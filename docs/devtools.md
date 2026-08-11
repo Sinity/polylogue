@@ -58,7 +58,6 @@ They are not a proof ledger or end-user archive workflow.
 | --- | --- |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
 | `devtools lab graph` | Inspect declared runtime artifacts, operations, paths, and maintenance targets. |
-| `devtools lab test-economics` | Decide where test-writing effort or test-suite pruning actually pays off, by cross-referencing coverage percent, historical fix-commit density, testmon wall-time cost exposure, and testmon selection fan-out per top-level package. |
 | `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
 | `devtools lab testmon-blind-spots` | Inspect an existing coverage JSON report against an existing pytest-testmon database. Declaration-only modules are reported separately from executable validator risk; this command does not run pytest or regenerate coverage. |
 | `devtools lab pytest-witness-repetitions` | Establish that the historical periodic optimize, WAL checkpoint, and embedding backlog lifecycle witnesses survive consecutive isolated and xdist runs. Each attempt uses the ordinary managed pytest/supervisor path; failures and timeouts are retained rather than retried. |
@@ -166,7 +165,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
-| `devtools lab test-economics` | Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11). |
 | `devtools lab testmon-blind-spots` | Audit coverage-known files that are absent from the testmon fingerprint graph. |
 | `devtools lab testmon-proof` | Prove real testmon affected selection against a semantic production mutation. |
 
@@ -192,7 +190,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools bench coordination-latency` | Measure compact coordination status p50/p95 with raw stage samples. |
 | `devtools bench help-latency` | Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2). |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
@@ -222,9 +219,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
 | `devtools workspace chatgpt-lifecycle-anchor-audit` | Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts. |
-| `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
-| `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
-| `devtools workspace continuity-replay` | Run continuity scenarios with query-discovery and repository-effect checks. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |

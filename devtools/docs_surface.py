@@ -206,7 +206,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Daemon, web-shell, browser-capture, and extension debugging workflow.",
         "operations",
     ),
-    _entry("Test Economics", "test-economics.md", "Test-selection and verification cost model.", "operations"),
     _entry(
         "Visual Evidence",
         "visual-evidence.md",

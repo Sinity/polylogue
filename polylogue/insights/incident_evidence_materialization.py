@@ -1,13 +1,8 @@
 """Source-to-graph incident materialization from the archive's own evidence.
 
-``devtools.mandate_continuity_replay.build_repository_claim_graph`` builds a
-work-evidence graph of claim nodes purely from an *external* ledger --
-``.beads/interactions.jsonl``. That proves an issue-tracker's own "closed"
-transitions can be reconciled against independently observed git/GitHub/Beads
-effects (``insights.work_effects``), but it never reads a single archived
-session, message, or action. An operator investigating a real incident
-("agent X did Y around time Z in repo R") starts from the opposite end: the
-archive's own record of what actually ran, not an issue tracker.
+An operator investigating a real incident ("agent X did Y around time Z in
+repo R") starts from the archive's own record of what actually ran, not an
+issue tracker or a separately generated report.
 
 This module is that missing half. It is deliberately *not* a second copy of
 ``insights.claude_workflow_materializer`` (which reads raw Claude Workflow

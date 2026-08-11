@@ -74,7 +74,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 |----------|-------------|
 | [Developer Tools](devtools.md) | Generated surfaces, validation, and repo hygiene. |
 | [Branch-Local Development Loop](dev-loop.md) | Daemon, web-shell, browser-capture, and extension debugging workflow. |
-| [Test Economics](test-economics.md) | Test-selection and verification cost model. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
 | [Tracker Authority](tracker-authority.md) | GitHub and Beads authority split, and the reconciliation script that checks it. |

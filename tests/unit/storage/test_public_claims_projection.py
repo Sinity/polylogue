@@ -12,10 +12,10 @@ from polylogue.insights.measurement.public_claims import (
     PublicClaimStatus,
     project_public_claims,
 )
-from polylogue.scenarios.corpus import claim_vs_evidence_findings
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    FindingAssertion,
     PublicClaimDeclaration,
     judge_assertion_candidate,
     upsert_findings_as_assertions,
@@ -31,73 +31,48 @@ def _connect_user_db(tmp_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _finding() -> FindingAssertion:
+    evidence_ref = "file:tests/fixtures/public-claim-evidence.json"
+    return FindingAssertion(
+        claim_key="finding.fixture-observation",
+        target_ref="analysis:fixture-observation",
+        body_text="The fixture observed three matching records.",
+        finding_kind="measure",
+        statistic={"op": "count", "value": 3, "unit": "records"},
+        n=3,
+        query_ref=f"{evidence_ref}#query",
+        result_set_ref=f"{evidence_ref}#results",
+        detector_ref="run:fixture-observation",
+        evidence_refs=(evidence_ref,),
+        source_epoch="2026-07-04T08:55:53.667311+00:00",
+        frame_ref=f"{evidence_ref}#frame",
+        public_claim=PublicClaimDeclaration(
+            publication="The fixture observed three matching records.",
+            scope="The deterministic public-claim fixture.",
+            caveat="This is fixture evidence, not a production population estimate.",
+            public_evidence_refs=(evidence_ref,),
+            disclosure="public",
+        ),
+    )
+
+
 def _supported_verdict(finding_ref: str) -> EvidenceIntegrityVerdict:
     return EvidenceIntegrityVerdict(
         finding_ref=finding_ref,
         status=EvidenceIntegrityStatus.SUPPORTED,
-        public_evidence_refs=("file:docs/findings/claim-vs-evidence.md#verdict",),
+        public_evidence_refs=("file:tests/fixtures/public-claim-evidence.json#verdict",),
         as_of_epoch="2026-07-04T08:55:53.667311+00:00",
-        frame_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
-        definition_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#definition",
-    )
-
-
-def test_seed_population_uses_snapshot_values_and_sanitized_demo_refs() -> None:
-    findings = {finding.claim_key: finding for finding in claim_vs_evidence_findings()}
-
-    assert set(findings) == {
-        "finding.silent-proceed-lower-bound",
-        "finding.handler-class-split",
-        "finding.per-origin-inspection-counts",
-    }
-    silent = findings["finding.silent-proceed-lower-bound"]
-    assert silent.statistic == {
-        "op": "lower_bound",
-        "value": 0.241,
-        "unit": "ratio",
-        "numerator": 1_205,
-        "denominator": 5_000,
-        "ambiguous": 3_375,
-    }
-    handlers = findings["finding.handler-class-split"].statistic["value"]
-    assert handlers == {
-        "consequential": {
-            "failed_outcomes": 4_175,
-            "silent_proceed": 930,
-            "ambiguous": 2_842,
-            "silent_rate_lower_bound": 0.22275449101796407,
-        },
-        "benign_recovery": {
-            "failed_outcomes": 634,
-            "silent_proceed": 172,
-            "ambiguous": 455,
-            "silent_rate_lower_bound": 0.27129337539432175,
-        },
-        "other": {
-            "failed_outcomes": 191,
-            "silent_proceed": 103,
-            "ambiguous": 78,
-            "silent_rate_lower_bound": 0.5392670157068062,
-        },
-    }
-    origins = findings["finding.per-origin-inspection-counts"].statistic["value"]
-    assert isinstance(origins, dict)
-    assert origins["claude-code-session"] == {"inspected": 3_752, "requested": 3_752, "frame_total": 31_555}
-    assert origins["codex-session"] == {"inspected": 1_241, "requested": 1_241, "frame_total": 10_429}
-    assert origins["claude-ai-export"] == {"inspected": 7, "requested": 7, "frame_total": 49}
-    assert all(
-        ref.startswith("file:.local/evidence/claim-vs-evidence/") or ref == "file:docs/findings/claim-vs-evidence.md"
-        for finding in findings.values()
-        for ref in finding.evidence_refs
+        frame_ref="file:tests/fixtures/public-claim-evidence.json#frame",
+        definition_ref="file:tests/fixtures/public-claim-evidence.json#definition",
     )
 
 
 def test_real_storage_lifecycle_controls_public_support(tmp_path: Path) -> None:
     conn = _connect_user_db(tmp_path)
     try:
-        candidates = upsert_findings_as_assertions(conn, claim_vs_evidence_findings(), now_ms=1_000)
+        candidates = upsert_findings_as_assertions(conn, (_finding(),), now_ms=1_000)
         conn.commit()
-        candidate = next(item for item in candidates if item.key == "finding.silent-proceed-lower-bound")
+        candidate = candidates[0]
 
         before = project_public_claims(
             list_public_finding_inputs(conn),
@@ -135,7 +110,7 @@ def test_real_storage_lifecycle_controls_public_support(tmp_path: Path) -> None:
         assert accepted_claim.privacy_review == "approved"
         assert accepted_claim.status is PublicClaimStatus.SUPPORTED
 
-        upsert_findings_as_assertions(conn, claim_vs_evidence_findings(), now_ms=3_000)
+        upsert_findings_as_assertions(conn, (_finding(),), now_ms=3_000)
         conn.commit()
         assert int(conn.execute("SELECT count(*) FROM assertions").fetchone()[0]) == rows_after_accept
 
@@ -149,9 +124,9 @@ def test_real_storage_lifecycle_controls_public_support(tmp_path: Path) -> None:
                         status=EvidenceIntegrityStatus.STALE,
                         reason_codes=("source-epoch-advanced",),
                         as_of_epoch="2026-07-17T00:00:00+00:00",
-                        frame_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame-v2",
-                        definition_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#definition",
-                        public_remediation_refs=("run:claim-vs-evidence-rerun",),
+                        frame_ref="file:tests/fixtures/public-claim-evidence.json#frame-v2",
+                        definition_ref="file:tests/fixtures/public-claim-evidence.json#definition",
+                        public_remediation_refs=("run:fixture-observation-rerun",),
                     )
                 }
             ),
@@ -167,7 +142,7 @@ def test_real_storage_lifecycle_controls_public_support(tmp_path: Path) -> None:
 def test_rejected_candidate_cannot_render_supported(tmp_path: Path) -> None:
     conn = _connect_user_db(tmp_path)
     try:
-        candidate = upsert_findings_as_assertions(conn, claim_vs_evidence_findings()[:1], now_ms=1_000)[0]
+        candidate = upsert_findings_as_assertions(conn, (_finding(),), now_ms=1_000)[0]
         judged = judge_assertion_candidate(
             conn,
             candidate_ref=f"assertion:{candidate.assertion_id}",
@@ -194,7 +169,7 @@ def test_rejected_candidate_cannot_render_supported(tmp_path: Path) -> None:
 
 def test_public_claim_writer_rejects_absolute_or_parent_traversal_refs(tmp_path: Path) -> None:
     conn = _connect_user_db(tmp_path)
-    finding = claim_vs_evidence_findings()[0]
+    finding = _finding()
     assert finding.public_claim is not None
     try:
         for unsafe_ref in ("file:/home/operator/private.json", "file:../private.json", "file:C:\\private.json"):
@@ -214,7 +189,7 @@ def test_public_claim_writer_rejects_absolute_or_parent_traversal_refs(tmp_path:
 
 def test_held_private_declaration_survives_storage_and_blocks_publication(tmp_path: Path) -> None:
     conn = _connect_user_db(tmp_path)
-    finding = claim_vs_evidence_findings()[0]
+    finding = _finding()
     assert finding.public_claim is not None
     held = replace(
         finding,

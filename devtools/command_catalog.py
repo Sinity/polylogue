@@ -338,22 +338,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab test-economics",
-        "verification lab",
-        "Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11).",
-        "devtools.test_economics_report",
-        use_when=(
-            "Decide where test-writing effort or test-suite pruning actually pays off, by "
-            "cross-referencing coverage percent, historical fix-commit density, testmon "
-            "wall-time cost exposure, and testmon selection fan-out per top-level package."
-        ),
-        examples=(
-            "devtools lab test-economics",
-            "devtools lab test-economics --json",
-            "devtools lab test-economics --write docs/test-economics.md",
-        ),
-    ),
-    CommandSpec(
         "lab testmon-proof",
         "verification lab",
         "Prove real testmon affected selection against a semantic production mutation.",
@@ -431,13 +415,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench ingest-throughput --json",
             "devtools bench ingest-throughput --batches 20 --seed 2391",
         ),
-    ),
-    CommandSpec(
-        "bench coordination-latency",
-        "benchmarking",
-        "Measure compact coordination status p50/p95 with raw stage samples.",
-        "devtools.coordination_latency_probe",
-        examples=("devtools bench coordination-latency --samples 21 --out .local/coordination-latency.json",),
     ),
     CommandSpec(
         "lab snapshot read-surface",
@@ -1366,36 +1343,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace cli-surface-audit",
-        "workspace",
-        "Capture a current-curated CLI surface audit demo.",
-        "devtools.cli_surface_audit",
-        use_when=(
-            "Refresh the CLI surface audit shelf through one reusable command that captures representative "
-            "help, status, query, read, and facets outputs while keeping large unbounded diagnostics opt-in."
-        ),
-        examples=(
-            "devtools workspace cli-surface-audit",
-            "devtools workspace cli-surface-audit --out-dir .local/evidence/cli-surface-audit/current --json",
-            "devtools workspace cli-surface-audit --include-unbounded-dialogue",
-        ),
-    ),
-    CommandSpec(
-        "workspace claim-vs-evidence",
-        "workspace",
-        "Build a structured failure follow-up claim-vs-evidence demo.",
-        "devtools.claim_vs_evidence",
-        use_when=(
-            "Produce a fast, bounded report over structured tool failures and the immediately following "
-            "assistant turn, using tool_result is_error/exit_code as the evidence anchor instead of "
-            "prose-mined outcome claims."
-        ),
-        examples=(
-            "devtools workspace claim-vs-evidence --json",
-            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .local/evidence/claim-vs-evidence",
-        ),
-    ),
-    CommandSpec(
         "workspace read-package",
         "workspace",
         "Render a declarative package of Polylogue read artifacts.",
@@ -1922,23 +1869,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar",
             "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
-        ),
-    ),
-    CommandSpec(
-        "workspace continuity-replay",
-        "workspace",
-        "Run continuity scenarios with query-discovery and repository-effect checks.",
-        "devtools.mandate_continuity_replay",
-        use_when=(
-            "Replay the continuity scenario catalog over MCP stdio JSON-RPC, reconcile this repository's "
-            "git and Beads effects, and cross-check every query-tool route against the query-discovery "
-            "catalog. Defaults to a fresh, privacy-safe synthetic archive; pass "
-            "--archive-root for an authorized live-scale replay."
-        ),
-        examples=(
-            "devtools workspace continuity-replay",
-            "devtools workspace continuity-replay --output .cache/continuity-replay.json",
-            "devtools workspace continuity-replay --archive-root /path/to/authorized/archive --keep-archive",
         ),
     ),
     CommandSpec(
