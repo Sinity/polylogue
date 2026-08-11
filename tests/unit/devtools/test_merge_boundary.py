@@ -307,6 +307,47 @@ def test_merge_refuses_when_local_verify_command_fails(monkeypatch: pytest.Monke
     assert ledger["merges"] == []
 
 
+def test_merge_replaces_a_recent_failed_receipt_instead_of_reusing_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, local_exit=2))
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=True,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 2
+    )
+    assert json.loads(merge_gate._receipt_path(42).read_text())["exit_code"] == 2
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, local_exit=0))
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=True,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 0
+    )
+    receipt = json.loads(merge_gate._receipt_path(42).read_text())
+    assert receipt["exit_code"] == 0
+    assert receipt["verification_scope"] == "affected"
+
+
 def test_merge_dry_run_never_calls_gh_pr_merge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
