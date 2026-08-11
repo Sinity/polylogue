@@ -256,7 +256,7 @@ def _terminal_authorization(stdout: str) -> str | None:
 
 
 def cmd_record(pr: int, command: str) -> int:
-    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft"])
+    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft,author,files"])
     head_sha = info["headRefOid"]
 
     local_head = _git_head_sha()
@@ -277,10 +277,28 @@ def cmd_record(pr: int, command: str) -> int:
         )
         return 2
 
-    scope = pr_scope.validate_pr_body(
-        info.get("body") or "",
-        head_sha=head_sha,
-        is_draft=bool(info.get("isDraft")),
+    author = info.get("author")
+    files = info.get("files")
+    author_login = author.get("login") if isinstance(author, dict) else None
+    author_type = author.get("type") if isinstance(author, dict) else None
+    changed_files: tuple[str, ...] = ()
+    if isinstance(files, list):
+        changed_files = tuple(
+            path for item in files if isinstance(item, dict) and isinstance((path := item.get("path")), str)
+        )
+    automated_scope = pr_scope.automated_dependency_scope_allowed(
+        author_login=author_login if isinstance(author_login, str) else None,
+        author_type=author_type if isinstance(author_type, str) else None,
+        changed_files=changed_files,
+    )
+    scope = (
+        pr_scope.ScopeVerdict(ok=True)
+        if automated_scope
+        else pr_scope.validate_pr_body(
+            info.get("body") or "",
+            head_sha=head_sha,
+            is_draft=bool(info.get("isDraft")),
+        )
     )
     if not scope.ok:
         print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
