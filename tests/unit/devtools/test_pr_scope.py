@@ -332,6 +332,11 @@ def test_ci_accepts_authoritative_dependabot_dependency_only_pr(
         == 0
     )
     assert "typed automated-dependency disposition" in capsys.readouterr().out
+    assert pr_scope.automated_dependency_scope_allowed(
+        author_login="dependabot[bot]",
+        author_type="Bot",
+        changed_files=("pyproject.toml", "uv.lock"),
+    )
     fetch_base.assert_not_called()
 
 
