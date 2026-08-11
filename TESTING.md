@@ -94,11 +94,14 @@ independent placement policy that can silently disagree with this one:
 
 1. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` — an explicit operator override,
    still headroom-checked (see below), never silently downgraded.
-2. `/dev/shm` (tmpfs) — the default, because measured SQLite fsync traffic
-   made the disk-backed lane more than 20 times slower — used when it clears
-   the free-space requirement.
-3. `/realm/tmp/polylogue-pytest` (NVMe scratch) — used when `/dev/shm` lacks
-   headroom but `/realm/tmp` is mounted and has room.
+2. `/dev/shm` (tmpfs) — the focused-run default, because measured SQLite fsync
+   traffic makes it substantially faster when it clears the free-space
+   requirement. Full-suite and seed-testmon runs use it only when
+   `POLYLOGUE_PYTEST_TMPFS=1` is explicit.
+3. `/realm/tmp/polylogue-pytest` (NVMe scratch) — the broad-run default, and
+   the fallback when `/dev/shm` lacks headroom. Broad fixture trees have
+   exceeded the supervised 2 GiB tmpfs ceiling while still making progress,
+   so their normal route does not guess a future aggregate peak.
 4. `/tmp/polylogue-pytest` — reachable **only** when `/realm/tmp` is not
    mounted at all (a genuine cloud sandbox, where `.claude/settings.json`
    sets this as `POLYLOGUE_PYTEST_BASETEMP_ROOT`). On a workstation with

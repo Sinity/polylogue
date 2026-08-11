@@ -321,7 +321,7 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     assert command[command.index("-n") + 1] == "4"
 
 
-def test_seed_auto_enables_bounded_tmpfs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_seed_defaults_to_managed_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
 
@@ -332,8 +332,11 @@ def test_seed_auto_enables_bounded_tmpfs(monkeypatch: pytest.MonkeyPatch) -> Non
         rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "--testmon-noselect"])
 
     assert rc == 0
-    assert metadata["pytest_tmpfs"] is True
-    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_TMPFS"] == "1"
+    assert metadata["pytest_tmpfs"] is False
+    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(
+        verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT
+    )
     assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] == "50000"
 
 
@@ -1837,7 +1840,7 @@ def _patch_resource_capacity(
     monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
 
 
-def test_default_workers_on_eight_gib_remain_admissible_through_placement(
+def test_default_full_suite_workers_use_scratch_through_placement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
@@ -1849,8 +1852,32 @@ def test_default_workers_on_eight_gib_remain_admissible_through_placement(
     assert workers == 5
     assert policy is not None
     assert policy.workers == workers
+    assert policy.basetemp_label == "scratch"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
+def test_focused_selection_keeps_bounded_tmpfs_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=8192)
+
+    env, policy = apply_managed_pytest_runtime_policy({}, worker_count=1, full_suite=False)
+
+    assert policy is not None
     assert policy.basetemp_label == "tmpfs opt-in"
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+
+
+def test_explicit_full_suite_tmpfs_choice_remains_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+
+    env, policy = apply_managed_pytest_runtime_policy({"POLYLOGUE_PYTEST_TMPFS": "1"}, worker_count=4, full_suite=True)
+
+    assert policy is not None
+    assert policy.basetemp_label == "tmpfs opt-in"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+    assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "2048"
 
 
 def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(

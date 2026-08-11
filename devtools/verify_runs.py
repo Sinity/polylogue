@@ -729,7 +729,7 @@ def adaptive_pytest_runtime_policy(
 def apply_managed_pytest_runtime_policy(
     env: Mapping[str, str], *, worker_count: int | None = None, full_suite: bool = True
 ) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
-    """Enable bounded tmpfs by default; preserve explicit storage choices.
+    """Place broad runs on scratch and focused runs on bounded tmpfs by default.
 
     Also runs the basetemp disk-headroom preflight
     (:func:`resolve_pytest_basetemp_root`) so a starved basetemp location is
@@ -738,6 +738,11 @@ def apply_managed_pytest_runtime_policy(
     unrelated command minutes or hours later.
     """
     normalized = normalize_pytest_basetemp_env(env)
+    default_full_suite_scratch = (
+        full_suite
+        and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        and "POLYLOGUE_PYTEST_TMPFS" not in normalized
+    )
     manages_tmpfs = (
         not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0"
     )
@@ -763,6 +768,12 @@ def apply_managed_pytest_runtime_policy(
             and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
             normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+    if default_full_suite_scratch:
+        # Broad-suite demand grows with the fixture universe and has exceeded
+        # the supervised 2 GiB ceiling while tests were still progressing.
+        # Keep that ceiling for explicit tmpfs runs; use NVMe for the default
+        # broad route instead of guessing the next aggregate peak.
+        normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
     if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:
         normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(selected_root)
