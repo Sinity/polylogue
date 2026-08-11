@@ -475,16 +475,33 @@ def fetch_pr_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
 
 def _automated_dependency_scope_allowed(metadata: PullRequestMetadata) -> bool:
     """Recognize only GitHub's bot identity and an exact dependency file set."""
+    return automated_dependency_scope_allowed(
+        author_login=metadata.author_login,
+        author_type=metadata.author_type,
+        changed_files=metadata.changed_files,
+    )
+
+
+def automated_dependency_scope_allowed(
+    *,
+    author_login: str | None,
+    author_type: str | None,
+    author_is_bot: bool | None = None,
+    changed_files: tuple[str, ...],
+) -> bool:
+    """Recognize the typed dependency-only scope across REST and gh schemas."""
     allowed = {
         ".github/workflows/codeql.yml",
         "pyproject.toml",
         "uv.lock",
     }
     return (
-        metadata.author_login == "dependabot[bot]"
-        and metadata.author_type == "Bot"
-        and bool(metadata.changed_files)
-        and set(metadata.changed_files).issubset(allowed)
+        (
+            (author_login == "dependabot[bot]" and author_type == "Bot")
+            or (author_login == "app/dependabot" and author_is_bot is True)
+        )
+        and bool(changed_files)
+        and set(changed_files).issubset(allowed)
     )
 
 
