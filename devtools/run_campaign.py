@@ -13,9 +13,7 @@ import asyncio
 import inspect
 import shutil
 import sys
-from collections.abc import Awaitable
 from pathlib import Path
-from typing import cast
 
 from devtools import repo_root as _get_root
 from polylogue.scenarios import CorpusSourceKind
@@ -81,7 +79,7 @@ async def _run(args: argparse.Namespace) -> int:
             raise ValueError(f"Unknown synthetic benchmark runner {name!r}") from exc
         result = runner(db_path)
         if inspect.isawaitable(result):
-            return await cast(Awaitable[CampaignResult], result)
+            return await result
         return result
 
     if args.list_campaigns:
