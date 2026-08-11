@@ -2315,11 +2315,15 @@ def test_run_scopes_measured_full_suite_basetemp_demand(tmp_path: Path, label: s
     assert apply_policy.call_args.kwargs["full_suite"] is full_suite
 
 
-def test_bench_slo_inherits_managed_pytest_environment(tmp_path: Path) -> None:
+def test_bench_slo_forces_nested_pytest_to_managed_scratch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     run = VerifyRun(tier="lab", argv=[], git_head=None, root=tmp_path)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/dev/shm/inherited-benchmark")
     managed_env = {
-        "POLYLOGUE_PYTEST_TMPFS": "1",
-        "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+        "POLYLOGUE_PYTEST_TMPFS": "0",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/realm/tmp/polylogue-pytest",
     }
     completed = subprocess.CompletedProcess(args=["devtools", "bench", "slo"], returncode=0, stdout="", stderr="")
 
@@ -2331,11 +2335,14 @@ def test_bench_slo_inherits_managed_pytest_environment(tmp_path: Path) -> None:
 
     assert rc == 0
     assert apply_policy.call_args.kwargs == {"worker_count": 0, "full_suite": False}
+    policy_input = apply_policy.call_args.args[0]
+    assert policy_input["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in policy_input
     env = subprocess_run.call_args.kwargs["env"]
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"] == run.run_id
-    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
-    assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "512"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/realm/tmp/polylogue-pytest"
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2622,15 +2629,17 @@ def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
 
-    # _run's _clear_pytest_report wipes PYTEST_EVENTS_PATH before the child
+    # _run's _clear_pytest_report wipes the event artifacts before the child
     # starts, so the child itself must write the one-and-only progress
     # event (matching a real pytest worker reporting "test started" then
-    # wedging mid-test) -- it reads the path devtools/verify.py's
-    # _subprocess_env() injects for it.
+    # wedging mid-test). Real xdist workers write their own live JSONL files
+    # under POLYLOGUE_PYTEST_EVENTS_DIR; the merged path appears only after
+    # pytest exits and therefore cannot drive an in-process stall detector.
     child_script = (
         "import json, os, time\n"
-        "path = os.environ['POLYLOGUE_PYTEST_EVENTS_PATH']\n"
-        "os.makedirs(os.path.dirname(path), exist_ok=True)\n"
+        "directory = os.environ['POLYLOGUE_PYTEST_EVENTS_DIR']\n"
+        "os.makedirs(directory, exist_ok=True)\n"
+        "path = os.path.join(directory, 'gw0.jsonl')\n"
         "with open(path, 'w') as f:\n"
         "    f.write(json.dumps({'event': 'test_started', 'nodeid': 'wedged::test', "
         "'updated_at': '2026-01-01T00:00:00Z'}) + '\\n')\n"
