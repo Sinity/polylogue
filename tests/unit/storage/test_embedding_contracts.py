@@ -36,7 +36,7 @@ from polylogue.storage.sqlite.schema import SCHEMA_VERSION
 
 
 class _FakeV1VectorProvider:
-    model = "voyage-4"
+    model = "voyage-4-lite"
     dimension = 1024
 
     def __init__(self) -> None:

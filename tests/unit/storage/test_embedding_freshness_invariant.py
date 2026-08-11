@@ -87,6 +87,18 @@ class _EmbeddingConfig(dict[str, object]):
         self.embedding_max_cost_usd = 0.0
 
 
+@pytest.fixture(autouse=True)
+def _materialization_uses_freshness_baseline_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep initial materialization on the test's explicit voyage-4 baseline.
+
+    Individual tests replace this patch with voyage-5 to prove a recipe change
+    invalidates stale vectors before it can be published as current.
+    """
+    from polylogue.storage.embeddings import materialization
+
+    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: _EmbeddingConfig())
+
+
 def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
     with ArchiveStore(root) as archive:
         return archive.write_parsed(
