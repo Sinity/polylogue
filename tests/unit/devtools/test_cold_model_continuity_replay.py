@@ -17,7 +17,6 @@ from collections.abc import Mapping, Sequence
 import pytest
 
 from devtools import cold_model_continuity_replay as cmr
-from devtools.command_catalog import COMMANDS
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 
 _QUERY_TOOL_PROPERTIES: dict[str, object] = {
@@ -45,17 +44,6 @@ def _goal(
         forced_page_limit=base.forced_page_limit,
         corpus_row_count=base.corpus_row_count,
     )
-
-
-# ── Command registration ──────────────────────────────────────────────
-
-
-def test_command_not_yet_wired_module_importable() -> None:
-    # This module is intentionally standalone (invoked directly / via CI),
-    # not yet a `devtools workspace ...` subcommand; guard that assumption
-    # so a future registration attempt updates this test rather than
-    # silently duplicating a command name.
-    assert "workspace cold-model-continuity-replay" not in COMMANDS
 
 
 # ── Cold-model plan selection ──────────────────────────────────────────
