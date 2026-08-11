@@ -211,7 +211,6 @@ def test_quick_verify_omits_pytest() -> None:
         "render all",
         "verify layering",
         "lab graph strict",
-        "verify closure-matrix",
         "lab schema roundtrip",
         "verify manifests",
         "verify ci-workflows",

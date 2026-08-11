@@ -18,7 +18,7 @@ the toolbar mutates, and which fields the lineage tab consumes from the
 :class:`SessionTopology` envelope.
 
 This file is the durable cross-surface pin. It is organized by source
-module so the closure-matrix row for each module can attribute coverage:
+module so each production asset's behavior remains directly attributable:
 
 - ``TestWebShellSelectionAssetContract`` — asset module integrity and the
   JS→endpoint contract for ``POST /api/user/marks`` shared with the

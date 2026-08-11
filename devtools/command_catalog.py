@@ -1659,17 +1659,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify closure-matrix",
-        "verification",
-        "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",
-        "devtools.verify_closure_matrix",
-        use_when=(
-            "Keep the per-domain test-closure matrix honest — fails when a declared target file or "
-            "representative test path is missing, or when a row violates the gate schema."
-        ),
-        examples=("devtools verify closure-matrix", "devtools verify closure-matrix --json"),
-    ),
-    CommandSpec(
         "bench slo",
         "benchmarking",
         "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",

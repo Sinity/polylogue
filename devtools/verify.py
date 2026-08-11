@@ -2085,7 +2085,6 @@ def build_verify_steps(
                 ("render all", _devtools_cmd("render all", "--check")),
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("lab graph strict", _devtools_cmd("lab graph", "--strict")),
-                ("verify closure-matrix", _devtools_cmd("verify closure-matrix")),
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
                 ("verify manifests", _devtools_cmd("verify manifests")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),

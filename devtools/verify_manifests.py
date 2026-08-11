@@ -622,51 +622,6 @@ def check_distribution_ci_claims(
     return errors
 
 
-def check_test_quality_ci_claims(
-    plans_dir: Path,
-    inventory: WorkflowInventory | None = None,
-) -> list[str]:
-    """Verify ``ci_gate: true`` in test-quality-coverage.yaml is real.
-
-    If a dimension claims ``ci_gate: true``, then either the declared
-    ``tool`` invocation or the canonical devtools gate command must appear
-    in some workflow ``run:`` step. Otherwise the manifest is claiming a
-    CI gate that does not exist.
-    """
-    errors: list[str] = []
-    path = plans_dir / "test-quality-coverage.yaml"
-    if not path.exists():
-        return errors
-    try:
-        data = load_manifest(path)
-    except ValueError as exc:
-        return [str(exc)]
-
-    wf = inventory if inventory is not None else inventory_workflows(plans_dir.parent.parent / ".github" / "workflows")
-
-    dimensions = data.get("dimensions")
-    if not isinstance(dimensions, dict):
-        return errors
-
-    for dim_name, dim in dimensions.items():
-        if not isinstance(dim, dict):
-            continue
-        if dim.get("ci_gate") is not True:
-            continue
-        label = f"{path}: dimensions.{dim_name}"
-        tool = dim.get("tool") if isinstance(dim.get("tool"), str) else ""
-        # Probe candidates: the tool string (e.g. "pytest-cov"), and the
-        # canonical devtools gate for known tools.
-        candidates: list[str] = []
-        if tool:
-            candidates.append(tool)
-        if tool in {"pytest-cov", "coverage"}:
-            candidates.append("devtools verify coverage")
-        if not any(_command_present_in_workflows(candidate, wf) for candidate in candidates):
-            errors.append(f"{label} ci_gate=true but no workflow run step invokes any of {candidates!r}")
-    return errors
-
-
 def check_pydantic_models(plans_dir: Path) -> list[str]:
     """Validate every YAML manifest against its Pydantic model schema."""
     errors: list[str] = []
@@ -698,7 +653,6 @@ def main(argv: list[str] | None = None) -> int:
         check_coverage_status_claims,
         check_campaign_coverage_catalog,
         check_distribution_ci_claims,
-        check_test_quality_ci_claims,
     ):
         try:
             all_errors.extend(check(plans_dir))

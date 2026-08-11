@@ -490,43 +490,6 @@ def test_distribution_ci_claims_rejects_ci_build_without_build_command(tmp_path:
     ]
 
 
-def test_test_quality_ci_gate_accepts_real_workflow(tmp_path: Path) -> None:
-    plans = tmp_path
-    (plans / "test-quality-coverage.yaml").write_text(
-        """dimensions:
-  direct_coverage:
-    tool: pytest-cov
-    ci_gate: true
-""",
-        encoding="utf-8",
-    )
-
-    errors = verify_manifests.check_test_quality_ci_claims(
-        plans,
-        inventory=_stub_inventory("uv run devtools verify coverage"),
-    )
-    assert errors == []
-
-
-def test_test_quality_ci_gate_rejects_unbacked_claim(tmp_path: Path) -> None:
-    plans = tmp_path
-    (plans / "test-quality-coverage.yaml").write_text(
-        """dimensions:
-  direct_coverage:
-    tool: pytest-cov
-    ci_gate: true
-""",
-        encoding="utf-8",
-    )
-
-    errors = verify_manifests.check_test_quality_ci_claims(
-        plans,
-        inventory=_stub_inventory("uv run ruff check"),
-    )
-    assert len(errors) == 1
-    assert "ci_gate=true but no workflow run step invokes" in errors[0]
-
-
 # ---------------------------------------------------------------------------
 # Pack C: campaign test-path and freshness/artifact existence enforcement
 # ---------------------------------------------------------------------------

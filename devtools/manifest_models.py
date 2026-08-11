@@ -309,90 +309,6 @@ class DistributionCoverageManifest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Test-quality-coverage manifest  (test-quality-coverage.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class FuzzTool(BaseModel):
-    """Fuzz-tool entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    locations: list[str] = Field(default_factory=list)
-    strategies_location: str | None = None
-    schema_driven_strategies: bool = False
-    notes: str | None = None
-
-
-class FlakyTest(BaseModel):
-    """Known flaky test entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str | None = None
-    location: str | None = None
-    intermittent_on: str | None = None
-    behavior: str | None = None
-    workaround: str | None = None
-
-
-class TestQualityDimension(BaseModel):
-    """A single test-quality dimension."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    measured: bool = False
-    value_percent: int | None = None
-    fail_under_percent: int | None = None
-    tool: str | None = None
-    config_location: str | None = None
-    ci_gate: bool = False
-    last_verified: str | None = None
-    notes: str | None = None
-    known_flaky: list[FlakyTest] = Field(default_factory=list)
-    ci_retry: bool = False
-    flakiness_dashboard: bool = False
-    tools: list[FuzzTool] = Field(default_factory=list)
-    policy: str | None = None
-
-
-class TestLocations(BaseModel):
-    """Test-location groups."""
-
-    model_config = ConfigDict(extra="forbid")
-    unit_core: list[str] = Field(default_factory=list)
-    unit_sources: list[str] = Field(default_factory=list)
-    unit_storage: list[str] = Field(default_factory=list)
-    unit_pipeline: list[str] = Field(default_factory=list)
-    unit_cli: list[str] = Field(default_factory=list)
-    unit_mcp: list[str] = Field(default_factory=list)
-    unit_security: list[str] = Field(default_factory=list)
-    unit_rendering: list[str] = Field(default_factory=list)
-    integration: list[str] = Field(default_factory=list)
-    fuzz: list[str] = Field(default_factory=list)
-
-
-class TestCount(BaseModel):
-    """Test-count record."""
-
-    model_config = ConfigDict(extra="forbid")
-    total: int | None = None
-    unit: str | None = None
-    property: str | None = None
-    integration: str | None = None
-    snapshot: str | int | None = None
-    last_measured: str | None = None
-
-
-class TestQualityCoverageManifest(BaseModel):
-    """Root of test-quality-coverage.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    dimensions: dict[str, TestQualityDimension | TestCount | TestLocations] = Field(default_factory=dict)
-    coverage_gaps: list[CoverageGap] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Manifest-type dispatch table
 # ──────────────────────────────────────────────────────────────────────
 
@@ -401,7 +317,6 @@ MANIFEST_MODELS: dict[str, type[BaseModel]] = {
     "campaign-coverage.yaml": CampaignCoverageManifest,
     "layering.yaml": LayeringManifest,
     "distribution-coverage.yaml": DistributionCoverageManifest,
-    "test-quality-coverage.yaml": TestQualityCoverageManifest,
 }
 
 
@@ -456,8 +371,6 @@ __all__ = [
     "CoverageManifest",
     "DistributionArtifact",
     "DistributionCoverageManifest",
-    "FlakyTest",
-    "FuzzTool",
     "LayeringManifest",
     "LayeringRule",
     "TwinWriteContract",
@@ -467,9 +380,5 @@ __all__ = [
     "MANIFEST_MODELS",
     "MutationCampaignEntry",
     "PlatformCoverage",
-    "TestCount",
-    "TestLocations",
-    "TestQualityCoverageManifest",
-    "TestQualityDimension",
     "validate_manifest",
 ]
