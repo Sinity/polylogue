@@ -1610,6 +1610,7 @@ def test_adaptive_pytest_policy_caps_near_threshold_from_full_cgroup_peak() -> N
     )
 
     assert policy.tmpfs_budget_mb == 1338
+    assert policy.tmpfs_predicted_mb is not None
     assert policy.tmpfs_budget_mb < policy.tmpfs_predicted_mb
 
 
