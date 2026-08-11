@@ -4492,6 +4492,13 @@ x-polylogue-route-contracts:
   response_contract: SearchEnvelope / SessionListResponse with route_state
   notes: Local UDS-only root-request parameter envelope; daemon owns query compilation.
 - method: POST
+  pattern: /api/cli/delete
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: MutationResultPayload
+  notes: Local CLI transport; deletion executes under the daemon writer gate.
+- method: POST
   pattern: /api/maintenance/rebuild-index
   kind: maintenance
   stability: operational

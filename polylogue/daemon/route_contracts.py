@@ -269,6 +269,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/cli/delete",
+        "maintenance",
+        "private",
+        "bearer_if_configured_and_same_origin",
+        "MutationResultPayload",
+        "Local CLI transport; deletion executes under the daemon writer gate.",
+    ),
+    RouteContract(
+        "POST",
         "/api/maintenance/rebuild-index",
         "maintenance",
         "operational",

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 from collections.abc import Awaitable, Callable, Iterator
 from http import HTTPStatus
+from io import BytesIO
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -55,6 +59,7 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     ("path", "handler_name", "actor"),
     [
         (["api", "reset"], "_handle_reset", "http.reset"),
+        (["api", "cli", "delete"], "_handle_cli_delete", "http.cli.delete"),
         (["api", "ingest"], "_handle_ingest", "http.ingest"),
         (["api", "maintenance", "run"], "_handle_maintenance_run", "http.maintenance.run"),
     ],
@@ -67,6 +72,40 @@ def test_authenticated_write_route_holds_gate_around_handler(path: list[str], ha
     handler._do_post_impl()
 
     assert timeline == [f"enter:{actor}", "body", f"exit:{actor}"]
+
+
+def test_cli_delete_handler_executes_the_resolved_set_through_polylogue() -> None:
+    body = json.dumps({"session_ids": ["s1", "s2", "s1"]}).encode()
+    handler = cast(Any, object.__new__(DaemonAPIHandler))
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = BytesIO(body)
+    polylogue = SimpleNamespace(
+        delete_session_safe=AsyncMock(
+            side_effect=[
+                SimpleNamespace(outcome="deleted"),
+                SimpleNamespace(outcome="not_found"),
+            ]
+        )
+    )
+    handler._sync_run = lambda operation: asyncio.run(operation(polylogue))
+    sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+    handler._send_json = lambda status, payload: sent.append((status, payload))
+
+    handler._handle_cli_delete()
+
+    assert [call.args for call in polylogue.delete_session_safe.await_args_list] == [("s1",), ("s2",)]
+    assert all(call.kwargs == {"actor": "user:cli"} for call in polylogue.delete_session_safe.await_args_list)
+    assert sent == [
+        (
+            HTTPStatus.OK,
+            {
+                "status": "deleted",
+                "operation": "delete",
+                "session_count": 2,
+                "affected_count": 1,
+            },
+        )
+    ]
 
 
 def test_user_post_and_delete_hold_named_gates_around_dispatch() -> None:

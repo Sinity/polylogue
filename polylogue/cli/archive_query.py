@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import multiprocessing
+import os
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -200,9 +201,12 @@ def execute_delete_by_session_ids(
             _emit_delete(env, archive, tuple(session_ids), params=params)
         return
 
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with archive_read_context(
+        archive_root,
+        operation="cli.delete.resolve",
+        arguments={"session_ids": session_ids, "dry_run": False},
+        projection="delete-apply",
+    ) as archive:
         _emit_delete(env, archive, tuple(session_ids), params=params)
 
 

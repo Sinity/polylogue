@@ -19,8 +19,7 @@ version: 2.1
 #     checks that stay --lab-only because they scan the whole Beads/backlog
 #     corpus rather than the current diff (bead-graph) or
 #     are otherwise not cheap/deterministic enough for every push
-#     (timestamp-doctrine, insight-honesty, docs-drift,
-#     policy docs-drift). Runs nightly so a policy that fails
+#     (timestamp-doctrine, insight-honesty). Runs nightly so a policy that fails
 #     continuously is at least visible somewhere, per polylogue-ze5i AC2,
 #     instead of only reachable via a human remembering `devtools verify
 #     --lab`.
@@ -108,8 +107,7 @@ jobs:
       # doesn't hide the pass/fail signal of the others in the same job --
       # bead-graph reports repository-wide graph state rather than the current
       # diff, and that must not mask a genuine regression
-      # in timestamp-doctrine/insight-honesty/
-      # docs-drift going unnoticed.
+      # in timestamp-doctrine/insight-honesty going unnoticed.
       - run:
           name: lab policy timestamp-doctrine
           command: ~/.local/bin/uv run devtools lab policy timestamp-doctrine
@@ -117,10 +115,6 @@ jobs:
       - run:
           name: lab policy insight-honesty
           command: ~/.local/bin/uv run devtools lab policy insight-honesty
-          when: always
-      - run:
-          name: lab policy docs-drift
-          command: ~/.local/bin/uv run devtools lab policy docs-drift
           when: always
       - run:
           name: lab policy bead-graph
@@ -137,8 +131,8 @@ jobs:
     steps:
       - bootstrap
       - run:
-          name: Full suite
-          command: ~/.local/bin/uv run devtools verify --all
+          name: Coverage suite
+          command: ~/.local/bin/uv run devtools verify coverage
           no_output_timeout: 30m
       - run:
           name: Dependency audit

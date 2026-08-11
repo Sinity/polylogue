@@ -276,6 +276,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify coverage",
+        "verification",
+        "Run pytest with the repository coverage floor from pyproject.toml.",
+        "devtools.coverage_gate",
+        use_when="Enforce the committed coverage ratchet locally or in CI without duplicating threshold values.",
+        examples=(
+            "devtools verify coverage",
+            "devtools verify coverage --ignore-integration --term-missing",
+            "devtools verify coverage -- --maxfail=1",
+        ),
+    ),
+    CommandSpec(
         "verify mutation-freshness",
         "verification",
         "Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds.",

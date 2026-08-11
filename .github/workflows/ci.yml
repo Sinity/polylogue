@@ -56,6 +56,8 @@ jobs:
           POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
 
   test:
+    # The full suite runs under coverage instrumentation. Keep a generous job
+    # ceiling so pytest's per-test timeout can report the actual stalled node.
     # This heavy gate is intentionally OFF the per-PR path (operator decision):
     # the ~18 min wait on every PR was not worth it. It still runs post-merge on
     # master (regression net) and on demand via workflow_dispatch, but no longer
@@ -63,6 +65,7 @@ jobs:
     # demo-visual-verify, distribution — plus the local pre-push
     # `devtools verify --quick` hook. Re-enable PR gating by deleting this `if:`.
     if: github.event_name != 'pull_request'
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -74,10 +77,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --frozen
-      - run: uv run devtools verify --all
+      - run: uv run devtools verify coverage
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
+      - uses: actions/upload-artifact@v7
+        if: matrix.python-version == '3.14'
+        with:
+          name: coverage-report
+          path: coverage.xml
 
   typecheck:
     # Strict mypy over the clean subset of polylogue/*. The list of

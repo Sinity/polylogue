@@ -892,15 +892,20 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert payload["affected_count"] == 0
         assert payload["session_ids"] == ["s1", "s2"]
 
-    def test_plain_forced_delete_proceeds_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_plain_forced_delete_routes_through_daemon_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
         env = self._env(plain=True)
         archive = self._archive()
-        archive.delete_sessions.return_value = 2
 
-        _emit_delete(env, archive, ("s1", "s2"), params={"force": True, "dry_run": False})
+        with patch(
+            "polylogue.cli.archive_query._fetch_daemon_payload",
+            return_value={"status": "deleted", "affected_count": 2},
+        ) as daemon_delete:
+            _emit_delete(env, archive, ("s1", "s2"), params={"force": True, "dry_run": False})
 
         env.ui.confirm.assert_not_called()
-        archive.delete_sessions.assert_called_once_with(("s1", "s2"))
+        archive.delete_sessions.assert_not_called()
+        assert daemon_delete.call_args.args[1] == "/api/cli/delete"
+        assert daemon_delete.call_args.kwargs["body"] == {"session_ids": ["s1", "s2"]}
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "deleted"
         assert payload["affected_count"] == 2

@@ -445,6 +445,7 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             "_handle_mcp_call_log",
         ),
         _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
+        _StaticPostRoute("/api/cli/delete", ("api", "cli", "delete"), "_handle_cli_delete"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
         _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
@@ -1941,6 +1942,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             mutating_actor = {
                 "_handle_mcp_call_log": "http.telemetry.mcp-call",
                 "_handle_reset": "http.reset",
+                "_handle_cli_delete": "http.cli.delete",
                 "_handle_ingest": "http.ingest",
                 "_handle_maintenance_run": "http.maintenance.run",
             }.get(authenticated_route.handler_name)
@@ -5014,6 +5016,44 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if expression:
             params["query"] = [expression]
         self._handle_list_sessions(params)
+
+    @daemon_safe_handler
+    def _handle_cli_delete(self) -> None:
+        """Delete the CLI's resolved session set under daemon writer ownership."""
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0 or content_length > 1_048_576:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length))
+            raw_session_ids = body["session_ids"]
+            if not isinstance(raw_session_ids, list):
+                raise TypeError("session_ids must be a list")
+            session_ids = tuple(dict.fromkeys(str(value) for value in raw_session_ids))
+            if len(session_ids) > 10_000 or any(not session_id for session_id in session_ids):
+                raise ValueError("invalid session_ids")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        async def _delete(poly: Polylogue) -> int:
+            deleted = 0
+            for session_id in session_ids:
+                result = await poly.delete_session_safe(session_id, actor="user:cli")
+                deleted += result.outcome == "deleted"
+            return deleted
+
+        deleted = cast(int, self._sync_run(_delete))
+        self._send_json(
+            HTTPStatus.OK,
+            MutationResultPayload(
+                status="deleted" if deleted else "ok",
+                operation="delete",
+                session_count=len(session_ids),
+                affected_count=deleted,
+            ).model_dump(exclude_none=True),
+        )
 
     @daemon_safe_handler
     def _handle_reset(self) -> None:
