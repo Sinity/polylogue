@@ -306,6 +306,57 @@ async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
 
+@pytest.mark.asyncio
+async def test_live_watcher_redrains_added_hook_shard_after_atomic_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The directory event can precede its first atomically published envelope."""
+
+    spool_root = tmp_path / "hooks"
+    pending = pending_hook_spool_dir(spool_root)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=None)),
+        (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+    original_drain = watcher._drain_hook_spool
+    drain_calls = 0
+
+    async def drain_then_publish_first_envelope() -> None:
+        nonlocal drain_calls
+        await original_drain()
+        drain_calls += 1
+        if drain_calls == 1:
+            enqueue_hook_event(
+                event_id="published-after-directory-event",
+                provider="codex",
+                event_type="SessionStart",
+                session_id="session-2",
+                timestamp="2026-07-12T10:00:00Z",
+                payload={"cwd": "/workspace"},
+                root=spool_root,
+            )
+
+    async def emit_empty_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
+        assert roots == (pending,)
+        shard = pending / "2026-08-11"
+        shard.mkdir(parents=True)
+        yield {(Change.added, str(shard))}
+
+    monkeypatch.setattr(watcher, "_drain_hook_spool", drain_then_publish_first_envelope)
+    monkeypatch.setattr(watchfiles, "awatch", emit_empty_shard)
+
+    await watcher._watch_changes([pending])
+
+    assert drain_calls == 2
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")) != []
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-2",)
+
+
 def test_hook_spool_retains_sqlite_failures_for_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
