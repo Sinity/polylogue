@@ -348,7 +348,9 @@ def initialize_active_archive_root(root: Path) -> None:
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
         pending_audit_adoption = audit_adoption_receipt_path(root).exists()
         has_durable_train_state = any(
-            path.name not in {"audit-adoption.json", "audit-continuity.json"} for path in manifest_root.glob("*.json")
+            path.name not in {"audit-adoption.json", "audit-continuity.json"}
+            and not path.name.startswith("audit-restore.")
+            for path in manifest_root.glob("*.json")
         )
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"

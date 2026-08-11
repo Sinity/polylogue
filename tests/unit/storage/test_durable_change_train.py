@@ -24,6 +24,7 @@ from polylogue.operations.durable_change_train import (
     acquire_durable_archive_ownership,
     adopt_missing_audit_tier,
     audit_adoption_receipt_path,
+    restore_adopted_audit_tier,
 )
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
@@ -1749,6 +1750,152 @@ def test_audit_adoption_receipt_allows_a_mutated_audit_journal(workspace_env: di
         connection.commit()
 
     assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+def test_adopted_audit_restore_rebinds_continuity_from_verified_backup(workspace_env: dict[str, Path]) -> None:
+    """The real offline restore publishes a new immutable continuity generation."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = backup_archive(output_dir=archive_root.parent / "pre-adoption", profile="full_evidence", verify=True)
+    assert pre_adoption.ok, pre_adoption.error
+    assert pre_adoption.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-restore-adopt") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    verified = backup_archive(output_dir=archive_root.parent / "post-adoption", profile="full_evidence", verify=True)
+    assert verified.ok, verified.error
+    assert verified.output_path is not None
+    expected_bytes = (Path(verified.output_path) / "audit.db").read_bytes()
+    old_identity = (audit_path.stat().st_dev, audit_path.stat().st_ino)
+    audit_path.write_bytes(b"corrupted audit image")
+
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-restore") as owner:
+        receipt = restore_adopted_audit_tier(
+            audit_path,
+            backup_manifest=Path(verified.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    assert audit_path.read_bytes() == expected_bytes
+    assert (audit_path.stat().st_dev, audit_path.stat().st_ino) != old_identity
+    assert receipt.name.endswith(".committed.json")
+    assert receipt.with_name(receipt.name.replace(".committed.json", ".prepared.json")).is_file()
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prepared record blocks startup but the same verified backup can complete it."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = backup_archive(output_dir=archive_root.parent / "resume-pre", profile="full_evidence", verify=True)
+    assert pre_adoption.ok and pre_adoption.output_path is not None, pre_adoption.error
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume-adopt") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    verified = backup_archive(output_dir=archive_root.parent / "resume-post", profile="full_evidence", verify=True)
+    assert verified.ok and verified.output_path is not None, verified.error
+    audit_path.write_bytes(b"corrupt")
+    real_link = os.link
+
+    def fail_committed_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if str(destination).endswith(".committed.json"):
+            raise OSError("simulated continuity commit interruption")
+        real_link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=follow_symlinks)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr("polylogue.operations.durable_change_train.os.link", fail_committed_link)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume-interrupt") as owner:
+            with pytest.raises(MigrationError, match="cannot publish immutable audit adoption receipt"):
+                restore_adopted_audit_tier(
+                    audit_path,
+                    backup_manifest=Path(verified.output_path) / "manifest.json",
+                    directory_fd=owner.directory_fd,
+                    stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+                )
+
+    with pytest.raises(MigrationError, match="prepared but incomplete"):
+        reconcile_durable_change_train_startup(archive_root)
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume") as owner:
+        receipt = restore_adopted_audit_tier(
+            audit_path,
+            backup_manifest=Path(verified.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    assert receipt.name.endswith(".committed.json")
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+@pytest.mark.parametrize("tamper", ["artifact", "receipt", "stale-source"])
+def test_adopted_audit_restore_rejects_untrusted_or_stale_backup(workspace_env: dict[str, Path], tamper: str) -> None:
+    """Mutation: bypassing receipt, artifact, or current-authority checks reaches the real restore call."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = backup_archive(
+        output_dir=archive_root.parent / f"pre-{tamper}", profile="full_evidence", verify=True
+    )
+    assert pre_adoption.ok and pre_adoption.output_path is not None, pre_adoption.error
+    with acquire_durable_archive_ownership(archive_root, owner_id=f"test:audit-restore-adopt-{tamper}") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    verified = backup_archive(output_dir=archive_root.parent / f"post-{tamper}", profile="full_evidence", verify=True)
+    assert verified.ok and verified.output_path is not None, verified.error
+    backup_root = Path(verified.output_path)
+    if tamper == "artifact":
+        (backup_root / "audit.db").write_bytes(b"altered backup audit")
+    elif tamper == "receipt":
+        (backup_root / "verification-receipt.json").write_text("{}", encoding="utf-8")
+    else:
+        with sqlite3.connect(archive_root / "source.db") as connection:
+            connection.execute("PRAGMA user_version = 999")
+            connection.commit()
+    audit_path.write_bytes(b"corrupted audit image")
+
+    with acquire_durable_archive_ownership(archive_root, owner_id=f"test:audit-restore-reject-{tamper}") as owner:
+        with pytest.raises(MigrationError, match="(adopted-audit restore|migration backup tier artifact)"):
+            restore_adopted_audit_tier(
+                audit_path,
+                backup_manifest=backup_root / "manifest.json",
+                directory_fd=owner.directory_fd,
+                stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+            )
+
+    assert audit_path.read_bytes() == b"corrupted audit image"
 
 
 def test_audit_adoption_binds_only_the_source_user_authority(workspace_env: dict[str, Path]) -> None:

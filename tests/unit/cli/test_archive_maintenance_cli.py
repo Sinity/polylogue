@@ -3482,6 +3482,59 @@ def test_migrate_tier_cli_adoption_refuses_live_writer_before_receipt_or_sql(
     assert not (root / ".maintenance-state" / "durable-change-trains" / "audit-adoption.json").exists()
 
 
+def test_migrate_tier_cli_restores_adopted_audit_from_verified_full_evidence(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """The operator-facing command rebinds a corrupted adopted tier instead of leaving startup wedged."""
+    root = cli_workspace["archive_root"]
+    audit_path = root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = _full_evidence_backup_without_audit(root)
+    adopted = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--adopt-established-audit",
+            "--backup-manifest",
+            str(pre_adoption),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+    assert adopted.exit_code == 0, adopted.output
+    verified = backup_archive(output_dir=root.parent / "adopted-audit-restore", profile="full_evidence", verify=True)
+    assert verified.ok and verified.output_path is not None, verified.error
+    expected_bytes = (Path(verified.output_path) / "audit.db").read_bytes()
+    audit_path.write_bytes(b"corrupt")
+
+    restored = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--restore-adopted-audit",
+            "--backup-manifest",
+            str(Path(verified.output_path) / "manifest.json"),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert restored.exit_code == 0, restored.output
+    payload = json.loads(restored.stdout)
+    assert payload["restore_receipt"].endswith(".committed.json")
+    assert audit_path.read_bytes() == expected_bytes
+
+
 @pytest.mark.parametrize("publication_failure", ["race", "interrupted"])
 def test_migrate_tier_cli_adoption_fails_closed_during_publication(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, publication_failure: str

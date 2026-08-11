@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import stat
@@ -31,6 +32,7 @@ from polylogue.storage.sqlite.migration_runner import (
     MigrationError,
     _canonical_json_sha256,
     capture_durable_schema_inventory,
+    validate_full_evidence_backup_for_adopted_audit_restore,
     validate_full_evidence_backup_for_audit_adoption,
 )
 
@@ -38,6 +40,10 @@ _AUDIT_ADOPTION_RECEIPT_FORMAT = "polylogue.audit-tier-adoption.v1"
 _AUDIT_ADOPTION_RECEIPT_NAME = "audit-adoption.json"
 _AUDIT_ADOPTION_CONTINUITY_FORMAT = "polylogue.audit-tier-continuity.v1"
 _AUDIT_ADOPTION_CONTINUITY_NAME = "audit-continuity.json"
+_AUDIT_ADOPTION_RESTORE_FORMAT = "polylogue.audit-tier-restore.v1"
+_AUDIT_ADOPTION_RESTORE_NAME = re.compile(
+    r"^audit-restore\.(?P<generation>[1-9][0-9]*)\.(?P<operation>[0-9a-f]{32})\.(?P<state>prepared|committed)\.json$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,11 +484,17 @@ def _open_audit_adoption_receipt_directory(
 ) -> int:
     """Open the receipt parent without following any archive path component."""
     archive_root = archive_root.resolve()
-    expected_paths = {
-        audit_adoption_receipt_path(archive_root),
-        _audit_adoption_continuity_path(archive_root),
-    }
-    if path not in expected_paths:
+    expected_paths = {audit_adoption_receipt_path(archive_root), _audit_adoption_continuity_path(archive_root)}
+    try:
+        relative = path.relative_to(archive_root)
+    except ValueError:
+        relative = Path()
+    is_restore_record = (
+        len(relative.parts) == 3
+        and relative.parts[:2] == (".maintenance-state", "durable-change-trains")
+        and _AUDIT_ADOPTION_RESTORE_NAME.fullmatch(relative.name) is not None
+    )
+    if path not in expected_paths and not is_restore_record:
         raise MigrationError(f"audit adoption receipt path is outside its fixed archive location: {path}")
     try:
         current_fd = (
@@ -767,6 +779,108 @@ def _load_audit_adoption_continuity(archive_root: Path) -> dict[str, object] | N
     return payload
 
 
+def _audit_restore_records(archive_root: Path) -> list[tuple[Path, dict[str, object]]]:
+    """Read restore state through the fixed, no-follow archive ledger path."""
+    marker_path = _audit_adoption_continuity_path(archive_root)
+    try:
+        directory_fd = _open_audit_adoption_receipt_directory(marker_path, archive_root=archive_root, create=False)
+    except FileNotFoundError:
+        return []
+    records: list[tuple[Path, dict[str, object]]] = []
+    try:
+        for name in os.listdir(directory_fd):
+            match = _AUDIT_ADOPTION_RESTORE_NAME.fullmatch(name)
+            if match is None:
+                continue
+            path = marker_path.with_name(name)
+            fd: int | None = None
+            try:
+                fd = os.open(
+                    name, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd
+                )
+                metadata = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_nlink != 1
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) & 0o022
+                ):
+                    raise MigrationError(f"invalid audit restore record ownership or mode: {path}")
+                with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                    fd = None
+                    payload = json.load(stream)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise MigrationError(f"invalid audit restore record: {path}") from exc
+            finally:
+                if fd is not None:
+                    os.close(fd)
+            if not isinstance(payload, dict) or payload.get("format") != _AUDIT_ADOPTION_RESTORE_FORMAT:
+                raise MigrationError(f"audit restore record format mismatch: {path}")
+            checksum_key = "restore_sha256" if match["state"] == "prepared" else "continuity_sha256"
+            checksum = payload.get(checksum_key)
+            unsigned = dict(payload)
+            unsigned.pop(checksum_key, None)
+            if not isinstance(checksum, str) or checksum != _canonical_json_sha256(unsigned):
+                raise MigrationError(f"audit restore record checksum mismatch: {path}")
+            if payload.get("state") != match["state"] or payload.get("operation_id") != match["operation"]:
+                raise MigrationError(f"audit restore record filename does not match its payload: {path}")
+            if payload.get("generation") != int(match["generation"]):
+                raise MigrationError(f"audit restore record generation mismatch: {path}")
+            records.append((path, payload))
+    finally:
+        os.close(directory_fd)
+    return records
+
+
+def _latest_audit_adoption_continuity(
+    archive_root: Path, *, allow_incomplete_restore: bool = False
+) -> dict[str, object] | None:
+    """Follow the immutable restore chain and expose its current generation."""
+    continuity = _load_audit_adoption_continuity(archive_root)
+    if continuity is None:
+        return None
+    current_digest = continuity.get("continuity_sha256")
+    if not isinstance(current_digest, str):
+        raise MigrationError("audit adoption continuity lacks its immutable checksum")
+    records_by_generation: dict[int, dict[str, dict[str, object]]] = {}
+    for _path, payload in _audit_restore_records(archive_root):
+        generation = payload["generation"]
+        state = payload["state"]
+        assert isinstance(generation, int)
+        assert isinstance(state, str)
+        states = records_by_generation.setdefault(generation, {})
+        if state in states:
+            raise MigrationError("audit restore records contain duplicate generation state")
+        states[state] = payload
+    for expected_generation in range(1, len(records_by_generation) + 1):
+        if expected_generation not in records_by_generation:
+            raise MigrationError("audit restore continuity generations are not contiguous")
+        states = records_by_generation[expected_generation]
+        prepared = states.get("prepared")
+        committed = states.get("committed")
+        if prepared is None or committed is None:
+            if allow_incomplete_restore and prepared is not None and committed is None:
+                return continuity
+            raise MigrationError(
+                "adopted audit restore is prepared but incomplete; rerun maintenance migrate-tier audit "
+                "--restore-adopted-audit with the same verified full_evidence backup"
+            )
+        if (
+            prepared.get("previous_continuity_sha256") != current_digest
+            or committed.get("previous_continuity_sha256") != current_digest
+            or committed.get("prepared_restore_sha256") != prepared.get("restore_sha256")
+            or committed.get("receipt_sha256") != continuity.get("receipt_sha256")
+            or committed.get("source_user_authority_digest") != continuity.get("source_user_authority_digest")
+        ):
+            raise MigrationError("audit restore continuity chain does not match the adopted archive")
+        next_digest = committed.get("continuity_sha256")
+        if not isinstance(next_digest, str):
+            raise MigrationError("committed audit restore record lacks its continuity checksum")
+        continuity = committed
+        current_digest = next_digest
+    return continuity
+
+
 def _write_audit_adoption_continuity(
     archive_root: Path,
     *,
@@ -805,7 +919,7 @@ def _validate_audit_adoption_continuity(
     expected_initial_file_identity: tuple[int, int] | None,
 ) -> None:
     """Require the published audit path to retain its adopted live identity."""
-    continuity = _load_audit_adoption_continuity(archive_root)
+    continuity = _latest_audit_adoption_continuity(archive_root)
     if continuity is None:
         if expected_initial_file_identity is None:
             raise MigrationError("audit adoption continuity is missing without an authenticated initial image")
@@ -814,7 +928,7 @@ def _validate_audit_adoption_continuity(
             receipt_payload=receipt_payload,
             expected_initial_file_identity=expected_initial_file_identity,
         )
-        continuity = _load_audit_adoption_continuity(archive_root)
+        continuity = _latest_audit_adoption_continuity(archive_root)
     assert continuity is not None
     expected = (continuity.get("audit_device"), continuity.get("audit_inode"))
     if (
@@ -887,9 +1001,10 @@ def recover_pending_audit_adoption(archive_root: Path) -> bool:
     audit_path = archive_root / "audit.db"
     if receipt is None or audit_path.is_file():
         return False
-    if _load_audit_adoption_continuity(archive_root) is not None:
+    if _latest_audit_adoption_continuity(archive_root) is not None:
         raise MigrationError(
-            "adopted audit tier is missing after continuity was recorded; restore audit.db from backup"
+            "adopted audit tier is missing after continuity was recorded; run maintenance migrate-tier audit "
+            "--restore-adopted-audit --backup-manifest <verified-full-evidence>/manifest.json"
         )
     receipt_path, payload = receipt
     _recover_pending_audit_adoption(archive_root, receipt_path, payload)
@@ -908,11 +1023,12 @@ def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image
     if not isinstance(expected_initial_version, int):
         raise MigrationError("audit adoption receipt lacks its initial audit schema version")
     audit_path = archive_root / "audit.db"
-    continuity = _load_audit_adoption_continuity(archive_root)
+    continuity = _latest_audit_adoption_continuity(archive_root)
     if not audit_path.is_file():
         if continuity is not None:
             raise MigrationError(
-                "adopted audit tier is missing after continuity was recorded; restore audit.db from backup"
+                "adopted audit tier is missing after continuity was recorded; run maintenance migrate-tier audit "
+                "--restore-adopted-audit --backup-manifest <verified-full-evidence>/manifest.json"
             )
         _recover_pending_audit_adoption(archive_root, receipt_path, payload)
         require_initial_image = True
@@ -1023,6 +1139,225 @@ def adopt_missing_audit_tier(
     return version, receipt_path
 
 
+def _audit_restore_artifact_binding(receipt_path: Path) -> tuple[str, int, int]:
+    """Read the audit artifact facts after receipt authentication succeeded."""
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MigrationError("cannot read adopted-audit restore verification receipt") from exc
+    artifacts = receipt.get("tier_artifacts") if isinstance(receipt, dict) else None
+    audit = (
+        next((item for item in artifacts if isinstance(item, dict) and item.get("tier") == "audit"), None)
+        if isinstance(artifacts, list)
+        else None
+    )
+    if not isinstance(audit, dict):
+        raise MigrationError("adopted-audit restore receipt lacks audit artifact evidence")
+    sha256, size, version = audit.get("sha256"), audit.get("size_bytes"), audit.get("user_version")
+    if not isinstance(sha256, str) or not isinstance(size, int) or not isinstance(version, int):
+        raise MigrationError("adopted-audit restore receipt has invalid audit artifact evidence")
+    return sha256, size, version
+
+
+def _copy_restore_artifact(source: Path, *, directory_fd: int, temporary_name: str, sha256: str, size: int) -> None:
+    """Copy an exact no-follow, unlinked backup artifact into the owned root."""
+    source_fd: int | None = None
+    target_fd: int | None = None
+    try:
+        source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+        source_metadata = os.fstat(source_fd)
+        if not stat.S_ISREG(source_metadata.st_mode) or source_metadata.st_nlink != 1:
+            raise MigrationError("adopted-audit restore artifact is not an unlinked regular file")
+        target_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        digest = hashlib.sha256()
+        copied = 0
+        while chunk := os.read(source_fd, 1024 * 1024):
+            digest.update(chunk)
+            copied += len(chunk)
+            offset = 0
+            while offset < len(chunk):
+                written = os.write(target_fd, chunk[offset:])
+                if written <= 0:
+                    raise MigrationError("adopted-audit restore artifact copy made no progress")
+                offset += written
+        if copied != size or digest.hexdigest() != sha256:
+            raise MigrationError("adopted-audit restore artifact changed while it was copied")
+        os.fsync(target_fd)
+    finally:
+        if target_fd is not None:
+            os.close(target_fd)
+        if source_fd is not None:
+            os.close(source_fd)
+
+
+def _audit_file_matches_artifact(path: Path, *, sha256: str, size: int) -> bool:
+    """Check whether an interrupted restore already published the intended image."""
+    try:
+        _audit_file_identity(path)
+        if path.stat().st_size == size:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest() == sha256
+    except OSError:
+        return False
+    return False
+
+
+def restore_adopted_audit_tier(
+    path: Path,
+    *,
+    backup_manifest: Path,
+    directory_fd: int,
+    stopped_daemon_check: Callable[[], str],
+) -> Path:
+    """Restore adopted ``audit.db`` and append its new continuity generation."""
+    if path.name != "audit.db":
+        raise MigrationError(f"adopted-audit restore is only supported for audit.db: {path}")
+    archive_root = path.parent.resolve()
+    receipt = _load_audit_adoption_receipt(archive_root)
+    if receipt is None:
+        raise MigrationError("adopted-audit restore requires an existing audit adoption receipt")
+    _receipt_path, adoption = receipt
+    continuity = _latest_audit_adoption_continuity(archive_root, allow_incomplete_restore=True)
+    if continuity is None or continuity.get("receipt_sha256") != adoption.get("receipt_sha256"):
+        raise MigrationError("adopted-audit restore requires completed continuity for this adoption receipt")
+    stopped_evidence = stopped_daemon_check()
+    manifest_path, verification_receipt = validate_full_evidence_backup_for_adopted_audit_restore(
+        backup_manifest, archive_root=archive_root
+    )
+    artifact_sha256, artifact_size, artifact_version = _audit_restore_artifact_binding(verification_receipt)
+    previous_continuity_sha256 = continuity.get("continuity_sha256")
+    if not isinstance(previous_continuity_sha256, str):
+        raise MigrationError("adopted-audit restore continuity lacks its checksum")
+    restore_records = _audit_restore_records(archive_root)
+    committed_generations: list[int] = []
+    pending_records: list[tuple[Path, dict[str, object]]] = []
+    committed_operations: set[tuple[int, str]] = set()
+    for record_path, payload in restore_records:
+        generation_value = payload.get("generation")
+        if payload.get("state") == "committed" and isinstance(generation_value, int):
+            committed_generations.append(generation_value)
+            operation_value = payload.get("operation_id")
+            if isinstance(operation_value, str):
+                committed_operations.add((generation_value, operation_value))
+        elif payload.get("state") == "prepared":
+            pending_records.append((record_path, payload))
+    unresolved_records: list[tuple[Path, dict[str, object]]] = []
+    for record_path, payload in pending_records:
+        generation_value = payload.get("generation")
+        operation_value = payload.get("operation_id")
+        if not isinstance(generation_value, int) or not isinstance(operation_value, str):
+            raise MigrationError("incomplete adopted-audit restore has invalid identity fields")
+        if (generation_value, operation_value) not in committed_operations:
+            unresolved_records.append((record_path, payload))
+    pending_records = unresolved_records
+    if len(pending_records) > 1:
+        raise MigrationError("adopted-audit restore has multiple incomplete continuity records")
+    if pending_records:
+        _pending_path, pending_payload = pending_records[0]
+        generation_value = pending_payload.get("generation")
+        operation_value = pending_payload.get("operation_id")
+        assert isinstance(generation_value, int)
+        assert isinstance(operation_value, str)
+        generation = generation_value
+        operation_id = operation_value
+    else:
+        generation = 1 + max(committed_generations, default=0)
+        operation_id = secrets.token_hex(16)
+    base_payload: dict[str, object] = {
+        "format": _AUDIT_ADOPTION_RESTORE_FORMAT,
+        "generation": generation,
+        "operation_id": operation_id,
+        "previous_continuity_sha256": previous_continuity_sha256,
+        "receipt_sha256": adoption["receipt_sha256"],
+        "source_user_authority_digest": adoption["source_user_authority_digest"],
+        "backup_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "backup_verification_receipt_sha256": hashlib.sha256(verification_receipt.read_bytes()).hexdigest(),
+        "audit_artifact_sha256": artifact_sha256,
+        "audit_artifact_size": artifact_size,
+        "audit_artifact_user_version": artifact_version,
+        "stopped_daemon_evidence_ref": stopped_evidence,
+        "single_writer_evidence_ref": "proof:archive-ownership-lock",
+    }
+    if pending_records:
+        prepared_path, prepared = pending_records[0]
+        expected_prepared = {**base_payload, "state": "prepared"}
+        if any(prepared.get(key) != value for key, value in expected_prepared.items()):
+            raise MigrationError("incomplete adopted-audit restore does not match the supplied verified backup")
+    else:
+        prepared_path = _audit_adoption_continuity_path(archive_root).with_name(
+            f"audit-restore.{generation}.{operation_id}.prepared.json"
+        )
+        prepared = {**base_payload, "state": "prepared"}
+        _write_immutable_audit_adoption_receipt(
+            prepared_path,
+            prepared,
+            archive_root=archive_root,
+            archive_directory_fd=directory_fd,
+            checksum_key="restore_sha256",
+        )
+    temporary_name = f".audit.db.restore-{operation_id}.tmp"
+    published = False
+    try:
+        if _audit_file_matches_artifact(archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size):
+            published = True
+        else:
+            _copy_restore_artifact(
+                manifest_path.parent / "audit.db",
+                directory_fd=directory_fd,
+                temporary_name=temporary_name,
+                sha256=artifact_sha256,
+                size=artifact_size,
+            )
+        if stopped_daemon_check() != stopped_evidence:
+            raise MigrationError("daemon stopped proof changed during adopted-audit restore")
+        validate_full_evidence_backup_for_adopted_audit_restore(backup_manifest, archive_root=archive_root)
+        if _audit_adoption_authority_digest(archive_root) != adoption.get("source_user_authority_digest"):
+            raise MigrationError("source/user authority changed during adopted-audit restore")
+        if not published:
+            os.replace(temporary_name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            os.fsync(directory_fd)
+            published = True
+        identity = _audit_file_identity(path)
+        version, _application_id, quick_check = _audit_live_metadata(path)
+        if version != artifact_version or quick_check != ("ok",):
+            raise MigrationError("adopted-audit restore published artifact is not the verified SQLite image")
+        if stopped_daemon_check() != stopped_evidence:
+            raise MigrationError("daemon stopped proof changed after adopted-audit restore publication")
+        validate_full_evidence_backup_for_adopted_audit_restore(backup_manifest, archive_root=archive_root)
+        committed_path = prepared_path.with_name(prepared_path.name.replace(".prepared.json", ".committed.json"))
+        prepared_restore_sha256 = prepared.get("restore_sha256")
+        if not isinstance(prepared_restore_sha256, str):
+            prepared_restore_sha256 = _canonical_json_sha256(prepared)
+        committed = {
+            **base_payload,
+            "state": "committed",
+            "prepared_restore_sha256": prepared_restore_sha256,
+            "audit_device": identity[0],
+            "audit_inode": identity[1],
+        }
+        _write_immutable_audit_adoption_receipt(
+            committed_path,
+            committed,
+            archive_root=archive_root,
+            archive_directory_fd=directory_fd,
+            checksum_key="continuity_sha256",
+        )
+        return committed_path
+    finally:
+        if not published:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary_name, dir_fd=directory_fd)
+                os.fsync(directory_fd)
+
+
 def execute_durable_change_train(
     archive_root: Path,
     tier: ArchiveTier,
@@ -1059,5 +1394,6 @@ __all__ = [
     "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
     "recover_pending_audit_adoption",
+    "restore_adopted_audit_tier",
     "validate_audit_adoption_receipt",
 ]
