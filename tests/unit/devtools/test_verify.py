@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from devtools import verify, verify_runs
+from devtools import run_tests, verify, verify_runs
 from devtools.testmon_state import (
     BaselineStatus,
     BindingMode,
@@ -1586,17 +1586,37 @@ def test_adaptive_pytest_policy_uses_host_capacity_not_ten_percent_cap() -> None
 
     assert policy.workers == 12
     assert policy.tmpfs_budget_mb == 2048
+    assert policy.tmpfs_predicted_mb == 1439
 
 
-def test_adaptive_pytest_policy_refuses_when_command_workers_exhaust_headroom() -> None:
-    with pytest.raises(PytestResourceError, match="cannot reserve pytest workers"):
+def test_adaptive_pytest_policy_refuses_four_workers_at_four_gib_from_measured_envelope() -> None:
+    with pytest.raises(PytestResourceError, match="cannot reserve measured pytest cgroup memory"):
         adaptive_pytest_runtime_policy(
-            available_kb=3 * 1024 * 1024,
+            available_kb=4 * 1024 * 1024,
             memory_full_avg10=0.0,
             cpu_count=24,
             shm_free_kb=16 * 1024 * 1024,
             worker_count=4,
         )
+
+
+@pytest.mark.parametrize(
+    ("worker_args", "expected"),
+    [
+        (["-n", "4"], 4),
+        (["-n4"], 4),
+        (["-n=4"], 4),
+        (["--numprocesses", "8"], 8),
+        (["--numprocesses=8"], 8),
+        (["-n", "auto"], max(1, os.cpu_count() or 1)),
+        (["-nauto"], max(1, os.cpu_count() or 1)),
+        (["--numprocesses=auto"], max(1, os.cpu_count() or 1)),
+    ],
+)
+def test_production_pytest_commands_reserve_every_xdist_spelling(worker_args: list[str], expected: int) -> None:
+    command = run_tests.build_pytest_cmd(["tests/unit/devtools", *worker_args])
+
+    assert verify._pytest_command_concurrency(command) == expected
 
 
 def test_adaptive_pytest_policy_reduces_workers_under_pressure() -> None:
@@ -1917,6 +1937,25 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     assert rc == 0
     cleanup.assert_called_once()
     assert metadata["basetemp_cleanup"] == str(cleaned)
+
+
+def test_explicit_basetemp_root_retains_managed_resource_monitoring(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    nvme_root = tmp_path / "realm-tmp" / "polylogue-pytest"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(nvme_root))
+    run = VerifyRun(tier="configured-nvme", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest configured NVMe root",
+        [sys.executable, "-c", "print('managed resource sampler remains active')"],
+        run=run,
+    )
+
+    assert rc == 0
+    assert metadata["pytest_tmpfs"] is False
+    assert metadata["pytest_tmpfs_budget_mb"] is None
+    assert metadata["resource_sample_count"] >= 1
 
 
 def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:

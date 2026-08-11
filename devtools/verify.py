@@ -364,12 +364,7 @@ def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -
 def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     """Return verify metadata that explains the pytest worker policy."""
     metadata: dict[str, Any] = {}
-    if "-n" in cmd:
-        index = cmd.index("-n")
-        if index + 1 < len(cmd):
-            metadata["pytest_workers"] = cmd[index + 1]
-    else:
-        metadata["pytest_workers"] = "unset"
+    metadata["pytest_workers"] = _pytest_command_worker_request(cmd) or "unset"
     if "--testmon" in cmd:
         metadata["pytest_selection"] = "testmon-noselect" if "--testmon-noselect" in cmd else "testmon"
     else:
@@ -2120,16 +2115,39 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["-n", str(workers)]
 
 
+def _pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
+    """Return the last xdist worker request from a final pytest command.
+
+    ``devtools test`` forwards pytest arguments unchanged, so this accepts
+    both xdist spellings and their compact forms.  The final occurrence wins,
+    matching pytest's normal option precedence.
+    """
+    request: str | None = None
+    for index, arg in enumerate(cmd):
+        if arg in {"-n", "--numprocesses"}:
+            if index + 1 < len(cmd):
+                request = cmd[index + 1]
+        elif arg.startswith("--numprocesses="):
+            request = arg.removeprefix("--numprocesses=")
+        elif arg.startswith("-n") and len(arg) > 2:
+            request = arg[2:].removeprefix("=")
+    return request
+
+
 def _pytest_command_concurrency(cmd: Sequence[str]) -> int:
-    """Return the worker count actually requested by the final pytest command."""
-    for index in range(len(cmd) - 2, -1, -1):
-        if cmd[index] != "-n":
-            continue
-        try:
-            return max(1, int(cmd[index + 1]))
-        except ValueError:
-            return 1
-    return 1
+    """Return a fail-closed reservation for the final pytest command.
+
+    ``-n auto`` can launch one worker per logical CPU.  Reserve that maximum
+    instead of guessing one worker; an unrecognised xdist value is treated the
+    same way so malformed or future values cannot weaken admission.
+    """
+    request = _pytest_command_worker_request(cmd)
+    if request is None:
+        return 1
+    try:
+        return max(1, int(request))
+    except ValueError:
+        return max(1, os.cpu_count() or 1)
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {

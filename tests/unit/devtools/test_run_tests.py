@@ -35,6 +35,22 @@ def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
     assert cmd[-2:] == ["-n", "4"]
 
 
+@pytest.mark.parametrize(
+    "selection",
+    [
+        ["tests/unit", "-n4"],
+        ["tests/unit", "-n=4"],
+        ["tests/unit", "--numprocesses", "8"],
+        ["tests/unit", "--numprocesses=8"],
+    ],
+)
+def test_build_pytest_cmd_forwards_all_xdist_worker_spellings(selection: list[str]) -> None:
+    command = run_tests.build_pytest_cmd(selection)
+
+    for arg in selection:
+        assert arg in command
+
+
 def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
     cmd = run_tests.build_pytest_cmd(["tests/unit"])
