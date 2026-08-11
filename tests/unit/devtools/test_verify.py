@@ -2582,15 +2582,19 @@ def test_pytest_run_terminates_with_heartbeat_disabled(
 
 
 def test_pytest_run_terminates_after_output_stall(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
 
+    run = VerifyRun(tier="output-stall", argv=[], git_head=None, root=tmp_path)
     rc, _elapsed, metadata = _run(
         "pytest stall",
         [sys.executable, "-c", "import time; print('progress', flush=True); time.sleep(5)"],
+        run=run,
     )
 
     captured = capsys.readouterr()
@@ -2603,7 +2607,9 @@ def test_pytest_run_terminates_after_output_stall(
 
 
 def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """polylogue-27rb: an xdist-master-keeps-emitting D-state deadlock.
 
@@ -2632,7 +2638,12 @@ def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
         "    print('progress', flush=True)\n"
         "    time.sleep(0.02)\n"
     )
-    rc, _elapsed, metadata = _run("pytest stall", [sys.executable, "-c", child_script])
+    run = VerifyRun(tier="progress-stall", argv=[], git_head=None, root=tmp_path)
+    rc, _elapsed, metadata = _run(
+        "pytest stall",
+        [sys.executable, "-c", child_script],
+        run=run,
+    )
 
     captured = capsys.readouterr()
     assert rc == 124
