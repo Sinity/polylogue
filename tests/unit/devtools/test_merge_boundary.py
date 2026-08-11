@@ -151,6 +151,7 @@ def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
     pr_view = _base_pr_view()
     pr_view["baseRefOid"] = "base-one"
     monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
     assert (
         merge_boundary.cmd_merge(

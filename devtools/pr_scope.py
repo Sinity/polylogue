@@ -379,13 +379,15 @@ def validate_carrier(
         reasons.append(f"cannot resolve declared Bead records: {exc}")
     if is_v1 and expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
         reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
-    if not is_v1 and base_sha is not None:
+    if base_sha is not None:
         try:
             actual_mutations = changed_bead_ids(base_sha=base_sha, beads_path=beads_path)
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
             reasons.append(f"cannot resolve Bead mutation scope: {exc}")
         else:
-            if actual_mutations != sorted(mutated_ids):
+            if is_v1 and actual_mutations:
+                reasons.append("legacy v1 carrier cannot omit Bead mutations; render a v2 carrier")
+            elif not is_v1 and actual_mutations != sorted(mutated_ids):
                 reasons.append("mutated_beads does not match the complete Bead mutation set")
 
     _validate_dispositions(carrier.get("dispositions"), assigned_ids=assigned_ids, records=records, reasons=reasons)

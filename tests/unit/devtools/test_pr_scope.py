@@ -216,6 +216,26 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     )
     assert "mutated_beads does not match the complete Bead mutation set" in capsys.readouterr().out
 
+    legacy_body_path = repository / "legacy-body.md"
+    legacy_body_path.write_text(_body(_input(), beads_path))
+    assert (
+        pr_scope.main(
+            [
+                "check",
+                "--body-file",
+                str(legacy_body_path),
+                "--head-sha",
+                HEAD_SHA,
+                "--base-sha",
+                base_sha,
+                "--beads-path",
+                str(beads_path),
+            ]
+        )
+        == 1
+    )
+    assert "legacy v1 carrier cannot omit Bead mutations" in capsys.readouterr().out
+
 
 def test_v2_self_contained_scope_can_declare_a_real_bead_mutation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -475,6 +495,7 @@ def test_pr_check_uses_public_github_rest_without_cli_auth(
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setattr(request, "urlopen", _urlopen)
     monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
     exit_code = pr_scope.main(["check", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)])
 
@@ -789,6 +810,7 @@ def test_ci_check_bootstraps_once_when_base_has_no_validator(
         is_draft=False,
     )
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", lambda **_kwargs: None)
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
     assert (
         pr_scope.check_ci_metadata(
