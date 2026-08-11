@@ -224,10 +224,45 @@ def _bead_records_at(base_sha: str) -> dict[str, dict[str, Any]]:
     return _parse_bead_records(result.stdout.splitlines(), line_label="base line")
 
 
+def _ensure_local_commit(revision: str) -> None:
+    """Ensure a Git commit reported by GitHub exists in this checkout.
+
+    Feature worktrees and shallow CI checkouts can have a current PR head while
+    lacking a target-branch tip that advanced after the checkout was created.
+    Mutation scope is defined from the merge base, so resolve that authority
+    explicitly instead of requiring an operator-side ``git fetch`` first.
+    """
+    present = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    if present.returncode == 0:
+        return
+    fetched = subprocess.run(
+        ["git", "fetch", "--no-tags", "--quiet", "origin", revision],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fetched.returncode != 0:
+        detail = fetched.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise ValueError(f"cannot fetch base revision {revision[:8]} from origin{suffix}")
+    present = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    if present.returncode != 0:
+        raise ValueError(f"fetched base revision {revision[:8]} is not a local commit")
+
+
 def changed_bead_ids(*, base_sha: str, beads_path: Path = _BEADS_PATH) -> list[str]:
     """Return the complete Bead-record mutation set from the PR merge base."""
     if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
         raise ValueError("base revision must be a hexadecimal Git object name")
+    _ensure_local_commit(base_sha)
     merge_base = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
     if merge_base.returncode != 0 or not _GIT_OBJECT_PATTERN.fullmatch(merge_base.stdout.strip()):
         raise ValueError(f"cannot resolve PR merge base from base revision {base_sha[:8]}")

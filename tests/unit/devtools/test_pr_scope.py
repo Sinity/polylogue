@@ -841,6 +841,36 @@ def test_fetch_base_validator_prefers_local_base_object(
     github_fetch.assert_not_called()
 
 
+def test_changed_bead_ids_fetches_missing_target_commit_before_merge_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_sha = "b" * 40
+    calls: list[list[str]] = []
+    cat_file_attempts = 0
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal cat_file_attempts
+        calls.append(argv)
+        if argv[:3] == ["git", "cat-file", "-e"]:
+            cat_file_attempts += 1
+            return subprocess.CompletedProcess(argv, 0 if cat_file_attempts == 2 else 1, "", "")
+        if argv[:2] == ["git", "fetch"]:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:2] == ["git", "merge-base"]:
+            return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _sha: {})
+    monkeypatch.setattr(pr_scope, "load_bead_records", lambda _path: {})
+
+    assert pr_scope.changed_bead_ids(base_sha=base_sha) == []
+    assert ["git", "fetch", "--no-tags", "--quiet", "origin", base_sha] in calls
+    assert calls.index(["git", "fetch", "--no-tags", "--quiet", "origin", base_sha]) < calls.index(
+        ["git", "merge-base", base_sha, "HEAD"]
+    )
+
+
 def test_check_rejects_carrier_bound_to_a_different_head_sha(
     beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
