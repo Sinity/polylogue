@@ -144,6 +144,46 @@ def test_merge_auto_records_when_no_fresh_receipt_then_merges(monkeypatch: pytes
     assert ledger["merges"][0]["title"] == "fix: thing (#42)"
 
 
+def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    pr_view["baseRefOid"] = "base-one"
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=True,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 0
+    )
+    capsys.readouterr()
+    pr_view["baseRefOid"] = "base-two"
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=True,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 0
+    )
+    assert "no fresh merge-gate receipt" in capsys.readouterr().err
+
+
 def test_merge_strips_doubled_pr_suffix_before_merging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view(title="fix: thing (#42) (#42)")

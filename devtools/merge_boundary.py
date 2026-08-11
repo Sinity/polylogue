@@ -77,7 +77,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from devtools import merge_gate
+from devtools import merge_gate, pr_scope
 from devtools.testmon_state import TerminalAuthorization, VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
@@ -418,11 +418,23 @@ def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str
     ]
 
 
-def _receipt_is_fresh_for_head(pr: int, head_sha: str, max_age_s: int) -> bool:
+def _receipt_is_fresh_for_scope(
+    pr: int,
+    *,
+    head_sha: str,
+    scope: pr_scope.ScopeVerdict,
+    base_sha: str | None,
+    max_age_s: int,
+) -> bool:
     receipt = merge_gate._read_json_object(merge_gate._receipt_path(pr))
     if receipt is None:
         return False
     if receipt.get("head_sha") != head_sha:
+        return False
+    expected_attestation = pr_scope.attestation_payload(scope, head_sha=head_sha, base_sha=base_sha)[
+        "attestation_digest"
+    ]
+    if receipt.get("pr_scope_attestation_digest") != expected_attestation:
         return False
     age_s = time.time() - float(receipt.get("recorded_at", 0))
     return bool(age_s <= max_age_s)
@@ -567,7 +579,15 @@ def cmd_merge(
     verify_command: str,
 ) -> int:
     try:
-        info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,title,state"])
+        info = _gh_json(
+            [
+                "pr",
+                "view",
+                str(pr),
+                "--json",
+                "headRefOid,baseRefOid,title,state,body,isDraft,author,files",
+            ]
+        )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
         print(f"REFUSING to merge PR #{pr}: gh pr view failed: {exc}", file=sys.stderr)
         return 1
@@ -577,8 +597,15 @@ def cmd_merge(
         return 1
 
     head_sha = info["headRefOid"]
+    scope = merge_gate._scope_verdict(pr, info, head_sha=head_sha)
 
-    if not _receipt_is_fresh_for_head(pr, head_sha, max_age_s):
+    if not scope.ok or not _receipt_is_fresh_for_scope(
+        pr,
+        head_sha=head_sha,
+        scope=scope,
+        base_sha=merge_gate._base_sha(info),
+        max_age_s=max_age_s,
+    ):
         print(
             f"no fresh merge-gate receipt for PR #{pr} @ {head_sha[:8]} -- recording one now via {command!r}",
             file=sys.stderr,

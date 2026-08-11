@@ -255,6 +255,12 @@ def _terminal_authorization(stdout: str) -> str | None:
     return value if value in {authorization.value for authorization in TerminalAuthorization} else None
 
 
+def _base_sha(info: dict[str, Any]) -> str | None:
+    """Read the PR base commit SHA when GitHub reported one."""
+    value = info.get("baseRefOid")
+    return value if isinstance(value, str) else None
+
+
 def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.ScopeVerdict:
     """Use the same carrier or typed bot exception for record and check."""
     author = info.get("author")
@@ -278,7 +284,7 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
         info.get("body") or "",
         head_sha=head_sha,
         is_draft=bool(info.get("isDraft")),
-        base_sha=info.get("baseRefOid") if isinstance(info.get("baseRefOid"), str) else None,
+        base_sha=_base_sha(info),
     )
 
 
@@ -333,7 +339,7 @@ def cmd_record(pr: int, command: str) -> int:
         "pr_scope_attestation_digest": pr_scope.attestation_payload(
             scope,
             head_sha=head_sha,
-            base_sha=info.get("baseRefOid") if isinstance(info.get("baseRefOid"), str) else None,
+            base_sha=_base_sha(info),
         )["attestation_digest"],
         "branch": info["headRefName"],
         "command": command,
@@ -479,6 +485,19 @@ def cmd_check(
     head_sha = info["headRefOid"]
     verdict.head_sha = head_sha
 
+    local_head = _git_head_sha()
+    if local_head != head_sha:
+        verdict.ok = False
+        verdict.reasons.append(
+            f"current checkout HEAD ({local_head[:8] if local_head else '?'}) does not match PR #{pr}'s "
+            f"head ({head_sha[:8]}); check out the exact PR commit before checking"
+        )
+    if not _git_is_clean():
+        verdict.ok = False
+        verdict.reasons.append(
+            "current checkout has uncommitted changes; merge-gate check requires committed PR content"
+        )
+
     scope = _scope_verdict(pr, info, head_sha=head_sha)
     verdict.pr_scope = asdict(scope)
     if not scope.ok:
@@ -544,7 +563,7 @@ def cmd_check(
             expected_attestation_digest = pr_scope.attestation_payload(
                 scope,
                 head_sha=head_sha,
-                base_sha=info.get("baseRefOid") if isinstance(info.get("baseRefOid"), str) else None,
+                base_sha=_base_sha(info),
             )["attestation_digest"]
             if receipt.get("pr_scope_attestation_digest") != expected_attestation_digest:
                 verdict.ok = False

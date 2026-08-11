@@ -31,6 +31,7 @@ _VERSION = 2
 _BEADS_PATH = Path(".beads/issues.jsonl")
 _GITHUB_API_URL = "https://api.github.com"
 _REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_GIT_OBJECT_PATTERN = re.compile(r"[0-9a-fA-F]{7,64}")
 _V1_CARRIER_KEYS = frozenset({"version", "head_sha", "assigned_beads", "beads_digest", "dispositions", "scope_digest"})
 _V2_CARRIER_KEYS = frozenset(
     {"version", "scope_kind", "assigned_beads", "mutated_beads", "dispositions", "scope_digest"}
@@ -102,15 +103,12 @@ def _digest(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
 
 
-def load_bead_records(path: Path = _BEADS_PATH) -> dict[str, dict[str, Any]]:
-    """Load the repository's committed Bead records without invoking ``bd``.
-
-    The carrier needs the exact Bead snapshot that CI checked out. Reading the
-    JSONL avoids mutating shared Dolt state from a worktree and keeps this
-    validation independent of Beads' CLI synchronization hooks.
-    """
+def _parse_bead_records(lines: object, *, line_label: str) -> dict[str, dict[str, Any]]:
+    """Parse issue records from a Beads JSONL snapshot."""
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        raise ValueError("Bead JSONL snapshot must contain text lines")
     records: dict[str, dict[str, Any]] = {}
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_no, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         raw = json.loads(line)
@@ -118,9 +116,19 @@ def load_bead_records(path: Path = _BEADS_PATH) -> dict[str, dict[str, Any]]:
             continue
         bead_id = raw["id"]
         if bead_id in records:
-            raise ValueError(f"duplicate Bead id {bead_id!r} on line {line_no}")
+            raise ValueError(f"duplicate Bead id {bead_id!r} on {line_label} {line_no}")
         records[bead_id] = raw
     return records
+
+
+def load_bead_records(path: Path = _BEADS_PATH) -> dict[str, dict[str, Any]]:
+    """Load the repository's committed Bead records without invoking ``bd``.
+
+    The carrier needs the exact Bead snapshot that CI checked out. Reading the
+    JSONL avoids mutating shared Dolt state from a worktree and keeps this
+    validation independent of Beads' CLI synchronization hooks.
+    """
+    return _parse_bead_records(path.read_text(encoding="utf-8").splitlines(), line_label="line")
 
 
 def canonical_beads_digest(
@@ -206,26 +214,24 @@ def _bead_ids(value: object, *, label: str, allow_empty: bool, reasons: list[str
 
 
 def _bead_records_at(base_sha: str) -> dict[str, dict[str, Any]]:
+    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
+        raise ValueError("base revision must be a hexadecimal Git object name")
     result = subprocess.run(
         ["git", "show", f"{base_sha}:.beads/issues.jsonl"], capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
         raise ValueError(f"cannot read .beads/issues.jsonl at base revision {base_sha[:8]}")
-    records: dict[str, dict[str, Any]] = {}
-    for line_no, line in enumerate(result.stdout.splitlines(), start=1):
-        if not line.strip():
-            continue
-        raw = json.loads(line)
-        if isinstance(raw, dict) and raw.get("_type") == "issue" and isinstance(raw.get("id"), str):
-            if raw["id"] in records:
-                raise ValueError(f"duplicate Bead id {raw['id']!r} on base line {line_no}")
-            records[raw["id"]] = raw
-    return records
+    return _parse_bead_records(result.stdout.splitlines(), line_label="base line")
 
 
 def changed_bead_ids(*, base_sha: str, beads_path: Path = _BEADS_PATH) -> list[str]:
-    """Return the complete Bead-record mutation set between base and checkout."""
-    before = _bead_records_at(base_sha)
+    """Return the complete Bead-record mutation set from the PR merge base."""
+    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
+        raise ValueError("base revision must be a hexadecimal Git object name")
+    merge_base = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
+    if merge_base.returncode != 0 or not _GIT_OBJECT_PATTERN.fullmatch(merge_base.stdout.strip()):
+        raise ValueError(f"cannot resolve PR merge base from base revision {base_sha[:8]}")
+    before = _bead_records_at(merge_base.stdout.strip())
     after = load_bead_records(beads_path)
     return sorted(bead_id for bead_id in set(before) | set(after) if before.get(bead_id) != after.get(bead_id))
 
@@ -343,10 +349,8 @@ def validate_carrier(
         mutated_ids = _bead_ids(carrier.get("mutated_beads"), label="mutated_beads", allow_empty=True, reasons=reasons)
         if scope_kind == ScopeKind.BEAD.value and not assigned_ids:
             reasons.append("bead scope requires at least one assigned Bead")
-        if scope_kind == ScopeKind.SELF_CONTAINED.value and (
-            assigned_ids or mutated_ids or carrier.get("dispositions") != []
-        ):
-            reasons.append("self_contained scope cannot declare Beads, dispositions, or Bead mutations")
+        if scope_kind == ScopeKind.SELF_CONTAINED.value and (assigned_ids or carrier.get("dispositions") != []):
+            reasons.append("self_contained scope cannot declare assigned Beads or dispositions")
     if is_draft:
         reasons.append("PR is draft; publish a non-draft PR before validation")
 
@@ -358,13 +362,17 @@ def validate_carrier(
     records: dict[str, dict[str, Any]] = {}
     try:
         records = load_bead_records(beads_path)
+        missing_assigned = [bead_id for bead_id in assigned_ids if bead_id not in records]
+        if missing_assigned:
+            reasons.append(f"assigned Bead record(s) missing: {', '.join(missing_assigned)}")
         bound_ids = list(assigned_ids)
         if not is_v1:
             bound_ids.extend(mutated_ids)
-            for entry in carrier.get("dispositions", []):
+            dispositions = carrier.get("dispositions")
+            for entry in dispositions if isinstance(dispositions, list) else []:
                 if isinstance(entry, dict) and isinstance(entry.get("successors"), list):
                     bound_ids.extend(item for item in entry["successors"] if isinstance(item, str))
-        bound_ids = sorted(set(bound_ids))
+        bound_ids = sorted({bead_id for bead_id in bound_ids if bead_id in records})
         expected_beads_digest = canonical_beads_digest(records, bound_ids, carrier_version=int(version))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         expected_beads_digest = None
@@ -672,6 +680,11 @@ def _run_validator_source(
         body_path = root / "pr-body.md"
         validator_path.write_bytes(source)
         body_path.write_text(metadata.body, encoding="utf-8")
+        help_result = subprocess.run(
+            [sys.executable, str(validator_path), "check", "--help"], capture_output=True, text=True, check=False
+        )
+        if help_result.returncode != 0:
+            raise RuntimeError("base-revision pr-scope validator cannot report its check interface")
         argv = [
             sys.executable,
             str(validator_path),
@@ -683,7 +696,7 @@ def _run_validator_source(
             "--beads-path",
             str(beads_path.resolve()),
         ]
-        if b'add_argument("--base-sha"' in source:
+        if "--base-sha" in help_result.stdout:
             argv.extend(["--base-sha", metadata.base_sha])
         result = subprocess.run(
             argv,
@@ -822,6 +835,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             repository = resolve_repository(args.repo)
             metadata = fetch_pr_metadata(args.pr, repository=repository)
+            if _git_head_sha() != metadata.head_sha:
+                raise ValueError("current checkout HEAD does not match the fetched PR head")
             verdict = validate_pr_body(
                 metadata.body,
                 head_sha=metadata.head_sha,
@@ -849,6 +864,8 @@ def main(argv: list[str] | None = None) -> int:
             head_sha = metadata.head_sha
             is_draft = metadata.is_draft
             base_sha = metadata.base_sha
+            if _git_head_sha() != head_sha:
+                raise ValueError("current checkout HEAD does not match the fetched PR head")
         else:
             if not args.head_sha:
                 raise ValueError("--head-sha is required with --body-file")
@@ -863,7 +880,7 @@ def main(argv: list[str] | None = None) -> int:
             beads_path=args.beads_path,
             base_sha=base_sha,
         )
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"REFUSING to check pr-scope carrier: {exc}", file=sys.stderr)
         return 2
 
