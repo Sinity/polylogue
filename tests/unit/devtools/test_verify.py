@@ -1569,16 +1569,34 @@ def test_pytest_tmpfs_budget_is_shared_and_bounded() -> None:
     )
 
 
-def test_adaptive_pytest_policy_scales_workers_and_tmpfs() -> None:
+def test_adaptive_pytest_policy_uses_host_capacity_not_ten_percent_cap() -> None:
+    """Reproduce ce4dd629's 15,190 MiB host headroom without under-capping tmpfs.
+
+    The full parallel suite used four workers and reached 1,521.6 MiB in its
+    basetemp.  Before this regression, the production policy returned 1,519
+    MiB solely because it used ten percent of ``MemAvailable`` as the cap.
+    """
     policy = adaptive_pytest_runtime_policy(
-        available_kb=16 * 1024 * 1024,
+        available_kb=15_190 * 1024,
         memory_full_avg10=0.0,
         cpu_count=24,
-        shm_free_kb=16 * 1024 * 1024,
+        shm_free_kb=15_190 * 1024,
+        worker_count=4,
     )
 
     assert policy.workers == 12
-    assert policy.tmpfs_budget_mb == 1638
+    assert policy.tmpfs_budget_mb == 2048
+
+
+def test_adaptive_pytest_policy_refuses_when_command_workers_exhaust_headroom() -> None:
+    with pytest.raises(PytestResourceError, match="cannot reserve pytest workers"):
+        adaptive_pytest_runtime_policy(
+            available_kb=3 * 1024 * 1024,
+            memory_full_avg10=0.0,
+            cpu_count=24,
+            shm_free_kb=16 * 1024 * 1024,
+            worker_count=4,
+        )
 
 
 def test_adaptive_pytest_policy_reduces_workers_under_pressure() -> None:
@@ -1911,13 +1929,16 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
             return {"workers": self.workers}
 
     with (
-        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, UncappedPolicy())),
+        patch(
+            "devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, UncappedPolicy())
+        ) as apply_policy,
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
         rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "-n", "4"])
 
     assert rc == 0
+    assert apply_policy.call_args.kwargs["worker_count"] == 4
     assert metadata["pytest_runtime_policy"] == {"workers": 12}
     assert metadata["workload_receipt"]["spec"]["concurrency"] == 4
 

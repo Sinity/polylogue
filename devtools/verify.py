@@ -1489,7 +1489,10 @@ def _run(
     basetemp_cleanup: Path | None = None
     if is_pytest:
         try:
-            env, runtime_policy = apply_managed_pytest_runtime_policy(env)
+            env, runtime_policy = apply_managed_pytest_runtime_policy(
+                env,
+                worker_count=_pytest_command_concurrency(cmd),
+            )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
             sys.stderr.write(f"FAILED ({elapsed:.1f}s)\nverify: {exc}\n")

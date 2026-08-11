@@ -573,8 +573,18 @@ def adaptive_pytest_runtime_policy(
     memory_full_avg10: float | None = None,
     cpu_count: int | None = None,
     shm_free_kb: int | None = None,
+    worker_count: int | None = None,
 ) -> PytestRuntimePolicy:
-    """Size tmpfs and xdist from current headroom without a disk fallback."""
+    """Size tmpfs and xdist from current headroom without a disk fallback.
+
+    The tmpfs cap is an admission limit, so it must be derived from capacity
+    the host can actually reserve.  A percentage of ``MemAvailable`` made a
+    well-provisioned host advertise a 1.5 GiB cap to a full pytest run that
+    had 15 GiB free, then the supervisor correctly killed the run at that
+    artificial limit.  Reserve the command's known workers and host headroom
+    first; the remaining tmpfs capacity is then bounded by both memory and
+    the free space on the tmpfs mount.
+    """
     if available_kb is None:
         available_kb = _meminfo().get("MemAvailable")
     if available_kb is None:
@@ -587,19 +597,24 @@ def adaptive_pytest_runtime_policy(
     if memory_full_avg10 is None:
         memory_full_avg10 = _pressure("memory").get("full_avg10", 0.0)
     if shm_free_kb is None:
-        shm = _fs_usage(Path("/dev/shm"))
+        shm = _fs_usage(PYTEST_TMPFS_ROOT)
         shm_free_kb = shm.get("free_kb") if shm is not None else None
     if shm_free_kb is None:
         raise PytestResourceError("/dev/shm is unavailable; refusing to fall back to disk-backed pytest")
 
-    adaptive_budget_mb = max(
-        DEFAULT_PYTEST_TMPFS_MAX_MB,
-        min(MAX_PYTEST_TMPFS_MAX_MB, int(available_kb / 1024 * 0.10)),
-    )
-    safe_shm_budget_mb = int((shm_free_kb / 1024) * 0.80)
-    tmpfs_budget_mb = min(adaptive_budget_mb, safe_shm_budget_mb)
+    if worker_count is not None and worker_count < 0:
+        raise PytestResourceError(f"invalid pytest worker count {worker_count}")
+    reserved_workers = max(1, worker_count or 1)
+    memory_safe_tmpfs_kb = available_kb - PYTEST_HOST_RESERVE_KB - reserved_workers * PYTEST_WORKER_MEMORY_KB
+    safe_shm_budget_kb = int(shm_free_kb * 0.80)
+    tmpfs_budget_kb = min(MAX_PYTEST_TMPFS_MAX_MB * 1024, safe_shm_budget_kb, memory_safe_tmpfs_kb)
+    tmpfs_budget_mb = int(tmpfs_budget_kb / 1024)
     if tmpfs_budget_mb < 64:
-        raise PytestResourceError(f"only {shm_free_kb / 1024:.0f} MiB free in /dev/shm; refusing disk-backed pytest")
+        raise PytestResourceError(
+            "cannot reserve pytest workers, host headroom, and a 64 MiB tmpfs budget "
+            f"(available={available_kb / 1024:.0f} MiB, workers={reserved_workers}, "
+            f"/dev/shm free={shm_free_kb / 1024:.0f} MiB)"
+        )
 
     logical_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
     cpu_cap = max(1, logical_cpus // 2)
@@ -625,7 +640,9 @@ def adaptive_pytest_runtime_policy(
     )
 
 
-def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
+def apply_managed_pytest_runtime_policy(
+    env: Mapping[str, str], *, worker_count: int | None = None
+) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
     """Enable bounded tmpfs by default; preserve explicit storage choices.
 
     Also runs the basetemp disk-headroom preflight
@@ -637,7 +654,7 @@ def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[st
     normalized = normalize_pytest_basetemp_env(env)
     policy: PytestRuntimePolicy | None = None
     if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0":
-        policy = adaptive_pytest_runtime_policy()
+        policy = adaptive_pytest_runtime_policy(worker_count=worker_count)
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
         normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
     selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
