@@ -938,10 +938,15 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
     if configured:
         root = Path(configured)
         free_kb = _headroom_kb(root)
-        if free_kb is not None and free_kb >= min_free_kb:
+        configured_required_kb = min_free_kb
+        if _is_beneath(root, PYTEST_TMPFS_ROOT) and normalized.get("POLYLOGUE_PYTEST_TMPFS") == "1":
+            budget_kb = pytest_tmpfs_budget_kb(normalized)
+            headroom_kb = pytest_basetemp_min_free_kb(normalized)
+            configured_required_kb = headroom_kb + max(required_kb or 0, budget_kb or 0)
+        if free_kb is not None and free_kb >= configured_required_kb:
             return root, "configured"
-        checked.append(_describe_candidate(root, "configured", free_kb, min_free_kb))
-        raise _basetemp_refusal(checked, min_free_kb)
+        checked.append(_describe_candidate(root, "configured", free_kb, configured_required_kb))
+        raise _basetemp_refusal(checked, configured_required_kb)
 
     if normalized.get("POLYLOGUE_PYTEST_TMPFS", "1") != "0":
         shm = PYTEST_TMPFS_ROOT

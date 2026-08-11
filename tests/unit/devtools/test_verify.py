@@ -1786,6 +1786,26 @@ def test_managed_pytest_policy_bounds_explicit_tmpfs_root(monkeypatch: pytest.Mo
     assert policy.basetemp_label == "configured"
 
 
+def test_managed_pytest_policy_preserves_headroom_for_explicit_tmpfs_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda _path: {"used_kb": 0, "free_kb": 2500 * 1024})
+
+    with pytest.raises(PytestResourceError, match="need >= 3024 MiB"):
+        apply_managed_pytest_runtime_policy(
+            {
+                "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/polylogue-explicit",
+                "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "1522",
+                "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "2048",
+            },
+            worker_count=4,
+            full_suite=True,
+        )
+
+
 def test_full_suite_explicit_root_requires_measured_basetemp_space(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
