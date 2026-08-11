@@ -1834,6 +1834,7 @@ def test_adoption_receipt_short_write_is_removed_for_a_safe_retry(
 ) -> None:
     """A failed receipt write leaves no immutable-looking truncated publication behind."""
     archive_root = tmp_path / "archive"
+    archive_root.mkdir()
     receipt_path = audit_adoption_receipt_path(archive_root)
     write_calls = 0
 
@@ -1850,6 +1851,21 @@ def test_adoption_receipt_short_write_is_removed_for_a_safe_retry(
         _write_immutable_audit_adoption_receipt(receipt_path, {"format": "test"}, archive_root=archive_root)
 
     assert not receipt_path.exists()
+
+
+def test_adoption_receipt_refuses_a_symlinked_maintenance_parent(tmp_path: Path) -> None:
+    """Receipt publication and loading stay beneath the owned archive descriptor."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (archive_root / ".maintenance-state").symlink_to(outside, target_is_directory=True)
+    receipt_path = audit_adoption_receipt_path(archive_root)
+
+    with pytest.raises(MigrationError, match="must not traverse outside archive-owned directories"):
+        _write_immutable_audit_adoption_receipt(receipt_path, {"format": "test"}, archive_root=archive_root)
+
+    assert not (outside / "durable-change-trains" / "audit-adoption.json").exists()
 
 
 def test_runtime_bootstrap_refuses_an_established_archive_missing_audit(workspace_env: dict[str, Path]) -> None:

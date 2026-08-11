@@ -10,7 +10,7 @@ import sqlite3
 import stat
 import sys
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -454,37 +454,110 @@ def _audit_schema_inventory_sha256() -> str:
         return capture_durable_schema_inventory(connection).sha256
 
 
-def _fsync_audit_adoption_receipt_directories(path: Path, *, archive_root: Path) -> None:
-    """Persist receipt directory entries through the owned archive root."""
-    for directory in (path.parent, *path.parent.parents):
-        descriptor = os.open(
-            directory,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+def _open_audit_adoption_receipt_directory(
+    path: Path,
+    *,
+    archive_root: Path,
+    create: bool,
+    archive_directory_fd: int | None = None,
+) -> int:
+    """Open the receipt parent without following any archive path component."""
+    archive_root = archive_root.resolve()
+    expected_path = audit_adoption_receipt_path(archive_root)
+    if path != expected_path:
+        raise MigrationError(f"audit adoption receipt path is outside its fixed archive location: {path}")
+    try:
+        current_fd = (
+            os.dup(archive_directory_fd)
+            if archive_directory_fd is not None
+            else os.open(
+                archive_root,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
         )
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        if directory == archive_root:
-            return
-    raise MigrationError(f"audit adoption receipt escapes archive root: {path}")
+    except OSError as exc:
+        raise MigrationError(f"cannot anchor audit adoption receipt to archive root: {archive_root}") from exc
+    try:
+        for component in path.parent.relative_to(archive_root).parts:
+            try:
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=current_fd,
+                )
+            except FileNotFoundError:
+                if not create:
+                    raise
+                with suppress(FileExistsError):
+                    os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=current_fd,
+                )
+            metadata = os.fstat(next_fd)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+            ):
+                os.close(next_fd)
+                raise MigrationError(
+                    f"audit adoption receipt parent is not a private owned directory: {archive_root / component}"
+                )
+            os.fsync(current_fd)
+            os.fsync(next_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException as exc:
+        os.close(current_fd)
+        if isinstance(exc, (FileNotFoundError, MigrationError)):
+            raise
+        if isinstance(exc, OSError):
+            raise MigrationError(
+                f"audit adoption receipt path must not traverse outside archive-owned directories: {path}"
+            ) from exc
+        raise
 
 
-def _write_immutable_audit_adoption_receipt(path: Path, payload: dict[str, object], *, archive_root: Path) -> None:
+def _write_immutable_audit_adoption_receipt(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    archive_root: Path,
+    archive_directory_fd: int | None = None,
+) -> None:
     """Publish one pre-publication receipt without replacement and fsync it."""
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     unsigned = dict(payload)
     unsigned.pop("receipt_sha256", None)
     payload = {**unsigned, "receipt_sha256": _canonical_json_sha256(unsigned)}
     encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     descriptor: int | None = None
-    temporary_path = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
+    receipt_directory_fd: int | None = None
+    temporary_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
     published = False
     try:
+        receipt_directory_fd = _open_audit_adoption_receipt_directory(
+            path,
+            archive_root=archive_root,
+            create=True,
+            archive_directory_fd=archive_directory_fd,
+        )
         descriptor = os.open(
-            temporary_path,
+            temporary_name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             0o600,
+            dir_fd=receipt_directory_fd,
         )
         offset = 0
         while offset < len(encoded):
@@ -495,11 +568,17 @@ def _write_immutable_audit_adoption_receipt(path: Path, payload: dict[str, objec
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = None
-        os.link(temporary_path, path, follow_symlinks=False)
+        os.link(
+            temporary_name,
+            path.name,
+            src_dir_fd=receipt_directory_fd,
+            dst_dir_fd=receipt_directory_fd,
+            follow_symlinks=False,
+        )
         published = True
-        _fsync_audit_adoption_receipt_directories(path, archive_root=archive_root)
-        temporary_path.unlink()
-        _fsync_audit_adoption_receipt_directories(path, archive_root=archive_root)
+        os.fsync(receipt_directory_fd)
+        os.unlink(temporary_name, dir_fd=receipt_directory_fd)
+        os.fsync(receipt_directory_fd)
     except FileExistsError as exc:
         raise MigrationError(f"audit adoption receipt already exists and is immutable: {path}") from exc
     except OSError as exc:
@@ -507,12 +586,16 @@ def _write_immutable_audit_adoption_receipt(path: Path, payload: dict[str, objec
     finally:
         if descriptor is not None:
             os.close(descriptor)
-        if not published:
+        if receipt_directory_fd is not None and not published:
             try:
-                temporary_path.unlink(missing_ok=True)
-                _fsync_audit_adoption_receipt_directories(path, archive_root=archive_root)
+                os.unlink(temporary_name, dir_fd=receipt_directory_fd)
+                os.fsync(receipt_directory_fd)
+            except FileNotFoundError:
+                pass
             except OSError:
                 pass
+        if receipt_directory_fd is not None:
+            os.close(receipt_directory_fd)
 
 
 def _audit_adoption_image_binding(payload: dict[str, object]) -> tuple[str, int, int]:
@@ -531,12 +614,39 @@ def _audit_adoption_image_binding(payload: dict[str, object]) -> tuple[str, int,
 
 def _load_audit_adoption_receipt(archive_root: Path) -> tuple[Path, dict[str, object]] | None:
     receipt_path = audit_adoption_receipt_path(archive_root)
-    if not receipt_path.exists():
-        return None
     try:
-        payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt_directory_fd = _open_audit_adoption_receipt_directory(
+            receipt_path,
+            archive_root=archive_root,
+            create=False,
+        )
+    except FileNotFoundError:
+        return None
+    receipt_fd: int | None = None
+    try:
+        receipt_fd = os.open(
+            receipt_path.name,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=receipt_directory_fd,
+        )
+        metadata = os.fstat(receipt_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise MigrationError(f"invalid audit adoption receipt ownership or mode: {receipt_path}")
+        with os.fdopen(receipt_fd, "r", encoding="utf-8") as stream:
+            receipt_fd = None
+            payload = json.load(stream)
+    except FileNotFoundError:
+        return None
     except (OSError, json.JSONDecodeError) as exc:
         raise MigrationError(f"invalid audit adoption receipt: {receipt_path}") from exc
+    finally:
+        if receipt_fd is not None:
+            os.close(receipt_fd)
+        os.close(receipt_directory_fd)
     if not isinstance(payload, dict) or payload.get("format") != _AUDIT_ADOPTION_RECEIPT_FORMAT:
         raise MigrationError(f"audit adoption receipt format mismatch: {receipt_path}")
     digest = payload.get("receipt_sha256")
@@ -662,7 +772,7 @@ def adopt_missing_audit_tier(
     if path.exists() or path.is_symlink():
         raise MigrationError(f"audit tier already exists; refusing established-archive adoption: {path}")
     receipt_path = audit_adoption_receipt_path(archive_root)
-    if receipt_path.exists():
+    if _load_audit_adoption_receipt(archive_root) is not None:
         validate_audit_adoption_receipt(archive_root)
         return 1, receipt_path
     stopped_evidence = stopped_daemon_check()
@@ -714,7 +824,12 @@ def adopt_missing_audit_tier(
                 "audit_image_size": len(initialized_image),
             }
         )
-        _write_immutable_audit_adoption_receipt(receipt_path, payload, archive_root=archive_root)
+        _write_immutable_audit_adoption_receipt(
+            receipt_path,
+            payload,
+            archive_root=archive_root,
+            archive_directory_fd=directory_fd,
+        )
 
     version = initialize_missing_durable_tier(
         path,
