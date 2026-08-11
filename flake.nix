@@ -485,18 +485,22 @@
           # older interpreter survived a toolchain bump forever and shadowed
           # the nix-provided python on PATH -- recreate whenever the
           # interpreter identity moves (version + free-threaded flag).
-          devshell_python_id="$(python3 -c 'import sys; print(sys.version.split()[0], sys._is_gil_enabled())')"
+          devshell_python="$(command -v python3)"
+          devshell_python_id="$("$devshell_python" -c 'import sys; print(sys.version.split()[0], sys._is_gil_enabled())')"
+          create_devshell_venv() {
+            uv venv --python "$devshell_python"
+          }
           venv_python_id=""
           if [ -x .venv/bin/python ]; then
             venv_python_id="$(.venv/bin/python -c 'import sys; print(sys.version.split()[0], getattr(sys, "_is_gil_enabled", lambda: True)())' 2>/dev/null || true)"
           fi
           if [ ! -d .venv ]; then
             echo "devshell: creating virtual environment ($devshell_python_id)" >&2
-            uv venv
+            create_devshell_venv
           elif [ "$venv_python_id" != "$devshell_python_id" ]; then
             echo "devshell: interpreter changed ($venv_python_id -> $devshell_python_id); recreating .venv" >&2
             rm -rf .venv
-            uv venv
+            create_devshell_venv
           fi
 
           # Activate venv
