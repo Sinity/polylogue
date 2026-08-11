@@ -2052,7 +2052,12 @@ class LiveBatchProcessor:
             elif path.suffix.lower() == ".jsonl":
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
-                if not parse_as_session:
+                # An unknown JSONL cannot be safely excluded from acquire: the
+                # strict parse route persists typed terminal evidence for empty
+                # and malformed exports. Known-provider sidecars remain
+                # cursor-excluded here because their classification is already
+                # authoritative.
+                if not parse_as_session and provider is not Provider.UNKNOWN:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:

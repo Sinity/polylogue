@@ -2871,7 +2871,7 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
 
 
 @pytest.mark.asyncio
-async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_storage(
+async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_before_raw_storage(
     workspace_env: dict[str, Path],
 ) -> None:
     root = workspace_env["data_root"] / "projects"
@@ -2884,7 +2884,7 @@ async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_stora
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="projects", root=root),),
+        (WatchSource(name="claude-code", root=root),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )

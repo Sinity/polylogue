@@ -357,6 +357,9 @@ class LiveWatcher:
                     continue
                 observed_path = Path(raw_path)
                 if change is Change.added and observed_path.is_dir():
+                    if self._is_hook_spool_path(observed_path):
+                        await self._drain_hook_spool()
+                        continue
                     self._enqueue_added_directory(observed_path)
                     continue
                 path = self._canonical_watch_path(observed_path)
