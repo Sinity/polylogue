@@ -1,9 +1,0 @@
-# Exceptions to pytest's repository-wide 120-second timeout default
-# (tool.pytest.ini_options.timeout in pyproject.toml). Every path/value pair
-# must correspond to a live literal command override; `devtools verify
-# pytest-timeout-overrides` rejects stale entries.
-
-[[exception]]
-path = "tests/unit/scenarios/test_codex_804_live_proof.py"
-value = 900
-rationale = "The sanitized 804-revision proof generates and acquires the outlier corpus, runs source remediation, then exercises pre-checkpoint failure, interrupted replay, fresh-process resume, and promotion under one bounded incident-scale budget."

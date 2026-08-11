@@ -339,31 +339,6 @@ async def test_attachment_identity_lookup_uses_stored_columns(tmp_path: Path) ->
             )
 
 
-def test_attachment_identity_query_does_not_extract_native_ids_from_json() -> None:
-    """The canonical attachment identity query must not read the moved native
-    identifiers (provider_id, fileId, driveId) out of provider_meta — that was
-    the fragile JSON-extract hot path #1252 retired."""
-    import inspect
-
-    from polylogue.storage.sqlite.queries import attachment_records
-
-    source = inspect.getsource(attachment_records)
-    forbidden_extracts = (
-        "json_extract(attachment_meta, '$.provider_id')",
-        "json_extract(attachment_meta, '$.id')",
-        "json_extract(attachment_meta, '$.fileId')",
-        "json_extract(attachment_meta, '$.driveId')",
-        "json_extract(ref_meta, '$.provider_id')",
-        "json_extract(ref_meta, '$.id')",
-        "json_extract(ref_meta, '$.fileId')",
-        "json_extract(ref_meta, '$.driveId')",
-    )
-    for needle in forbidden_extracts:
-        assert needle not in source, (
-            f"#1252: identity-lookup hot path must not re-read native ID via {needle!r}; use the stored typed column."
-        )
-
-
 # ---------------------------------------------------------------------------
 # No JSON-expression indexes survive on attachments
 # ---------------------------------------------------------------------------

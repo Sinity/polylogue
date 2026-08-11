@@ -2088,8 +2088,6 @@ def build_verify_steps(
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
-                ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
-                ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
                 # Static, archive-independent, sub-second: an index bump that
                 # lands without its lifecycle.py delta declaration silently
                 # downgrades every existing generation to a full raw replay

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 
 from polylogue.agent_integration.spec import DEFAULT_READ_TOOLS
 from polylogue.mcp.declarations.models import MCPCapabilities
@@ -76,12 +75,3 @@ def test_discovery_signatures_expose_real_resume_and_reference_inputs() -> None:
     assert {"subject", "expression", "ref"} <= set(signatures["explain"].parameters)
     assert {"intent", "query", "budget_tokens", "result_ref"} <= set(signatures["context"].parameters)
     assert {"scope", "include", "ref"} <= set(signatures["status"].parameters)
-
-
-def test_generated_equivalence_map_tracks_the_cutover_declarations() -> None:
-    import json
-
-    payload = json.loads(Path("docs/generated/mcp-equivalence.json").read_text())
-    surface = payload["compatibility_surface"]
-    assert surface["tool_count"] == 10
-    assert set(surface["tool_names"]) == MCP_TOOL_NAME_BASELINE | {"write", "run", "judge", "maintenance"}

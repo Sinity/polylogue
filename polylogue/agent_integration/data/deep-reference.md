@@ -721,30 +721,30 @@ Prompts: `cost_of`.
 
 ### Stable target resources
 
-- `polylogue://session/{id}` — objects session; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://message/{id}` — objects message; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://block/{id}` — objects block; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://action/{id}` — objects action; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://file/{id}` — objects file; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://query/{id}` — objects query; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://result-set/{id}` — objects result-set; required capability `read`; owner `polylogue-t46.8.2`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://recall-pack/{id}` — objects recall-pack; required capability `read`; owner `polylogue-t46.8.3`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://capabilities/query` — objects capability, query, result-set; required capability `read`; owner `polylogue-z9gh.3`; executable query vocabulary and recovery guidance; no mutation authority.
+- `polylogue://session/{id}` — objects session; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://message/{id}` — objects message; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://block/{id}` — objects block; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://action/{id}` — objects action; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://file/{id}` — objects file; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://query/{id}` — objects query; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://result-set/{id}` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://recall-pack/{id}` — objects recall-pack; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://capabilities/query` — objects capability, query, result-set; required capability `read`; executable query vocabulary and recovery guidance; no mutation authority.
 
 ### Workflow prompts
 
-- `resume_context` — workflow `resume`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `postmortem_last` — workflow `postmortem`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `decisions_about` — workflow `decision-recovery`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `unacknowledged_failures` — workflow `failure-recovery`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `sessions_touching_file` — workflow `file-touch`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `cost_of` — workflow `cost-analysis`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
-- `agent_coordination_brief` — workflow `coordination`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.3`.
-- `analyze_errors` — workflow `error-analysis`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
-- `summarize_week` — workflow `weekly-summary`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
-- `extract_code` — workflow `code-extraction`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
-- `compare_sessions` — workflow `session-comparison`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
-- `extract_patterns` — workflow `pattern-extraction`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
+- `resume_context` — workflow `resume`; required capability `read`; mutation authority `none`.
+- `postmortem_last` — workflow `postmortem`; required capability `read`; mutation authority `none`.
+- `decisions_about` — workflow `decision-recovery`; required capability `read`; mutation authority `none`.
+- `unacknowledged_failures` — workflow `failure-recovery`; required capability `read`; mutation authority `none`.
+- `sessions_touching_file` — workflow `file-touch`; required capability `read`; mutation authority `none`.
+- `cost_of` — workflow `cost-analysis`; required capability `read`; mutation authority `none`.
+- `agent_coordination_brief` — workflow `coordination`; required capability `read`; mutation authority `none`.
+- `analyze_errors` — workflow `error-analysis`; required capability `read`; mutation authority `none`.
+- `summarize_week` — workflow `weekly-summary`; required capability `read`; mutation authority `none`.
+- `extract_code` — workflow `code-extraction`; required capability `read`; mutation authority `none`.
+- `compare_sessions` — workflow `session-comparison`; required capability `read`; mutation authority `none`.
+- `extract_patterns` — workflow `pattern-extraction`; required capability `read`; mutation authority `none`.
 
 ## Source origins
 

@@ -385,12 +385,12 @@ def render_deep_reference() -> str:
     )
     for resource in TARGET_RESOURCES:
         lines.append(
-            f"- `{resource.uri_template}` — objects {', '.join(resource.object_kinds)}; required capability `{resource.required_capability or 'read'}`; owner `{resource.migration_owner}`; {resource.authority}."
+            f"- `{resource.uri_template}` — objects {', '.join(resource.object_kinds)}; required capability `{resource.required_capability or 'read'}`; {resource.authority}."
         )
     lines.extend(["", "### Workflow prompts", ""])
     for prompt in TARGET_PROMPTS:
         lines.append(
-            f"- `{prompt.name}` — workflow `{prompt.workflow}`; required capability `{prompt.required_capability or 'read'}`; mutation authority `{prompt.mutation_authority}`; owner `{prompt.migration_owner}`."
+            f"- `{prompt.name}` — workflow `{prompt.workflow}`; required capability `{prompt.required_capability or 'read'}`; mutation authority `{prompt.mutation_authority}`."
         )
     lines.extend(["", "## Source origins", ""])
     for origin in ORIGIN_MEANINGS:

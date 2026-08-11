@@ -7,12 +7,10 @@ from dataclasses import dataclass
 
 from devtools import (
     render_agent_manual,
-    render_api_operation_parity,
     render_cli_output_schemas,
     render_cli_reference,
     render_devtools_reference,
     render_docs_surface,
-    render_mcp_equivalence,
     render_openapi,
     render_pages,
     render_product_workflows,
@@ -37,23 +35,6 @@ class GeneratedSurface:
 
 
 GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
-    GeneratedSurface(
-        name="api-operation-parity",
-        label="Python API operation parity",
-        description="Render the semantic-operation matrix and generated Python facade reference.",
-        command=control_plane_argv("render api-operation-parity"),
-        main=render_api_operation_parity.main,
-        inputs=(
-            "polylogue/api/__init__.py",
-            "polylogue/api/archive.py",
-            "polylogue/api/embeddings.py",
-            "polylogue/api/ingest.py",
-            "polylogue/api/insights.py",
-            "polylogue/api/operation_parity.py",
-            "devtools/render_api_operation_parity.py",
-            "docs/library-api.md",
-        ),
-    ),
     GeneratedSurface(
         name="agent-manual",
         label="Agent manual",
@@ -218,18 +199,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/sources/provider_completeness.py",
             "docs/",
             "README.md",
-        ),
-    ),
-    GeneratedSurface(
-        name="mcp-equivalence",
-        label="MCP algebra equivalence map",
-        description="Render the executable MCP contract and migration map as generated JSON.",
-        command=control_plane_argv("render mcp-equivalence"),
-        main=render_mcp_equivalence.main,
-        inputs=(
-            "devtools/render_mcp_equivalence.py",
-            "polylogue/declarations/",
-            "polylogue/mcp/declarations/",
         ),
     ),
     GeneratedSurface(

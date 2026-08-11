@@ -178,28 +178,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render query-discovery", "devtools render query-discovery --check"),
     ),
     CommandSpec(
-        "render api-operation-parity",
-        "generated surfaces",
-        "Render the committed semantic-operation parity matrix and Python facade reference.",
-        "devtools.render_api_operation_parity",
-        use_when=(
-            "Refresh or verify stable Python API operation IDs, cross-surface bindings, intentional exclusions, "
-            "and the signature-aware generated section in docs/library-api.md."
-        ),
-        examples=("devtools render api-operation-parity", "devtools render api-operation-parity --check"),
-    ),
-    CommandSpec(
-        "render mcp-equivalence",
-        "generated surfaces",
-        "Render docs/generated/mcp-equivalence.json from executable MCP declarations.",
-        "devtools.render_mcp_equivalence",
-        use_when=(
-            "Refresh or verify MCP discovery names, input/output contracts, role gates, operation owners, "
-            "Python parity expectations, and disjoint migration ownership after changing the compatibility surface."
-        ),
-        examples=("devtools render mcp-equivalence", "devtools render mcp-equivalence --check"),
-    ),
-    CommandSpec(
         "render product-workflows",
         "generated surfaces",
         "Render docs/product/workflows.md from executable query-action workflow registries.",
@@ -817,20 +795,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace raw-live-source-reconciliation",
             "devtools workspace raw-live-source-reconciliation --json",
             "devtools workspace raw-live-source-reconciliation --limit 500 --sample-limit 20",
-        ),
-    ),
-    CommandSpec(
-        "workspace chatgpt-lifecycle-anchor-audit",
-        "workspace",
-        "Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts.",
-        "devtools.chatgpt_lifecycle_anchor_audit",
-        use_when=(
-            "Run the read-only parser-to-classifier census behind the historical ChatGPT mapping-order defect. "
-            "It emits only aggregate, sanitized evidence and never reclassifies source rows or graph gates."
-        ),
-        examples=(
-            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive",
-            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive --receipt .local/evidence/chatgpt-lifecycle-anchor.json",
         ),
     ),
     CommandSpec(
@@ -1537,31 +1501,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "instead of showing as uncovered."
         ),
         examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
-    ),
-    CommandSpec(
-        "verify pytest-timeout-overrides",
-        "verification",
-        "Verify explicit pytest timeout overrides are positive, bounded, and justified.",
-        "devtools.verify_pytest_timeout_overrides",
-        use_when=(
-            "Check AST-parsed @pytest.mark.timeout decorators and managed pytest command literals. "
-            "Values above the pyproject default require an exact manifest rationale."
-        ),
-        examples=("devtools verify pytest-timeout-overrides", "devtools verify pytest-timeout-overrides --json"),
-    ),
-    CommandSpec(
-        "verify degrade-loudly",
-        "verification",
-        "Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure.",
-        "devtools.verify_degrade_loudly",
-        use_when=(
-            "Enforce the degrade-loudly doctrine (polylogue-cpf.4): a broad except-handler "
-            "(Exception/BaseException/*.Error) in derived-read, status, or probe code that "
-            "swallows the exception with no log call and no re-raise is indistinguishable from "
-            "'no data' to a reader. New silent sites must add a log call, or add a typed signal "
-            "plus a rationale entry in docs/plans/degrade-loudly-allowlist.yaml."
-        ),
-        examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
     ),
     CommandSpec(
         "release verify-distribution",

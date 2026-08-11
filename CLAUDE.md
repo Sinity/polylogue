@@ -561,7 +561,7 @@ Core loop:
   [Verification](#verification--testmon-inner-loop-never-blanket-run).
 - `devtools test <sel>` — focused pytest through the managed harness.
 - `devtools lab …` — executable schema/provider/pipeline/lane checks.
-- `devtools workspace …` — task history, frontier, worktree-gc, evidence.
+- `devtools workspace …` — task history, worktree-gc, evidence.
 
 Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.

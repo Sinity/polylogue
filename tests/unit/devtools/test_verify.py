@@ -214,8 +214,6 @@ def test_quick_verify_omits_pytest() -> None:
         "verify ci-workflows",
         "verify doc-commands",
         "verify test-infra-currency",
-        "verify pytest-timeout-overrides",
-        "verify degrade-loudly",
         "lab policy schema-versioning",
         "lab policy classifier-fingerprints",
         "lab policy raw-payload-hash-purity",

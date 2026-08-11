@@ -32,7 +32,6 @@ parallel dispatch. Validate branch-local dependency records without importing
 an aging worktree into the shared Beads database:
 
 ```bash
-devtools workspace frontier --json
 devtools lab policy bead-graph --export .beads/issues.jsonl --json
 ```
 
@@ -113,12 +112,10 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools render agent-manual` | Render the declaration-generated six-tool agent manual and packaged integration assets. |
 | `devtools render all` | Refresh or verify generated docs and agent files. |
-| `devtools render api-operation-parity` | Render the committed semantic-operation parity matrix and Python facade reference. |
 | `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
 | `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
 | `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
-| `devtools render mcp-equivalence` | Render docs/generated/mcp-equivalence.json from executable MCP declarations. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
 | `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
@@ -178,11 +175,9 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
-| `devtools verify degrade-loudly` | Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure. |
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
-| `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
 | `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
 
@@ -217,7 +212,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
-| `devtools workspace chatgpt-lifecycle-anchor-audit` | Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
