@@ -24,6 +24,7 @@ from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm
@@ -72,7 +73,7 @@ def _ingest_append_plans_archive(
     archive_root: Path,
 ) -> _AppendResult:
     timings: dict[str, float] = {}
-    index_db = archive_root / "index.db"
+    index_db = resolve_active_index_path(archive_root)
     source_db = archive_root / "source.db"
     if not index_db.exists() or not source_db.exists():
         t0 = time.perf_counter()

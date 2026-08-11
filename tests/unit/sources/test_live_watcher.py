@@ -370,6 +370,10 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     assert metrics.full_file_count == 1
     assert shadow_index.read_bytes() == shadow_before
     assert active_index.read_bytes() != active_before
+    with sqlite3.connect(shadow_index) as conn:
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+    assert watcher._reconcile_archived_cursor(source_path, stat=source_path.stat()) is True
     watcher.stop()
 
 
