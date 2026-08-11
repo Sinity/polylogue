@@ -1639,6 +1639,26 @@ def test_resolve_basetemp_falls_back_to_nvme_scratch_when_tmpfs_is_low(
     assert label == "scratch"
 
 
+def test_resolve_basetemp_reroutes_known_demand_before_tmpfs_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path == shm:
+            return {"used_kb": 0, "free_kb": 2500 * 1024}
+        if path == scratch.parent:
+            return {"used_kb": 0, "free_kb": 4096 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+
+    root, label = resolve_pytest_basetemp_root({"POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "2048"})
+
+    assert root == scratch
+    assert label == "scratch"
+
+
 def test_resolve_basetemp_refuses_loudly_when_every_candidate_is_full(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
