@@ -84,8 +84,7 @@ from polylogue.operations.mutation_actuators import (
 )
 from polylogue.operations.mutation_transaction import ConfirmationRequiredError, OperationExecutor, PlanStaleError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
@@ -95,8 +94,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_active_archive_root(archive_root)
     session_id = f"codex-session:{native_id}"
     raw_id = f"raw-{native_id}"
     with sqlite3.connect(source_db) as conn:
