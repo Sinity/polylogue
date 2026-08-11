@@ -1873,6 +1873,13 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
 
     with pytest.raises(MigrationError, match="prepared but incomplete"):
         reconcile_durable_change_train_startup(archive_root)
+    with sqlite3.connect(archive_root / "source.db") as source, sqlite3.connect(audit_path) as audit:
+        assert (
+            source.execute(
+                "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
+            ).fetchone()
+            == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
+        )
     with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume") as owner:
         receipt = restore_adopted_audit_tier(
             audit_path,
@@ -1882,6 +1889,66 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
         )
 
     assert receipt.name.endswith(".committed.json")
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One retry completes a prepared restore after a crash leaves its private image."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = backup_archive(output_dir=archive_root.parent / "staging-pre", profile="full_evidence", verify=True)
+    assert pre_adoption.ok and pre_adoption.output_path is not None, pre_adoption.error
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-staging-adopt") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    verified = backup_archive(output_dir=archive_root.parent / "staging-post", profile="full_evidence", verify=True)
+    assert verified.ok and verified.output_path is not None, verified.error
+    audit_path.write_bytes(b"corrupt")
+    real_replace = os.replace
+    real_unlink = os.unlink
+
+    def interrupt_publication(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated restore publication crash")
+
+    def leave_staging(name: os.PathLike[str] | str, *args: object, **kwargs: object) -> None:
+        if str(name).startswith(".audit.db.restore-"):
+            return
+        real_unlink(name, *args, **kwargs)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr("polylogue.operations.durable_change_train.os.replace", interrupt_publication)
+        interrupted.setattr("polylogue.operations.durable_change_train.os.unlink", leave_staging)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-staging-interrupt") as owner:
+            with pytest.raises(OSError, match="simulated restore publication crash"):
+                restore_adopted_audit_tier(
+                    audit_path,
+                    backup_manifest=Path(verified.output_path) / "manifest.json",
+                    directory_fd=owner.directory_fd,
+                    stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+                )
+
+    stale = tuple(archive_root.glob(".audit.db.restore-*.tmp"))
+    assert len(stale) == 1
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-staging-resume") as owner:
+        receipt = restore_adopted_audit_tier(
+            audit_path,
+            backup_manifest=Path(verified.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    assert receipt.name.endswith(".committed.json")
+    assert not tuple(archive_root.glob(".audit.db.restore-*.tmp"))
     assert reconcile_durable_change_train_startup(archive_root) == ()
 
 

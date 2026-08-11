@@ -29,6 +29,7 @@ from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     DestructiveClass,
     MutationPlan,
+    MutationPrincipal,
     MutationReceipt,
     MutationTransactionError,
     OperationExecutor,
@@ -1522,6 +1523,8 @@ def apply_raw_authority_recovery(
         if operation is RecoveryOperation.RESET_CENSUS
         else PruneOrphanedIndexRevisionSeedsActuator()
     )
+    from polylogue.operations.bindings import runtime_operation_binding
+
     executor = OperationExecutor.for_archive_root(root)
     try:
         location = ArchiveLocation.resolve(root)
@@ -1538,24 +1541,24 @@ def apply_raw_authority_recovery(
                 with RebuildLease(root):
                     if _committed_postflight(selected) is not None:
                         return _apply_plan(selected)
-        prepared = executor.prepare(actuator, args)
-        if prepared.context.get("recovery_plan_digest") != selected.plan_digest:
-            raise PlanStaleError("recovery plan is stale before lease acquisition")
-        authorization = executor.authorize(
-            actuator,
-            prepared,
-            actor="cli:maintenance",
-            role="maintenance",
-            capability="archive.raw_authority_recovery",
-            confirmation_strength="confirm_flag",
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal(
+            "cli:maintenance",
+            frozenset({"archive.raw_authority_recovery", "archive.legacy_runtime"}),
+            "maintenance",
+            "maintenance",
         )
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+        if preview.plan.context.get("recovery_plan_digest") != selected.plan_digest:
+            raise PlanStaleError("recovery plan is stale before lease acquisition")
+        authorization = executor.authorize_bound(binding, preview, principal)
         with OwnedArchiveLocation.acquire(
             location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
         ) as owned:
             current_location = ArchiveLocation.resolve(root)
             assert_owns_archive_location(owned, current_location)
             with RebuildLease(root):
-                result = executor.execute(actuator, prepared, authorization, args)
+                result = executor.execute_bound(binding, preview, authorization, args)
     except (
         ArchiveLocationError,
         ArchiveOwnershipError,

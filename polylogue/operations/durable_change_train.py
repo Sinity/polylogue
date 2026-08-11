@@ -15,7 +15,7 @@ from collections.abc import Callable
 from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -715,6 +715,20 @@ def _audit_live_metadata(audit_path: Path) -> tuple[int, int, tuple[str, ...]]:
     return version, application_id, quick_check
 
 
+def _audit_file_sha256(audit_path: Path) -> str:
+    """Hash the exact regular-file image a continuity rebind is about to bless."""
+
+    _audit_file_identity(audit_path)
+    digest = hashlib.sha256()
+    try:
+        with audit_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise MigrationError(f"cannot hash adopted audit tier: {audit_path}") from exc
+    return digest.hexdigest()
+
+
 def _validate_initial_audit_image(
     audit_path: Path,
     *,
@@ -889,12 +903,15 @@ def _write_audit_adoption_continuity(
     *,
     receipt_payload: dict[str, object],
     expected_initial_file_identity: tuple[int, int],
+    expected_audit_image_sha256: str,
 ) -> None:
     """Publish the post-link audit identity that later detects stale replacement."""
     audit_path = archive_root / "audit.db"
     device, inode = _audit_file_identity(audit_path)
     if (device, inode) != expected_initial_file_identity:
         raise MigrationError("audit tier changed before recording adoption continuity")
+    if _audit_file_sha256(audit_path) != expected_audit_image_sha256:
+        raise MigrationError("audit image changed before recording adoption continuity")
     continuity_path = _audit_adoption_continuity_path(archive_root)
     payload: dict[str, object] = {
         "format": _AUDIT_ADOPTION_CONTINUITY_FORMAT,
@@ -902,6 +919,7 @@ def _write_audit_adoption_continuity(
         "source_user_authority_digest": receipt_payload["source_user_authority_digest"],
         "audit_device": device,
         "audit_inode": inode,
+        "audit_image_sha256": expected_audit_image_sha256,
     }
     unsigned = dict(payload)
     payload["continuity_sha256"] = _canonical_json_sha256(unsigned)
@@ -923,7 +941,7 @@ def _write_audit_adoption_continuity(
         evidence={
             "kind": "adoption",
             "receipt_sha256": receipt_sha256,
-            "audit_image_sha256": hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+            "audit_image_sha256": expected_audit_image_sha256,
         },
     )
     if _audit_file_identity(audit_path) != (device, inode):
@@ -945,6 +963,7 @@ def _validate_audit_adoption_continuity(
             archive_root,
             receipt_payload=receipt_payload,
             expected_initial_file_identity=expected_initial_file_identity,
+            expected_audit_image_sha256=cast(str, receipt_payload["audit_image_sha256"]),
         )
         continuity = _latest_audit_adoption_continuity(archive_root)
     assert continuity is not None
@@ -1213,6 +1232,23 @@ def _copy_restore_artifact(source: Path, *, directory_fd: int, temporary_name: s
             os.close(source_fd)
 
 
+def _remove_stale_restore_staging(*, directory_fd: int, temporary_name: str) -> None:
+    """Remove one prior crash's private restore image before retrying its intent."""
+    try:
+        metadata = os.stat(temporary_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) & 0o077
+    ):
+        raise MigrationError(f"invalid stale adopted-audit restore staging file: {temporary_name}")
+    os.unlink(temporary_name, dir_fd=directory_fd)
+    os.fsync(directory_fd)
+
+
 def _audit_file_matches_artifact(path: Path, *, sha256: str, size: int) -> bool:
     """Check whether an interrupted restore already published the intended image."""
     try:
@@ -1349,6 +1385,7 @@ def restore_adopted_audit_tier(
             checksum_key="restore_sha256",
         )
     temporary_name = f".audit.db.restore-{operation_id}.tmp"
+    _remove_stale_restore_staging(directory_fd=directory_fd, temporary_name=temporary_name)
     published = False
     try:
         if _audit_file_matches_artifact(archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size):
@@ -1370,6 +1407,8 @@ def restore_adopted_audit_tier(
             os.replace(temporary_name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
             os.fsync(directory_fd)
             published = True
+        if _audit_file_sha256(path) != artifact_sha256:
+            raise MigrationError("adopted-audit restore published image changed before continuity rebind")
         identity = _audit_file_identity(path)
         version, application_id, quick_check = _audit_live_metadata(path)
         if version != artifact_version or application_id != expected_application_id or quick_check != ("ok",):
@@ -1387,22 +1426,24 @@ def restore_adopted_audit_tier(
             "prepared_restore_sha256": prepared_restore_sha256,
             "audit_device": identity[0],
             "audit_inode": identity[1],
+            "audit_image_sha256": artifact_sha256,
         }
-        _write_immutable_audit_adoption_receipt(
-            committed_path,
-            committed,
-            archive_root=archive_root,
-            archive_directory_fd=directory_fd,
-            checksum_key="continuity_sha256",
-        )
+        committed["continuity_sha256"] = _canonical_json_sha256(committed)
         AuditContinuityCoordinator(archive_root).seed_or_rebind(
             mutation_id=f"audit-restore:{operation_id}",
             now_ms=int(time.time() * 1000),
             evidence={
                 "kind": "verified_restore",
                 "restore_continuity_sha256": committed["continuity_sha256"],
-                "audit_artifact_sha256": artifact_sha256,
+                "audit_image_sha256": artifact_sha256,
             },
+        )
+        _write_immutable_audit_adoption_receipt(
+            committed_path,
+            committed,
+            archive_root=archive_root,
+            archive_directory_fd=directory_fd,
+            checksum_key="continuity_sha256",
         )
         return committed_path
     finally:

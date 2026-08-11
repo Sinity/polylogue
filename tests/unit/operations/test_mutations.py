@@ -7,6 +7,7 @@ stays in one place.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,9 @@ class TestDeleteSessionSafe:
         assert first.session_id == _native("conv-del")
         assert second.outcome == "not_found"
         assert second.detail == "session_not_found"
+        with sqlite3.connect(workspace_env["archive_root"] / "audit.db") as audit:
+            assert audit.execute("SELECT state FROM operation_previews").fetchone()[0] == "executed"
+            assert audit.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
     async def test_missing_session_returns_not_found(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env)

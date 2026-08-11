@@ -2140,8 +2140,9 @@ def _emit_delete(
     ``ArchiveStore.delete_sessions`` directly, so preview/authorization/
     receipt semantics cannot diverge between adapters.
     """
+    from polylogue.operations.bindings import runtime_operation_binding
     from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-    from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
     from polylogue.surfaces.payloads import MutationResultPayload
 
     dry_run = bool(params.get("dry_run"))
@@ -2151,7 +2152,11 @@ def _emit_delete(
     actuator = SessionDeleteActuator()
     executor = OperationExecutor.for_archive_root(archive.archive_root)
     prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
-    plan = executor.prepare(actuator, prepare_args)
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(
+        "user:cli", frozenset({"archive.delete_session", "archive.legacy_runtime"}), "cli", "write"
+    )
+    preview = executor.prepare_bound_for_archive(binding, prepare_args, principal, archive_root=archive.archive_root)
 
     if dry_run:
         # ``session_count`` = matched, ``affected_count`` = deleted (0 in a
@@ -2204,15 +2209,8 @@ def _emit_delete(
                 ).to_json(exclude_none=True)
             )
             return
-    authorization = executor.authorize(
-        actuator,
-        plan,
-        actor="user:cli",
-        role="write",
-        capability="archive.delete_session",
-        confirmation_strength="confirm_flag",
-    )
-    receipt = executor.execute(actuator, plan, authorization, prepare_args)
+    authorization = executor.authorize_bound(binding, preview, principal)
+    receipt = executor.execute_bound(binding, preview, authorization, prepare_args)
     deleted = receipt.affected_count
     # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.
     click.echo(

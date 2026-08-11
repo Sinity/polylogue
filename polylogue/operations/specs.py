@@ -849,6 +849,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbWrite",),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        allowed_surfaces=("internal",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="annotation-import",
+                target_kinds=("annotation-batch", "assertion"),
+                required_capabilities=("archive.annotation.import_batch",),
+                destructive_class="reversible",
+                required_confirmation="role_only",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("none",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-rebuild-index",
@@ -872,6 +884,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        allowed_surfaces=("api",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="index-rebuild",
+                target_kinds=("source",),
+                required_capabilities=("archive.rebuild_index",),
+                destructive_class="maintenance",
+                required_confirmation="role_only",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("rebuild",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-update-index",
@@ -895,6 +919,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        allowed_surfaces=("api",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="index-update",
+                target_kinds=("source",),
+                required_capabilities=("archive.update_index",),
+                destructive_class="maintenance",
+                required_confirmation="role_only",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("rebuild",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-rebuild-insights",
@@ -918,6 +954,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        allowed_surfaces=("api",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="insights-rebuild",
+                target_kinds=("session",),
+                required_capabilities=("archive.rebuild_insights",),
+                destructive_class="maintenance",
+                required_confirmation="role_only",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("rebuild",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-resolve-raw-authority-blocker",
@@ -944,6 +992,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="raw-authority-blocker",
+                target_kinds=("raw-authority-blocker",),
+                required_capabilities=("archive.raw_authority.resolve_blocker",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-reset-raw-authority-census",
@@ -969,6 +1029,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        allowed_surfaces=("maintenance",),
         target_authority=(
             TargetAuthorityPolicy(
                 key="raw-authority-recovery-source",
@@ -1004,6 +1065,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        allowed_surfaces=("maintenance",),
         target_authority=(
             TargetAuthorityPolicy(
                 key="raw-authority-recovery-index",
@@ -1257,6 +1319,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        allowed_surfaces=("api", "cli"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="session-delete",
+                target_kinds=("session",),
+                required_capabilities=("archive.delete_session",),
+                destructive_class="delete",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("rebuild",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-session-excision",
@@ -1282,6 +1356,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="session-excision",
+                target_kinds=("session",),
+                required_capabilities=("archive.excise_session",),
+                destructive_class="excise",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("none",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-identity-reset",
@@ -1307,6 +1393,18 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite", "Destructive"),
         safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
         executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="identity-reset",
+                target_kinds=("session",),
+                required_capabilities=("archive.identity_reset",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("rebuild",),
+            ),
+        ),
     ),
     OperationSpec(
         name="project-archive-readiness",

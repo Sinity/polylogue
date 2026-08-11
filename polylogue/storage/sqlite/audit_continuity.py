@@ -93,7 +93,7 @@ class AuditContinuityCoordinator:
         self._phase("before_source_prepare", mutation)
         prepared = self._prepare(mutation)
         self._phase("after_source_prepare", mutation)
-        result = self._apply_prepared(prepared, apply)
+        result = self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
         self._phase("after_audit_commit", mutation)
         self._promote(prepared)
         self._phase("after_source_promotion", mutation)
@@ -106,7 +106,8 @@ class AuditContinuityCoordinator:
         if prepared is None:
             self._assert_committed_head_matches_audit()
             return
-        self._apply_prepared(prepared, apply)
+        mutation = AuditMutation.from_command(prepared["command"])
+        self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
         self._promote(prepared)
 
     def seed_or_rebind(self, *, mutation_id: str, now_ms: int, evidence: Mapping[str, object]) -> None:
@@ -117,16 +118,14 @@ class AuditContinuityCoordinator:
         exact evidence to the new audit image without trusting inode identity.
         """
 
+        expected_image_sha256 = evidence.get("audit_image_sha256")
+        if not isinstance(expected_image_sha256, str) or len(expected_image_sha256) != 64:
+            raise AuditContinuityError("rebind requires an exact audit image sha256")
         mutation = AuditMutation("rebind", mutation_id, now_ms, dict(evidence))
 
-        def apply(conn: sqlite3.Connection, _mutation: AuditMutation) -> None:
-            # A verified restored image can contain an older audit head.  Its
-            # authenticated restore evidence is the authority to rebind it.
-            return None
-
-        prepared = self._prepare(mutation)
-        self._apply_prepared(prepared, apply, allow_rebind=True)
-        self._promote(prepared)
+        # A verified restored image can contain an older audit head. Its
+        # authenticated image hash is the authority to rebind it.
+        self.execute(mutation, lambda _conn, _mutation: None)
 
     def _phase(self, name: str, mutation: AuditMutation) -> None:
         if self._phase_hook is not None:
@@ -221,12 +220,17 @@ class AuditContinuityCoordinator:
             if current[:2] == target and current[2] == mutation.mutation_id:
                 conn.commit()
                 return None  # type: ignore[return-value]
+            if mutation.kind == "rebind":
+                # A retry after the audit-side commit sees the target head and
+                # returns above. Any other state must still prove that the
+                # exact authenticated image is present before it can rebind.
+                self._assert_rebind_image(mutation)
             if current[:2] != prior:
                 if allow_rebind and mutation.kind == "rebind":
                     pass
                 else:
                     raise AuditContinuityError("audit continuity head does not match the prepared source command")
-            result = apply(conn, mutation)
+            result = None if mutation.kind == "rebind" else apply(conn, mutation)
             conn.execute(
                 "UPDATE audit_continuity_head SET generation = ?, head_sha256 = ?, mutation_id = ?, advanced_at_ms = ? WHERE singleton = 1",
                 (*target, mutation.mutation_id, mutation.created_at_ms),
@@ -287,6 +291,20 @@ class AuditContinuityCoordinator:
         )
         if prepared.get("next_head_sha256") != expected_head:
             raise AuditContinuityError("audit continuity command head checksum mismatch")
+
+    def _assert_rebind_image(self, mutation: AuditMutation) -> None:
+        expected = mutation.payload.get("audit_image_sha256")
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise AuditContinuityError("rebind command lacks an audit image sha256")
+        digest = hashlib.sha256()
+        try:
+            with self.audit_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise AuditContinuityError("cannot read audit image for rebind") from exc
+        if digest.hexdigest() != expected:
+            raise AuditContinuityError("audit image changed before continuity rebind")
 
     def _require_paths(self) -> None:
         if not self.source_path.is_file() or not self.audit_path.is_file():

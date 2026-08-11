@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Generic, TypeVar
 
-from polylogue.operations.mutation_transaction import MutationActuator
+from polylogue.operations.mutation_transaction import MutationActuator, TargetAuthorityPolicy
 from polylogue.operations.specs import OperationSpec
 
 ArgsT = TypeVar("ArgsT", contravariant=True)
@@ -103,9 +103,67 @@ def validate_operation_bindings(
     return catalog
 
 
+def runtime_operation_binding(actuator: MutationActuator[ArgsT]) -> OperationBinding[ArgsT, object]:
+    """Resolve and validate the declared runtime binding for one actuator."""
+
+    from polylogue.operations.specs import build_runtime_operation_catalog
+
+    operation = getattr(actuator, "operation", None)
+    if not isinstance(operation, str) or not operation:
+        raise BindingValidationError("runtime actuator has no declared operation name")
+    spec = build_runtime_operation_catalog().by_name().get(operation)
+    if spec is None:
+        raise BindingValidationError(f"no runtime OperationSpec for actuator {operation!r}")
+    if not spec.target_authority:
+        # Older executor-routed catalog rows predate typed authority metadata.
+        # Keep those real routes on the bound audit lifecycle with an explicit
+        # compatibility capability until their individual target policies are
+        # declared. The extra capability is deliberately required rather than
+        # silently treating an untyped route as authorized.
+        spec = replace(
+            spec,
+            allowed_surfaces=("cli", "api", "mcp", "daemon", "maintenance", "internal"),
+            target_authority=(
+                TargetAuthorityPolicy(
+                    key="legacy-runtime",
+                    target_kinds=(
+                        "annotation",
+                        "annotation-batch",
+                        "assertion",
+                        "blackboard",
+                        "block",
+                        "correction",
+                        "index",
+                        "message",
+                        "raw-authority-blocker",
+                        "recall-pack",
+                        "recall_pack",
+                        "saved-view",
+                        "saved_view",
+                        "session",
+                        "source",
+                        "workspace",
+                    ),
+                    required_capabilities=("archive.legacy_runtime",),
+                    destructive_class=actuator.destructive_class,
+                    required_confirmation=actuator.required_confirmation,
+                    # The remaining compatibility routes all mutate user.db.
+                    # Rebuildable index operations have their own explicit
+                    # policies below, so the fallback remains unambiguous.
+                    allowed_durabilities=("durable",),
+                    allowed_recovery=("none",),
+                ),
+            ),
+        )
+    binding = OperationBinding(spec, actuator)
+    binding.validate()
+    return binding
+
+
 __all__ = [
     "BindingValidationError",
     "OperationBinding",
     "OperationBindingCatalog",
+    "runtime_operation_binding",
     "validate_operation_bindings",
 ]

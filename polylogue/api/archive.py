@@ -2687,23 +2687,20 @@ class PolylogueArchiveMixin:
         outside this helper. Returns ``(receipt, plan)`` because a couple of
         callers read ``plan.context`` back after the archive handle closes.
         """
-        from polylogue.operations.mutation_transaction import OperationExecutor
+        from polylogue.operations.bindings import runtime_operation_binding
+        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             args = build_args(archive)
-            executor = OperationExecutor.for_archive_root(_active_archive_root(self.config))
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor="facade",
-                role="write",
-                capability=capability,
-                confirmation_strength="role_only",
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
-        return receipt, plan
+            root = _active_archive_root(self.config)
+            executor = OperationExecutor.for_archive_root(root)
+            binding = runtime_operation_binding(actuator)
+            principal = MutationPrincipal("facade", frozenset({capability, "archive.legacy_runtime"}), "api", "write")
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+            authorization = executor.authorize_bound(binding, preview, principal)
+            receipt = executor.execute_bound(binding, preview, authorization, args)
+        return receipt, preview.plan
 
     async def import_annotation_batch(
         self,
@@ -6574,8 +6571,9 @@ class PolylogueArchiveMixin:
         -- shares one preview/authorization/receipt contract instead of
         calling ``ArchiveStore.delete_sessions`` independently.
         """
+        from polylogue.operations.bindings import runtime_operation_binding
         from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
+        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import DeleteSessionResult
 
@@ -6589,18 +6587,16 @@ class PolylogueArchiveMixin:
                     detail="session_not_found",
                 )
             actuator = SessionDeleteActuator()
-            executor = OperationExecutor.for_archive_root(_active_archive_root(self.config))
+            root = _active_archive_root(self.config)
+            executor = OperationExecutor.for_archive_root(root)
             args = SessionDeleteArgs(archive=archive, session_ids=(resolved,))
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor=actor,
-                role="write",
-                capability="archive.delete_session",
-                confirmation_strength="confirm_flag",
+            binding = runtime_operation_binding(actuator)
+            principal = MutationPrincipal(
+                actor, frozenset({"archive.delete_session", "archive.legacy_runtime"}), "api", "write"
             )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+            authorization = executor.authorize_bound(binding, preview, principal)
+            receipt = executor.execute_bound(binding, preview, authorization, args)
         deleted = receipt.affected_count > 0
         return DeleteSessionResult(
             outcome="deleted" if deleted else "not_found",

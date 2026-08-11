@@ -602,6 +602,30 @@ class OperationExecutor:
         preview_ref = self._audit.create_preview(plan, principal)
         return MutationPreview(preview_ref=preview_ref, plan=plan)
 
+    def prepare_bound_for_archive(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        args: ArgsT,
+        principal: MutationPrincipal,
+        *,
+        archive_root: Path,
+    ) -> MutationPreview:
+        """Prepare a production mutation with live archive and audit authority."""
+
+        if self._audit is None:
+            raise MutationTransactionError("production mutation preparation requires a durable audit repository")
+        from polylogue.storage.archive_identity import ArchiveIdentity
+
+        raw_plan = binding.actuator.prepare(args)
+        return self.prepare_bound(
+            binding,
+            args,
+            principal,
+            archive_instance_id=self._audit.ensure_archive_authority(now_ms=self._now_ms()),
+            archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+            parameter_digest=_sha256_document(raw_plan.to_dict()),
+        )
+
     def authorize_bound(
         self,
         binding: OperationBinding[ArgsT, object],

@@ -195,8 +195,9 @@ def excise_command(
         )
         return
 
+    from polylogue.operations.bindings import runtime_operation_binding
     from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
-    from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
     from polylogue.security.excision import plan_session_excision
 
     actuator = SessionExcisionActuator()
@@ -312,16 +313,13 @@ def excise_command(
     # EXECUTE revalidates the hash immediately before mutating -- a stale or
     # tampered authorization refuses (``PlanStaleError``) rather than excising
     # the wrong target set.
-    executor_plan = executor.prepare(actuator, excision_args)
-    authorization = executor.authorize(
-        actuator,
-        executor_plan,
-        actor=actor,
-        role="write",
-        capability="archive.excise_session",
-        confirmation_strength="confirm_flag",
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(
+        actor, frozenset({"archive.excise_session", "archive.legacy_runtime"}), "cli", "write"
     )
-    executor_receipt = executor.execute(actuator, executor_plan, authorization, excision_args)
+    preview = executor.prepare_bound_for_archive(binding, excision_args, principal, archive_root=root)
+    authorization = executor.authorize_bound(binding, preview, principal)
+    executor_receipt = executor.execute_bound(binding, preview, authorization, excision_args)
     if executor_receipt.status == "blocked":
         _emit(
             env,

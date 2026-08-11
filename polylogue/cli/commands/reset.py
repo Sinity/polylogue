@@ -210,24 +210,23 @@ def _apply_identity_reset(session_ids: list[str], *, reason: str) -> tuple[int, 
     instead of tombstoning directly. Returns
     ``(suppressed_count, deleted_archive_rows)``.
     """
+    from polylogue.operations.bindings import runtime_operation_binding
     from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
-    from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
 
     if not session_ids:
         return 0, 0
     actuator = IdentityResetActuator()
-    executor = OperationExecutor.for_archive_root(_archive_root())
-    args = IdentityResetArgs(archive_root=_archive_root(), session_ids=tuple(session_ids), reason=reason)
-    plan = executor.prepare(actuator, args)
-    authorization = executor.authorize(
-        actuator,
-        plan,
-        actor="user:cli",
-        role="write",
-        capability="archive.identity_reset",
-        confirmation_strength="confirm_flag",
+    root = _archive_root()
+    executor = OperationExecutor.for_archive_root(root)
+    args = IdentityResetArgs(archive_root=root, session_ids=tuple(session_ids), reason=reason)
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(
+        "user:cli", frozenset({"archive.identity_reset", "archive.legacy_runtime"}), "cli", "write"
     )
-    receipt = executor.execute(actuator, plan, authorization, args)
+    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+    authorization = executor.authorize_bound(binding, preview, principal)
+    receipt = executor.execute_bound(binding, preview, authorization, args)
     domain = receipt.domain_receipt
     suppressed = cast("int", domain.get("suppressed_count", receipt.affected_count))
     deleted = cast("int", domain.get("deleted_archive_rows", 0))
