@@ -1,5 +1,0 @@
-surface_type,classification,surfaces,observed_actions
-cli_command,keep,64,0
-cli_command,kill,54,0
-mcp_tool,keep,4,0
-mcp_tool,kill,6,0

@@ -1039,9 +1039,8 @@ implemented and unit-tested but **never reachable in production**: the only
 call site that could have populated the lease payload keys
 (`commit_archive_write_effects`'s `_blob_hashes`/`_operation_id`) was never
 given them by any real ingest caller (`_commit_sync_ingest_side_effects`
-built its payload without them). A race-window audit
-(`docs/audits/2026-07-09-race-window-audit.md`, rows 1a/1b) confirmed zero
-production callers across the whole write path, so `has_lease` was always
+built its payload without them). Source-history review and the production-route
+tests confirmed zero production callers across the whole write path, so `has_lease` was always
 `False` and the acquire/release calls never ran. The mechanism was removed
 rather than left as dead code implying a protection that did not exist
 (polylogue-v7e0). A deterministic provider-shaped measurement later proved

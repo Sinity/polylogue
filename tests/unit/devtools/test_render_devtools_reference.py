@@ -16,7 +16,6 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     assert "devtools status --json" in rendered
     assert "not a proof ledger or end-user archive workflow" in rendered
     assert "| `devtools lab graph` | Render the runtime artifact and operation graph. |" in rendered
-    assert "| `devtools lab projections` | Render the authored scenario-bearing verification projections. |" in rendered
     assert (
         "| `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |"
         in rendered
@@ -27,7 +26,6 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
     )
     assert "### Lab Checks" in rendered
     assert "| `devtools render all` |" in rendered
-    assert "| `devtools render demo-corpus-datasheet` |" in rendered
     assert "| `devtools verify pytest-timeout-overrides` |" in rendered
     assert "| `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate" in rendered
     assert "Common forms: `devtools status`" in rendered

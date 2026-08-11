@@ -104,9 +104,7 @@ def test_new_branch_uses_default_branch_merge_base(git_repo: Path) -> None:
     assert pre_push_gate.changed_paths([update], cwd=git_repo) == {".beads/issues.jsonl"}
 
 
-def test_beads_only_gate_uses_registered_backlog_hygiene_command(
-    git_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_beads_only_gate_uses_structural_bead_graph_command(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base = _git(git_repo, "rev-parse", "HEAD")
     tip = _commit(git_repo, ".beads/issues.jsonl", "{}\n", "beads")
     update = pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", base)
@@ -117,8 +115,8 @@ def test_beads_only_gate_uses_registered_backlog_hygiene_command(
     assert pre_push_gate.run_gate([update], cwd=git_repo) == "beads"
     assert len(commands) == 1
     assert commands[0][:3] == [sys.executable, "-m", "devtools"]
-    assert command_name_from_tokens(commands[0][3:]) == "lab policy backlog-hygiene"
-    assert commands[0][-3:] == ["--checks", "D1,D2", ".beads/issues.jsonl"]
+    assert command_name_from_tokens(commands[0][3:]) == "lab policy bead-graph"
+    assert commands[0][-2:] == ["--export", ".beads/issues.jsonl"]
 
 
 def test_parse_updates_rejects_malformed_input() -> None:

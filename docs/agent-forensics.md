@@ -30,7 +30,7 @@ polylogue analyze insights usage-timeline --group-by month-origin-model --format
 
 # Focused claim-vs-evidence packet for the current demo shelf.
 devtools workspace claim-vs-evidence --limit 5000 \
-  --out-dir .agent/demos/claim-vs-evidence --json
+  --out-dir .local/evidence/claim-vs-evidence --json
 ```
 
 The same analysis can be reproduced against the deterministic demo archive:
@@ -96,5 +96,5 @@ reconciliation or logical-work totals.
 
 The query outputs are aggregate statistics by default: no message content,
 session titles, or source paths. Demo packets that include samples should stay
-inside the local `.agent/demos/` shelf unless they have been explicitly
+inside the local `.local/evidence/` directory unless they have been explicitly
 redacted for publication.

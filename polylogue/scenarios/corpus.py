@@ -893,14 +893,14 @@ def claim_vs_evidence_findings() -> tuple[FindingAssertion, ...]:
 
     The return annotation stays storage-neutral at module import time; callers
     receive ``FindingAssertion`` instances.  Values are copied from the
-    snapshot's sanitized ``.agent/demos/claim-vs-evidence`` report, while the
+    snapshot's sanitized local claim-vs-evidence report, while the
     actual support status remains a live 37t.14 verdict rather than a seed.
     """
 
     from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, PublicClaimDeclaration
 
-    report_ref = "file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json"
-    public_summary_ref = "file:.agent/demos/claim-vs-evidence/public-summary.json"
+    report_ref = "file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json"
+    public_summary_ref = "file:.local/evidence/claim-vs-evidence/public-summary.json"
     finding_doc_ref = "file:docs/findings/claim-vs-evidence.md"
 
     def finding(

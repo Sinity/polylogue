@@ -137,7 +137,6 @@ _CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
     ("lab probe pipeline", "query"),
     ("bench memory", "query"),
     ("lab probe capture-regression", "query"),
-    ("lab projections", "query"),
     ("verify coverage", "verify"),
     ("workspace tasks", "query"),
     ("workspace failure-context", "query"),

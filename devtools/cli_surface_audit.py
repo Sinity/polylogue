@@ -172,7 +172,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="devtools workspace cli-surface-audit",
         description="Capture a current-curated CLI surface audit demo.",
     )
-    parser.add_argument("--out-dir", type=Path, default=Path(".agent/demos/cli-surface-audit/current"))
+    parser.add_argument("--out-dir", type=Path, default=Path(".local/evidence/cli-surface-audit/current"))
     parser.add_argument("--archive-root", type=Path, default=Path.home() / ".local/share/polylogue")
     parser.add_argument("--include-unbounded-dialogue", action="store_true")
     parser.add_argument("--timeout", type=int, default=60)
@@ -320,7 +320,7 @@ the product path an operator should actually use for large devloop sessions.
 ## Regeneration
 
 ```bash
-devtools workspace cli-surface-audit --out-dir .agent/demos/cli-surface-audit/current
+devtools workspace cli-surface-audit --out-dir .local/evidence/cli-surface-audit/current
 ```
 """
 

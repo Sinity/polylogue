@@ -773,7 +773,6 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "## Files",
         "",
         "- `lineage-validation.report.json` — full machine-readable evidence.",
-        "- `summary.json` — demo-shelf claim/non-claim/proof/caveat summary.",
         "",
     ]
     if verdict["reasons"]:

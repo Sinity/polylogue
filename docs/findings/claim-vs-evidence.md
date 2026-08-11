@@ -139,19 +139,17 @@ Operators with the relevant archive can run:
 ```bash
 devtools workspace claim-vs-evidence \
   --limit 5000 \
-  --out-dir .agent/demos/claim-vs-evidence \
+  --out-dir .local/evidence/claim-vs-evidence \
   --json
 
-devtools workspace demo-shelf
 ```
 
 ## Evidence and caveats
 
 See:
 
-- [Proof Artifacts](../proof-artifacts.md);
 - `devtools/claim_vs_evidence.py`;
 - `tests/unit/devtools/test_claim_vs_evidence.py`;
-- the local `.agent/demos/claim-vs-evidence/` packet when generated.
+- the local `.local/evidence/claim-vs-evidence/` packet when generated.
 
 Publication requires the packet’s archive cursor, measure version, commit SHA, sample-frame predicate, and run date. If any is missing or stale, the finding page should refuse regeneration rather than silently retain an old number.

@@ -1,4 +1,0 @@
-exit_code=0
-elapsed_s=n/a (completes well under a second on the 19-session seeded fixture)
-command=POLYLOGUE_ARCHIVE_ROOT=/path/to/demo-archive polylogue --plain analyze insights cost-rollups --format json --limit 100
-note=The original version of this packet was generated against a live operator archive and this command timed out there (exit_code=124, elapsed_s=120.03) -- a genuine product-performance finding at live-archive scale, tracked separately. That timeout does not reproduce on this tiny synthetic fixture, so this file no longer documents a timeout; it documents that the command completes and returns 10 cost-rollup rows.

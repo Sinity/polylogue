@@ -139,19 +139,6 @@ def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None
         assert spec.code_refs
 
 
-def test_non_routed_mutations_carry_typed_debt_reasons() -> None:
-    specs = build_declared_operation_catalog().by_name()
-
-    for name in (
-        "mutate-maintenance-target-run",
-        "mutate-filesystem-reset",
-        "seed-demo-archive",
-    ):
-        assert specs[name].mutates_state is True
-        assert specs[name].executor_status in {"declared-not-routed", "typed-exemption"}
-        assert specs[name].executor_reason
-
-
 def test_raw_authority_recovery_specs_declare_their_exact_target_kinds() -> None:
     """Recovery target refs remain authorized by the production operation catalog."""
 

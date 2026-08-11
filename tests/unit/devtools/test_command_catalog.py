@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from devtools.command_catalog import (
-    CATALOG_BYPASS_SITES,
     CATEGORY_ORDER,
     COMMAND_SPECS,
     COMMANDS,
@@ -71,17 +68,6 @@ def test_bead_graph_and_frontier_catalogs_expose_complete_json_reports() -> None
 
     assert any("--json" in example for example in graph.examples)
     assert graph.use_when is not None
-    assert "missing acceptance criteria" in graph.use_when
+    assert "dependency records only" in graph.use_when
     assert any("--json" in example for example in frontier.examples)
     assert "execution focus" in frontier.description
-
-
-def test_catalog_bypass_sites_are_concrete_and_cardinality_bounded() -> None:
-    root = Path(__file__).resolve().parents[3]
-
-    assert CATALOG_BYPASS_SITES
-    for site in CATALOG_BYPASS_SITES:
-        source = (root / site.path).read_text(encoding="utf-8")
-        assert site.marker in source
-        assert source.count(site.marker) == site.expected_occurrences == 1
-        assert site.reason

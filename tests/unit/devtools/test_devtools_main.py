@@ -17,7 +17,6 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "lab graph" in commands
     assert "lab probe capture-regression" in commands
     assert "lab probe cost-reconciliation" in commands
-    assert "lab projections" in commands
     assert "render devtools-reference" in commands
     assert "workspace tasks" in commands
     assert "status" in commands
@@ -35,7 +34,6 @@ def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert "lab graph" in captured.out
     assert "lab probe capture-regression" in captured.out
     assert "lab probe cost-reconciliation" in captured.out
-    assert "lab projections" in captured.out
     assert "render devtools-reference" in captured.out
 
 

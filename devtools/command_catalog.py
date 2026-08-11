@@ -12,10 +12,8 @@ CONTROL_PLANE = "devtools"
 VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab graph",
     "lab lanes",
-    "lab policy backlog-hygiene",
     "lab policy bead-graph",
     "lab policy campaign-archive-boundaries",
-    "lab policy demo-tour-freshness",
     "lab policy insight-honesty",
     "lab policy schema-versioning",
     "lab policy timestamp-doctrine",
@@ -24,7 +22,6 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab probe cost-reconciliation",
     "lab probe pipeline",
     "lab probe turso",
-    "lab projections",
     "lab run",
     "lab smoke",
     "lab schema audit",
@@ -96,14 +93,6 @@ class CommandSpec:
         data["invocation"] = self.invocation
         data["argv"] = list(self.argv)
         return data
-
-
-@dataclass(frozen=True, slots=True)
-class CatalogBypassSite:
-    path: str
-    marker: str
-    reason: str
-    expected_occurrences: int = 1
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
@@ -202,27 +191,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_devtools_reference",
     ),
     CommandSpec(
-        "render demo-corpus-datasheet",
-        "generated surfaces",
-        "Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive.",
-        "devtools.render_demo_corpus_datasheet",
-        use_when="Refresh or verify the deterministic demo corpus construct datasheet after changing demo families, constructs, or seed semantics.",
-        examples=(
-            "devtools render demo-corpus-datasheet",
-            "devtools render demo-corpus-datasheet --check",
-        ),
-    ),
-    CommandSpec(
         "render docs-surface",
         "generated surfaces",
         "Render docs/README.md and the README documentation table.",
         "devtools.render_docs_surface",
-    ),
-    CommandSpec(
-        "render quality-reference",
-        "generated surfaces",
-        "Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries.",
-        "devtools.render_quality_reference",
     ),
     CommandSpec(
         "render query-discovery",
@@ -989,7 +961,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive",
-            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive --receipt docs/audits/receipt.json",
+            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive --receipt .local/evidence/chatgpt-lifecycle-anchor.json",
         ),
     ),
     CommandSpec(
@@ -1430,7 +1402,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace lineage-validation --json",
             "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
-            "devtools workspace lineage-validation --out-dir .agent/demos/lineage-validation/current",
+            "devtools workspace lineage-validation --out-dir .local/evidence/lineage-validation/current",
         ),
     ),
     CommandSpec(
@@ -1445,24 +1417,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace affordance-usage --days 7 --json",
             "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
-            "devtools workspace affordance-usage --out-dir .agent/demos/agent-affordance-usage",
-        ),
-    ),
-    CommandSpec(
-        "workspace demo-shelf",
-        "workspace",
-        "Refresh or verify current demo shelf indexes.",
-        "devtools.demo_shelf",
-        use_when=(
-            "After curating .agent/demos or another explicit current demo shelf, regenerate "
-            "MANIFEST.readable.json and SUMMARY_INDEX.json from one deterministic helper. "
-            "Declarative read packages own portable readable bundles; the shelf is the best current set, "
-            "not an append-only archive."
-        ),
-        examples=(
-            "devtools workspace demo-shelf",
-            "devtools workspace demo-shelf --check",
-            "devtools workspace demo-shelf --root /realm/project/sinex/.agent/demos --json",
+            "devtools workspace affordance-usage --out-dir .local/evidence/agent-affordance-usage",
         ),
     ),
     CommandSpec(
@@ -1477,7 +1432,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace degraded-archive-proof --json",
-            "devtools workspace degraded-archive-proof --out-dir .agent/demos/degraded-archive-proof/current --json",
+            "devtools workspace degraded-archive-proof --out-dir .local/evidence/degraded-archive-proof/current --json",
         ),
     ),
     CommandSpec(
@@ -1491,7 +1446,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace cli-surface-audit",
-            "devtools workspace cli-surface-audit --out-dir .agent/demos/cli-surface-audit/current --json",
+            "devtools workspace cli-surface-audit --out-dir .local/evidence/cli-surface-audit/current --json",
             "devtools workspace cli-surface-audit --include-unbounded-dialogue",
         ),
     ),
@@ -1507,7 +1462,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace claim-vs-evidence --json",
-            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .agent/demos/claim-vs-evidence",
+            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .local/evidence/claim-vs-evidence",
         ),
     ),
     CommandSpec(
@@ -1523,18 +1478,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace read-package --spec package.json --session-id 019f... --out-dir product-read",
             "devtools workspace read-package --spec package.yaml --session-id 019f... --out-dir product-read --dry-run --json",
-        ),
-    ),
-    CommandSpec(
-        "lab projections",
-        "verification lab",
-        "Render the authored scenario-bearing verification projections.",
-        "devtools.scenario_projections",
-        use_when="Inspect descriptive projection metadata for executable lanes, inferred fixtures, and benchmarks.",
-        examples=(
-            "devtools lab projections",
-            "devtools lab projections --source-kind validation-lane --artifact-target session_insight_rows",
-            "devtools lab projections --json",
         ),
     ),
     CommandSpec(
@@ -1606,17 +1549,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "non-existent paths. Checks only locally verifiable facts — not remote CI state."
         ),
         examples=("devtools verify ci-workflows", "devtools verify ci-workflows --json"),
-    ),
-    CommandSpec(
-        "verify catalog-bypasses",
-        "verification",
-        "Reject direct devtools module or script execution outside sanctioned adapters.",
-        "devtools.verify_catalog_bypasses",
-        use_when=(
-            "Check workflow run blocks, repository hooks, and devtools process-launch sites for direct "
-            "python -m devtools.X or python devtools/X.py execution that bypasses the command catalog."
-        ),
-        examples=("devtools verify catalog-bypasses", "devtools verify catalog-bypasses --json"),
     ),
     CommandSpec(
         "verify test-infra-currency",
@@ -1724,57 +1656,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab policy backlog-hygiene",
-        "verification lab",
-        "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
-        "devtools.verify_backlog_hygiene",
-        use_when=(
-            "Enforce structured backlog invariants over the Beads export: dangling dependency "
-            "refs, blocks-cycles, horizon/priority/AC/design fields, area labels, structured epic "
-            "membership, duplicate titles, an unclean/corrupt bd JSONL sync receipt (S1, consuming "
-            "polylogue-gxjh.1's monotonic sync contract), an active leaf that is itself an "
-            "epic (F1), an active leaf with a missing/dangling/mismatched program ref (F2), a "
-            "stale in_progress claim with no recent activity (F3, configurable window), and a "
-            "frontier_program=active program with no admitted active leaves (F4) -- catches "
-            "backlog structure drift before it needs an archaeology sweep to recover, instead "
-            "of only a manually-invoked script. Also reports a non-blocking active-set size "
-            "diagnostic (soft target/warn bands, never a hard cap or failure)."
-        ),
-        examples=(
-            "devtools lab policy backlog-hygiene",
-            "devtools lab policy backlog-hygiene --json",
-            "devtools lab policy backlog-hygiene --fresh",
-            "devtools lab policy backlog-hygiene --stale-claim-days 10",
-        ),
-    ),
-    CommandSpec(
         "lab policy bead-graph",
         "verification lab",
-        "Bead-graph invariant lint and complete missing-AC census over live `bd` state.",
+        "Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph.",
         "devtools.verify_bead_graph",
         use_when=(
-            "Run right before shipping a bead-state delta (matches the sinex bead-graph-lint "
-            "convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than "
-            "the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. It fails "
-            "closed for real missing acceptance criteria and validates zero-or-one structured parent-child "
-            "parents. `--json` emits the complete deterministic missing-AC census, never a display page. "
-            "INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged "
-            "(polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here)."
+            "Run before shipping a bead-state delta. With no source option it checks live `bd` state; "
+            "`--export .beads/issues.jsonl` validates the branch snapshot without importing it into the "
+            "shared database. The gate reads dependency records only and does not make prose, labels, or "
+            "campaign-specific edge lists machine authority."
         ),
-        examples=("devtools lab policy bead-graph", "devtools lab policy bead-graph --json"),
-    ),
-    CommandSpec(
-        "lab policy demo-tour-freshness",
-        "verification lab",
-        "Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts.",
-        "devtools.verify_demo_tour_freshness",
-        use_when=(
-            "Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, "
-            "report, per-step command output, recording tape) and the committed copies under "
-            "docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). "
-            "Runs the real tour (~10s), so it lives in the lab tier rather than --quick."
+        examples=(
+            "devtools lab policy bead-graph",
+            "devtools lab policy bead-graph --export .beads/issues.jsonl --json",
         ),
-        examples=("devtools lab policy demo-tour-freshness",),
     ),
     CommandSpec(
         "lab policy timestamp-doctrine",
@@ -2049,20 +1944,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify layering", "devtools verify layering --json"),
     ),
     CommandSpec(
-        "verify evidence",
-        "verification",
-        "Render the pytest-first evidence dashboard.",
-        "devtools.evidence_dashboard",
-        use_when=(
-            "Inspect pytest health, contract-evidence inventory, coverage, SLO "
-            "catalog, static-gate status, and campaign freshness."
-        ),
-        examples=(
-            "devtools verify evidence --json",
-            "devtools verify evidence --markdown",
-        ),
-    ),
-    CommandSpec(
         "release build-package",
         "release",
         "Build the default Nix package with the out-link under .local/result.",
@@ -2192,20 +2073,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
 
 
-CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
-    CatalogBypassSite(
-        ".githooks/pre-push",
-        "python -m devtools.pre_push_gate",
-        "The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate.",
-    ),
-    CatalogBypassSite(
-        ".beads-hooks/pre-push",
-        "python -m devtools.pre_push_gate",
-        "The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs.",
-    ),
-)
-
-
 def command_name_from_tokens(tokens: Iterable[str], commands: Iterable[CommandSpec] = COMMAND_SPECS) -> str | None:
     """Resolve leading argv tokens to a registered command name."""
     token_tuple = tuple(tokens)
@@ -2256,7 +2123,6 @@ __all__ = [
     "CATEGORY_ORDER",
     "COMMANDS",
     "COMMAND_SPECS",
-    "CATALOG_BYPASS_SITES",
     "CONTROL_PLANE",
     "CommandMain",
     "CommandSpec",

@@ -10,14 +10,12 @@ from devtools import (
     render_api_operation_parity,
     render_cli_output_schemas,
     render_cli_reference,
-    render_demo_corpus_datasheet,
     render_devtools_reference,
     render_docs_surface,
     render_mcp_equivalence,
     render_openapi,
     render_pages,
     render_product_workflows,
-    render_quality_reference,
     render_query_discovery,
     render_visual_tapes,
     render_webui_client,
@@ -176,37 +174,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         ),
     ),
     GeneratedSurface(
-        name="demo-corpus-datasheet",
-        label="Demo corpus datasheet",
-        description="Render docs/plans/demo-corpus-construct-audit.md from declared demo families and measured seed rows.",
-        command=control_plane_argv("render demo-corpus-datasheet"),
-        main=render_demo_corpus_datasheet.main,
-        inputs=(
-            "devtools/render_demo_corpus_datasheet.py",
-            "polylogue/demo/",
-            "polylogue/scenarios/",
-        ),
-    ),
-    GeneratedSurface(
-        name="quality-reference",
-        label="Quality docs",
-        description="Render docs/test-quality-workflows.md from quality registries.",
-        command=control_plane_argv("render quality-reference"),
-        main=render_quality_reference.main,
-        inputs=(
-            "devtools/render_quality_reference.py",
-            "devtools/authored_scenario_catalog.py",
-            "devtools/benchmark_catalog.py",
-            "devtools/mutation_catalog.py",
-            "devtools/run_validation_lanes.py",
-            "devtools/validation_lane_catalog_contracts.py",
-            "devtools/validation_lane_catalog_live.py",
-            "polylogue/operations/specs.py",
-            "polylogue/scenarios/",
-            "pyproject.toml",
-        ),
-    ),
-    GeneratedSurface(
         name="product-workflows",
         label="Product workflows",
         description="Render docs/product/workflows.md from query-action workflow registries (#2305).",
@@ -300,21 +267,8 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
 GENERATED_SURFACE_BY_NAME = {surface.name: surface for surface in GENERATED_SURFACES}
 
 
-# Commands in `devtools/command_catalog.py`'s "generated surfaces" category
-# that are intentionally NOT registered above, because their check semantics
-# genuinely don't fit the hash-stamp render/--check contract every
-# GeneratedSurface.main follows. Each entry names the bespoke gate that covers
-# it instead, so the exemption is auditable rather than a silent gap --
-# `tests/unit/devtools/test_generated_surfaces.py` fails closed if a new
-# "generated surfaces" command shows up here without either a GENERATED_SURFACES
-# entry or a line in this dict (polylogue-bfc7a). "render all" itself is the
-# orchestrator over this registry, not a member of it, and needs no entry.
-GENERATED_SURFACES_CATALOG_EXEMPTIONS: dict[str, str] = {}
-
-
 __all__ = [
     "GENERATED_SURFACES",
-    "GENERATED_SURFACES_CATALOG_EXEMPTIONS",
     "GENERATED_SURFACE_BY_NAME",
     "GeneratedSurface",
 ]

@@ -58,11 +58,11 @@ def test_render_all_check_runs_surfaces_in_registry_order(monkeypatch: pytest.Mo
     monkeypatch.setattr(
         render_all,
         "GENERATED_SURFACES",
-        (FakeSurface("cli-reference"), FakeSurface("devtools-reference"), FakeSurface("quality-reference")),
+        (FakeSurface("cli-reference"), FakeSurface("devtools-reference")),
     )
 
     assert render_all.main(["--check"]) == 0
-    assert calls == ["cli-reference", "devtools-reference", "quality-reference"]
+    assert calls == ["cli-reference", "devtools-reference"]
 
 
 def test_render_all_reports_surface_progress(

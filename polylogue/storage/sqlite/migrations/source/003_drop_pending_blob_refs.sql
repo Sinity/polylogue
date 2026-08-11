@@ -2,9 +2,8 @@
 --
 -- pending_blob_refs and its acquire_blob_leases/release_operation_leases
 -- read/write helpers existed to bridge the acquire-blob -> write-DB-row
--- commit window more tightly than a timing heuristic. A race-window audit
--- (docs/audits/2026-07-09-race-window-audit.md, rows 1a/1b) found that no
--- production ingest caller ever populated the payload keys
+-- commit window more tightly than a timing heuristic. Source-history review
+-- and production-route tests found that no ingest caller ever populated the payload keys
 -- (_blob_hashes/_operation_id) that would have triggered a lease acquire, so
 -- the table was permanently empty in production and the mechanism never
 -- engaged. GC's defense against a blob write racing a concurrent GC pass is

@@ -2086,7 +2086,6 @@ def build_verify_steps(
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
-                ("verify catalog-bypasses", _devtools_cmd("verify catalog-bypasses")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
@@ -2105,16 +2104,6 @@ def build_verify_steps(
                 # concrete case that shipped green against the version-keyed
                 # gate above).
                 ("lab policy classifier-fingerprints", _devtools_cmd("lab policy classifier-fingerprints")),
-                # ~15-30s, fully deterministic (wall-clock timing is masked
-                # before comparison, see devtools/verify_demo_tour_freshness.py).
-                # Unlike backlog-hygiene/bead-graph below, this check's failure
-                # count does not scale with total backlog/bead-corpus size --
-                # it is a fixed-cost diff against one committed fixture that
-                # only drifts when demo/insight code actually changes shape
-                # (polylogue-ze5i: moved out of --lab after the committed
-                # fixture was regenerated to match a `healed_tiers` field the
-                # demo receipts code had already grown).
-                ("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")),
                 # Static, archive-independent, sub-second: forbids the exact
                 # byte-mutation-before-hashing pattern that produced
                 # polylogue-u19l's Codex append-header bug (a synthesized
@@ -2250,18 +2239,6 @@ def build_verify_steps(
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
         )
-        # backlog-hygiene and bead-graph are corpus-wide backlog-debt scans
-        # (findings scale with the total count of open Beads issues, not
-        # with this change's diff) -- they stay --lab-only/scheduled rather
-        # than default- or CI-gated. Gating either on a merge would block
-        # every PR in the repo until the entire pre-existing backlog is
-        # cleaned up (485 backlog-hygiene findings / 225 missing-AC beads
-        # measured 2026-08-02), which is periodic hygiene debt, not a
-        # per-change regression signal. Wired into the CircleCI nightly
-        # schedule instead (polylogue-ze5i) so continuous failure is at
-        # least visible, and the backlog itself is tracked by follow-up
-        # beads rather than left to rot silently.
-        steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
         steps.append(("lab policy bead-graph", _devtools_cmd("lab policy bead-graph")))
     return steps
 

@@ -119,19 +119,12 @@ REMOVED_POLYLOGUE_COMMANDS: dict[str, str] = {
 }
 
 
-# Dated point-in-time records under these trees assert the command surface *as
-# of their date*, not the current one. Holding them to live-command accuracy
-# would force rewriting history, so they are excluded from the drift lint.
-_EXCLUDED_DOC_DIRS: tuple[str, ...] = ("docs/audits",)
-
-
 def _doc_files(root: Path) -> list[Path]:
     paths = [root / "README.md", root / "browser-extension" / "README.md"]
     docs_dir = root / "docs"
     if docs_dir.exists():
         paths.extend(sorted(docs_dir.rglob("*.md")))
-    excluded = tuple(root / Path(d) for d in _EXCLUDED_DOC_DIRS)
-    return [p for p in paths if p.exists() and not any(p.is_relative_to(d) for d in excluded)]
+    return [p for p in paths if p.exists()]
 
 
 # Match ``surface rest_of_line`` where surface is a strict-subcommand

@@ -75,7 +75,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Developer Tools](devtools.md) | Generated surfaces, validation, and repo hygiene. |
 | [Branch-Local Development Loop](dev-loop.md) | Daemon, web-shell, browser-capture, and extension debugging workflow. |
 | [Test Economics](test-economics.md) | Test-selection and verification cost model. |
-| [Test Quality Workflows](test-quality-workflows.md) | Executable mutation-campaign and benchmark registries. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
 | [Tracker Authority](tracker-authority.md) | GitHub and Beads authority split, and the reconciliation script that checks it. |
@@ -85,17 +84,10 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
-| [Cursor Authority Census, 2026-08-04](evidence/polylogue-xeck9-cursor-authority-census-2026-08-04.md) | Privacy-safe read-only census of cursor and accepted-head readiness evidence. |
-| [Topology Live-Proof Residue, 2026-08-06](evidence/polylogue-topology-live-proof-2026-08-06.md) | Candidate topology census, production-route cycle evidence, and unexercised live-archive residue. |
-| [Reindex Canary Differ Implementation, 2026-08-09](evidence/polylogue-0x7nh-reindex-canary-differ-implementation-2026-08-09.md) | Implementation packet, supersession proof, anti-vacuity evidence, and the remaining first-production-report gate. |
-| [Proof Artifacts](proof-artifacts.md) | Claim-to-proof map for public-facing demo and evidence claims. |
 | [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded field finding with oracle, sample frame, calibration, and caveats. |
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
 | [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |
 | [Query-Action Workflows](product/workflows.md) | Executable product contract for workflows, affordances, completions, and golden paths. |
-| [Demo Corpus Datasheet](plans/demo-corpus-construct-audit.md) | Measured construct coverage for the deterministic demo fixture world. |
-| [Demo Tour Report](examples/demo-tour/report.md) | Recorded output and receipts from the demo tour. |
-| [UVX Installation Proof](examples/demo-tour/uvx-proof.md) | Recorded installation proof for the uvx distribution path. |
 | [Visual Tape Examples](examples/visual-tapes/README.md) | Reader-evidence and visual-tape artifact catalog. |
 | [Reader-Comprehension Test Harness](examples/reader-comprehension-test/README.md) | Single-blind N-arm cold-reader test harness for README/positioning candidates. |
 | [Example and Proof Index](examples/README.md) | Index of recorded proof artifacts and worked examples. |
@@ -126,20 +118,8 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 
 | Document | Description |
 |----------|-------------|
-| [Closed-Issue Workload Audit](audits/2026-05-19-closed-issue-workload-audit.md) | Historical audit of closed-issue workload. |
-| [Cross-Surface Coherence Audit](audits/2026-05-20-cross-surface-coherence-audit.md) | Historical cross-surface coherence audit. |
-| [API Bypass Audit](audits/2026-05-25-api-bypass-audit.md) | Historical audit of API bypasses. |
-| [Daemon Loop Lock-Starvation Map](audits/2026-07-09-daemon-loop-lock-starvation-map.md) | Lock-starvation investigation record. |
-| [Hash Boundary Census](audits/2026-07-09-hash-boundary-census.md) | Hash-boundary investigation record. |
-| [Race Window Audit](audits/2026-07-09-race-window-audit.md) | Race-window investigation record. |
-| [Reindex Forcing-Class Audit](audits/2026-08-04-reindex-forcing-class-audit.md) | Forcing-class and reindex-gate evidence audit. |
-| [Blob-Reference Liveness Closure Audit](audits/2026-08-04-blob-ref-liveness-closure.md) | I3 live evidence, source-tier reconciliation safeguards, and the direct-reindex gate. |
-| [Raw-Failure Preflight](audits/2026-08-04-raw-failure-preflight.md) | Read-only raw-failure census before lifecycle evidence deployment. |
-| [ChatGPT Lifecycle-Anchor Evidence Packet](audits/2026-08-04-polylogue-uqwd-chatgpt-lifecycle-anchor.md) | Current-corpus evidence for ChatGPT generation lifecycle-anchor drift. |
-| [Audit Record Index](audits/README.md) | Index of dated investigation records. |
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
-| [Nine-Bead Decision Adjudication](plans/decision-adjudication-kea7p-avna-cijx-uh6c-rxdo9-ze5-dx1-fie-ca4.md) | Implementation decisions and dependency graph for nine architecture Beads. |
 | [Semantic Card Tool Map](generated/semantic-card-tool-map.md) | Generated map from semantic cards to tools. |
 
 ## Contributor Workflow

@@ -1659,9 +1659,8 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "```bash",
         "devtools workspace claim-vs-evidence \\",
         "  --limit 5000 \\",
-        "  --out-dir .agent/demos/claim-vs-evidence \\",
+        "  --out-dir .local/evidence/claim-vs-evidence \\",
         "  --json",
-        "devtools workspace demo-shelf",
         "```",
         "",
         "## Files",
@@ -1672,7 +1671,6 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         f"- `{_COLD_READER_GATE_FILE}` — cold-reader prompt and passing-answer checklist.",
         f"- `{_CALIBRATION_SAMPLE_FILE}` — deterministic sample for marker calibration.",
         f"- `{_CALIBRATION_LABELS_FILE}` — optional human labels consumed on regeneration.",
-        "- `summary.json` — current demo-shelf claim/non-claim/proof/caveat summary.",
         "- `README.md` — this human-readable packet.",
         "",
     ]

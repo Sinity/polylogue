@@ -220,7 +220,6 @@ Start with the task-oriented guides below. The complete documentation map is in 
 | [Getting Started](docs/getting-started.md) | Install Polylogue, create an archive, and run a first query. |
 | [Installation](docs/installation.md) | Package, source-checkout, Nix, and managed deployment options. |
 | [Demos and Proofs](docs/demos.md) | Run the private-data-free tour and see what each demo establishes. |
-| [Proof Artifacts](docs/proof-artifacts.md) | Links between public claims and reproducible checks. |
 | [Architecture](docs/architecture.md) | Storage, data flow, and component responsibilities. |
 | [Code Navigation](docs/code-navigation.md) | Find the owning package, runtime path, and verification for a code change. |
 | [Search & Query](docs/search.md) | Search syntax, filters, action queries, ranking, and output formats. |

@@ -37,8 +37,8 @@ def _supported_verdict(finding_ref: str) -> EvidenceIntegrityVerdict:
         status=EvidenceIntegrityStatus.SUPPORTED,
         public_evidence_refs=("file:docs/findings/claim-vs-evidence.md#verdict",),
         as_of_epoch="2026-07-04T08:55:53.667311+00:00",
-        frame_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
-        definition_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
+        frame_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame",
+        definition_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#definition",
     )
 
 
@@ -86,7 +86,7 @@ def test_seed_population_uses_snapshot_values_and_sanitized_demo_refs() -> None:
     assert origins["codex-session"] == {"inspected": 1_241, "requested": 1_241, "frame_total": 10_429}
     assert origins["claude-ai-export"] == {"inspected": 7, "requested": 7, "frame_total": 49}
     assert all(
-        ref.startswith("file:.agent/demos/claim-vs-evidence/") or ref == "file:docs/findings/claim-vs-evidence.md"
+        ref.startswith("file:.local/evidence/claim-vs-evidence/") or ref == "file:docs/findings/claim-vs-evidence.md"
         for finding in findings.values()
         for ref in finding.evidence_refs
     )
@@ -149,8 +149,8 @@ def test_real_storage_lifecycle_controls_public_support(tmp_path: Path) -> None:
                         status=EvidenceIntegrityStatus.STALE,
                         reason_codes=("source-epoch-advanced",),
                         as_of_epoch="2026-07-17T00:00:00+00:00",
-                        frame_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame-v2",
-                        definition_ref="file:.agent/demos/claim-vs-evidence/claim-vs-evidence.report.json#definition",
+                        frame_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#sample_frame-v2",
+                        definition_ref="file:.local/evidence/claim-vs-evidence/claim-vs-evidence.report.json#definition",
                         public_remediation_refs=("run:claim-vs-evidence-rerun",),
                     )
                 }

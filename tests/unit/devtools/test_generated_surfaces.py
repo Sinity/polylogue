@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from devtools.command_catalog import COMMAND_SPECS
-from devtools.generated_surfaces import GENERATED_SURFACES, GENERATED_SURFACES_CATALOG_EXEMPTIONS
+from devtools.generated_surfaces import GENERATED_SURFACES
 
 
 def _surface_inputs(name: str) -> set[str]:
@@ -32,43 +31,6 @@ def test_generated_surface_cache_inputs_include_renderer_module() -> None:
     for surface in GENERATED_SURFACES:
         renderer_path = Path(*surface.main.__module__.split(".")).with_suffix(".py").as_posix()
         assert renderer_path in surface.inputs, surface.name
-
-
-def test_generated_surfaces_catalog_category_is_gated() -> None:
-    """Every ``devtools/command_catalog.py`` command in the "generated
-    surfaces" category must either be a registered ``GeneratedSurface`` (so
-    ``render all`` / ``render all --check`` actually gates it) or carry an
-    explicit, commented exemption in ``GENERATED_SURFACES_CATALOG_EXEMPTIONS``
-    naming its bespoke gate.
-
-    Without this test, a new "generated surfaces"-category CommandSpec can
-    join the catalog without joining any gate at all -- polylogue-bfc7a found
-    exactly this for `render topology-projection` and `render visual-tapes`,
-    which rode the category label but were wired (or, for visual-tapes, not
-    wired at all) outside `devtools/generated_surfaces.py`.
-    """
-    registered_commands = {surface.command for surface in GENERATED_SURFACES}
-    ungated = [
-        spec.name
-        for spec in COMMAND_SPECS
-        if spec.category == "generated surfaces"
-        and spec.name != "render all"  # the orchestrator over the registry, not a member of it
-        and spec.argv not in registered_commands
-        and spec.name not in GENERATED_SURFACES_CATALOG_EXEMPTIONS
-    ]
-    assert not ungated, (
-        f"generated-surfaces category command(s) with no gate: {ungated} -- "
-        "register in GENERATED_SURFACES or add a commented exemption to "
-        "GENERATED_SURFACES_CATALOG_EXEMPTIONS naming the bespoke gate"
-    )
-
-
-def test_generated_surfaces_catalog_exemptions_reference_real_commands() -> None:
-    """Keep the exemption dict itself honest: a stale exemption for a command
-    that no longer exists (renamed/removed) should not silently linger."""
-    catalog_names = {spec.name for spec in COMMAND_SPECS if spec.category == "generated surfaces"}
-    stale = set(GENERATED_SURFACES_CATALOG_EXEMPTIONS) - catalog_names
-    assert not stale, f"stale generated-surfaces exemption(s), no matching command: {stale}"
 
 
 def test_generated_surface_cache_inputs_include_contract_owners() -> None:
@@ -135,18 +97,3 @@ def test_generated_surface_cache_inputs_include_contract_owners() -> None:
         "polylogue/archive/viewport/profiles.py",
         "polylogue/surfaces/payloads.py",
     }.issubset(_surface_inputs("pages"))
-
-    assert {
-        "polylogue/demo/",
-        "polylogue/scenarios/",
-    }.issubset(_surface_inputs("demo-corpus-datasheet"))
-
-    assert {
-        "devtools/authored_scenario_catalog.py",
-        "devtools/benchmark_catalog.py",
-        "devtools/mutation_catalog.py",
-        "devtools/validation_lane_catalog_contracts.py",
-        "devtools/validation_lane_catalog_live.py",
-        "polylogue/operations/specs.py",
-        "polylogue/scenarios/",
-    }.issubset(_surface_inputs("quality-reference"))

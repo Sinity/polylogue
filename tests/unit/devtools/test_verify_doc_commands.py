@@ -242,12 +242,3 @@ class TestPolylogueCommandRecognition:
         )
         errors, _ = check_docs(root=tmp_path)
         assert errors == [], errors
-
-    def test_dated_audit_docs_are_excluded(self, tmp_path: Path) -> None:
-        # Point-in-time audits assert past command state; not held to current.
-        _write_docs(
-            tmp_path,
-            {"docs/audits/2020-01-01-x.md": "```bash\npolylogue list\n```\n"},
-        )
-        errors, _ = check_docs(root=tmp_path)
-        assert errors == [], errors

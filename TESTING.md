@@ -222,10 +222,9 @@ and `.cache/verify/current-pytest-output.log` to see the active/latest test node
 selected/deselected node IDs, collection duration, slowest setup/call/teardown
 phases, captured output, and termination reason if a focused run stalls.
 
-For optional lane, mutation-campaign, and benchmark inventories, see
-[docs/test-quality-workflows.md](docs/test-quality-workflows.md). Those registries are
-secondary navigation over executable checks; the source of truth for behavior is
-pytest plus the concrete `polylogue`/`devtools` commands they invoke.
+Optional lane, mutation-campaign, and benchmark commands remain discoverable
+through `devtools --help`; pytest and the concrete commands are the behavioral
+authority.
 
 ### Known limitation: collection-time-only imports are invisible to testmon
 

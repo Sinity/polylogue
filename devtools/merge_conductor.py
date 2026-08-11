@@ -77,11 +77,9 @@ _GENERATED_SURFACE_FILES: frozenset[str] = frozenset(
         "docs/mcp-reference.md",
         "docs/search.md",
         "docs/product/workflows.md",
-        "docs/test-quality-workflows.md",
         "docs/README.md",
         "docs/openapi/search.yaml",
         "docs/generated/mcp-equivalence.json",
-        "docs/plans/demo-corpus-construct-audit.md",
     }
 )
 _GENERATED_SURFACE_PREFIXES: tuple[str, ...] = (
