@@ -2042,6 +2042,54 @@ def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_u
     assert projection.available is False
 
 
+def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path: Path) -> None:
+    """A promoted index, rather than a stale conventional shadow, governs frontier health."""
+
+    source_db = tmp_path / "source.db"
+    shadow_index = tmp_path / "index.db"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(shadow_index, ArchiveTier.INDEX)
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-active",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-1",
+            generation=1,
+            blob_size=10,
+        )
+        conn.commit()
+    _seed_index_authority(
+        active_index,
+        session_raw_id="raw-active",
+        accepted_raw_id="raw-active",
+        accepted_revision="revision-1",
+        generation=1,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10)
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0},
+    )
+
+    assert projection.broken_head_status == "healthy"
+    assert projection.cursor_ahead_status == "healthy"
+    assert projection.overall_status == "healthy"
+    assert projection.available is True
+
+
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])
 def test_raw_frontier_integrity_snapshot_unavailable_index_tier_is_unknown_never_healthy(
     tmp_path: Path,

@@ -45,7 +45,7 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.storage.archive_identity import archive_file_set_root
+from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
@@ -5890,7 +5890,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
     archive_root = _raw_materialization_archive_root(config)
     repair_db_path = archive_root / "source.db"
     if repair_db_path.exists():
-        index_db_path = archive_root / "index.db"
+        index_db_path = resolve_active_index_path(archive_root)
         with closing(open_connection(repair_db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             try:

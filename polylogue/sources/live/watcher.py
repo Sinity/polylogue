@@ -52,6 +52,7 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -1207,7 +1208,7 @@ class LiveWatcher:
         """
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        index_db = archive_root / "index.db"
+        index_db = resolve_active_index_path(archive_root)
         conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         if source_db.exists() and index_db.exists():
             try:
@@ -1334,7 +1335,7 @@ class LiveWatcher:
                 return self._path_corroborated_by_index(path, source_conn=shared[0], index_conn=shared[1])
             archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
             source_db = archive_root / "source.db"
-            index_db = archive_root / "index.db"
+            index_db = resolve_active_index_path(archive_root)
             if not source_db.exists() or not index_db.exists():
                 return True
             with (
@@ -1370,7 +1371,7 @@ class LiveWatcher:
                 row = self._archived_cursor_row(path, source_conn=shared[0], index_conn=shared[1])
             else:
                 source_db = archive_root / "source.db"
-                index_db = archive_root / "index.db"
+                index_db = resolve_active_index_path(archive_root)
                 if not source_db.exists() or not index_db.exists():
                     return _ArchivedCursorReconciliation.UNAVAILABLE
                 with (
