@@ -68,6 +68,7 @@ _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
 # until its first envelope is visible, rather than leaving it to periodic
 # catch-up or relying on a scheduler-dependent fixed grace period.
 _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S = 0.05
+_HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS = 5.0
 # A catch-up writer owns the only archive writer for the whole chunk.  The
 # former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
 # starving fresh watcher events.  Keep historical convergence fair by
@@ -269,7 +270,7 @@ class LiveWatcher:
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
         self._periodic_catch_up_task: asyncio.Task[None] | None = None
-        self._hook_spool_directory_retry_tasks: set[asyncio.Task[None]] = set()
+        self._hook_spool_directory_retry_tasks: dict[Path, asyncio.Task[None]] = {}
         self._failed_retry_deadline: float | None = None
         self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
@@ -437,14 +438,20 @@ class LiveWatcher:
         catch-up scan.
         """
 
+        directory = directory.resolve()
+        existing = self._hook_spool_directory_retry_tasks.get(directory)
+        if existing is not None and not existing.done():
+            return
         task = asyncio.create_task(self._retry_hook_spool_directory_until_populated(directory))
-        self._hook_spool_directory_retry_tasks.add(task)
-        task.add_done_callback(self._hook_spool_directory_retry_tasks.discard)
+        self._hook_spool_directory_retry_tasks[directory] = task
+        task.add_done_callback(lambda _task: self._hook_spool_directory_retry_tasks.pop(directory, None))
 
     async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
         """Wait for an added shard's first JSON envelope, then drain once."""
 
-        while not self._stop.is_set():
+        deadline = asyncio.get_running_loop().time() + _HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS
+        delay_s = _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S
+        while not self._stop.is_set() and asyncio.get_running_loop().time() < deadline:
             try:
                 if not directory.exists():
                     return
@@ -453,10 +460,11 @@ class LiveWatcher:
                     return
             except OSError:
                 return
-            await asyncio.sleep(_HOOK_SPOOL_DIRECTORY_RETRY_POLL_S)
+            await asyncio.sleep(delay_s)
+            delay_s = min(delay_s * 2, 0.5)
 
     def _cancel_hook_spool_directory_retries(self) -> None:
-        for task in tuple(self._hook_spool_directory_retry_tasks):
+        for task in tuple(self._hook_spool_directory_retry_tasks.values()):
             if not task.done():
                 task.cancel()
         self._hook_spool_directory_retry_tasks.clear()
