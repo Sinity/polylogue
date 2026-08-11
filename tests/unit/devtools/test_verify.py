@@ -321,8 +321,17 @@ def test_seed_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyP
     assert command[command.index("-n") + 1] == "4"
 
 
-def test_seed_defaults_to_managed_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
+def test_seed_defaults_to_managed_scratch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=8192)
+    for name in (
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_TMPFS_MAX_MB",
+        "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB",
+        "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB",
+    ):
+        monkeypatch.delenv(name, raising=False)
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
 
     with (
@@ -334,9 +343,7 @@ def test_seed_defaults_to_managed_scratch(monkeypatch: pytest.MonkeyPatch) -> No
     assert rc == 0
     assert metadata["pytest_tmpfs"] is False
     assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_TMPFS"] == "0"
-    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(
-        verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT
-    )
+    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
     assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] == "50000"
 
 
@@ -1542,13 +1549,11 @@ def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypat
     assert calls == 1
 
 
-def test_pytest_basetemp_path_tracks_tmpfs_opt_in(tmp_path: Path) -> None:
+def test_pytest_basetemp_path_tracks_tmpfs_opt_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
     path = pytest_basetemp_path(root=tmp_path, run_id="run-1", env={"POLYLOGUE_PYTEST_TMPFS": "1"})
 
-    if Path("/dev/shm").is_dir():
-        assert path.parent == Path("/dev/shm")
-    else:
-        assert path.parent == Path("/realm/tmp/polylogue-pytest")
+    assert path.parent == shm
 
 
 def test_pytest_tmpfs_budget_is_shared_and_bounded() -> None:
@@ -1703,7 +1708,10 @@ def test_adaptive_pytest_policy_treats_full_run_basetemp_as_aggregate_demand() -
         (["--numprocesses=auto"], max(1, os.cpu_count() or 1)),
     ],
 )
-def test_production_pytest_commands_reserve_every_xdist_spelling(worker_args: list[str], expected: int) -> None:
+def test_production_pytest_commands_reserve_every_xdist_spelling(
+    monkeypatch: pytest.MonkeyPatch, worker_args: list[str], expected: int
+) -> None:
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
     command = run_tests.build_pytest_cmd(["tests/unit/devtools", *worker_args])
 
     assert verify._pytest_command_concurrency(command) == expected
@@ -2319,7 +2327,14 @@ def test_explicit_basetemp_root_retains_managed_resource_monitoring(
 ) -> None:
     monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", tmp_path / "unselected-tmpfs")
     nvme_root = tmp_path / "realm-tmp" / "polylogue-pytest"
+    nvme_root.mkdir(parents=True)
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda _path: {"used_kb": 0, "free_kb": 16 * 1024 * 1024})
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(nvme_root))
+    monkeypatch.delenv("POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB", raising=False)
     run = VerifyRun(tier="configured-nvme", argv=[], git_head=None, root=tmp_path)
 
     rc, _elapsed, metadata = _run(
@@ -2398,11 +2413,15 @@ def test_bench_slo_forces_nested_pytest_to_managed_scratch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    inherited_tmpfs_root = shm / "inherited-benchmark"
+    inherited_tmpfs_root.mkdir()
+    scratch.mkdir()
     run = VerifyRun(tier="lab", argv=[], git_head=None, root=tmp_path)
-    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/dev/shm/inherited-benchmark")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(inherited_tmpfs_root))
     managed_env = {
         "POLYLOGUE_PYTEST_TMPFS": "0",
-        "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/realm/tmp/polylogue-pytest",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(scratch),
     }
     completed = subprocess.CompletedProcess(args=["devtools", "bench", "slo"], returncode=0, stdout="", stderr="")
 
@@ -2421,7 +2440,7 @@ def test_bench_slo_forces_nested_pytest_to_managed_scratch(
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
-    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/realm/tmp/polylogue-pytest"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:

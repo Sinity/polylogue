@@ -478,6 +478,33 @@ def _check_pointer_coherence(archive_root: Path, _sample_limit: int) -> ArchiveV
 # ---------------------------------------------------------------------------
 
 
+def _valid_byte_duplicate_supersession_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str:
+    """Return the receipt predicate shared by source/index coverage checks.
+
+    A supersession receipt is authority only when it still names the same
+    bytes and an index materialization of the recorded duplicate twin. Keep
+    the predicate in one place so backlog freshness cannot classify a receipt
+    differently from source-index coverage.
+    """
+    if not table_exists(conn, "raw_byte_duplicate_supersession_receipts"):
+        return "0"
+    return f"""
+        EXISTS(
+            SELECT 1
+            FROM raw_byte_duplicate_supersession_receipts receipt
+            JOIN raw_sessions twin ON twin.raw_id = receipt.duplicate_of_raw_id
+            JOIN idx_tier.sessions twin_session
+              ON twin_session.raw_id = twin.raw_id
+             AND twin_session.session_id = receipt.duplicate_of_session_id
+            WHERE receipt.raw_id = {raw_alias}.raw_id
+              AND receipt.blob_hash = {raw_alias}.blob_hash
+              AND receipt.blob_size = {raw_alias}.blob_size
+              AND twin.blob_hash = {raw_alias}.blob_hash
+              AND twin.blob_size = {raw_alias}.blob_size
+        )
+    """
+
+
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
     return _check_source_index_coverage_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
 
@@ -525,26 +552,7 @@ def _check_source_index_coverage_at_index_path(
             census_expr = (
                 "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
             )
-            has_supersession_receipts = table_exists(conn, "raw_byte_duplicate_supersession_receipts")
-            valid_supersession_expr = (
-                """
-                EXISTS(
-                    SELECT 1
-                    FROM raw_byte_duplicate_supersession_receipts receipt
-                    JOIN raw_sessions twin ON twin.raw_id = receipt.duplicate_of_raw_id
-                    JOIN idx_tier.sessions twin_session
-                      ON twin_session.raw_id = twin.raw_id
-                     AND twin_session.session_id = receipt.duplicate_of_session_id
-                    WHERE receipt.raw_id = r.raw_id
-                      AND receipt.blob_hash = r.blob_hash
-                      AND receipt.blob_size = r.blob_size
-                      AND twin.blob_hash = r.blob_hash
-                      AND twin.blob_size = r.blob_size
-                )
-                """
-                if has_supersession_receipts
-                else "0"
-            )
+            valid_supersession_expr = _valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
 
             # A read-only connection (``query_only=ON``, connection-wide, not
             # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
@@ -2394,6 +2402,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
     """
     has_census = table_exists(conn, "raw_membership_census")
     census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
+    valid_supersession_expr = _valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
     row = conn.execute(
         f"""
         WITH heads AS (
@@ -2402,6 +2411,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
                 r.parse_error,
                 r.logical_source_key,
                 {census_expr} AS census_status,
+                {valid_supersession_expr} AS valid_supersession,
                 MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
                     OVER (
                         PARTITION BY r.origin,
@@ -2417,6 +2427,7 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
         SELECT SUM(
             CASE WHEN rn = 1 AND any_indexed = 0 AND parse_error IS NULL
                       AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                      AND valid_supersession = 0
                  THEN 1 ELSE 0 END
         )
         FROM heads WHERE rn = 1

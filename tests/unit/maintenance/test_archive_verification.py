@@ -1464,6 +1464,90 @@ def test_convergence_freshness_passes_with_no_gap(tmp_path: Path) -> None:
     assert check.evidence["unindexed_backlog_gap"] == 0
 
 
+def test_convergence_freshness_excludes_a_receipt_backed_duplicate(tmp_path: Path) -> None:
+    """The production convergence-freshness route excludes a byte-identical
+    unindexed duplicate only when its supersession receipt names an indexed
+    twin. Removing the receipt must turn this route back into a backlog."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-superseded-backlog', origin, 'duplicate-backlog', '/duplicate-backlog',
+                   blob_hash, blob_size, 200, 'byte_proven'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id,
+                duplicate_of_session_id, previous_revision_authority,
+                promoted_at_ms, tool_version, backup_manifest_path, detail
+            )
+            SELECT 'raw-superseded-backlog', blob_hash, blob_size, 'raw-1',
+                   'codex-session:session', 'quarantined', 200,
+                   'test', '/verified/manifest.json', ''
+            FROM raw_sessions WHERE raw_id = 'raw-superseded-backlog'
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("convergence-freshness",)), "convergence-freshness")
+
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["unindexed_backlog_gap"] == 0
+
+
+def test_convergence_freshness_counts_a_receipt_with_the_wrong_twin_bytes(tmp_path: Path) -> None:
+    """The production convergence-freshness route keeps a duplicate in the
+    backlog when mutating the receipt's indexed-twin bytes invalidates its
+    supersession evidence."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            ) VALUES (
+                'raw-invalid-supersession-backlog', 'codex-session', 'invalid-duplicate',
+                '/invalid-duplicate', ?, 10, 200, 'byte_proven'
+            )
+            """,
+            (b"z" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id,
+                duplicate_of_session_id, previous_revision_authority,
+                promoted_at_ms, tool_version, backup_manifest_path, detail
+            ) VALUES (
+                'raw-invalid-supersession-backlog', ?, 10, 'raw-1',
+                'codex-session:session', 'quarantined', 200,
+                'test', '/verified/manifest.json', ''
+            )
+            """,
+            (b"z" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("convergence-freshness",)), "convergence-freshness")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unindexed_backlog_gap"] == 1
+
+
 def test_dangling_assertion_target_trips_user_tier_refs(tmp_path: Path) -> None:
     """RED TWIN (I10): a user-tier assertion whose target session/message no
     longer resolves in index.db is a dangling reference -- silently

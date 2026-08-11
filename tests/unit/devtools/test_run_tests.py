@@ -34,19 +34,26 @@ def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
 
 
 @pytest.mark.parametrize(
-    "selection",
+    ("selection", "expected_request"),
     [
-        ["tests/unit", "-n4"],
-        ["tests/unit", "-n=4"],
-        ["tests/unit", "--numprocesses", "8"],
-        ["tests/unit", "--numprocesses=8"],
+        (["tests/unit", "-n4"], "4"),
+        (["tests/unit", "-n=4"], "4"),
+        (["tests/unit", "--numprocesses", "8"], "8"),
+        (["tests/unit", "--numprocesses=8"], "8"),
     ],
 )
-def test_build_pytest_cmd_forwards_all_xdist_worker_spellings(selection: list[str]) -> None:
+def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
+    selection: list[str], expected_request: str
+) -> None:
     command = run_tests.build_pytest_cmd(selection)
 
     for arg in selection:
         assert arg in command
+    worker_flags = [
+        arg for arg in command if arg in {"-n", "--numprocesses"} or arg.startswith(("-n", "--numprocesses="))
+    ]
+    assert len(worker_flags) == 1
+    assert verify._pytest_command_worker_request(command) == expected_request
 
 
 def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -70,6 +70,7 @@ def test_managed_pytest_temp_root_honors_explicit_root(
     tmp_path: Path,
 ) -> None:
     configured = tmp_path / "configured"
+    configured.mkdir()
     monkeypatch.setattr(verify_runs, "_fs_usage", lambda path: {"used_kb": 0, "free_kb": 32 * 1024 * 1024})
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(configured))
     monkeypatch.setenv("POLYLOGUE_PYTEST_TMPFS", "1")
