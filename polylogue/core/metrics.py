@@ -146,6 +146,27 @@ def read_cgroup_memory_max_bytes() -> int | None:
     return _read_cgroup_limit_int("memory.max")
 
 
+def read_cgroup_memory_headroom_bytes() -> int | None:
+    """Return the smallest remaining ``memory.max`` allowance in the hierarchy.
+
+    A child can have ample local allowance while a finite ancestor is nearly
+    full because of sibling workloads. Pair every finite limit with that same
+    cgroup's ``memory.current`` value instead of subtracting the leaf usage from
+    an unrelated ancestor limit. A finite limit with unreadable usage returns
+    zero so callers do not admit work against unmeasured capacity.
+    """
+    headrooms: list[int] = []
+    for limit_path in _cgroup_limit_files("memory.max"):
+        limit = _read_cgroup_int_from_path(limit_path)
+        if limit is None:
+            continue
+        current = _read_cgroup_int_from_path(limit_path.with_name("memory.current"))
+        if current is None:
+            return 0
+        headrooms.append(max(0, limit - current))
+    return min(headrooms) if headrooms else None
+
+
 def read_cgroup_memory_high_bytes() -> int | None:
     """Return the effective cgroup hierarchy ``memory.high`` threshold in bytes.
 
@@ -322,6 +343,7 @@ __all__ = [
     "SlowItemTracker",
     "StageMetrics",
     "read_cgroup_memory_current_mb",
+    "read_cgroup_memory_headroom_bytes",
     "read_cgroup_memory_high_bytes",
     "read_cgroup_memory_max_bytes",
     "read_cgroup_memory_peak_mb",

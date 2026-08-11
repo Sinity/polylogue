@@ -509,9 +509,15 @@ isolated XDG paths + archive root.
   exceptions opt out inline via `@pytest.mark.uses_real_clock("reason")`.
 - Pytest temp DBs pick ONE basetemp root via
   `devtools.verify_runs.resolve_pytest_basetemp_root` (shared by
-  `tests/conftest.py` and the `devtools test`/`verify` preflight): `/dev/shm`
-  tmpfs by default when it has ≥1 GiB free (`POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB`
-  to override), else `/realm/tmp/polylogue-pytest` (NVMe), else `/tmp/polylogue-pytest`
+  `tests/conftest.py` and the `devtools test`/`verify` preflight): focused runs
+  use bounded `/dev/shm` tmpfs when it has ≥1 GiB free, while full-suite and
+  seed-testmon runs default to `/realm/tmp/polylogue-pytest` (NVMe) because
+  their aggregate fixture tree can exceed the supervised tmpfs ceiling.
+  `POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB` overrides required headroom; an
+  explicit `POLYLOGUE_PYTEST_TMPFS=1` requests bounded tmpfs, but the request
+  is honored only when the effective budget satisfies the declared basetemp
+  requirement.
+  `/tmp/polylogue-pytest` is used
   only when `/realm/tmp` genuinely isn't mounted (cloud sandbox). If nothing
   clears the headroom requirement the run refuses immediately with every
   candidate's free space named, instead of an unrelated command crashing on

@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
+
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
@@ -37,12 +39,29 @@ PYTEST_TMPFS_MAX_MB_ENV = "POLYLOGUE_PYTEST_TMPFS_MAX_MB"
 DEFAULT_PYTEST_TMPFS_MAX_MB = 512
 MAX_PYTEST_TMPFS_MAX_MB = 2048
 MIN_PYTEST_AVAILABLE_KB = 1024 * 1024
-PYTEST_WORKER_MEMORY_KB = 768 * 1024
 PYTEST_HOST_RESERVE_KB = 512 * 1024
+MIN_PYTEST_TMPFS_BUDGET_KB = 64 * 1024
 MAX_ADAPTIVE_PYTEST_WORKERS = 12
 PYTEST_BASETEMP_MIN_FREE_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB"
 DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB = 1024
 PYTEST_BASETEMP_REQUIRED_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"
+PYTEST_MEMORY_ENVELOPE_WORKERS = 4
+PYTEST_MEMORY_ENVELOPE_PSS_KB = 4_353_168
+PYTEST_MEMORY_ENVELOPE_TMPFS_KB = 1_472_636
+PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES = 6_278_623_232
+PYTEST_BASETEMP_PEAK_KB = 1_522 * 1024
+PYTEST_PROCESS_MEMORY_PER_WORKER_KB = 768 * 1024
+PYTEST_FOCUSED_CONTROLLER_MEMORY_KB = 256 * 1024
+PYTEST_PROCESS_MEMORY_FIXED_KB = max(
+    0,
+    PYTEST_MEMORY_ENVELOPE_PSS_KB - PYTEST_MEMORY_ENVELOPE_WORKERS * PYTEST_PROCESS_MEMORY_PER_WORKER_KB,
+)
+PYTEST_CGROUP_OVERHEAD_FLOOR_KB = max(
+    0,
+    (PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES + 1023) // 1024
+    - PYTEST_MEMORY_ENVELOPE_PSS_KB
+    - PYTEST_MEMORY_ENVELOPE_TMPFS_KB,
+)
 
 
 class PytestResourceError(RuntimeError):
@@ -61,6 +80,7 @@ class PytestRuntimePolicy:
     basetemp_label: str | None = None
     basetemp_required_mb: int | None = None
     basetemp_free_mb: int | None = None
+    tmpfs_predicted_mb: int | None = None
 
     def to_dict(self) -> dict[str, int | float | str | None]:
         return {
@@ -72,6 +92,7 @@ class PytestRuntimePolicy:
             "basetemp_label": self.basetemp_label,
             "basetemp_required_mb": self.basetemp_required_mb,
             "basetemp_free_mb": self.basetemp_free_mb,
+            "tmpfs_predicted_mb": self.tmpfs_predicted_mb,
         }
 
 
@@ -550,6 +571,15 @@ _CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
 
 
+def _is_beneath(path: Path, root: Path) -> bool:
+    """Return whether *path* resolves within *root*, including *root* itself."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
     """Keep cloud pytest defaults from escaping a workstation scratch volume.
 
@@ -567,16 +597,110 @@ def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
     return normalized
 
 
+def force_managed_pytest_scratch(env: Mapping[str, str]) -> dict[str, str]:
+    """Route an unsupervised nested pytest away from tmpfs.
+
+    Preserve a genuine disk-backed operator root. An inherited root beneath
+    ``/dev/shm`` is not a safe override for a subprocess whose parent does not
+    sample or terminate it at the managed tmpfs cap.
+    """
+    normalized = normalize_pytest_basetemp_env(env)
+    configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    if configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT):
+        normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
+    normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+    return normalized
+
+
+def _pytest_process_memory_reserve_kb(workers: int) -> int:
+    """Keep the measured controller floor while scaling worker processes."""
+    return PYTEST_PROCESS_MEMORY_FIXED_KB + workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB
+
+
+def _pytest_cgroup_overhead_reserve_kb(workers: int) -> int:
+    """Keep the measured residual floor, then scale it above four workers."""
+    scale_workers = max(workers, PYTEST_MEMORY_ENVELOPE_WORKERS)
+    return (
+        PYTEST_CGROUP_OVERHEAD_FLOOR_KB * scale_workers + PYTEST_MEMORY_ENVELOPE_WORKERS - 1
+    ) // PYTEST_MEMORY_ENVELOPE_WORKERS
+
+
+def _pytest_non_tmpfs_memory_reserve_kb(workers: int, *, full_suite: bool = True) -> int:
+    if not full_suite:
+        focused_process_kb = PYTEST_FOCUSED_CONTROLLER_MEMORY_KB + workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB
+        focused_cgroup_overhead_kb = (
+            PYTEST_CGROUP_OVERHEAD_FLOOR_KB * max(1, workers) + PYTEST_MEMORY_ENVELOPE_WORKERS - 1
+        ) // PYTEST_MEMORY_ENVELOPE_WORKERS
+        return focused_process_kb + focused_cgroup_overhead_kb + PYTEST_HOST_RESERVE_KB
+    return (
+        _pytest_process_memory_reserve_kb(workers)
+        + _pytest_cgroup_overhead_reserve_kb(workers)
+        + PYTEST_HOST_RESERVE_KB
+    )
+
+
+def _default_pytest_workers(*, available_kb: int, cpu_cap: int, memory_full_avg10: float) -> int:
+    """Choose a pool that the same launch-time envelope can admit.
+
+    Prefer the largest pool that preserves the measured aggregate basetemp in
+    memory. If even one worker cannot do that, retain the largest pool that can
+    start with the minimum tmpfs allowance so placement can reroute the shared
+    basetemp to scratch.
+    """
+
+    maximum = min(MAX_ADAPTIVE_PYTEST_WORKERS, cpu_cap)
+
+    def largest_with(tmpfs_reserve_kb: int) -> int | None:
+        return next(
+            (
+                workers
+                for workers in range(maximum, 0, -1)
+                if _pytest_non_tmpfs_memory_reserve_kb(workers) + tmpfs_reserve_kb <= available_kb
+            ),
+            None,
+        )
+
+    workers = largest_with(PYTEST_BASETEMP_PEAK_KB)
+    if workers is None:
+        workers = largest_with(MIN_PYTEST_TMPFS_BUDGET_KB) or 1
+    if memory_full_avg10 >= 2.0:
+        return max(1, workers // 4)
+    if memory_full_avg10 >= 0.5:
+        return max(1, workers // 2)
+    return workers
+
+
 def adaptive_pytest_runtime_policy(
     *,
     available_kb: int | None = None,
     memory_full_avg10: float | None = None,
     cpu_count: int | None = None,
     shm_free_kb: int | None = None,
+    worker_count: int | None = None,
+    full_suite: bool = True,
 ) -> PytestRuntimePolicy:
-    """Size tmpfs and xdist from current headroom without a disk fallback."""
+    """Size tmpfs and xdist from one measured resource envelope.
+
+    The tmpfs cap is an admission limit, so it must be derived from capacity
+    the host can actually reserve.  A percentage of ``MemAvailable`` made a
+    well-provisioned host advertise a 1.5 GiB cap to a full pytest run that
+    had 15 GiB free, then the supervisor correctly killed the run at that
+    artificial limit.  Reserve the command's known workers and host headroom
+    from the measured four-worker process/cgroup/tmpfs envelope first.
+
+    The four-worker PSS measurement contains a controller and supervisor that
+    do not disappear at one worker. Preserve the remainder after the existing
+    768 MiB marginal worker allowance as a fixed process component. Keep the
+    measured residual cgroup charge as a floor through four workers and scale
+    it above the observed concurrency. Reserve the separately observed 1,521.6
+    MiB basetemp peak at its next whole-MiB ceiling because it is one aggregate
+    run tree, independent of how xdist partitions the tests.
+    """
     if available_kb is None:
         available_kb = _meminfo().get("MemAvailable")
+        cgroup_headroom_bytes = read_cgroup_memory_headroom_bytes()
+        if available_kb is not None and cgroup_headroom_bytes is not None:
+            available_kb = min(available_kb, cgroup_headroom_bytes // 1024)
     if available_kb is None:
         raise PytestResourceError("cannot read MemAvailable; refusing an unbudgeted pytest run")
     if available_kb < MIN_PYTEST_AVAILABLE_KB:
@@ -587,46 +711,49 @@ def adaptive_pytest_runtime_policy(
     if memory_full_avg10 is None:
         memory_full_avg10 = _pressure("memory").get("full_avg10", 0.0)
     if shm_free_kb is None:
-        shm = _fs_usage(Path("/dev/shm"))
-        shm_free_kb = shm.get("free_kb") if shm is not None else None
-    if shm_free_kb is None:
-        raise PytestResourceError("/dev/shm is unavailable; refusing to fall back to disk-backed pytest")
-
-    adaptive_budget_mb = max(
-        DEFAULT_PYTEST_TMPFS_MAX_MB,
-        min(MAX_PYTEST_TMPFS_MAX_MB, int(available_kb / 1024 * 0.10)),
-    )
-    safe_shm_budget_mb = int((shm_free_kb / 1024) * 0.80)
-    tmpfs_budget_mb = min(adaptive_budget_mb, safe_shm_budget_mb)
-    if tmpfs_budget_mb < 64:
-        raise PytestResourceError(f"only {shm_free_kb / 1024:.0f} MiB free in /dev/shm; refusing disk-backed pytest")
+        shm = _fs_usage(PYTEST_TMPFS_ROOT)
+        shm_free_kb = shm.get("free_kb", 0) if shm is not None else 0
 
     logical_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
     cpu_cap = max(1, logical_cpus // 2)
-    worker_pool_kb = max(0, available_kb - tmpfs_budget_mb * 1024 - PYTEST_HOST_RESERVE_KB)
-    workers = max(
-        1,
-        min(
-            MAX_ADAPTIVE_PYTEST_WORKERS,
-            cpu_cap,
-            max(1, worker_pool_kb // PYTEST_WORKER_MEMORY_KB),
-        ),
-    )
-    if memory_full_avg10 >= 2.0:
-        workers = max(1, workers // 4)
-    elif memory_full_avg10 >= 0.5:
-        workers = max(1, workers // 2)
+    if worker_count is not None:
+        if worker_count < 0:
+            raise PytestResourceError(f"invalid pytest worker count {worker_count}")
+        reserved_workers = worker_count
+    else:
+        reserved_workers = _default_pytest_workers(
+            available_kb=available_kb,
+            cpu_cap=cpu_cap,
+            memory_full_avg10=memory_full_avg10,
+        )
+
+    fixed_reserve_kb = _pytest_non_tmpfs_memory_reserve_kb(reserved_workers, full_suite=full_suite)
+    tmpfs_predicted_kb = PYTEST_BASETEMP_PEAK_KB if full_suite else None
+    tmpfs_floor_kb = MIN_PYTEST_TMPFS_BUDGET_KB if shm_free_kb >= MIN_PYTEST_TMPFS_BUDGET_KB else 0
+    if fixed_reserve_kb + tmpfs_floor_kb > available_kb:
+        raise PytestResourceError(
+            "cannot reserve measured pytest cgroup memory and host headroom "
+            f"(available={available_kb / 1024:.0f} MiB, workers={reserved_workers}, "
+            f"required={(fixed_reserve_kb + tmpfs_floor_kb) / 1024:.0f} MiB)"
+        )
+    memory_safe_tmpfs_kb = available_kb - fixed_reserve_kb
+    safe_shm_budget_kb = int(shm_free_kb * 0.80)
+    tmpfs_budget_kb = min(MAX_PYTEST_TMPFS_MAX_MB * 1024, safe_shm_budget_kb, memory_safe_tmpfs_kb)
+    tmpfs_budget_mb = int(tmpfs_budget_kb / 1024)
 
     return PytestRuntimePolicy(
         available_kb=available_kb,
         tmpfs_budget_mb=tmpfs_budget_mb,
-        workers=workers,
+        workers=reserved_workers,
         memory_full_avg10=memory_full_avg10,
+        tmpfs_predicted_mb=(tmpfs_predicted_kb + 1023) // 1024 if tmpfs_predicted_kb is not None else None,
     )
 
 
-def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
-    """Enable bounded tmpfs by default; preserve explicit storage choices.
+def apply_managed_pytest_runtime_policy(
+    env: Mapping[str, str], *, worker_count: int | None = None, full_suite: bool = True
+) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
+    """Place broad runs on scratch and focused runs on bounded tmpfs by default.
 
     Also runs the basetemp disk-headroom preflight
     (:func:`resolve_pytest_basetemp_root`) so a starved basetemp location is
@@ -635,25 +762,55 @@ def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[st
     unrelated command minutes or hours later.
     """
     normalized = normalize_pytest_basetemp_env(env)
-    policy: PytestRuntimePolicy | None = None
-    if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0":
-        policy = adaptive_pytest_runtime_policy()
+    default_full_suite_scratch = (
+        full_suite
+        and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        and "POLYLOGUE_PYTEST_TMPFS" not in normalized
+    )
+    configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
+    manages_tmpfs = configured_tmpfs or (configured_root is None and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0")
+    policy = adaptive_pytest_runtime_policy(
+        worker_count=worker_count,
+        shm_free_kb=None if manages_tmpfs else 0,
+        full_suite=full_suite,
+    )
+    if full_suite and policy.tmpfs_predicted_mb is not None:
+        normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
+    if manages_tmpfs:
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
         normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
+        effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
+        policy_tmpfs_budget_kb = policy.tmpfs_budget_mb * 1024
+        if effective_tmpfs_budget_kb is not None and effective_tmpfs_budget_kb > policy_tmpfs_budget_kb:
+            normalized[PYTEST_TMPFS_MAX_MB_ENV] = str(policy.tmpfs_budget_mb)
+            effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
+        required_basetemp_kb = pytest_basetemp_required_kb(normalized)
+        if (
+            required_basetemp_kb is not None
+            and effective_tmpfs_budget_kb is not None
+            and effective_tmpfs_budget_kb < required_basetemp_kb
+        ):
+            normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+    if default_full_suite_scratch:
+        # Broad-suite demand grows with the fixture universe and has exceeded
+        # the supervised 2 GiB ceiling while tests were still progressing.
+        # Keep that ceiling for explicit tmpfs runs; use NVMe for the default
+        # broad route instead of guessing the next aggregate peak.
+        normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
     if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:
         normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(selected_root)
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
-    if policy is not None:
-        free_kb = _headroom_kb(selected_root)
-        required_kb = pytest_basetemp_required_kb(normalized)
-        policy = replace(
-            policy,
-            basetemp_root=str(selected_root),
-            basetemp_label=selected_label,
-            basetemp_required_mb=round(required_kb / 1024) if required_kb is not None else None,
-            basetemp_free_mb=round(free_kb / 1024) if free_kb is not None else None,
-        )
+    free_kb = _headroom_kb(selected_root)
+    required_kb = pytest_basetemp_required_kb(normalized)
+    policy = replace(
+        policy,
+        basetemp_root=str(selected_root),
+        basetemp_label=selected_label,
+        basetemp_required_mb=round(required_kb / 1024) if required_kb is not None else None,
+        basetemp_free_mb=round(free_kb / 1024) if free_kb is not None else None,
+    )
     return normalized, policy
 
 
@@ -781,10 +938,15 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
     if configured:
         root = Path(configured)
         free_kb = _headroom_kb(root)
-        if free_kb is not None and free_kb >= min_free_kb:
+        configured_required_kb = min_free_kb
+        if _is_beneath(root, PYTEST_TMPFS_ROOT) and normalized.get("POLYLOGUE_PYTEST_TMPFS") == "1":
+            budget_kb = pytest_tmpfs_budget_kb(normalized)
+            headroom_kb = pytest_basetemp_min_free_kb(normalized)
+            configured_required_kb = headroom_kb + max(required_kb or 0, budget_kb or 0)
+        if free_kb is not None and free_kb >= configured_required_kb:
             return root, "configured"
-        checked.append(_describe_candidate(root, "configured", free_kb, min_free_kb))
-        raise _basetemp_refusal(checked, min_free_kb)
+        checked.append(_describe_candidate(root, "configured", free_kb, configured_required_kb))
+        raise _basetemp_refusal(checked, configured_required_kb)
 
     if normalized.get("POLYLOGUE_PYTEST_TMPFS", "1") != "0":
         shm = PYTEST_TMPFS_ROOT
@@ -796,7 +958,7 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
             # cap so a bounded run cannot fill /dev/shm and strand unrelated
             # processes before the supervisor notices.
             headroom_kb = pytest_basetemp_min_free_kb(normalized)
-            declared_demand_kb = required_kb if required_kb is not None else (budget_kb or 0)
+            declared_demand_kb = max(required_kb or 0, budget_kb or 0)
             tmpfs_required_kb = headroom_kb + declared_demand_kb
             demand_fits_budget = free_kb is not None and free_kb >= tmpfs_required_kb
             if demand_fits_budget:
@@ -845,7 +1007,9 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
 
 def pytest_tmpfs_budget_kb(env: Mapping[str, str]) -> int | None:
     """Return the bounded per-run tmpfs budget shared by all pytest workers."""
-    if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT"):
+    configured_root = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
+    if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or (configured_root is not None and not configured_tmpfs):
         return None
     raw = env.get(PYTEST_TMPFS_MAX_MB_ENV, str(DEFAULT_PYTEST_TMPFS_MAX_MB))
     with contextlib.suppress(ValueError):

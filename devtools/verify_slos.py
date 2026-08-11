@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
-from devtools.verify_runs import git_head
+from devtools.verify_runs import apply_managed_pytest_runtime_policy, force_managed_pytest_scratch, git_head
 from polylogue.scenarios.workload import (
     BudgetMeasure,
     BudgetSemantics,
@@ -126,7 +127,12 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
             *sorted(test_ids),
         ]
 
-        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        env, _policy = apply_managed_pytest_runtime_policy(
+            force_managed_pytest_scratch(os.environ),
+            worker_count=0,
+            full_suite=False,
+        )
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
 
         if not json_path.exists() or json_path.stat().st_size == 0:
             print("verify-slos: no benchmark results produced", file=sys.stderr)

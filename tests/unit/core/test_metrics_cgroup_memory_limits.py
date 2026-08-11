@@ -1,10 +1,10 @@
 """polylogue-e98k: cgroup memory.max/memory.high readers used by the mmap budget check.
 
-Production dependency exercised: the real ``read_cgroup_memory_max_bytes``/
-``read_cgroup_memory_high_bytes`` -> ancestor-aware limit reader, not a
-reimplemented parser. Reverting either reader to always return ``None``, to
-read only the leaf cgroup, or to mis-treat the literal ``"max"`` value as a
-real 0-byte limit would make these tests fail.
+Production dependency exercised: the real max, high, and remaining-headroom
+readers use the ancestor-aware cgroup hierarchy, not a reimplemented parser.
+Returning ``None`` unconditionally, reading only the leaf cgroup, pairing an
+ancestor limit with leaf usage, or treating literal ``"max"`` as zero makes
+these tests fail.
 """
 
 from __future__ import annotations
@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 
 from polylogue.core import metrics as metrics_module
-from polylogue.core.metrics import read_cgroup_memory_high_bytes, read_cgroup_memory_max_bytes
+from polylogue.core.metrics import (
+    read_cgroup_memory_headroom_bytes,
+    read_cgroup_memory_high_bytes,
+    read_cgroup_memory_max_bytes,
+)
 
 
 def _patch_cgroup_hierarchy(monkeypatch: pytest.MonkeyPatch, cgroup_root: Path, cgroup_path: str = "/") -> None:
@@ -68,6 +72,33 @@ def test_read_cgroup_memory_limits_use_minimum_finite_nested_ancestor(
 
     assert read_cgroup_memory_max_bytes() == 12884901888
     assert read_cgroup_memory_high_bytes() == 10737418240
+
+
+def test_read_cgroup_memory_headroom_pairs_each_limit_with_its_own_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "cgroup"
+    parent = root / "parent"
+    leaf = parent / "leaf"
+    leaf.mkdir(parents=True)
+    (root / "memory.max").write_text("max\n")
+    (root / "memory.current").write_text("1073741824\n")
+    (parent / "memory.max").write_text("12884901888\n")
+    (parent / "memory.current").write_text("10737418240\n")
+    (leaf / "memory.max").write_text("17179869184\n")
+    (leaf / "memory.current").write_text("5368709120\n")
+    _patch_cgroup_hierarchy(monkeypatch, root, "/parent/leaf")
+
+    assert read_cgroup_memory_headroom_bytes() == 2147483648
+
+
+def test_read_cgroup_memory_headroom_fails_closed_when_finite_usage_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "memory.max").write_text("4294967296\n")
+    _patch_cgroup_hierarchy(monkeypatch, tmp_path)
+
+    assert read_cgroup_memory_headroom_bytes() == 0
 
 
 def test_read_cgroup_memory_limits_return_none_when_nested_hierarchy_is_unlimited(

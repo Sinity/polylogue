@@ -87,6 +87,7 @@ from devtools.verify_runs import (
     cleanup_managed_pytest_basetemp,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
+    force_managed_pytest_scratch,
     latest_event_from_paths,
     merge_worker_events,
     normalize_pytest_basetemp_env,
@@ -318,10 +319,16 @@ def _read_json_artifact(path: Path) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-def _read_latest_pytest_event(path: Path = PYTEST_EVENTS_PATH) -> dict[str, Any] | None:
+def _read_latest_pytest_event(
+    path: Path = PYTEST_EVENTS_PATH,
+    *,
+    events_dir: Path | None = None,
+) -> dict[str, Any] | None:
     """Return the latest valid pytest event from the live JSONL ledger."""
+    if events_dir is not None:
+        return latest_event_from_paths(events_dir, path)
     if path == PYTEST_EVENTS_PATH:
-        return latest_event_from_paths(PYTEST_EVENTS_DIR, PYTEST_EVENTS_PATH)
+        return latest_event_from_paths(PYTEST_EVENTS_DIR, path)
     try:
         with path.open("rb") as handle:
             handle.seek(0, os.SEEK_END)
@@ -364,12 +371,7 @@ def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -
 def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     """Return verify metadata that explains the pytest worker policy."""
     metadata: dict[str, Any] = {}
-    if "-n" in cmd:
-        index = cmd.index("-n")
-        if index + 1 < len(cmd):
-            metadata["pytest_workers"] = cmd[index + 1]
-    else:
-        metadata["pytest_workers"] = "unset"
+    metadata["pytest_workers"] = _pytest_command_worker_request(cmd) or "unset"
     if "--testmon" in cmd:
         metadata["pytest_selection"] = "testmon-noselect" if "--testmon-noselect" in cmd else "testmon"
     else:
@@ -611,6 +613,8 @@ def _write_pytest_progress(
     artifact_dir: str | None = None,
     resources: Mapping[str, Any] | None = None,
     containment: Mapping[str, Any] | None = None,
+    events_path: Path = PYTEST_EVENTS_PATH,
+    events_dir: Path | None = None,
 ) -> None:
     """Write a live pytest progress artifact for long verify runs."""
     if elapsed_s is None:
@@ -644,7 +648,7 @@ def _write_pytest_progress(
         payload["resources"] = dict(resources)
     if containment is not None:
         payload["containment"] = dict(containment)
-    latest_event = _read_latest_pytest_event()
+    latest_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
     if latest_event is not None:
         payload["latest_test_event"] = {
             key: latest_event[key]
@@ -908,6 +912,8 @@ def _run_pytest_with_heartbeat(
     term_grace_s = _pytest_term_grace_s()
     resource_interval_s = _pytest_resource_interval_s()
     tmpfs_budget_kb = pytest_tmpfs_budget_kb(env)
+    events_path = Path(env.get("POLYLOGUE_PYTEST_EVENTS_PATH", str(PYTEST_EVENTS_PATH)))
+    events_dir = Path(env.get("POLYLOGUE_PYTEST_EVENTS_DIR", str(PYTEST_EVENTS_DIR)))
     runner_subreaper_enabled = enable_child_subreaper()
     preserved_runner_descendants = tuple(descendant_process_identities(os.getpid()))
     receipt_path = (
@@ -1130,6 +1136,8 @@ def _run_pytest_with_heartbeat(
         run_id=run.run_id if run is not None else None,
         artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
         containment=_containment_summary(launch, startup_receipt),
+        events_path=events_path,
+        events_dir=events_dir,
     )
     selector = selectors.DefaultSelector()
     selector.register(stdout_pipe, selectors.EVENT_READ, "stdout")
@@ -1156,7 +1164,7 @@ def _run_pytest_with_heartbeat(
     # latest test event's own updated_at timestamp across all workers
     # (devtools/pytest_progress_plugin.py); last_progress_at is the local
     # monotonic time that marker was last seen to change.
-    initial_event = _read_latest_pytest_event()
+    initial_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
     last_progress_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
     last_progress_at = last_sample
     seen_any_progress_event = initial_event is not None
@@ -1165,7 +1173,7 @@ def _run_pytest_with_heartbeat(
     def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
         nonlocal last_progress_marker, last_progress_at, seen_any_progress_event
         if latest is None:
-            latest = _read_latest_pytest_event()
+            latest = _read_latest_pytest_event(events_path, events_dir=events_dir)
         if latest is None:
             return
         marker = latest.get("updated_at")
@@ -1309,6 +1317,8 @@ def _run_pytest_with_heartbeat(
                             run_id=run.run_id if run is not None else None,
                             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
                             containment=_containment_summary(launch, receipt),
+                            events_path=events_path,
+                            events_dir=events_dir,
                         )
                     else:
                         selector.unregister(selector_key.fileobj)
@@ -1325,7 +1335,7 @@ def _run_pytest_with_heartbeat(
                 rss_text = f", rss={int(rss) // 1024} MiB" if isinstance(rss, int) else ""
                 cpu_text = f", cpu={cpu_pct:.0f}%" if cpu_pct is not None else ""
                 state_text = f", state={status['state']}" if status["state"] is not None else ""
-                latest_event = _read_latest_pytest_event()
+                latest_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
                 _refresh_progress_marker(sample_now, latest_event)
                 if latest_event is not None:
                     event = latest_event.get("event")
@@ -1359,6 +1369,8 @@ def _run_pytest_with_heartbeat(
                     run_id=run.run_id if run is not None else None,
                     artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
                     containment=_containment_summary(launch, receipt),
+                    events_path=events_path,
+                    events_dir=events_dir,
                 )
             sample_now = time.monotonic()
             if (
@@ -1446,6 +1458,8 @@ def _run_pytest_with_heartbeat(
             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             resources=resource_summary,
             containment=containment,
+            events_path=events_path,
+            events_dir=events_dir,
         )
     else:
         _write_pytest_progress(
@@ -1459,6 +1473,8 @@ def _run_pytest_with_heartbeat(
             artifact_dir=str(artifacts.step_dir) if artifacts is not None else None,
             resources=resource_summary,
             containment=containment,
+            events_path=events_path,
+            events_dir=events_dir,
         )
     _write_pytest_output(stdout, stderr)
     if artifacts is not None:
@@ -1479,6 +1495,9 @@ def _run(
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
+    # ``bench slo`` starts pytest-benchmark itself, so it needs the same
+    # bounded temp policy and run marker as a direct pytest step.
+    has_managed_pytest_child = label == "bench slo"
     if is_pytest:
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
@@ -1486,10 +1505,24 @@ def _run(
     pytest_tmpfs = False
     pytest_tmpfs_budget_mb: float | None = None
     runtime_policy = None
+    pytest_concurrency = 0
     basetemp_cleanup: Path | None = None
-    if is_pytest:
+    if is_pytest or has_managed_pytest_child:
         try:
-            env, runtime_policy = apply_managed_pytest_runtime_policy(env)
+            if has_managed_pytest_child:
+                # The outer benchmark process is not supervised as pytest, so
+                # its nested pytest cannot safely consume a bounded tmpfs run:
+                # nobody samples or terminates it at the tmpfs cap. Preserve a
+                # custom disk root, but replace inherited /dev/shm placement
+                # with the managed scratch candidate before admission.
+                env = force_managed_pytest_scratch(env)
+            if is_pytest:
+                pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
+            env, runtime_policy = apply_managed_pytest_runtime_policy(
+                env,
+                worker_count=pytest_concurrency,
+                full_suite=_pytest_uses_full_suite_basetemp(label),
+            )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
             sys.stderr.write(f"FAILED ({elapsed:.1f}s)\nverify: {exc}\n")
@@ -1516,6 +1549,7 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    if is_pytest:
         try:
             result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
         finally:
@@ -1723,7 +1757,7 @@ def _run(
             last_resource_sample=last_resource_row,
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
-            concurrency=_pytest_command_concurrency(cmd),
+            concurrency=max(1, pytest_concurrency),
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -1780,9 +1814,10 @@ def _subprocess_env() -> dict[str, str]:
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
-    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(Path.cwd() / PYTEST_EVENTS_PATH)
-    env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(Path.cwd() / PYTEST_SELECTION_PATH)
-    env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(Path.cwd() / PYTEST_SUMMARY_PATH)
+    env["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(ROOT / PYTEST_EVENTS_DIR)
+    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
+    env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
+    env["POLYLOGUE_PYTEST_SUMMARY_PATH"] = str(ROOT / PYTEST_SUMMARY_PATH)
     return env
 
 
@@ -2117,16 +2152,60 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["-n", str(workers)]
 
 
-def _pytest_command_concurrency(cmd: Sequence[str]) -> int:
-    """Return the worker count actually requested by the final pytest command."""
-    for index in range(len(cmd) - 2, -1, -1):
-        if cmd[index] != "-n":
-            continue
-        try:
-            return max(1, int(cmd[index + 1]))
-        except ValueError:
-            return 1
-    return 1
+def _pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
+    """Return the last xdist worker request from a final pytest command.
+
+    ``devtools test`` forwards pytest arguments unchanged, so this accepts
+    both xdist spellings and their compact forms.  The final occurrence wins,
+    matching pytest's normal option precedence.
+    """
+    request: str | None = None
+    for index, arg in enumerate(cmd):
+        if arg in {"-n", "--numprocesses"}:
+            if index + 1 < len(cmd):
+                request = cmd[index + 1]
+        elif arg.startswith("--numprocesses="):
+            request = arg.removeprefix("--numprocesses=")
+        elif arg.startswith("-n") and len(arg) > 2:
+            request = arg[2:].removeprefix("=")
+    return request
+
+
+def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | None = None) -> int:
+    """Return a fail-closed reservation for the final pytest command.
+
+    ``-n auto`` can launch one worker per logical CPU.  Reserve that maximum
+    instead of guessing one worker; an unrecognised xdist value is treated the
+    same way so malformed or future values cannot weaken admission.
+    """
+    request = _pytest_command_worker_request(cmd)
+    if request is None:
+        return 0
+    if request == "auto":
+        auto_workers = (env if env is not None else os.environ).get("PYTEST_XDIST_AUTO_NUM_WORKERS", "").strip()
+        if auto_workers:
+            try:
+                configured = int(auto_workers)
+            except ValueError:
+                configured = 0
+            if configured > 0:
+                return configured
+    try:
+        return max(0, int(request))
+    except ValueError:
+        return max(1, os.cpu_count() or 1)
+
+
+def _pytest_uses_full_suite_basetemp(label: str) -> bool:
+    """Whether this pytest step can materialize the measured full-suite tree."""
+    return label.startswith(
+        (
+            "pytest seed-testmon",
+            "pytest full",
+            "pytest load-sensitive",
+            "pytest testmon (broad)",
+        )
+    )
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {

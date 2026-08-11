@@ -9,6 +9,7 @@ import pytest
 
 import tests.conftest as conftest
 from devtools import verify_runs
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _make_real_candidates(
@@ -166,8 +167,57 @@ def test_pytest_configure_reports_low_space_as_usage_error(
         conftest.pytest_configure(cast("pytest.Config", config))
 
 
+def test_bare_pytest_configure_defaults_to_scratch_without_a_supervisor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    for name in (
+        "POLYLOGUE_VERIFY_RUN_ID",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_CHECKOUT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    conftest.pytest_configure(cast("pytest.Config", config))
+
+    assert Path(str(config.option.basetemp)).parent == scratch
+    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+
+
+def test_bare_pytest_ignores_leaked_cloud_basetemp_on_workstation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(verify_runs._CLOUD_PYTEST_BASETEMP_ROOT))
+    monkeypatch.delenv("POLYLOGUE_VERIFY_RUN_ID", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_RUN_ID", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_CHECKOUT", raising=False)
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    conftest.pytest_configure(cast("pytest.Config", config))
+
+    assert Path(str(config.option.basetemp)).parent == scratch
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
+    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+
+
 def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     tmp_path: Path,
+    frozen_clock: FrozenClock,
 ) -> None:
     stale = tmp_path / "pytest-polylogue-dead-123"
     seeded = tmp_path / "pytest-polylogue-seeded-dead"
@@ -176,7 +226,7 @@ def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     for path in (stale, seeded, recent, unrelated):
         path.mkdir()
 
-    old = 1.0
+    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
     os.utime(stale, (old, old))
     os.utime(seeded, (old, old))
 
@@ -190,6 +240,7 @@ def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
 
 def test_sweep_stale_polylogue_basetemps_never_deletes_a_live_owner(
     tmp_path: Path,
+    frozen_clock: FrozenClock,
 ) -> None:
     """Critical safety invariant: age alone must never justify deletion — a
     long-running lane's basetemp must survive the sweep even once it is
@@ -198,7 +249,7 @@ def test_sweep_stale_polylogue_basetemps_never_deletes_a_live_owner(
     live = tmp_path / "pytest-polylogue-live-owner-123"
     live.mkdir()
     conftest._mark_basetemp_owner(live)
-    old = 1.0
+    old = frozen_clock.time() - 120
     os.utime(live, (old, old))
 
     conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
@@ -208,18 +259,83 @@ def test_sweep_stale_polylogue_basetemps_never_deletes_a_live_owner(
 
 def test_sweep_stale_polylogue_basetemps_reclaims_a_confirmed_dead_owner(
     tmp_path: Path,
+    frozen_clock: FrozenClock,
 ) -> None:
     dead = tmp_path / "pytest-polylogue-dead-owner-123"
     dead.mkdir()
     # A pid that is guaranteed not to be alive right now (max pid + 1 territory
     # would flake on hosts near pid rollover; /proc simply never has this one).
     (dead / conftest._OWNER_PID_MARKER).write_text("999999999", encoding="utf-8")
-    old = 1.0
+    old = frozen_clock.time() - 120
     os.utime(dead, (old, old))
 
     conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
 
     assert not dead.exists()
+
+
+def test_sweep_stale_polylogue_basetemps_reclaims_reused_pid_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    stale = tmp_path / "pytest-polylogue-reused-pid-123"
+    stale.mkdir()
+    (stale / conftest._OWNER_PID_MARKER).write_text(f"{os.getpid()}:100", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_process_start_ticks", lambda _pid: 200)
+    old = frozen_clock.time() - 120
+    os.utime(stale, (old, old))
+
+    conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
+
+    assert not stale.exists()
+
+
+def test_sweep_stale_polylogue_basetemps_reclaims_read_only_fixture_tree(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    stale = tmp_path / "pytest-polylogue-read-only-123"
+    nested = stale / "published" / "artifact"
+    nested.mkdir(parents=True)
+    payload = nested / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    payload.chmod(0o400)
+    nested.chmod(0o500)
+    (stale / "published").chmod(0o500)
+    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    os.utime(stale, (old, old))
+
+    conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
+
+    assert not stale.exists()
+
+
+def test_sweep_stale_polylogue_basetemps_does_not_follow_top_level_symlink(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    target = tmp_path / "external-fixture"
+    nested = target / "published"
+    nested.mkdir(parents=True)
+    payload = nested / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    payload.chmod(0o400)
+    nested.chmod(0o500)
+    target.chmod(0o500)
+    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    os.utime(target, (old, old))
+
+    link = tmp_path / "pytest-polylogue-stale-symlink-123"
+    link.symlink_to(target, target_is_directory=True)
+    before_modes = (target.stat().st_mode, nested.stat().st_mode, payload.stat().st_mode)
+
+    conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
+
+    assert link.is_symlink()
+    assert target.is_dir()
+    assert payload.read_text(encoding="utf-8") == "{}"
+    assert (target.stat().st_mode, nested.stat().st_mode, payload.stat().st_mode) == before_modes
 
 
 def test_sweep_stale_polylogue_basetemps_gives_unknown_owner_a_long_grace_period(
