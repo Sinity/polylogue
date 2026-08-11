@@ -311,6 +311,7 @@ def initialize_archive_database(
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
+    from polylogue.operations.durable_change_train import audit_adoption_receipt_path, validate_audit_adoption_receipt
     from polylogue.storage.archive_identity import (
         ArchiveLocation,
         OwnedArchiveLocation,
@@ -345,7 +346,8 @@ def initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
-        has_durable_train_state = any(manifest_root.glob("*.json"))
+        pending_audit_adoption = audit_adoption_receipt_path(root).exists()
+        has_durable_train_state = any(path.name != "audit-adoption.json" for path in manifest_root.glob("*.json"))
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
@@ -376,9 +378,21 @@ def initialize_active_archive_root(root: Path) -> None:
         if fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
+        if pending_audit_adoption:
+            assert_owned_root()
+            validate_audit_adoption_receipt(root)
         if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
+        if (
+            durable_tier_exists
+            and not recovering_fresh_durable_bootstrap
+            and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
+        ):
+            raise RuntimeError(
+                "established archive is missing audit.db; use maintenance migrate-tier audit "
+                "--adopt-established-audit with a verified full_evidence backup"
+            )
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)

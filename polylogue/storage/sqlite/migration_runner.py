@@ -864,10 +864,16 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
     manifest = _load_json(manifest_path, label="manifest")
     if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
         raise MigrationError("audit adoption requires a verified full_evidence backup")
-    required_tiers = {"source", "index", "embeddings", "user", "ops"}
     included = set(_json_str_list(manifest.get("included_tiers")))
-    if included != {f"{tier}.db" for tier in required_tiers}:
-        raise MigrationError("audit adoption backup must contain exactly the established non-audit tier set")
+    required_tiers = {"source", "index", "embeddings", "user"}
+    permitted_tiers = required_tiers | {"ops"}
+    included_tiers = {name.removesuffix(".db") for name in included}
+    if (
+        not required_tiers.issubset(included_tiers)
+        or included_tiers - permitted_tiers
+        or len(included_tiers) != len(included)
+    ):
+        raise MigrationError("audit adoption backup must contain every non-optional established tier and no audit tier")
     receipt_path = _receipt_path(manifest_path)
     if not receipt_path.exists() and not receipt_path.is_symlink():
         raise MigrationError(
@@ -905,9 +911,15 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
     _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
     if receipt.get("artifact_inventory") != artifact_inventory:
         raise MigrationError("audit adoption backup receipt does not match the closed artifact inventory")
-    for tier in required_tiers:
+    for tier in sorted(included_tiers):
         live_path = archive_root / f"{tier}.db"
         artifact = artifacts[tier]
+        artifact_path = backup_root / f"{tier}.db"
+        try:
+            if artifact_path.samefile(live_path):
+                raise MigrationError(f"audit adoption backup tier artifact aliases the live tier: {tier}.db")
+        except OSError as exc:
+            raise MigrationError(f"cannot compare audit adoption backup tier with live tier: {tier}.db") from exc
         fingerprint = artifact.get("source_fingerprint")
         if not isinstance(fingerprint, dict):
             raise MigrationError(f"audit adoption backup lacks a live source fingerprint for {tier}.db")
@@ -915,6 +927,9 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
             raise MigrationError(f"audit adoption backup belongs to a different archive tier: {tier}.db")
         if not live_path.is_file():
             raise MigrationError(f"audit adoption live tier is missing: {live_path}")
+        wal_path = live_path.with_name(f"{live_path.name}-wal")
+        if wal_path.exists() and wal_path.stat().st_size:
+            raise MigrationError(f"audit adoption backup has live WAL divergence for {tier}.db")
         if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
             raise MigrationError(f"audit adoption backup is stale for {tier}.db")
         if str(fingerprint.get("sha256")) != _sha256_file(live_path):

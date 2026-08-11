@@ -3338,6 +3338,72 @@ def test_migrate_tier_cli_adopts_established_audit_from_verified_full_evidence_b
         assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
 
 
+def test_migrate_tier_cli_adoption_allows_a_full_evidence_backup_without_ops(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """The production adoption command accepts full evidence when optional ops.db is absent."""
+    root = cli_workspace["archive_root"]
+    (root / "audit.db").unlink()
+    (root / "ops.db").unlink()
+    manifest = _full_evidence_backup_without_audit(root)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--adopt-established-audit",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (root / "audit.db").is_file()
+
+
+def test_migrate_tier_cli_adoption_rejects_live_wal_divergence(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """The production backup gate rejects logical source changes held only in a live WAL."""
+    root = cli_workspace["archive_root"]
+    (root / "audit.db").unlink()
+    manifest = _full_evidence_backup_without_audit(root)
+    source = root / "source.db"
+    with sqlite3.connect(source) as connection:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
+        connection.execute("CREATE TABLE adoption_wal_probe (value TEXT)")
+        connection.commit()
+        assert (root / "source.db-wal").stat().st_size > 0
+
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "migrate-tier",
+                "audit",
+                "--adopt-established-audit",
+                "--backup-manifest",
+                str(manifest),
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 1
+    assert "live WAL" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+
+
 @pytest.mark.parametrize("backup_case", ["missing", "stale", "wrong_archive"])
 def test_migrate_tier_cli_adoption_refuses_unbound_backup(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, backup_case: str
@@ -3434,6 +3500,11 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
         dst_dir_fd: int | None = None,
         follow_symlinks: bool = True,
     ) -> None:
+        if Path(destination).name != "audit.db":
+            real_link(
+                source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=follow_symlinks
+            )
+            return
         if publication_failure == "race":
             assert dst_dir_fd is not None
             # This is a *valid* v1 audit database with a different image, not
@@ -3475,7 +3546,7 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
         from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
         from polylogue.storage.sqlite.migration_runner import MigrationError
 
-        with pytest.raises(MigrationError, match="canonical audit image"):
+        with pytest.raises(MigrationError, match="canonical audit v1 tier"):
             reconcile_durable_change_trains_on_startup(root)
     else:
         assert not audit.exists()

@@ -20,6 +20,7 @@ import pytest
 import polylogue.storage.sqlite.durable_change_train as durable_change_train_module
 from polylogue.daemon.backup import backup_archive
 from polylogue.operations.durable_change_train import (
+    _write_immutable_audit_adoption_receipt,
     acquire_durable_archive_ownership,
     adopt_missing_audit_tier,
     audit_adoption_receipt_path,
@@ -1673,19 +1674,20 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
+    assert reconcile_durable_change_train_startup(tmp_path) == ()
+    initialize_active_archive_root(tmp_path)
 
 
-def test_audit_adoption_receipt_survives_startup_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_audit_adoption_receipt_survives_startup_preflight(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The storage startup route validates the receipt created by the real adopter."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    archive_root = workspace_env["archive_root"]
     initialize_active_archive_root(archive_root)
     (archive_root / "audit.db").unlink()
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    backup = backup_archive(output_dir=tmp_path / "backup", profile="full_evidence", verify=True)
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
     assert backup.ok, backup.error
     assert backup.output_path is not None
     fsynced_paths: set[Path] = set()
@@ -1719,8 +1721,149 @@ def test_audit_adoption_receipt_survives_startup_preflight(tmp_path: Path, monke
     receipt.write_text("tampered", encoding="utf-8")
     with pytest.raises(MigrationError, match="invalid audit adoption receipt"):
         reconcile_durable_change_train_startup(archive_root)
-    assert reconcile_durable_change_train_startup(tmp_path) == ()
-    initialize_active_archive_root(tmp_path)
+
+
+def test_audit_adoption_receipt_allows_a_mutated_audit_journal(workspace_env: dict[str, Path]) -> None:
+    """Startup accepts an adopted audit tier after normal SQLite journal writes."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-mutable-journal") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    with sqlite3.connect(audit_path) as connection:
+        connection.execute(
+            "INSERT INTO archive_authority (archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, ?)",
+            ("adopted-audit-journal", 1, 1),
+        )
+        connection.commit()
+
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+def test_audit_adoption_receipt_recovers_interrupted_publication_during_bootstrap(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The normal bootstrap route completes the receipt-backed publication after a crash."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    real_link = os.link
+
+    def fail_audit_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if Path(destination).name == "audit.db":
+            raise OSError("simulated interruption")
+        real_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    with monkeypatch.context() as failed_publication:
+        failed_publication.setattr("polylogue.operations.durable_change_train.os.link", fail_audit_link)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-interrupted-publication") as owner:
+            with pytest.raises(MigrationError):
+                adopt_missing_audit_tier(
+                    audit_path,
+                    backup_manifest=Path(backup.output_path) / "manifest.json",
+                    directory_fd=owner.directory_fd,
+                    stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+                )
+
+    initialize_active_archive_root(archive_root)
+
+    assert audit_path.is_file()
+    assert (marker_root / ".bootstrap").is_file()
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+def test_audit_adoption_receipt_is_excluded_from_pre_marker_train_state(workspace_env: dict[str, Path]) -> None:
+    """The adoption receipt does not prevent legacy current-schema bootstrap adoption."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    marker.unlink()
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-pre-marker") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    initialize_active_archive_root(archive_root)
+
+    assert marker.is_file()
+
+
+def test_adoption_receipt_short_write_is_removed_for_a_safe_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed receipt write leaves no immutable-looking truncated publication behind."""
+    archive_root = tmp_path / "archive"
+    receipt_path = audit_adoption_receipt_path(archive_root)
+    write_calls = 0
+
+    def short_then_fail(descriptor: int, data: bytes) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            return min(1, len(data))
+        raise OSError("simulated receipt write failure")
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.write", short_then_fail)
+
+    with pytest.raises(MigrationError, match="cannot publish immutable audit adoption receipt"):
+        _write_immutable_audit_adoption_receipt(receipt_path, {"format": "test"}, archive_root=archive_root)
+
+    assert not receipt_path.exists()
+
+
+def test_runtime_bootstrap_refuses_an_established_archive_missing_audit(workspace_env: dict[str, Path]) -> None:
+    """Ordinary writable startup cannot create audit.db without adoption evidence."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    (archive_root / "audit.db").unlink()
+
+    with pytest.raises(RuntimeError, match="adopt-established-audit"):
+        initialize_active_archive_root(archive_root)
+
+    assert not (archive_root / "audit.db").exists()
 
 
 def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
@@ -2359,6 +2502,7 @@ def test_bootstrap_reconciles_and_persists_interrupted_train_evidence(
         conn.execute("CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
         conn.execute(f"PRAGMA user_version = {_TARGET_VERSION}")
         conn.commit()
+    bootstrap.initialize_archive_database(tmp_path / "audit.db", ArchiveTier.AUDIT)
     manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
     write_durable_change_train_manifest(manifest, train, expected_revision=-1)
 
