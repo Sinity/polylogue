@@ -64,10 +64,10 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
 # A hook creates a day-shard directory before atomically publishing its first
 # envelope. An added-directory event can therefore precede the child-file
-# event that a recursive watcher is about to install. Re-drain once after this
-# short publication grace period rather than leaving the envelope to periodic
-# catch-up.
-_HOOK_SPOOL_DIRECTORY_RETRY_DELAY_S = 0.05
+# event that a recursive watcher is about to install. Poll only that new shard
+# until its first envelope is visible, rather than leaving it to periodic
+# catch-up or relying on a scheduler-dependent fixed grace period.
+_HOOK_SPOOL_DIRECTORY_RETRY_POLL_S = 0.05
 # A catch-up writer owns the only archive writer for the whole chunk.  The
 # former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
 # starving fresh watcher events.  Keep historical convergence fair by
@@ -269,6 +269,7 @@ class LiveWatcher:
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
         self._periodic_catch_up_task: asyncio.Task[None] | None = None
+        self._hook_spool_directory_retry_tasks: set[asyncio.Task[None]] = set()
         self._failed_retry_deadline: float | None = None
         self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
@@ -348,6 +349,7 @@ class LiveWatcher:
             with suppress(asyncio.CancelledError):
                 await watch_task
             self._cancel_periodic_catch_up()
+            self._cancel_hook_spool_directory_retries()
 
     async def _watch_changes(self, roots: list[Path]) -> None:
         from watchfiles import Change, awatch
@@ -364,9 +366,12 @@ class LiveWatcher:
                 observed_path = Path(raw_path)
                 if change is Change.added and observed_path.is_dir():
                     if self._is_hook_spool_path(observed_path):
+                        needs_first_envelope_retry = self._is_hook_spool_shard_directory(
+                            observed_path
+                        ) and not self._hook_spool_directory_has_envelope(observed_path)
                         await self._drain_hook_spool()
-                        await asyncio.sleep(_HOOK_SPOOL_DIRECTORY_RETRY_DELAY_S)
-                        await self._drain_hook_spool()
+                        if needs_first_envelope_retry:
+                            self._schedule_hook_spool_directory_retry(observed_path)
                         continue
                     self._enqueue_added_directory(observed_path)
                     continue
@@ -384,6 +389,7 @@ class LiveWatcher:
         self._stop.set()
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
+        self._cancel_hook_spool_directory_retries()
         if self._parse_stage is not None and self._owns_parse_stage:
             self._parse_stage.shutdown()
 
@@ -395,6 +401,7 @@ class LiveWatcher:
         self._pending_scheduled = False
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
+        self._cancel_hook_spool_directory_retries()
 
     async def _periodic_catch_up(self, roots: list[Path]) -> None:
         delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
@@ -419,6 +426,40 @@ class LiveWatcher:
         if task is not None and not task.done():
             task.cancel()
         self._periodic_catch_up_task = None
+
+    def _schedule_hook_spool_directory_retry(self, directory: Path) -> None:
+        """Drain a newly added hook shard when its first envelope appears.
+
+        The initial drain above handles an already-published envelope.  This
+        task covers the narrow event-ordering race where the directory arrives
+        first and the recursive watcher misses the first child notification.
+        It does not block subsequent watcher events or start a source-tree
+        catch-up scan.
+        """
+
+        task = asyncio.create_task(self._retry_hook_spool_directory_until_populated(directory))
+        self._hook_spool_directory_retry_tasks.add(task)
+        task.add_done_callback(self._hook_spool_directory_retry_tasks.discard)
+
+    async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
+        """Wait for an added shard's first JSON envelope, then drain once."""
+
+        while not self._stop.is_set():
+            try:
+                if not directory.exists():
+                    return
+                if any(directory.glob("*.json")):
+                    await self._drain_hook_spool()
+                    return
+            except OSError:
+                return
+            await asyncio.sleep(_HOOK_SPOOL_DIRECTORY_RETRY_POLL_S)
+
+    def _cancel_hook_spool_directory_retries(self) -> None:
+        for task in tuple(self._hook_spool_directory_retry_tasks):
+            if not task.done():
+                task.cancel()
+        self._hook_spool_directory_retry_tasks.clear()
 
     # ------------------------------------------------------------------
     # Catch-up: batch all changed files
@@ -1561,6 +1602,25 @@ class LiveWatcher:
             except OSError:
                 return False
         return False
+
+    def _is_hook_spool_shard_directory(self, path: Path) -> bool:
+        """Return whether ``path`` is a direct day shard beneath ``pending``."""
+
+        for source in self._sources:
+            if source.name != "hooks":
+                continue
+            try:
+                return path.resolve().parent == source.root.resolve()
+            except OSError:
+                return False
+        return False
+
+    @staticmethod
+    def _hook_spool_directory_has_envelope(directory: Path) -> bool:
+        try:
+            return next(directory.glob("*.json"), None) is not None
+        except OSError:
+            return False
 
     def _hook_spool_root(self) -> Path:
         """Return the root paired with this watcher's hook source."""
