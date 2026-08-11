@@ -4,7 +4,6 @@ from devtools.command_catalog import (
     CATEGORY_ORDER,
     COMMAND_SPECS,
     COMMANDS,
-    VERIFICATION_LAB_COMMAND_NAMES,
     command_name_from_tokens,
     control_plane_argv,
     control_plane_command,
@@ -50,7 +49,7 @@ def test_featured_command_specs_are_actionable() -> None:
 def test_verification_lab_surface_is_explicit_and_implemented() -> None:
     specs = verification_lab_command_specs()
 
-    assert tuple(spec.name for spec in specs) == VERIFICATION_LAB_COMMAND_NAMES
+    assert specs == tuple(spec for spec in COMMAND_SPECS if spec.category == "verification lab")
     assert {spec.category for spec in specs} == {"verification lab"}
     assert len({(spec.module, spec.entrypoint) for spec in specs}) == len(specs)
 

@@ -60,12 +60,6 @@ the current fixture directly.
 
 **Does not prove:** that every possible source outage is currently detected.
 
-## Field finding: claim versus structural failure
-
-The historical packet generated on 2026-07-04 sampled 5,000 structured failures from a frame of 42,033. It classified 1,205 cases as silent proceed on the next assistant turn, a 24.1% lower bound, while 3,375 cases remained ambiguous. This is a field observation from one archive and one method—not a population estimate or an automatically current claim.
-
-Read the full [finding, method, calibration, and caveats](findings/claim-vs-evidence.md). Reusing the number as a current claim requires rerunning the method against a current, representative frame.
-
 ## Flagship demonstrations under construction
 
 These are roadmap items, not present capabilities unless their packets are linked above.

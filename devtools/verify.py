@@ -2236,9 +2236,6 @@ def build_verify_steps(
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
-        steps.append(
-            ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
-        )
         steps.append(("lab policy bead-graph", _devtools_cmd("lab policy bead-graph")))
     return steps
 

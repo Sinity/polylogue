@@ -230,12 +230,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
-        "Structured Failure Follow-Up",
-        "findings/claim-vs-evidence.md",
-        "Bounded field finding with oracle, sample frame, calibration, and caveats.",
-        "evidence",
-    ),
-    _entry(
         "Polylogue on Sinex",
         "sinex-interop.md",
         "Current bridge, target authority split, and rebuild proof.",
@@ -297,12 +291,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Browser-capture redesign rationale and verification artifacts.",
         "design",
     ),
-    _entry(
-        "Incident 14:32 Proof World",
-        "design/incident-1432-proof-world.md",
-        "Deterministic demo corpus and anti-circularity rules.",
-        "design",
-    ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
     _entry(
         "Query-Action Workflows Design",
@@ -354,12 +342,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "archive",
     ),
     _entry("Retrospective Index", "retro/README.md", "Index of historical incident retrospectives.", "archive"),
-    _entry(
-        "Semantic Card Tool Map",
-        "generated/semantic-card-tool-map.md",
-        "Generated map from semantic cards to tools.",
-        "archive",
-    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (

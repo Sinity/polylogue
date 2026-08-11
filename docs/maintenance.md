@@ -683,22 +683,6 @@ strings. `polylogue ops doctor` reports a `messages_fts` discrepancy.
 `polylogue ops diagnostics workload`
 shows non-empty `fts_trigger_state.missing` or `regressed` triggers.
 
-For a deployment-bound, read-only gate that checks schema versions, exact FTS
-debt, raw frontier integrity, replay candidates, cursor failures, and
-convergence debt, add `--preflight`:
-
-```bash
-polylogue ops diagnostics workload --preflight --json > preflight.json
-jq '.preflight_ledger | {state, blocking_checks, warning_checks}' preflight.json
-```
-
-The preflight reports quarantined raw bytes and missing
-`raw_membership_census` rows by origin. Quarantine is authority-pending
-evidence, not an automatic failure. Missing census is `coverage_unknown` and
-blocks the gate until a verdict exists. Only source rows with present,
-non-terminal census evidence are classified as actionable parse/validation
-debt.
-
 **Root cause.** `messages_fts` is a contentless FTS5 table
 (`content=''`, `contentless_delete=1`) indexing `blocks.search_text`,
 kept in sync by three rowid-keyed triggers on `blocks`

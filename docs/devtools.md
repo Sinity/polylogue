@@ -56,34 +56,36 @@ They are not a proof ledger or end-user archive workflow.
 
 | Command | Role |
 | --- | --- |
-| `devtools lab graph` | Inspect declared runtime artifacts, operations, paths, and maintenance targets. |
-| `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
-| `devtools lab policy bead-graph` | Run before shipping a bead-state delta. With no source option it checks live `bd` state; `--export .beads/issues.jsonl` validates the branch snapshot without importing it into the shared database. The gate reads dependency records only and does not make prose, labels, or campaign-specific edge lists machine authority. |
-| `devtools lab policy campaign-archive-boundaries` | Catch a regression of the phantom-benchmark.db bug (polylogue-ovme.3): a campaign reintroducing a 'benchmark.db' sentinel, an ad hoc tier-path sibling derivation, or an entry point (generate_archive/run_full_campaign/run_campaign._run) that no longer routes through CampaignArchiveLocation. Scoped to the devtools campaign boundary only -- the broader storage/diagnostics/daemon/maintenance/transitions boundary audit is polylogue-ovme.2's migration surface. |
-| `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
-| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
-| `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
-| `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
+| `devtools lab graph` | Inspect declared runtime artifacts, operations, paths, and maintenance targets. |
+| `devtools lab test-economics` | Decide where test-writing effort or test-suite pruning actually pays off, by cross-referencing coverage percent, historical fix-commit density, testmon wall-time cost exposure, and testmon selection fan-out per top-level package. |
+| `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
+| `devtools lab testmon-blind-spots` | Inspect an existing coverage JSON report against an existing pytest-testmon database. Declaration-only modules are reported separately from executable validator risk; this command does not run pytest or regenerate coverage. |
+| `devtools lab pytest-witness-repetitions` | Establish that the historical periodic optimize, WAL checkpoint, and embedding backlog lifecycle witnesses survive consecutive isolated and xdist runs. Each attempt uses the ordinary managed pytest/supervisor path; failures and timeouts are retained rather than retried. |
+| `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
+| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
+| `devtools lab policy classifier-fingerprints` | Catch the gap `lab policy schema-versioning` cannot see (polylogue-gucv): a parser/classifier under polylogue/sources/ or polylogue/archive/artifact_taxonomy/ (looks_like*/classify_artifact* functions) changes what it accepts for identical input bytes without any INDEX_SCHEMA_VERSION bump at all, so already-indexed rows go silently stale with no signal a reparse was needed (PR #3428 shipped exactly this, green, against the version-keyed gate). |
+| `devtools lab policy raw-payload-hash-purity` | Prevent a regression of polylogue-u19l's confirmed bug: sources/live/batch.py used to prepend a synthetic session_meta header onto every Codex append capture before hashing/storing it, so the stored blob was never a literal byte-slice of the live file, permanently defeating live-source byte-identity verification for ~59GB of raw rows. Statically forbids concatenating a synthesized literal (bytes/str constant, f-string, json.dumps()/.encode() result) onto captured bytes anywhere in the raw-capture write-path modules (WRITE_PATH_MODULES). |
+| `devtools lab policy position-derived-identity` | Prevent a regression of polylogue-hith/qkuq's already-fixed attachment-id bug (a synthetic id seeded partly by array index was unstable across export vintages that reorder/insert entries, manufacturing false divergence in revision-authority membership comparison) and catch new occurrences of the same shape (polylogue-gysk3 found the identical hazard still live for provider_message_id, the sole input to message_identity_hash). Statically scans polylogue/sources/parsers/ for an identity-bearing field constructed from an f-string/format/concatenation referencing a loop index/position variable, either inline or via a local variable. |
+| `devtools lab policy raw-authority-frontier-executability` | polylogue-w32w / polylogue-lb39z (Phase 1, item 4): RawAuthorityFrontierItem.__post_init__ raises if a CONSTRUCTED item pairs a dispatched actuator (_APPLY_DISPATCHED_ACTUATORS) with a non-executable state (_EXECUTABLE_STATES) -- but that only fires when a test or live classification actually builds one; a new frontier state or re-paired actuator can ship an unexercised branch that stays silent until it accumulates against real archive data (the original defect: 4,174 blockers demanding an unreachable actuator, undetected for weeks). This lint statically enumerates every literal (state, actuator) construction site in polylogue/storage/raw_reconciler.py (_item(...) and _StrategyOverride(...) calls) and re-checks the same invariant at review time, independent of test coverage. |
+| `devtools lab policy bead-graph` | Run before shipping a bead-state delta. With no source option it checks live `bd` state; `--export .beads/issues.jsonl` validates the branch snapshot without importing it into the shared database. The gate reads dependency records only and does not make prose, labels, or campaign-specific edge lists machine authority. |
+| `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
+| `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
 | `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
 | `devtools lab run` | Run a scenario such as rebuild-safety through the direct lab command path. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
-| `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
-| `devtools lab schema commit` | Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live archive -- 'lab schema generate' only ever previews and never writes committed package files. |
+| `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
 | `devtools lab schema compare` | Review schema package drift between committed versions in the lab surface. |
 | `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
 | `devtools lab schema generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
-| `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
-| `devtools lab schema parser-diff` | Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching is name-based, so read the parser before acting on a row. |
+| `devtools lab schema commit` | Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live archive -- 'lab schema generate' only ever previews and never writes committed package files. |
 | `devtools lab schema promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
+| `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
+| `devtools lab schema parser-diff` | Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching is name-based, so read the parser before acting on a row. |
 | `devtools lab schema roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
-| `devtools lab seed-receipt-compare` | Judge a seed-testmon or focused pytest run's resource receipt against a named baseline receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and linked follow-up for any unmet target instead of silently dropping it. |
-| `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
-| `devtools lab test-economics` | Decide where test-writing effort or test-suite pruning actually pays off, by cross-referencing coverage percent, historical fix-commit density, testmon wall-time cost exposure, and testmon selection fan-out per top-level package. |
-| `devtools lab testmon-blind-spots` | Inspect an existing coverage JSON report against an existing pytest-testmon database. Declaration-only modules are reported separately from executable validator risk; this command does not run pytest or regenerate coverage. |
-| `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
+| `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 
 ## Core Loop
 
@@ -140,9 +142,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools lab graph` | Render the runtime artifact and operation graph. |
-| `devtools lab lanes` | Run named validation lanes. |
 | `devtools lab policy bead-graph` | Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph. |
-| `devtools lab policy campaign-archive-boundaries` | Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation. |
 | `devtools lab policy classifier-fingerprints` | Verify parser/classifier decision-boundary changes are declared as reparse-requiring or acknowledged. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools lab policy position-derived-identity` | Verify no parser mints cross-revision comparison identity from positional/index data. |
@@ -166,7 +166,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema parser-diff` | List observed provider wire keys that no parser references. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
-| `devtools lab seed-receipt-compare` | Compare two workload receipts for a clean, like-for-like seed/incident proof (polylogue-b054.1.1.3). |
 | `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools lab test-economics` | Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11). |
@@ -183,7 +182,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
-| `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools verify degrade-loudly` | Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure. |
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
@@ -305,8 +303,8 @@ polylogue ops maintenance cursor-authority-reconcile --apply \
 When changing semantics, validation, or surfaces:
 
 ```bash
-devtools lab lanes --list
-devtools lab lanes --lane frontier-local
+devtools verify
+devtools test tests/unit/path/to/test_file.py
 devtools lab smoke run archive-smoke --tier 0
 devtools lab smoke run reader-visual-smoke
 devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze

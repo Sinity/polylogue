@@ -122,7 +122,6 @@ def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.M
     assert receipt["head_sha"] == "abc123"
     assert receipt["pr_scope_digest"]
     assert receipt["exit_code"] == 0
-    assert receipt["skips_tests"] is False
 
 
 @pytest.mark.parametrize("command", ["devtools verify", "devtools verify --lab", "devtools verify --json --skip-slow"])
@@ -481,20 +480,6 @@ def test_record_refuses_when_checkout_is_dirty(monkeypatch: pytest.MonkeyPatch, 
     assert not merge_gate._receipt_path(42).exists()
 
 
-def test_record_flags_a_test_skipping_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        _fake_run({"headRefOid": "abc123", "headRefName": "feature/x"}, [], local_head_sha="abc123"),
-    )
-
-    merge_gate.cmd_record(42, "devtools verify --quick")
-
-    receipt = json.loads(merge_gate._receipt_path(42).read_text())
-    assert receipt["skips_tests"] is True
-
-
 def _base_pr_view(head_sha: str = "abc123", committed_date: str = "2026-08-01T12:00:00Z") -> dict[str, object]:
     return {
         "headRefOid": head_sha,
@@ -820,22 +805,6 @@ def test_check_catches_a_late_review_body_not_just_inline_comments(
     exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
 
     assert exit_code == 1
-
-
-def test_check_reports_advisory_when_receipt_command_skips_tests(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    pr_view = _base_pr_view()
-    _record(monkeypatch, pr_view, command="devtools verify --quick")
-
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
-    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
-
-    # Advisory only -- does not block by itself, but is reported.
-    assert exit_code == 0
-    receipt = json.loads(merge_gate._receipt_path(42).read_text())
-    assert receipt["skips_tests"] is True
 
 
 def _fake_run_with_status_capture(

@@ -6,14 +6,14 @@ from types import ModuleType
 import pytest
 
 import devtools.__main__ as devtools_main
-from devtools.command_catalog import COMMANDS, VERIFICATION_LAB_COMMAND_NAMES, CommandSpec
+from devtools.command_catalog import COMMANDS, CommandSpec, verification_lab_command_specs
 
 
 def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     commands = {entry["name"] for entry in payload["commands"]}
-    assert payload["surfaces"]["verification_lab"] == list(VERIFICATION_LAB_COMMAND_NAMES)
+    assert payload["surfaces"]["verification_lab"] == [spec.name for spec in verification_lab_command_specs()]
     assert "lab graph" in commands
     assert "lab probe capture-regression" in commands
     assert "lab probe cost-reconciliation" in commands

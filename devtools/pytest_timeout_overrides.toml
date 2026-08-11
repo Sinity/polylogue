@@ -4,11 +4,6 @@
 # pytest-timeout-overrides` rejects stale entries.
 
 [[exception]]
-path = "devtools/coverage_gate.py"
-value = 600
-rationale = "The single-process coverage gate needs a bounded diagnostic budget for the full non-benchmark suite."
-
-[[exception]]
 path = "tests/unit/scenarios/test_codex_804_live_proof.py"
 value = 900
 rationale = "The sanitized 804-revision proof generates and acquires the outlier corpus, runs source remediation, then exercises pre-checkpoint failure, interrupted replay, fresh-process resume, and promotion under one bounded incident-scale budget."

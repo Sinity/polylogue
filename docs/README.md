@@ -84,7 +84,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
-| [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded field finding with oracle, sample frame, calibration, and caveats. |
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
 | [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |
 | [Query-Action Workflows](product/workflows.md) | Executable product contract for workflows, affordances, completions, and golden paths. |
@@ -101,7 +100,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Archive Storytelling](design/archive-storytelling.md) | Narrative and artifact design for archives. |
 | [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
-| [Incident 14:32 Proof World](design/incident-1432-proof-world.md) | Deterministic demo corpus and anti-circularity rules. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
 | [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
@@ -120,7 +118,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 |----------|-------------|
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
-| [Semantic Card Tool Map](generated/semantic-card-tool-map.md) | Generated map from semantic cards to tools. |
 
 ## Contributor Workflow
 

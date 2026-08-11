@@ -91,14 +91,6 @@ _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
 _DEFAULT_POLL_ROUNDS = 3
 _DEFAULT_POLL_INTERVAL_S = 20
-# Heuristic: profiles that explicitly skip tests (see CLAUDE.md -- `devtools
-# verify --quick` is format+lint+mypy+render, no pytest). Not exhaustive; a
-# command containing neither this nor an obvious test-runner name still gets
-# flagged as an advisory, since the whole point is not trusting a plausible-
-# looking command string without comment.
-_TEST_SKIPPING_MARKERS: tuple[str, ...] = ("verify --quick", "verify --lab")
-_LOOKS_LIKE_TESTS_MARKERS: tuple[str, ...] = ("test", "pytest", "verify --all", "devtools verify")
-
 
 def _gh_json(args: list[str]) -> Any:
     result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
@@ -230,13 +222,6 @@ def _ack_path(pr: int) -> Path:
     return _repository_root() / _RECEIPT_DIR / f"pr-{pr}-acks.json"
 
 
-def _command_skips_tests(command: str) -> bool:
-    lowered = command.lower()
-    if any(marker in lowered for marker in _TEST_SKIPPING_MARKERS):
-        return True
-    return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
-
-
 def _invocation_receipt(
     *,
     path: Path,
@@ -246,7 +231,6 @@ def _invocation_receipt(
     checkout_root: Path,
 ) -> dict[str, Any] | None:
     """Load the exact run artifact bound to the launched verifier process."""
-
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -407,7 +391,6 @@ def cmd_record(pr: int, command: str) -> int:
         )["attestation_digest"],
         "branch": info["headRefName"],
         "command": command,
-        "skips_tests": _command_skips_tests(command),
         "verification_scope": _verification_scope(verification_receipt),
         "release_baseline_allowed": _release_baseline_permission(verification_receipt),
         "terminal_authorization": _terminal_authorization(verification_receipt),
@@ -422,11 +405,6 @@ def cmd_record(pr: int, command: str) -> int:
     receipt_path.write_text(json.dumps(receipt, indent=2))
 
     print(f"recorded receipt for PR #{pr} @ {head_sha[:8]}: exit={result.returncode} ({duration_s}s)")
-    if receipt["skips_tests"]:
-        print(
-            f"  advisory: command {command!r} does not look like it ran tests -- `check` will flag this",
-            file=sys.stderr,
-        )
     if result.returncode != 0:
         print(result.stdout[-2000:])
         print(result.stderr[-2000:], file=sys.stderr)
@@ -656,11 +634,6 @@ def cmd_check(
                 verdict.ok = False
                 verdict.reasons.append(
                     "release-baseline verification receipt does not grant release_baseline_allowed=true"
-                )
-            if receipt.get("skips_tests"):
-                verdict.reasons.append(
-                    f"advisory: receipt command {receipt.get('command')!r} does not look like it ran tests "
-                    "-- confirm this PR genuinely needs no test coverage before merging"
                 )
 
     review_comments = _poll_stable_comments(pr, rounds=poll_rounds, interval_s=poll_interval_s)

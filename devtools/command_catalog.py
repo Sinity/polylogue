@@ -9,36 +9,6 @@ from dataclasses import asdict, dataclass
 
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
-VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
-    "lab graph",
-    "lab lanes",
-    "lab policy bead-graph",
-    "lab policy campaign-archive-boundaries",
-    "lab policy insight-honesty",
-    "lab policy schema-versioning",
-    "lab policy timestamp-doctrine",
-    "lab provider completeness",
-    "lab probe capture-regression",
-    "lab probe cost-reconciliation",
-    "lab probe pipeline",
-    "lab probe turso",
-    "lab run",
-    "lab smoke",
-    "lab schema audit",
-    "lab schema commit",
-    "lab schema compare",
-    "lab schema explain",
-    "lab schema generate",
-    "lab schema list",
-    "lab schema parser-diff",
-    "lab schema promote",
-    "lab schema roundtrip",
-    "lab seed-receipt-compare",
-    "lab snapshot read-surface",
-    "lab test-economics",
-    "lab testmon-blind-spots",
-    "lab testmon-proof",
-)
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
@@ -343,18 +313,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify coverage",
-        "verification",
-        "Run pytest with the repository coverage floor from pyproject.toml.",
-        "devtools.coverage_gate",
-        use_when="Enforce the committed coverage ratchet locally or in CI without duplicating threshold values.",
-        examples=(
-            "devtools verify coverage",
-            "devtools verify coverage --ignore-integration --term-missing",
-            "devtools verify coverage -- --maxfail=1",
-        ),
-    ),
-    CommandSpec(
         "verify mutation-freshness",
         "verification",
         "Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds.",
@@ -366,18 +324,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools verify mutation-freshness --enforce-kill-rate",
             "devtools verify mutation-freshness --strict --default-freshness-days 30",
-        ),
-    ),
-    CommandSpec(
-        "lab lanes",
-        "verification lab",
-        "Run named validation lanes.",
-        "devtools.run_validation_lanes",
-        use_when="List, dry-run, or execute authored validation lanes from the executable lane registry.",
-        examples=(
-            "devtools lab lanes --list",
-            "devtools lab lanes --lane frontier-local",
-            "devtools lab lanes --lane live-archive-smoke --dry-run",
         ),
     ),
     CommandSpec(
@@ -448,22 +394,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab pytest-witness-repetitions",
             "devtools lab pytest-witness-repetitions --attempts 2 --xdist-workers 3 --json",
-        ),
-    ),
-    CommandSpec(
-        "lab seed-receipt-compare",
-        "verification lab",
-        "Compare two workload receipts for a clean, like-for-like seed/incident proof (polylogue-b054.1.1.3).",
-        "devtools.seed_receipt_compare",
-        use_when=(
-            "Judge a seed-testmon or focused pytest run's resource receipt against a named baseline "
-            "receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated "
-            "cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and "
-            "linked follow-up for any unmet target instead of silently dropping it."
-        ),
-        examples=(
-            "devtools lab seed-receipt-compare --baseline incident.json --candidate current.json",
-            "devtools lab seed-receipt-compare --baseline incident.json --candidate current.json --json",
         ),
     ),
     CommandSpec(
@@ -1700,24 +1630,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
     ),
     CommandSpec(
-        "lab policy campaign-archive-boundaries",
-        "verification lab",
-        "Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation.",
-        "devtools.verify_campaign_archive_boundaries",
-        use_when=(
-            "Catch a regression of the phantom-benchmark.db bug (polylogue-ovme.3): a campaign "
-            "reintroducing a 'benchmark.db' sentinel, an ad hoc tier-path sibling derivation, or "
-            "an entry point (generate_archive/run_full_campaign/run_campaign._run) that no longer "
-            "routes through CampaignArchiveLocation. Scoped to the devtools campaign boundary only "
-            "-- the broader storage/diagnostics/daemon/maintenance/transitions boundary audit is "
-            "polylogue-ovme.2's migration surface."
-        ),
-        examples=(
-            "devtools lab policy campaign-archive-boundaries",
-            "devtools lab policy campaign-archive-boundaries --json",
-        ),
-    ),
-    CommandSpec(
         "verify pytest-timeout-overrides",
         "verification",
         "Verify explicit pytest timeout overrides are positive, bounded, and justified.",
@@ -2105,8 +2017,7 @@ def featured_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> t
 
 
 def verification_lab_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> tuple[CommandSpec, ...]:
-    by_name = {spec.name: spec for spec in commands}
-    return tuple(by_name[name] for name in VERIFICATION_LAB_COMMAND_NAMES)
+    return tuple(spec for spec in commands if spec.category == "verification lab")
 
 
 def grouped_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> OrderedDict[str, list[CommandSpec]]:
@@ -2131,6 +2042,5 @@ __all__ = [
     "control_plane_command",
     "featured_command_specs",
     "grouped_command_specs",
-    "VERIFICATION_LAB_COMMAND_NAMES",
     "verification_lab_command_specs",
 ]

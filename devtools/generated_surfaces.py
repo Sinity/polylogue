@@ -71,7 +71,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",
-        description="Render docs/cli-reference.md from live CLI help and action-contract metadata.",
+        description="Render docs/cli-reference.md from live CLI help.",
         command=control_plane_argv("render cli-reference"),
         main=render_cli_reference.main,
         inputs=(
@@ -90,7 +90,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/surfaces/payloads.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_cli_reference.py",
-            "devtools/action_contract_report.py",
             "devtools/render_cli_output_schemas.py",
             "devtools/provider_completeness.py",
         ),
