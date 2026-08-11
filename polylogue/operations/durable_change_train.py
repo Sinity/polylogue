@@ -1398,9 +1398,17 @@ def restore_adopted_audit_tier(
     temporary_name = f".audit.db.restore-{operation_id}.tmp"
     _remove_stale_restore_staging(directory_fd=directory_fd, temporary_name=temporary_name)
     rebind_mutation_id = f"audit-restore:{operation_id}"
-    rebind_already_committed = has_pending_restore and AuditContinuityCoordinator(archive_root).has_committed_mutation(
-        rebind_mutation_id
-    )
+    coordinator = AuditContinuityCoordinator(archive_root)
+    rebind_already_committed = False
+    if has_pending_restore:
+        # A restore can stop after its audit-side rebind commit while the source
+        # WAL still awaits promotion. Reconcile that exact operation before a
+        # retry tries to prepare a second command.
+        rebind_already_committed = (
+            coordinator.reconcile_pending_rebind(rebind_mutation_id)
+            if coordinator.has_pending_rebind(rebind_mutation_id)
+            else coordinator.has_committed_mutation(rebind_mutation_id)
+        )
     published = False
     try:
         if rebind_already_committed or _audit_file_matches_artifact(
@@ -1447,7 +1455,7 @@ def restore_adopted_audit_tier(
         }
         committed["continuity_sha256"] = _canonical_json_sha256(committed)
         if not rebind_already_committed:
-            AuditContinuityCoordinator(archive_root).seed_or_rebind(
+            coordinator.seed_or_rebind(
                 mutation_id=rebind_mutation_id,
                 now_ms=int(time.time() * 1000),
                 evidence={

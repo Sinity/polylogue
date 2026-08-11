@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from polylogue.operations.audit import AuditRepository
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import (
+    AuditFinalizationError,
     CapabilityDeniedError,
     ConfirmationStrength,
     DestructiveClass,
@@ -59,6 +61,31 @@ class _Actuator:
             detail=None,
             receipt_ref=None,
             applied_at="now",
+        )
+
+
+@dataclass(frozen=True)
+class _TypedDomainBatch:
+    batch_ref: str
+    rows: tuple[str, ...]
+    _cached_bytes: bytes = field(init=False, repr=False, default=b"private-cache")
+
+
+class _TypedDomainOutcome(BaseModel):
+    row_ref: str
+    status: str
+
+
+@dataclass
+class _TypedReceiptActuator(_Actuator):
+    def apply(self, plan: MutationPlan, args: object) -> MutationReceipt:
+        receipt = super().apply(plan, args)
+        return replace(
+            receipt,
+            domain_receipt={
+                "batch": _TypedDomainBatch("annotation-batch:typed", ("assertion:typed",)),
+                "outcomes": (_TypedDomainOutcome(row_ref="assertion:typed", status="imported"),),
+            },
         )
 
 
@@ -194,6 +221,70 @@ def test_audit_repository_replays_a_prepared_mutation_with_its_original_inputs(
             "archive:replayed",
             123,
         )
+
+
+def test_optional_archive_authority_id_replays_without_changing_existing_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An omitted authority id remains omitted across a pre-commit crash."""
+
+    audit = _audit(tmp_path)
+    assert audit.ensure_archive_authority(now_ms=1, archive_instance_id="archive:existing") == "archive:existing"
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_after_prepare(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "ensure_archive_authority" and phase == "after_source_prepare":
+            raise RuntimeError("crash after optional authority prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_after_prepare)
+    with pytest.raises(RuntimeError, match="optional authority prepare"):
+        audit.ensure_archive_authority(now_ms=2)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT archive_instance_id, created_at_ms FROM archive_authority").fetchone() == (
+            "archive:existing",
+            1,
+        )
+
+
+def test_typed_domain_receipt_replays_after_source_prepare_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real executor route persists and replays typed receipt values as JSON."""
+
+    audit = _audit(tmp_path)
+    actuator = _TypedReceiptActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "typed-receipt-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:typed-receipt",
+        archive_identity_digest="identity:typed-receipt",
+        parameter_digest="params:typed-receipt",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_finalize(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "finalize_attempt" and phase == "after_source_prepare":
+            raise RuntimeError("crash after typed receipt prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_finalize)
+    with pytest.raises(AuditFinalizationError, match="not reported completed"):
+        executor.execute_bound(_binding(actuator), preview, authorization, object())
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs").fetchone() == ("completed",)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        command = source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0]
+    assert command is None
 
 
 def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path) -> None:

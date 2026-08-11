@@ -93,7 +93,15 @@ class AuditContinuityCoordinator:
         self._phase("before_source_prepare", mutation)
         prepared = self._prepare(mutation)
         self._phase("after_source_prepare", mutation)
-        result = self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
+        try:
+            result = self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
+        except Exception:
+            # _apply_prepared has exited its audit transaction before this
+            # handler runs. Clear this exact source WAL entry only when the
+            # audit head still proves no commit happened, so validation rejects
+            # cannot wedge every later audit mutation.
+            self._abort_prepared(prepared)
+            raise
         self._phase("after_audit_commit", mutation)
         self._promote(prepared)
         self._phase("after_source_promotion", mutation)
@@ -102,6 +110,8 @@ class AuditContinuityCoordinator:
     def reconcile(self, apply: Callable[[sqlite3.Connection, AuditMutation], object]) -> None:
         """Deterministically complete a pending command or reject a stale audit image."""
 
+        if not self.is_available():
+            return
         prepared = self._pending()
         if prepared is None:
             self._assert_committed_head_matches_audit()
@@ -109,6 +119,62 @@ class AuditContinuityCoordinator:
         mutation = AuditMutation.from_command(prepared["command"])
         self._apply_prepared(prepared, apply, allow_rebind=mutation.kind == "rebind")
         self._promote(prepared)
+
+    def reconcile_pending_rebind(self, mutation_id: str) -> bool:
+        """Complete only the named operation-owned rebind command, if pending."""
+
+        prepared = self._pending()
+        if prepared is None:
+            return self.has_committed_mutation(mutation_id)
+        mutation = AuditMutation.from_command(prepared["command"])
+        if mutation.kind != "rebind" or mutation.mutation_id != mutation_id:
+            raise AuditContinuityError("pending audit continuity command does not belong to this restore rebind")
+        if not self.is_available():
+            raise AuditContinuityError("pending restore rebind lacks a readable audit continuity head")
+        self._apply_prepared(prepared, lambda _conn, _mutation: None, allow_rebind=True)
+        self._promote(prepared)
+        return True
+
+    def has_pending_rebind(self, mutation_id: str) -> bool:
+        """Return whether source.db has the named restore-owned rebind prepared."""
+
+        prepared = self._pending()
+        if prepared is None:
+            return False
+        mutation = AuditMutation.from_command(prepared["command"])
+        if mutation.kind != "rebind" or mutation.mutation_id != mutation_id:
+            raise AuditContinuityError("pending audit continuity command does not belong to this restore rebind")
+        return True
+
+    def is_available(self) -> bool:
+        """Return whether both schema halves needed for coordinated writes exist."""
+
+        if not self.source_path.is_file() or not self.audit_path.is_file():
+            return False
+        try:
+            with (
+                closing(sqlite3.connect(self.source_path)) as source,
+                closing(sqlite3.connect(self.audit_path)) as audit,
+            ):
+                source.execute("SELECT 1 FROM audit_continuity_control WHERE singleton = 1").fetchone()
+                audit.execute("SELECT 1 FROM audit_continuity_head WHERE singleton = 1").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return False
+            raise AuditContinuityError("cannot inspect audit continuity compatibility state") from exc
+        except sqlite3.DatabaseError as exc:
+            raise AuditContinuityError("cannot inspect audit continuity compatibility state") from exc
+        return True
+
+    def runtime_probe(self) -> str:
+        """Exercise the coordinator's released-schema or compatibility state."""
+
+        if not self.is_available():
+            return "standby until source.db and audit.db both install continuity control"
+        if self._pending() is not None:
+            raise AuditContinuityError("runtime probe found an unreconciled audit continuity command")
+        self._assert_committed_head_matches_audit()
+        return "reconciled matching source/audit continuity heads"
 
     def seed_or_rebind(self, *, mutation_id: str, now_ms: int, evidence: Mapping[str, object]) -> None:
         """Advance continuity after an authenticated adoption or verified restore.
@@ -284,6 +350,41 @@ class AuditContinuityCoordinator:
             if cursor.rowcount != 1:
                 raise AuditContinuityError("source audit continuity promotion lost its prepared command")
             conn.commit()
+
+    def _abort_prepared(self, prepared: Mapping[str, object]) -> None:
+        """Discard a rejected WAL command after proving its audit transaction rolled back."""
+
+        mutation = AuditMutation.from_command(prepared["command"])
+        prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
+        target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
+        with closing(sqlite3.connect(self.audit_path)) as audit:
+            row = audit.execute(
+                "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
+            ).fetchone()
+        if row is None:
+            raise AuditContinuityError("audit continuity head is missing while aborting a prepared command")
+        current = (int(row[0]), str(row[1]), row[2])
+        if current[:2] == target and current[2] == mutation.mutation_id:
+            # The audit commit did land. Keep the WAL command for normal
+            # promotion instead of mistaking an ambiguous failure for rollback.
+            return
+        if current[:2] != prior:
+            raise AuditContinuityError("cannot abort prepared command after an unrelated audit head change")
+        with closing(sqlite3.connect(self.source_path)) as source, source:
+            source.execute("BEGIN IMMEDIATE")
+            cursor = source.execute(
+                """
+                UPDATE audit_continuity_control
+                SET pending_mutation_id = NULL, pending_payload_json = NULL,
+                    pending_payload_sha256 = NULL, prepared_at_ms = NULL
+                WHERE singleton = 1 AND committed_generation = ? AND committed_head_sha256 = ?
+                  AND pending_mutation_id = ? AND pending_payload_sha256 = ?
+                """,
+                (prior[0], prior[1], mutation.mutation_id, _sha256(dict(prepared))),
+            )
+            if cursor.rowcount != 1:
+                raise AuditContinuityError("source audit continuity abort lost its prepared command")
+            source.commit()
 
     def _assert_committed_head_matches_audit(self) -> None:
         with closing(sqlite3.connect(self.source_path)) as source, closing(sqlite3.connect(self.audit_path)) as audit:

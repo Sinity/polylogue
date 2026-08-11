@@ -68,6 +68,7 @@ from polylogue.storage.sqlite.migration_runner import (
     durable_migration_claim_for_sql,
     durable_migration_collision_report,
     load_durable_change_train_manifest,
+    migrate_archive_tier,
     prove_durable_change_train,
     prove_durable_fresh_ddl_parity,
     reconcile_interrupted_durable_change_train,
@@ -1847,24 +1848,19 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
     verified = backup_archive(output_dir=archive_root.parent / "resume-post", profile="full_evidence", verify=True)
     assert verified.ok and verified.output_path is not None, verified.error
     audit_path.write_bytes(b"corrupt")
-    real_link = os.link
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
 
-    def fail_committed_link(
-        source: os.PathLike[str] | str,
-        destination: os.PathLike[str] | str,
-        *,
-        src_dir_fd: int | None = None,
-        dst_dir_fd: int | None = None,
-        follow_symlinks: bool = True,
-    ) -> None:
-        if str(destination).endswith(".committed.json"):
-            raise OSError("simulated continuity commit interruption")
-        real_link(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=follow_symlinks)
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_after_rebind_commit(self: AuditContinuityCoordinator, phase: str, mutation: object) -> None:
+        if phase == "after_audit_commit" and getattr(mutation, "mutation_id", "").startswith("audit-restore:"):
+            raise RuntimeError("simulated continuity promotion interruption")
+        original_phase(self, phase, mutation)  # type: ignore[arg-type]
 
     with monkeypatch.context() as interrupted:
-        interrupted.setattr("polylogue.operations.durable_change_train.os.link", fail_committed_link)
+        interrupted.setattr(AuditContinuityCoordinator, "_phase", interrupt_after_rebind_commit)
         with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume-interrupt") as owner:
-            with pytest.raises(MigrationError, match="cannot publish immutable audit adoption receipt"):
+            with pytest.raises(RuntimeError, match="continuity promotion interruption"):
                 restore_adopted_audit_tier(
                     audit_path,
                     backup_manifest=Path(verified.output_path) / "manifest.json",
@@ -1872,14 +1868,17 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
                     stopped_daemon_check=lambda: "proof:test-daemon-stopped",
                 )
 
-    with pytest.raises(MigrationError, match="prepared but incomplete"):
-        reconcile_durable_change_train_startup(archive_root)
     with sqlite3.connect(archive_root / "source.db") as source, sqlite3.connect(audit_path) as audit:
+        assert (
+            source.execute("SELECT pending_mutation_id FROM audit_continuity_control")
+            .fetchone()[0]
+            .startswith("audit-restore:")
+        )
         assert (
             source.execute(
                 "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
             ).fetchone()
-            == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
+            != audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
         )
     with sqlite3.connect(archive_root / "source.db") as source:
         source.execute("CREATE TABLE restore_retry_tamper (value TEXT NOT NULL) STRICT")
@@ -1905,6 +1904,47 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
 
     assert receipt.name.endswith(".committed.json")
     assert reconcile_durable_change_train_startup(archive_root) == ()
+
+
+@pytest.mark.parametrize("order", ((ArchiveTier.AUDIT, ArchiveTier.SOURCE), (ArchiveTier.SOURCE, ArchiveTier.AUDIT)))
+def test_continuity_migrations_have_a_deployable_cross_tier_compatibility_window(
+    workspace_env: dict[str, Path], order: tuple[ArchiveTier, ArchiveTier]
+) -> None:
+    """Each numbered migration can ship first; coordination activates only after both."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute("DROP TABLE audit_continuity_control")
+        source.execute("PRAGMA user_version = 31")
+        source.commit()
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        audit.execute("DROP TABLE audit_continuity_head")
+        audit.execute("PRAGMA user_version = 1")
+        audit.commit()
+    backup = backup_archive(
+        output_dir=archive_root.parent / f"continuity-{order[0].value}-first", profile="full_evidence", verify=True
+    )
+    assert backup.ok and backup.output_path is not None, backup.error
+    manifest = Path(backup.output_path) / "manifest.json"
+
+    for position, tier in enumerate(order):
+        with sqlite3.connect(archive_root / f"{tier.value}.db") as connection:
+            result = migrate_archive_tier(connection, tier, backup_manifest=manifest)
+        assert result.applied_versions == (ARCHIVE_VERSION_BY_TIER[tier],)
+        train = durable_migration_sidecar_for_slot(tier, ARCHIVE_VERSION_BY_TIER[tier]).train
+        results = _runtime_consumer_results(train, archive_root)
+        assert {result.consumer_id for result in results} == {
+            consumer.consumer_id for rider in train.riders for consumer in rider.runtime_consumers
+        }
+        probe = AuditContinuityCoordinator(archive_root)
+        if position == 0:
+            assert probe.runtime_probe().startswith("standby")
+        else:
+            assert probe.runtime_probe() == "reconciled matching source/audit continuity heads"
 
 
 def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(

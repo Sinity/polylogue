@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import fields, is_dataclass
+from enum import Enum
 from functools import wraps
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -51,6 +54,12 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
     def decorate(method: _F) -> _F:
         @wraps(method)
         def wrapped(self: AuditRepository, *args: object, **kwargs: object) -> object:
+            # The audit tier can be upgraded before source.db installs its
+            # matching WAL table. Keep that release window operational; the
+            # coordinator becomes mandatory as soon as both schema halves are
+            # present.
+            if not self._continuity.is_available():
+                return method(self, *args, **kwargs)
             mutation = AuditMutation(
                 kind=kind,
                 mutation_id=f"audit-mutation:{secrets.token_urlsafe(18)}",
@@ -165,8 +174,43 @@ def _authorization_from_payload(raw: object) -> MutationAuthorization:
     )
 
 
+def _json_primitive(value: object) -> object:
+    """Project typed receipt values into finite, replayable JSON primitives."""
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError("continuity receipt contains a non-finite float")
+        return value
+    if isinstance(value, Enum):
+        return _json_primitive(value.value)
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("continuity receipt object keys must be strings")
+            normalized[key] = _json_primitive(item)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_json_primitive(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _json_primitive(model_dump(mode="json"))
+    if is_dataclass(value) and not isinstance(value, type):
+        # Dataclass receipt values can carry private derived caches (for
+        # example AnnotationBatch's canonical byte payload). Persist only the
+        # constructor fields that define the replayable public value.
+        return _json_primitive({field.name: getattr(value, field.name) for field in fields(value) if field.init})
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"continuity receipt cannot encode {type(value).__qualname__}")
+
+
 def _receipt_payload(receipt: MutationReceipt) -> dict[str, object]:
-    return receipt.to_dict()
+    payload = _json_primitive(receipt.to_dict())
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _receipt_from_payload(raw: object) -> MutationReceipt:
@@ -227,9 +271,18 @@ class AuditRepository:
 
         values = dict(kwargs)
         if kind == "ensure_archive_authority":
+            archive_instance_id = cast(str | None, values.get("archive_instance_id"))
             return {
                 "now_ms": cast(int, values["now_ms"]),
-                "archive_instance_id": values.get("archive_instance_id") or f"archive:{secrets.token_hex(16)}",
+                # Keep caller intent separate from the deterministic value used
+                # only if this command has to create the authority row. A live
+                # call with ``None`` accepts an existing id; replay must retain
+                # that same optional semantic rather than treating a generated
+                # value as an asserted authority id.
+                "archive_instance_id": archive_instance_id,
+                "generated_archive_instance_id": (
+                    None if archive_instance_id is not None else f"archive:{secrets.token_hex(16)}"
+                ),
             }
         if kind == "create_preview":
             plan, principal = cast(MutationPlan, args[0]), cast(MutationPrincipal, args[1])
@@ -294,7 +347,7 @@ class AuditRepository:
                 return cast(Any, self.ensure_archive_authority).__wrapped__(
                     self,
                     now_ms=cast(int, payload["now_ms"]),
-                    archive_instance_id=cast(str, payload["archive_instance_id"]),
+                    archive_instance_id=cast(str | None, payload.get("archive_instance_id")),
                 )
             if mutation.kind == "create_preview":
                 return cast(Any, self.create_preview).__wrapped__(
@@ -357,7 +410,16 @@ class AuditRepository:
                 if archive_instance_id is not None and archive_instance_id != existing:
                     raise ValueError("audit archive instance identity changed")
                 return existing
-            instance_id = cast(str, archive_instance_id or self._command_value("archive_instance_id", ""))
+            instance_id = cast(
+                str,
+                archive_instance_id
+                or self._command_value(
+                    "generated_archive_instance_id",
+                    self._command_value("archive_instance_id", ""),
+                ),
+            )
+            if not instance_id:
+                raise RuntimeError("audit archive authority command lacks an instance identity")
             conn.execute(
                 "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, 1)",
                 (instance_id, now_ms),

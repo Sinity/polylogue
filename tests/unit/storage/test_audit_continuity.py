@@ -108,6 +108,28 @@ def test_second_mutation_refuses_while_first_command_is_pending(tmp_path: Path) 
         AuditContinuityCoordinator(tmp_path).execute(_mutation(2), _apply)
 
 
+def test_rejected_audit_transaction_aborts_its_prepared_command(tmp_path: Path) -> None:
+    """A deterministic reject cannot leave the source WAL blocking later work."""
+
+    initialize_active_archive_root(tmp_path)
+
+    def reject(_conn: sqlite3.Connection, _mutation: AuditMutation) -> object:
+        raise ValueError("already consumed")
+
+    coordinator = AuditContinuityCoordinator(tmp_path)
+    with pytest.raises(ValueError, match="already consumed"):
+        coordinator.execute(_mutation(1), reject)
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
+    assert coordinator.execute(_mutation(2), _apply) == "mutation:2"
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        assert audit.execute("SELECT generation, mutation_id FROM audit_continuity_head").fetchone() == (
+            1,
+            "mutation:2",
+        )
+
+
 @pytest.mark.parametrize(
     ("crash_phase", "error"),
     [

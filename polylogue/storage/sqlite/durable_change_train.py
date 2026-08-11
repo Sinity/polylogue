@@ -1468,6 +1468,10 @@ def _runtime_consumer_results(
 
                     AuditRepository.for_archive_root(archive_root).reconcile_continuity()
                     detail = "reconciled matching source/audit continuity heads"
+                elif reference.endswith(":AuditContinuityCoordinator"):
+                    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
+
+                    detail = AuditContinuityCoordinator(archive_root).runtime_probe()
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
