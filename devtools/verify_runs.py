@@ -46,7 +46,7 @@ PYTEST_BASETEMP_REQUIRED_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"
 PYTEST_MEMORY_ENVELOPE_WORKERS = 4
 PYTEST_MEMORY_ENVELOPE_PSS_KB = 4_353_168
 PYTEST_MEMORY_ENVELOPE_TMPFS_KB = 1_472_636
-PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES = 6_135_799_808
+PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES = 6_278_623_232
 
 
 def _per_worker_ceiling(total: int) -> int:
@@ -55,7 +55,14 @@ def _per_worker_ceiling(total: int) -> int:
 
 PYTEST_PROCESS_MEMORY_PER_WORKER_KB = _per_worker_ceiling(PYTEST_MEMORY_ENVELOPE_PSS_KB)
 PYTEST_TMPFS_MEMORY_PER_WORKER_KB = _per_worker_ceiling(PYTEST_MEMORY_ENVELOPE_TMPFS_KB)
-PYTEST_CGROUP_MEMORY_PER_WORKER_KB = _per_worker_ceiling((PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES + 1023) // 1024)
+PYTEST_CGROUP_OVERHEAD_PER_WORKER_KB = _per_worker_ceiling(
+    max(
+        0,
+        (PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES + 1023) // 1024
+        - PYTEST_MEMORY_ENVELOPE_PSS_KB
+        - PYTEST_MEMORY_ENVELOPE_TMPFS_KB,
+    )
+)
 
 
 class PytestResourceError(RuntimeError):
@@ -599,10 +606,11 @@ def adaptive_pytest_runtime_policy(
     artificial limit.  Reserve the command's known workers and host headroom
     from the measured four-worker process/cgroup/tmpfs envelope first.
 
-    Tmpfs pages are charged to the cgroup on this host.  ``cgroup`` is already
-    greater than the observed PSS-plus-basetemp total, so admission uses the
-    larger of that composite measurement and PSS plus the proposed tmpfs cap,
-    rather than adding cgroup and tmpfs a second time.
+    Tmpfs pages are charged to the cgroup on this host.  Preserve the measured
+    cgroup charge beyond PSS plus basetemp as an explicit overhead reserve,
+    then admit the proposed tmpfs cap against PSS + that overhead + tmpfs.
+    This models the measured composite without adding the full cgroup reading
+    and tmpfs a second time.
     """
     if available_kb is None:
         available_kb = _meminfo().get("MemAvailable")
@@ -625,15 +633,17 @@ def adaptive_pytest_runtime_policy(
         raise PytestResourceError(f"invalid pytest worker count {worker_count}")
     reserved_workers = max(1, worker_count or 1)
     process_reserve_kb = reserved_workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB
-    cgroup_reserve_kb = reserved_workers * PYTEST_CGROUP_MEMORY_PER_WORKER_KB
+    cgroup_overhead_reserve_kb = reserved_workers * PYTEST_CGROUP_OVERHEAD_PER_WORKER_KB
     tmpfs_predicted_kb = reserved_workers * PYTEST_TMPFS_MEMORY_PER_WORKER_KB
-    if cgroup_reserve_kb + PYTEST_HOST_RESERVE_KB > available_kb:
+    fixed_reserve_kb = process_reserve_kb + cgroup_overhead_reserve_kb + PYTEST_HOST_RESERVE_KB
+    minimum_tmpfs_kb = 64 * 1024
+    if fixed_reserve_kb + minimum_tmpfs_kb > available_kb:
         raise PytestResourceError(
             "cannot reserve measured pytest cgroup memory and host headroom "
             f"(available={available_kb / 1024:.0f} MiB, workers={reserved_workers}, "
-            f"required={(cgroup_reserve_kb + PYTEST_HOST_RESERVE_KB) / 1024:.0f} MiB)"
+            f"required={(fixed_reserve_kb + minimum_tmpfs_kb) / 1024:.0f} MiB)"
         )
-    memory_safe_tmpfs_kb = available_kb - PYTEST_HOST_RESERVE_KB - process_reserve_kb
+    memory_safe_tmpfs_kb = available_kb - fixed_reserve_kb
     safe_shm_budget_kb = int(shm_free_kb * 0.80)
     tmpfs_budget_kb = min(MAX_PYTEST_TMPFS_MAX_MB * 1024, safe_shm_budget_kb, memory_safe_tmpfs_kb)
     tmpfs_budget_mb = int(tmpfs_budget_kb / 1024)
@@ -846,7 +856,7 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
             # cap so a bounded run cannot fill /dev/shm and strand unrelated
             # processes before the supervisor notices.
             headroom_kb = pytest_basetemp_min_free_kb(normalized)
-            declared_demand_kb = required_kb if required_kb is not None else (budget_kb or 0)
+            declared_demand_kb = max(required_kb or 0, budget_kb or 0)
             tmpfs_required_kb = headroom_kb + declared_demand_kb
             demand_fits_budget = free_kb is not None and free_kb >= tmpfs_required_kb
             if demand_fits_budget:

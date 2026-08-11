@@ -1600,6 +1600,19 @@ def test_adaptive_pytest_policy_refuses_four_workers_at_four_gib_from_measured_e
         )
 
 
+def test_adaptive_pytest_policy_caps_near_threshold_from_full_cgroup_peak() -> None:
+    policy = adaptive_pytest_runtime_policy(
+        available_kb=6400 * 1024,
+        memory_full_avg10=0.0,
+        cpu_count=24,
+        shm_free_kb=16 * 1024 * 1024,
+        worker_count=4,
+    )
+
+    assert policy.tmpfs_budget_mb == 1338
+    assert policy.tmpfs_budget_mb < policy.tmpfs_predicted_mb
+
+
 @pytest.mark.parametrize(
     ("worker_args", "expected"),
     [
@@ -1732,6 +1745,32 @@ def test_resolve_basetemp_reroutes_known_demand_before_tmpfs_run(
     monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
 
     root, label = resolve_pytest_basetemp_root({"POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "2048"})
+
+    assert root == scratch
+    assert label == "scratch"
+
+
+def test_resolve_basetemp_reserves_the_allowed_cap_not_only_the_prediction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path == shm:
+            return {"used_kb": 0, "free_kb": 2500 * 1024}
+        if path == scratch.parent:
+            return {"used_kb": 0, "free_kb": 4096 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+
+    root, label = resolve_pytest_basetemp_root(
+        {
+            "POLYLOGUE_PYTEST_TMPFS": "1",
+            "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "1439",
+            "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "2048",
+        }
+    )
 
     assert root == scratch
     assert label == "scratch"
