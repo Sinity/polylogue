@@ -267,6 +267,45 @@ async def test_live_watcher_observes_a_spool_created_after_startup(
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
 
+@pytest.mark.asyncio
+async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An added hook shard drains immediately without waiting for catch-up."""
+
+    spool_root = tmp_path / "hooks"
+    pending = pending_hook_spool_dir(spool_root)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=None)),
+        (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+
+    async def emit_added_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
+        assert roots == (pending,)
+        event_path = enqueue_hook_event(
+            event_id="directory-notification",
+            provider="codex",
+            event_type="SessionStart",
+            session_id="session-1",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"cwd": "/workspace"},
+            root=spool_root,
+        )
+        yield {(Change.added, str(event_path.parent))}
+
+    monkeypatch.setattr(watchfiles, "awatch", emit_added_shard)
+
+    await watcher._watch_changes([pending])
+
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob("directory-notification.json")) != []
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
+
+
 def test_hook_spool_retains_sqlite_failures_for_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
