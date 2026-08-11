@@ -37,8 +37,8 @@ PYTEST_TMPFS_MAX_MB_ENV = "POLYLOGUE_PYTEST_TMPFS_MAX_MB"
 DEFAULT_PYTEST_TMPFS_MAX_MB = 512
 MAX_PYTEST_TMPFS_MAX_MB = 2048
 MIN_PYTEST_AVAILABLE_KB = 1024 * 1024
-PYTEST_WORKER_MEMORY_KB = 768 * 1024
 PYTEST_HOST_RESERVE_KB = 512 * 1024
+MIN_PYTEST_TMPFS_BUDGET_KB = 64 * 1024
 MAX_ADAPTIVE_PYTEST_WORKERS = 12
 PYTEST_BASETEMP_MIN_FREE_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB"
 DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB = 1024
@@ -47,21 +47,17 @@ PYTEST_MEMORY_ENVELOPE_WORKERS = 4
 PYTEST_MEMORY_ENVELOPE_PSS_KB = 4_353_168
 PYTEST_MEMORY_ENVELOPE_TMPFS_KB = 1_472_636
 PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES = 6_278_623_232
-
-
-def _per_worker_ceiling(total: int) -> int:
-    return (total + PYTEST_MEMORY_ENVELOPE_WORKERS - 1) // PYTEST_MEMORY_ENVELOPE_WORKERS
-
-
-PYTEST_PROCESS_MEMORY_PER_WORKER_KB = _per_worker_ceiling(PYTEST_MEMORY_ENVELOPE_PSS_KB)
-PYTEST_TMPFS_MEMORY_PER_WORKER_KB = _per_worker_ceiling(PYTEST_MEMORY_ENVELOPE_TMPFS_KB)
-PYTEST_CGROUP_OVERHEAD_PER_WORKER_KB = _per_worker_ceiling(
-    max(
-        0,
-        (PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES + 1023) // 1024
-        - PYTEST_MEMORY_ENVELOPE_PSS_KB
-        - PYTEST_MEMORY_ENVELOPE_TMPFS_KB,
-    )
+PYTEST_BASETEMP_PEAK_KB = 1_522 * 1024
+PYTEST_PROCESS_MEMORY_PER_WORKER_KB = 768 * 1024
+PYTEST_PROCESS_MEMORY_FIXED_KB = max(
+    0,
+    PYTEST_MEMORY_ENVELOPE_PSS_KB - PYTEST_MEMORY_ENVELOPE_WORKERS * PYTEST_PROCESS_MEMORY_PER_WORKER_KB,
+)
+PYTEST_CGROUP_OVERHEAD_FLOOR_KB = max(
+    0,
+    (PYTEST_MEMORY_ENVELOPE_CGROUP_BYTES + 1023) // 1024
+    - PYTEST_MEMORY_ENVELOPE_PSS_KB
+    - PYTEST_MEMORY_ENVELOPE_TMPFS_KB,
 )
 
 
@@ -589,6 +585,58 @@ def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
     return normalized
 
 
+def _pytest_process_memory_reserve_kb(workers: int) -> int:
+    """Keep the measured controller floor while scaling worker processes."""
+    return PYTEST_PROCESS_MEMORY_FIXED_KB + workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB
+
+
+def _pytest_cgroup_overhead_reserve_kb(workers: int) -> int:
+    """Keep the measured residual floor, then scale it above four workers."""
+    scale_workers = max(workers, PYTEST_MEMORY_ENVELOPE_WORKERS)
+    return (
+        PYTEST_CGROUP_OVERHEAD_FLOOR_KB * scale_workers + PYTEST_MEMORY_ENVELOPE_WORKERS - 1
+    ) // PYTEST_MEMORY_ENVELOPE_WORKERS
+
+
+def _pytest_non_tmpfs_memory_reserve_kb(workers: int) -> int:
+    return (
+        _pytest_process_memory_reserve_kb(workers)
+        + _pytest_cgroup_overhead_reserve_kb(workers)
+        + PYTEST_HOST_RESERVE_KB
+    )
+
+
+def _default_pytest_workers(*, available_kb: int, cpu_cap: int, memory_full_avg10: float) -> int:
+    """Choose a pool that the same launch-time envelope can admit.
+
+    Prefer the largest pool that preserves the measured aggregate basetemp in
+    memory. If even one worker cannot do that, retain the largest pool that can
+    start with the minimum tmpfs allowance so placement can reroute the shared
+    basetemp to scratch.
+    """
+
+    maximum = min(MAX_ADAPTIVE_PYTEST_WORKERS, cpu_cap)
+
+    def largest_with(tmpfs_reserve_kb: int) -> int | None:
+        return next(
+            (
+                workers
+                for workers in range(maximum, 0, -1)
+                if _pytest_non_tmpfs_memory_reserve_kb(workers) + tmpfs_reserve_kb <= available_kb
+            ),
+            None,
+        )
+
+    workers = largest_with(PYTEST_BASETEMP_PEAK_KB)
+    if workers is None:
+        workers = largest_with(MIN_PYTEST_TMPFS_BUDGET_KB) or 1
+    if memory_full_avg10 >= 2.0:
+        return max(1, workers // 4)
+    if memory_full_avg10 >= 0.5:
+        return max(1, workers // 2)
+    return workers
+
+
 def adaptive_pytest_runtime_policy(
     *,
     available_kb: int | None = None,
@@ -597,7 +645,7 @@ def adaptive_pytest_runtime_policy(
     shm_free_kb: int | None = None,
     worker_count: int | None = None,
 ) -> PytestRuntimePolicy:
-    """Size tmpfs and xdist from current headroom without a disk fallback.
+    """Size tmpfs and xdist from one measured resource envelope.
 
     The tmpfs cap is an admission limit, so it must be derived from capacity
     the host can actually reserve.  A percentage of ``MemAvailable`` made a
@@ -606,11 +654,13 @@ def adaptive_pytest_runtime_policy(
     artificial limit.  Reserve the command's known workers and host headroom
     from the measured four-worker process/cgroup/tmpfs envelope first.
 
-    Tmpfs pages are charged to the cgroup on this host.  Preserve the measured
-    cgroup charge beyond PSS plus basetemp as an explicit overhead reserve,
-    then admit the proposed tmpfs cap against PSS + that overhead + tmpfs.
-    This models the measured composite without adding the full cgroup reading
-    and tmpfs a second time.
+    The four-worker PSS measurement contains a controller and supervisor that
+    do not disappear at one worker. Preserve the remainder after the existing
+    768 MiB marginal worker allowance as a fixed process component. Keep the
+    measured residual cgroup charge as a floor through four workers and scale
+    it above the observed concurrency. Reserve the separately observed 1,521.6
+    MiB basetemp peak at its next whole-MiB ceiling because it is one aggregate
+    run tree, independent of how xdist partitions the tests.
     """
     if available_kb is None:
         available_kb = _meminfo().get("MemAvailable")
@@ -629,19 +679,26 @@ def adaptive_pytest_runtime_policy(
     if shm_free_kb is None:
         raise PytestResourceError("/dev/shm is unavailable; refusing to fall back to disk-backed pytest")
 
-    if worker_count is not None and worker_count < 0:
-        raise PytestResourceError(f"invalid pytest worker count {worker_count}")
-    reserved_workers = max(1, worker_count or 1)
-    process_reserve_kb = reserved_workers * PYTEST_PROCESS_MEMORY_PER_WORKER_KB
-    cgroup_overhead_reserve_kb = reserved_workers * PYTEST_CGROUP_OVERHEAD_PER_WORKER_KB
-    tmpfs_predicted_kb = reserved_workers * PYTEST_TMPFS_MEMORY_PER_WORKER_KB
-    fixed_reserve_kb = process_reserve_kb + cgroup_overhead_reserve_kb + PYTEST_HOST_RESERVE_KB
-    minimum_tmpfs_kb = 64 * 1024
-    if fixed_reserve_kb + minimum_tmpfs_kb > available_kb:
+    logical_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    cpu_cap = max(1, logical_cpus // 2)
+    if worker_count is not None:
+        if worker_count < 0:
+            raise PytestResourceError(f"invalid pytest worker count {worker_count}")
+        reserved_workers = max(1, worker_count)
+    else:
+        reserved_workers = _default_pytest_workers(
+            available_kb=available_kb,
+            cpu_cap=cpu_cap,
+            memory_full_avg10=memory_full_avg10,
+        )
+
+    fixed_reserve_kb = _pytest_non_tmpfs_memory_reserve_kb(reserved_workers)
+    tmpfs_predicted_kb = PYTEST_BASETEMP_PEAK_KB
+    if fixed_reserve_kb + MIN_PYTEST_TMPFS_BUDGET_KB > available_kb:
         raise PytestResourceError(
             "cannot reserve measured pytest cgroup memory and host headroom "
             f"(available={available_kb / 1024:.0f} MiB, workers={reserved_workers}, "
-            f"required={(fixed_reserve_kb + minimum_tmpfs_kb) / 1024:.0f} MiB)"
+            f"required={(fixed_reserve_kb + MIN_PYTEST_TMPFS_BUDGET_KB) / 1024:.0f} MiB)"
         )
     memory_safe_tmpfs_kb = available_kb - fixed_reserve_kb
     safe_shm_budget_kb = int(shm_free_kb * 0.80)
@@ -654,26 +711,10 @@ def adaptive_pytest_runtime_policy(
             f"/dev/shm free={shm_free_kb / 1024:.0f} MiB)"
         )
 
-    logical_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
-    cpu_cap = max(1, logical_cpus // 2)
-    worker_pool_kb = max(0, available_kb - tmpfs_budget_mb * 1024 - PYTEST_HOST_RESERVE_KB)
-    workers = max(
-        1,
-        min(
-            MAX_ADAPTIVE_PYTEST_WORKERS,
-            cpu_cap,
-            max(1, worker_pool_kb // PYTEST_WORKER_MEMORY_KB),
-        ),
-    )
-    if memory_full_avg10 >= 2.0:
-        workers = max(1, workers // 4)
-    elif memory_full_avg10 >= 0.5:
-        workers = max(1, workers // 2)
-
     return PytestRuntimePolicy(
         available_kb=available_kb,
         tmpfs_budget_mb=tmpfs_budget_mb,
-        workers=workers,
+        workers=reserved_workers,
         memory_full_avg10=memory_full_avg10,
         tmpfs_predicted_mb=(tmpfs_predicted_kb + 1023) // 1024,
     )
@@ -698,7 +739,12 @@ def apply_managed_pytest_runtime_policy(
         normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
         if policy.tmpfs_predicted_mb is not None:
             normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
-        if policy.tmpfs_predicted_mb is not None and policy.tmpfs_budget_mb < policy.tmpfs_predicted_mb:
+        effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
+        if (
+            policy.tmpfs_predicted_mb is not None
+            and effective_tmpfs_budget_kb is not None
+            and effective_tmpfs_budget_kb < policy.tmpfs_predicted_mb * 1024
+        ):
             normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
     if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:

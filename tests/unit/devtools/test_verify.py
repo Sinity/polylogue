@@ -73,6 +73,7 @@ from devtools.verify_runs import (
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_runtime_policy,
+    adaptive_pytest_worker_count,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
@@ -1584,9 +1585,9 @@ def test_adaptive_pytest_policy_uses_host_capacity_not_ten_percent_cap() -> None
         worker_count=4,
     )
 
-    assert policy.workers == 12
+    assert policy.workers == 4
     assert policy.tmpfs_budget_mb == 2048
-    assert policy.tmpfs_predicted_mb == 1439
+    assert policy.tmpfs_predicted_mb == 1522
 
 
 def test_adaptive_pytest_policy_refuses_four_workers_at_four_gib_from_measured_envelope() -> None:
@@ -1612,6 +1613,32 @@ def test_adaptive_pytest_policy_caps_near_threshold_from_full_cgroup_peak() -> N
     assert policy.tmpfs_budget_mb == 1338
     assert policy.tmpfs_predicted_mb is not None
     assert policy.tmpfs_budget_mb < policy.tmpfs_predicted_mb
+
+
+def test_adaptive_pytest_policy_preserves_controller_memory_at_one_worker() -> None:
+    with pytest.raises(PytestResourceError, match="cannot reserve measured pytest cgroup memory"):
+        adaptive_pytest_runtime_policy(
+            available_kb=2800 * 1024,
+            memory_full_avg10=0.0,
+            cpu_count=24,
+            shm_free_kb=16 * 1024 * 1024,
+            worker_count=1,
+        )
+
+
+def test_adaptive_pytest_policy_treats_full_run_basetemp_as_aggregate_demand() -> None:
+    predictions = {
+        adaptive_pytest_runtime_policy(
+            available_kb=16 * 1024 * 1024,
+            memory_full_avg10=0.0,
+            cpu_count=24,
+            shm_free_kb=16 * 1024 * 1024,
+            worker_count=workers,
+        ).tmpfs_predicted_mb
+        for workers in (1, 4, 8)
+    }
+
+    assert predictions == {1522}
 
 
 @pytest.mark.parametrize(
@@ -1699,6 +1726,61 @@ def _patch_basetemp_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, re
     return shm, scratch
 
 
+def _patch_resource_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    shm: Path,
+    scratch: Path,
+    available_mb: int,
+) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": available_mb * 1024})
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path in {shm, scratch.parent}:
+            return {"used_kb": 0, "free_kb": 16 * 1024 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+
+
+def test_default_workers_on_eight_gib_remain_admissible_through_placement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=8192)
+
+    workers = adaptive_pytest_worker_count({})
+    env, policy = apply_managed_pytest_runtime_policy({}, worker_count=workers)
+
+    assert workers == 5
+    assert policy is not None
+    assert policy.workers == workers
+    assert policy.basetemp_label == "tmpfs opt-in"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+
+
+def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+
+    env, policy = apply_managed_pytest_runtime_policy(
+        {"POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512"},
+        worker_count=4,
+    )
+
+    assert policy is not None
+    assert policy.tmpfs_budget_mb == 2048
+    assert policy.tmpfs_predicted_mb == 1522
+    assert policy.basetemp_label == "scratch"
+    assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "512"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
 def test_resolve_basetemp_prefers_tmpfs_when_it_has_headroom(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
     monkeypatch.setattr(
@@ -1768,7 +1850,7 @@ def test_resolve_basetemp_reserves_the_allowed_cap_not_only_the_prediction(
     root, label = resolve_pytest_basetemp_root(
         {
             "POLYLOGUE_PYTEST_TMPFS": "1",
-            "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "1439",
+            "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB": "1522",
             "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "2048",
         }
     )
