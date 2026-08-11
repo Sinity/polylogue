@@ -944,12 +944,16 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
     return manifest_path, receipt_path
 
 
-def validate_full_evidence_backup_for_adopted_audit_restore(path: Path, *, archive_root: Path) -> tuple[Path, Path]:
+def validate_full_evidence_backup_for_adopted_audit_restore(
+    path: Path, *, archive_root: Path, allow_source_continuity_rebind: bool = False
+) -> tuple[Path, Path]:
     """Authorize replacing adopted ``audit.db`` from one exact backup.
 
     The audit file may be absent or unreadable, so its stable path authority is
     verified without opening it. Every other captured tier must still match
-    the scratch-verified full-evidence snapshot byte for byte.
+    the scratch-verified full-evidence snapshot byte for byte, except that a
+    retry after continuity promotion may differ only in source.db's control
+    row.
     """
     manifest_path = _backup_manifest_path(path)
     if not manifest_path.exists() and not manifest_path.is_symlink():
@@ -1028,6 +1032,11 @@ def validate_full_evidence_backup_for_adopted_audit_restore(path: Path, *, archi
         wal_path = live_path.with_name(f"{live_path.name}-wal")
         if wal_path.exists() and wal_path.stat().st_size:
             raise MigrationError(f"adopted-audit restore has live WAL divergence for {tier}.db")
+        if tier == "source" and allow_source_continuity_rebind:
+            if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+                raise MigrationError("adopted-audit restore backup is stale for source.db")
+            _validate_source_continuity_rebind_delta(artifact_path, live_path)
+            continue
         if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
             raise MigrationError(f"adopted-audit restore backup is stale for {tier}.db")
         if str(fingerprint.get("sha256")) != _sha256_file(live_path):
@@ -1035,6 +1044,42 @@ def validate_full_evidence_backup_for_adopted_audit_restore(path: Path, *, archi
         if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
             raise MigrationError(f"adopted-audit restore backup is stale for {tier}.db")
     return manifest_path, receipt_path
+
+
+def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path) -> None:
+    """Allow a retrying restore to differ only in the source continuity table."""
+
+    try:
+        with sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True) as connection:
+            connection.execute(
+                "ATTACH DATABASE ? AS backup_source", (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro",)
+            )
+            schema_sql = """
+                SELECT type, name, tbl_name, sql
+                FROM {schema}.sqlite_schema
+                WHERE name NOT LIKE 'sqlite_%'
+                  AND name != 'audit_continuity_control'
+                ORDER BY type, name
+            """
+            live_schema = connection.execute(schema_sql.format(schema="main")).fetchall()
+            backup_schema = connection.execute(schema_sql.format(schema="backup_source")).fetchall()
+            if live_schema != backup_schema:
+                raise MigrationError("adopted-audit restore backup is stale for source.db")
+            table_names = [str(row[1]) for row in live_schema if row[0] == "table"]
+            for table_name in table_names:
+                quoted = _quote_sqlite_identifier(table_name)
+                live_count = int(connection.execute(f"SELECT COUNT(*) FROM main.{quoted}").fetchone()[0])
+                backup_count = int(connection.execute(f"SELECT COUNT(*) FROM backup_source.{quoted}").fetchone()[0])
+                if live_count != backup_count:
+                    raise MigrationError("adopted-audit restore backup is stale for source.db")
+                for left, right in (("main", "backup_source"), ("backup_source", "main")):
+                    differs = connection.execute(
+                        f"SELECT 1 FROM (SELECT * FROM {left}.{quoted} EXCEPT SELECT * FROM {right}.{quoted}) LIMIT 1"
+                    ).fetchone()
+                    if differs is not None:
+                        raise MigrationError("adopted-audit restore backup is stale for source.db")
+    except sqlite3.DatabaseError as exc:
+        raise MigrationError("cannot compare adopted-audit restore source continuity delta") from exc
 
 
 def validate_backup_manifest_covers_derived_tier(

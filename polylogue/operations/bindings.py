@@ -155,7 +155,7 @@ def runtime_operation_binding(actuator: MutationActuator[ArgsT]) -> OperationBin
                 ),
             ),
         )
-    binding = OperationBinding(spec, actuator)
+    binding: OperationBinding[ArgsT, object] = OperationBinding(spec, actuator)
     binding.validate()
     return binding
 

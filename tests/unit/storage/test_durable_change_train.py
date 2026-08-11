@@ -1712,7 +1712,7 @@ def test_audit_adoption_receipt_survives_startup_preflight(
             stopped_daemon_check=lambda: "proof:test-daemon-stopped",
         )
 
-    assert version == 1
+    assert version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
     assert receipt == audit_adoption_receipt_path(archive_root)
     assert {
         archive_root,
@@ -1791,7 +1791,6 @@ def test_adopted_audit_restore_rebinds_continuity_from_verified_backup(workspace
     verified = backup_archive(output_dir=archive_root.parent / "post-adoption", profile="full_evidence", verify=True)
     assert verified.ok, verified.error
     assert verified.output_path is not None
-    expected_bytes = (Path(verified.output_path) / "audit.db").read_bytes()
     with closing(sqlite3.connect(archive_root / "index.db")) as connection:
         current_index_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
         connection.execute(f"PRAGMA user_version = {current_index_version + 1}")
@@ -1807,7 +1806,9 @@ def test_adopted_audit_restore_rebinds_continuity_from_verified_backup(workspace
             stopped_daemon_check=lambda: "proof:test-daemon-stopped",
         )
 
-    assert audit_path.read_bytes() == expected_bytes
+    with closing(sqlite3.connect(audit_path)) as audit:
+        assert audit.execute("PRAGMA user_version").fetchone() == (ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],)
+        assert audit.execute("SELECT generation FROM audit_continuity_head").fetchone() == (2,)
     assert (audit_path.stat().st_dev, audit_path.stat().st_ino) != old_identity
     assert receipt.name.endswith(".committed.json")
     assert receipt.with_name(receipt.name.replace(".committed.json", ".prepared.json")).is_file()
@@ -1880,6 +1881,20 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
             ).fetchone()
             == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
         )
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute("CREATE TABLE restore_retry_tamper (value TEXT NOT NULL) STRICT")
+        source.commit()
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume-tamper") as owner:
+        with pytest.raises(MigrationError, match="backup is stale for source.db"):
+            restore_adopted_audit_tier(
+                audit_path,
+                backup_manifest=Path(verified.output_path) / "manifest.json",
+                directory_fd=owner.directory_fd,
+                stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+            )
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute("DROP TABLE restore_retry_tamper")
+        source.commit()
     with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-resume") as owner:
         receipt = restore_adopted_audit_tier(
             audit_path,
@@ -1914,16 +1929,15 @@ def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(
     verified = backup_archive(output_dir=archive_root.parent / "staging-post", profile="full_evidence", verify=True)
     assert verified.ok and verified.output_path is not None, verified.error
     audit_path.write_bytes(b"corrupt")
-    real_replace = os.replace
     real_unlink = os.unlink
 
     def interrupt_publication(*args: object, **kwargs: object) -> None:
         raise OSError("simulated restore publication crash")
 
-    def leave_staging(name: os.PathLike[str] | str, *args: object, **kwargs: object) -> None:
+    def leave_staging(name: os.PathLike[str] | str, *, dir_fd: int | None = None) -> None:
         if str(name).startswith(".audit.db.restore-"):
             return
-        real_unlink(name, *args, **kwargs)
+        real_unlink(name, dir_fd=dir_fd)
 
     with monkeypatch.context() as interrupted:
         interrupted.setattr("polylogue.operations.durable_change_train.os.replace", interrupt_publication)
@@ -2110,7 +2124,9 @@ def test_adopted_audit_restore_rejects_backup_swap_after_validation(
     assert verified.ok and verified.output_path is not None, verified.error
     backup_root = Path(verified.output_path)
     audit_path.write_bytes(b"corrupt-before-swap-test")
-    real_validate = operations_durable_change_train.validate_full_evidence_backup_for_adopted_audit_restore
+    from polylogue.storage.sqlite.migration_runner import validate_full_evidence_backup_for_adopted_audit_restore
+
+    real_validate = validate_full_evidence_backup_for_adopted_audit_restore
     calls = 0
 
     def swap_after_validation(path: Path, *, archive_root: Path) -> tuple[Path, Path]:
@@ -3154,7 +3170,6 @@ def test_bootstrap_reconciles_and_persists_interrupted_train_evidence(
         conn.execute("CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
         conn.execute(f"PRAGMA user_version = {_TARGET_VERSION}")
         conn.commit()
-    bootstrap.initialize_archive_database(tmp_path / "audit.db", ArchiveTier.AUDIT)
     manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
     write_durable_change_train_manifest(manifest, train, expected_revision=-1)
 
@@ -3232,6 +3247,7 @@ def test_startup_proves_durable_continuity_before_initialization_or_release(
 
     db_path = tmp_path / f"{tier.value}.db"
     _create_current_database(db_path)
+    bootstrap.initialize_archive_database(tmp_path / "audit.db", ArchiveTier.AUDIT)
     _install_synthetic_migration(tmp_path, monkeypatch, tier)
     train = _admitted(tier, rider=_production_rider())
     with sqlite3.connect(db_path) as conn:

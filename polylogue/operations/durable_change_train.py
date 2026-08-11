@@ -1283,8 +1283,20 @@ def restore_adopted_audit_tier(
     if continuity is None or continuity.get("receipt_sha256") != adoption.get("receipt_sha256"):
         raise MigrationError("adopted-audit restore requires completed continuity for this adoption receipt")
     stopped_evidence = stopped_daemon_check()
+    restore_records = _audit_restore_records(archive_root)
+    committed_restore_operations = {
+        (payload.get("generation"), payload.get("operation_id"))
+        for _path, payload in restore_records
+        if payload.get("state") == "committed"
+    }
+    has_pending_restore = any(
+        payload.get("state") == "prepared"
+        and (payload.get("generation"), payload.get("operation_id")) not in committed_restore_operations
+        for _path, payload in restore_records
+    )
+    restore_validation_kwargs = {"allow_source_continuity_rebind": True} if has_pending_restore else {}
     manifest_path, verification_receipt = validate_full_evidence_backup_for_adopted_audit_restore(
-        backup_manifest, archive_root=archive_root
+        backup_manifest, archive_root=archive_root, **restore_validation_kwargs
     )
     artifact_sha256, artifact_size, artifact_version = _audit_restore_artifact_binding(verification_receipt)
     expected_application_id = adoption.get("audit_application_id")
@@ -1304,7 +1316,7 @@ def restore_adopted_audit_tier(
 
     def revalidate_exact_backup() -> None:
         current_manifest, current_receipt = validate_full_evidence_backup_for_adopted_audit_restore(
-            backup_manifest, archive_root=archive_root
+            backup_manifest, archive_root=archive_root, **restore_validation_kwargs
         )
         if (
             current_manifest.resolve() != manifest_path.resolve()
@@ -1317,7 +1329,6 @@ def restore_adopted_audit_tier(
     previous_continuity_sha256 = continuity.get("continuity_sha256")
     if not isinstance(previous_continuity_sha256, str):
         raise MigrationError("adopted-audit restore continuity lacks its checksum")
-    restore_records = _audit_restore_records(archive_root)
     committed_generations: list[int] = []
     pending_records: list[tuple[Path, dict[str, object]]] = []
     committed_operations: set[tuple[int, str]] = set()
@@ -1386,9 +1397,15 @@ def restore_adopted_audit_tier(
         )
     temporary_name = f".audit.db.restore-{operation_id}.tmp"
     _remove_stale_restore_staging(directory_fd=directory_fd, temporary_name=temporary_name)
+    rebind_mutation_id = f"audit-restore:{operation_id}"
+    rebind_already_committed = has_pending_restore and AuditContinuityCoordinator(archive_root).has_committed_mutation(
+        rebind_mutation_id
+    )
     published = False
     try:
-        if _audit_file_matches_artifact(archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size):
+        if rebind_already_committed or _audit_file_matches_artifact(
+            archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size
+        ):
             published = True
         else:
             _copy_restore_artifact(
@@ -1407,7 +1424,7 @@ def restore_adopted_audit_tier(
             os.replace(temporary_name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
             os.fsync(directory_fd)
             published = True
-        if _audit_file_sha256(path) != artifact_sha256:
+        if not rebind_already_committed and _audit_file_sha256(path) != artifact_sha256:
             raise MigrationError("adopted-audit restore published image changed before continuity rebind")
         identity = _audit_file_identity(path)
         version, application_id, quick_check = _audit_live_metadata(path)
@@ -1429,15 +1446,16 @@ def restore_adopted_audit_tier(
             "audit_image_sha256": artifact_sha256,
         }
         committed["continuity_sha256"] = _canonical_json_sha256(committed)
-        AuditContinuityCoordinator(archive_root).seed_or_rebind(
-            mutation_id=f"audit-restore:{operation_id}",
-            now_ms=int(time.time() * 1000),
-            evidence={
-                "kind": "verified_restore",
-                "restore_continuity_sha256": committed["continuity_sha256"],
-                "audit_image_sha256": artifact_sha256,
-            },
-        )
+        if not rebind_already_committed:
+            AuditContinuityCoordinator(archive_root).seed_or_rebind(
+                mutation_id=rebind_mutation_id,
+                now_ms=int(time.time() * 1000),
+                evidence={
+                    "kind": "verified_restore",
+                    "restore_continuity_sha256": committed["continuity_sha256"],
+                    "audit_image_sha256": artifact_sha256,
+                },
+            )
         _write_immutable_audit_adoption_receipt(
             committed_path,
             committed,

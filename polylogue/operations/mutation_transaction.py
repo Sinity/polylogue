@@ -364,6 +364,7 @@ def build_typed_plan(
     required_confirmation: ConfirmationStrength,
     prepared_at_ms: int,
     expires_at_ms: int,
+    context: Mapping[str, object] | None = None,
 ) -> MutationPlan:
     """Construct a plan whose hash covers the complete typed authority input."""
 
@@ -388,6 +389,7 @@ def build_typed_plan(
         reversible=destructive_class in {"additive", "reversible"},
         prepared_at=datetime.fromtimestamp(prepared_at_ms / 1000, UTC).isoformat(),
         plan_hash=plan_hash,
+        context=dict(context or {}),
         operation_version=operation_version,
         archive_instance_id=archive_instance_id,
         archive_identity_digest=archive_identity_digest,
@@ -815,6 +817,7 @@ class OperationExecutor:
             required_confirmation=required_confirmation,
             prepared_at_ms=self._now_ms(),
             expires_at_ms=expires_at_ms,
+            context=plan.context,
         )
 
     def authorize(

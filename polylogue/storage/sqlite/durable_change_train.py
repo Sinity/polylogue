@@ -1,4 +1,4 @@
-"""Durable source/user migration change-train authority."""
+"""Durable source/user/audit migration change-train authority."""
 
 from __future__ import annotations
 
@@ -489,7 +489,7 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
 
 
 def _durable_identity_digest(identity: object) -> str:
-    """Digest only the durable source/user identity for bootstrap receipts."""
+    """Digest the durable source/user/audit identity for bootstrap receipts."""
     from polylogue.storage.archive_identity import ArchiveIdentity
 
     if not isinstance(identity, ArchiveIdentity):
@@ -1463,6 +1463,11 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_failure_disposition_apply(cast(Callable[..., object], value), archive_root)
+                elif reference.endswith(":AuditRepository.reconcile_continuity"):
+                    from polylogue.operations.audit import AuditRepository
+
+                    AuditRepository.for_archive_root(archive_root).reconcile_continuity()
+                    detail = "reconciled matching source/audit continuity heads"
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -1972,6 +1977,8 @@ def _released_train_manifests_by_target(
     if not manifest_root.is_dir():
         return manifests_by_target
     for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
+        if path.name in {"audit-adoption.json", "audit-continuity.json"} or path.name.startswith("audit-restore."):
+            continue
         train = load_durable_change_train_manifest(path)
         if train.target_version in manifests_by_target:
             raise DurableChangeTrainError(

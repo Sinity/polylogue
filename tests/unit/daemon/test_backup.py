@@ -631,7 +631,7 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     assert inventory == [
         {
             "blob_hash": blob_hash,
-            "protection": ["reserved"],
+            "protection": ["referenced", "reserved"],
             "size_bytes": len(payload),
         }
     ]

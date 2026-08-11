@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, cast
 
 _FORMAT = "polylogue.audit-continuity-command.v1"
 _T = TypeVar("_T")
@@ -121,11 +121,35 @@ class AuditContinuityCoordinator:
         expected_image_sha256 = evidence.get("audit_image_sha256")
         if not isinstance(expected_image_sha256, str) or len(expected_image_sha256) != 64:
             raise AuditContinuityError("rebind requires an exact audit image sha256")
+        if self.has_committed_mutation(mutation_id):
+            return
         mutation = AuditMutation("rebind", mutation_id, now_ms, dict(evidence))
 
         # A verified restored image can contain an older audit head. Its
         # authenticated image hash is the authority to rebind it.
         self.execute(mutation, lambda _conn, _mutation: None)
+
+    def has_committed_mutation(self, mutation_id: str) -> bool:
+        """Return whether both tiers already committed this exact mutation id."""
+        self._require_paths()
+        try:
+            with (
+                closing(sqlite3.connect(self.source_path)) as source,
+                closing(sqlite3.connect(self.audit_path)) as audit,
+            ):
+                source_row = source.execute(
+                    "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
+                ).fetchone()
+                audit_row = audit.execute(
+                    "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
+                ).fetchone()
+        except sqlite3.DatabaseError:
+            return False
+        if source_row is None or audit_row is None:
+            raise AuditContinuityError("audit continuity control row is missing")
+        if (int(source_row[0]), str(source_row[1])) != (int(audit_row[0]), str(audit_row[1])):
+            return False
+        return isinstance(audit_row[2], str) and audit_row[2] == mutation_id
 
     def _phase(self, name: str, mutation: AuditMutation) -> None:
         if self._phase_hook is not None:
@@ -215,11 +239,11 @@ class AuditContinuityCoordinator:
             if row is None:
                 raise AuditContinuityError("audit continuity head is missing")
             current = (int(row[0]), str(row[1]), row[2])
-            prior = (int(prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
-            target = (int(prepared["next_generation"]), str(prepared["next_head_sha256"]))
+            prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
+            target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
             if current[:2] == target and current[2] == mutation.mutation_id:
                 conn.commit()
-                return None  # type: ignore[return-value]
+                return cast(_T, None)
             if mutation.kind == "rebind":
                 # A retry after the audit-side commit sees the target head and
                 # returns above. Any other state must still prove that the
@@ -230,7 +254,7 @@ class AuditContinuityCoordinator:
                     pass
                 else:
                     raise AuditContinuityError("audit continuity head does not match the prepared source command")
-            result = None if mutation.kind == "rebind" else apply(conn, mutation)
+            result = cast(_T, None) if mutation.kind == "rebind" else apply(conn, mutation)
             conn.execute(
                 "UPDATE audit_continuity_head SET generation = ?, head_sha256 = ?, mutation_id = ?, advanced_at_ms = ? WHERE singleton = 1",
                 (*target, mutation.mutation_id, mutation.created_at_ms),
@@ -278,10 +302,11 @@ class AuditContinuityCoordinator:
         command = prepared.get("command")
         if not isinstance(command, dict) or prepared.get("format") != _FORMAT:
             raise AuditContinuityError("audit continuity command format mismatch")
-        required_ints = ("prior_generation", "next_generation")
-        if any(not isinstance(prepared.get(key), int) for key in required_ints):
+        prior_generation = prepared.get("prior_generation")
+        next_generation = prepared.get("next_generation")
+        if not isinstance(prior_generation, int) or not isinstance(next_generation, int):
             raise AuditContinuityError("audit continuity command generations are malformed")
-        if prepared["next_generation"] != prepared["prior_generation"] + 1:
+        if next_generation != prior_generation + 1:
             raise AuditContinuityError("audit continuity command generation is non-monotonic")
         command_sha256 = _sha256(command)
         if prepared.get("command_sha256") != command_sha256:

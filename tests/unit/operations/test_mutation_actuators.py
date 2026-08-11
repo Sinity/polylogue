@@ -90,8 +90,7 @@ from polylogue.operations.mutation_transaction import (
     PlanStaleError,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
@@ -165,7 +164,7 @@ class TestSessionDeleteActuator:
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
         with sqlite3.connect(archive_root / "audit.db") as conn:
-            assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "executed"
+            assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
             assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
     def test_execute_without_authorization_confirm_flag_refuses(self, tmp_path: Path) -> None:

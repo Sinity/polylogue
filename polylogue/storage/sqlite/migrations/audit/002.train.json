@@ -26,9 +26,15 @@
           "production_ref": "polylogue.storage.sqlite.audit_continuity:AuditContinuityCoordinator",
           "behavior_proof_ref": "proof:audit-v2:cross-tier-continuity",
           "roles": ["read", "write"]
+        },
+        {
+          "consumer_id": "audit-continuity-startup-reconcile",
+          "production_ref": "polylogue.operations.audit:AuditRepository.reconcile_continuity",
+          "behavior_proof_ref": "proof:audit-v2:startup-continuity-reconcile",
+          "roles": ["read"]
         }
       ],
-      "behavior_proof_refs": ["proof:audit-v2:cross-tier-continuity"],
+      "behavior_proof_refs": ["proof:audit-v2:cross-tier-continuity", "proof:audit-v2:startup-continuity-reconcile"],
       "after_rider_ids": [],
       "trust_floor_exception_ref": null
     }
@@ -52,5 +58,5 @@
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "10d2d90dd519bc8496a9239459e06b30b33f2321ed8dfdcb5bb1de9f67e9c716"
+  "manifest_sha256": "c80342407e50cf0ecb7e30aa2bb56b132c705ac848f992ca8ccdf1b1634c78b0"
 }

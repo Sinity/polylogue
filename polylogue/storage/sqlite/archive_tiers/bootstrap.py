@@ -309,6 +309,22 @@ def initialize_archive_database(
         conn.close()
 
 
+def _source_has_audit_continuity_control(source_path: Path) -> bool:
+    """Return whether source.db is under the replayable audit continuity regime."""
+    if not source_path.is_file():
+        return False
+    try:
+        with sqlite3.connect(f"{source_path.resolve(strict=True).as_uri()}?mode=ro", uri=True) as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'audit_continuity_control'"
+                ).fetchone()
+                is not None
+            )
+    except sqlite3.DatabaseError:
+        return False
+
+
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
@@ -403,6 +419,7 @@ def initialize_active_archive_root(root: Path) -> None:
             durable_tier_exists
             and not recovering_fresh_durable_bootstrap
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
+            and _source_has_audit_continuity_control(root / archive_tier_spec(ArchiveTier.SOURCE).filename)
         ):
             raise RuntimeError(
                 "established archive is missing audit.db; use maintenance migrate-tier audit "
@@ -415,10 +432,12 @@ def initialize_active_archive_root(root: Path) -> None:
             assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)
         # Runtime mutation composition must observe a reconciled source/audit
-        # head before it can open any tier for writes.
-        from polylogue.operations.audit import AuditRepository
+        # head before it can open any tier for writes. Older adopted archives
+        # have no source-side continuity control to reconcile.
+        if _source_has_audit_continuity_control(root / archive_tier_spec(ArchiveTier.SOURCE).filename):
+            from polylogue.operations.audit import AuditRepository
 
-        AuditRepository.for_archive_root(root).reconcile_continuity()
+            AuditRepository.for_archive_root(root).reconcile_continuity()
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)

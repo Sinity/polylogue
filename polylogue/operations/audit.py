@@ -7,11 +7,11 @@ import json
 import secrets
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeVar, cast
 
 from polylogue.operations.mutation_transaction import (
     MutationAuthorization,
@@ -34,6 +34,7 @@ AuditTargetState = Literal[
     "acknowledged",
     "cancelled",
 ]
+_F = TypeVar("_F", bound=Callable[..., object])
 
 
 def token_sha256(token: str) -> str:
@@ -44,10 +45,10 @@ def token_sha256(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _continuity_mutation(kind: str):
+def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
     """Route one audit repository state transition through the source WAL."""
 
-    def decorate(method):
+    def decorate(method: _F) -> _F:
         @wraps(method)
         def wrapped(self: AuditRepository, *args: object, **kwargs: object) -> object:
             mutation = AuditMutation(
@@ -68,7 +69,7 @@ def _continuity_mutation(kind: str):
 
             return self._continuity.execute(mutation, apply)
 
-        return wrapped
+        return cast(_F, wrapped)
 
     return decorate
 
@@ -290,30 +291,30 @@ class AuditRepository:
         self._coordinated_mutation = mutation
         try:
             if mutation.kind == "ensure_archive_authority":
-                return self.ensure_archive_authority.__wrapped__(
+                return cast(Any, self.ensure_archive_authority).__wrapped__(
                     self,
                     now_ms=cast(int, payload["now_ms"]),
                     archive_instance_id=cast(str, payload["archive_instance_id"]),
                 )
             if mutation.kind == "create_preview":
-                return self.create_preview.__wrapped__(
+                return cast(Any, self.create_preview).__wrapped__(
                     self, _plan_from_payload(payload["plan"]), _principal_from_payload(payload["principal"])
                 )
             if mutation.kind == "issue_authorization":
-                return self.issue_authorization.__wrapped__(
+                return cast(Any, self.issue_authorization).__wrapped__(
                     self,
                     _preview_from_payload(payload["preview"]),
                     _principal_from_payload(payload["principal"]),
                     _authorization_from_payload(payload["authorization"]),
                 )
             if mutation.kind == "consume_authorization_and_start":
-                return self.consume_authorization_and_start.__wrapped__(
+                return cast(Any, self.consume_authorization_and_start).__wrapped__(
                     self,
                     _preview_from_payload(payload["preview"]),
                     _authorization_from_payload(payload["authorization"]),
                 )
             if mutation.kind == "finalize_attempt":
-                return self.finalize_attempt.__wrapped__(
+                return cast(Any, self.finalize_attempt).__wrapped__(
                     self,
                     cast(str, payload["operation_id"]),
                     status=cast(str, payload["status"]),
@@ -322,7 +323,7 @@ class AuditRepository:
                     unknown_reason=cast(str | None, payload.get("unknown_reason")),
                 )
             if mutation.kind == "reconcile_attempt":
-                return self.reconcile_attempt.__wrapped__(
+                return cast(Any, self.reconcile_attempt).__wrapped__(
                     self,
                     cast(str, payload["operation_id"]),
                     outcome=cast(Literal["applied", "absent", "unknown"], payload["outcome"]),

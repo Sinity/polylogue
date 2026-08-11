@@ -32,6 +32,7 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitResult,
@@ -2297,9 +2298,9 @@ def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
     assert payload["tier"] == "audit"
     assert payload["initialized"] is True
     assert payload["from_version"] == 0
-    assert payload["to_version"] == 1
+    assert payload["to_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
     with sqlite3.connect(audit_db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],)
         assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
@@ -3331,10 +3332,10 @@ def test_migrate_tier_cli_adopts_established_audit_from_verified_full_evidence_b
     payload = json.loads(result.stdout)
     receipt = Path(str(payload["adoption_receipt"]))
     assert payload["initialized"] is True
-    assert payload["to_version"] == 1
+    assert payload["to_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
     assert receipt.is_file()
     with sqlite3.connect(root / "audit.db") as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],)
         assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
 
 
@@ -3509,7 +3510,6 @@ def test_migrate_tier_cli_restores_adopted_audit_from_verified_full_evidence(
     assert adopted.exit_code == 0, adopted.output
     verified = backup_archive(output_dir=root.parent / "adopted-audit-restore", profile="full_evidence", verify=True)
     assert verified.ok and verified.output_path is not None, verified.error
-    expected_bytes = (Path(verified.output_path) / "audit.db").read_bytes()
     audit_path.write_bytes(b"corrupt")
 
     restored = cli_runner.invoke(
@@ -3532,7 +3532,9 @@ def test_migrate_tier_cli_restores_adopted_audit_from_verified_full_evidence(
     assert restored.exit_code == 0, restored.output
     payload = json.loads(restored.stdout)
     assert payload["restore_receipt"].endswith(".committed.json")
-    assert audit_path.read_bytes() == expected_bytes
+    with sqlite3.connect(audit_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],)
+        assert connection.execute("SELECT generation FROM audit_continuity_head").fetchone() == (2,)
 
 
 @pytest.mark.parametrize("publication_failure", ["race", "interrupted"])
@@ -3595,12 +3597,12 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
     assert result.exit_code == 1
     if publication_failure == "race":
         with sqlite3.connect(audit) as foreign:
-            assert foreign.execute("PRAGMA user_version").fetchone() == (1,)
+            assert foreign.execute("PRAGMA user_version").fetchone() == (ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],)
             assert foreign.execute("PRAGMA quick_check").fetchone() == ("ok",)
         from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
         from polylogue.storage.sqlite.migration_runner import MigrationError
 
-        with pytest.raises(MigrationError, match="canonical audit v1 tier"):
+        with pytest.raises(MigrationError, match="published canonical audit image"):
             reconcile_durable_change_trains_on_startup(root)
     else:
         assert not audit.exists()
