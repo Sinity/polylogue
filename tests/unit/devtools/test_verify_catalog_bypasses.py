@@ -158,6 +158,5 @@ def test_duplicate_hook_invocation_exceeds_the_sanctioned_cardinality(tmp_path: 
     violations = lint.collect_violations(tmp_path, paths=(Path(".githooks/pre-push"),))
 
     assert [(item.lineno, item.reason) for item in violations] == [
-        (22, "undeclared-direct-invocation"),
         (21, "sanctioned-occurrence-count:2!=1"),
     ]

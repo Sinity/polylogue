@@ -1,7 +1,6 @@
 # Incident 14:32 — the shared deterministic proof world
 
-Owning beads: `polylogue-212.11` (corpus), `polylogue-212.12` (Demo Packet v2
-contract). Epic: `polylogue-212` (demo portfolio). This document is the
+Owning bead: `polylogue-212.11` (corpus). Epic: `polylogue-212` (demo portfolio). This document is the
 standing model for the corpus; the beads carry execution state and win on
 conflict.
 
@@ -74,14 +73,12 @@ path. Secret-handling demos use unmistakably synthetic tokens (e.g.
 declared public view and preservation in the restricted evidence lane when
 that is the claimed policy.
 
-## Relationship to Demo Packet v2
+## Relationship to demo evidence
 
-Every demo built on this world ships a machine-readable packet
-(`polylogue-212.12`): one primary construct, the claim stated before
-execution, a declared independent oracle, negative and missing-evidence
-controls, a baseline arm, an explicit falsifier, resolvable receipts, and a
-non-claims section. The world exists so those packets can share receipts; the
-packets exist so the world cannot be mistaken for a feature montage.
+Every demo built on this world should retain the exact command output and the
+fixture-verifier result it used. A report may explain the intended construct
+and limits for readers, but prose labels and self-declared hashes are not a
+substitute for exercising the product route and preserving its measured result.
 
 ## Provenance
 

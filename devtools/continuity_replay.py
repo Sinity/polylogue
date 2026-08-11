@@ -412,6 +412,27 @@ class StdioMCPContinuityRoute:
     async def exercise_cancellation(
         self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
     ) -> CancellationExerciseReceipt:
+        """Exercise cancellation in a disposable MCP session.
+
+        Cancellation deliberately stresses request lifecycle and transport
+        teardown.  A failed or partially supported cancellation must not
+        poison the session used for the graded continuity query that follows.
+        Keep the probe on the same production server route and archive, but
+        isolate its connection authority from the measured scenario.
+        """
+        async with StdioMCPContinuityRoute(
+            self.archive_root,
+            read_timeout_seconds=self.read_timeout_seconds,
+        ) as probe:
+            return await probe._exercise_cancellation_on_open_session(
+                tool,
+                arguments,
+                grace_ms=grace_ms,
+            )
+
+    async def _exercise_cancellation_on_open_session(
+        self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
+    ) -> CancellationExerciseReceipt:
         """Drive real MCP ``notifications/cancelled`` messages through the
         live stdio session and observe whether the production
         QueryExecutionContext wiring (``execute_archive_read`` catching

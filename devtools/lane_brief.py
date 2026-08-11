@@ -42,7 +42,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import devtools.beads_acceptance_contracts as acceptance_contracts
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as strict_json_loads
 
@@ -67,8 +66,6 @@ _ANTI_VACUITY_CONTRACT = (
     "a FAILED lane even if green. State the implementation mutation that would make "
     "your test fail."
 )
-_MISSING_CONTRACT_ERROR = "missing metadata.acceptance_contract_v1"
-
 _HAZARDS = (
     "commit every logical chunk (worktree auto-clean destroys uncommitted work)",
     "never cd to the main checkout",
@@ -117,12 +114,6 @@ class BeadRecord:
     acceptance_criteria: str = ""
     notes_tail: str = ""
     dependencies: list[str] = field(default_factory=list)
-    contract_confidence: str | None = None
-    contract_errors: list[str] = field(default_factory=list)
-    contract_source_digest: str | None = None
-    computed_source_digest: str | None = None
-    contract_dependency_digest: str | None = None
-    computed_dependency_digest: str | None = None
     error: str = ""
 
 
@@ -187,24 +178,6 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
 
     notes_value = record.get("notes")
     notes = notes_value if isinstance(notes_value, str) else ""
-    metadata = record.get("metadata")
-    if isinstance(metadata, str):
-        try:
-            metadata = strict_json_loads(metadata)
-        except JSONDecodeError:
-            metadata = {}
-    contract = metadata.get("acceptance_contract_v1") if isinstance(metadata, dict) else None
-    confidence = contract.get("confidence") if isinstance(contract, dict) else None
-    contract_errors = acceptance_contracts.validate(record) if isinstance(contract, dict) else [_MISSING_CONTRACT_ERROR]
-    try:
-        computed_source_digest = acceptance_contracts.source_digest(record)
-        computed_dependency_digest = acceptance_contracts.dependency_digest(record)
-    except acceptance_contracts.DependencyProjectionError as exc:
-        contract_errors = sorted({*contract_errors, str(exc)})
-        computed_source_digest = None
-        computed_dependency_digest = None
-    contract_source_digest = contract.get("source_digest") if isinstance(contract, dict) else None
-    contract_dependency_digest = contract.get("dependency_digest") if isinstance(contract, dict) else None
     priority = record.get("priority")
     issue_type = record.get("issue_type")
     title = record.get("title")
@@ -222,12 +195,6 @@ def _fetch_bead(bead_id: str) -> BeadRecord:
         acceptance_criteria=acceptance_criteria if isinstance(acceptance_criteria, str) else "",
         notes_tail=notes[-500:],
         dependencies=_dep_labels(record),
-        contract_confidence=confidence if isinstance(confidence, str) else None,
-        contract_errors=contract_errors,
-        contract_source_digest=contract_source_digest if isinstance(contract_source_digest, str) else None,
-        computed_source_digest=computed_source_digest,
-        contract_dependency_digest=contract_dependency_digest if isinstance(contract_dependency_digest, str) else None,
-        computed_dependency_digest=computed_dependency_digest,
     )
 
 
@@ -401,28 +368,8 @@ def _render_markdown(
             continue
         lines.append(f"### {r.id} -- P{r.priority} {r.issue_type} -- {r.title}")
         lines.append("")
-        if r.contract_errors:
-            lines.append("**DISPATCH BLOCKED:** the current acceptance contract is invalid or stale.")
-            lines.append("")
-            for error in r.contract_errors:
-                lines.append(f"- {error}")
-            lines.append("")
-        elif r.contract_confidence == "planner-review":
-            lines.append(
-                "**DISPATCH BLOCKED:** this acceptance contract requires planner review before implementation dispatch."
-            )
-            lines.append("")
-        if r.contract_source_digest or r.computed_source_digest:
-            lines.append(
-                f"**Source digest:** contract={r.contract_source_digest or '(missing)'}; "
-                f"current={r.computed_source_digest or '(unavailable)'}"
-            )
-            lines.append("")
-        if r.contract_dependency_digest or r.computed_dependency_digest:
-            lines.append(
-                f"**Dependency digest:** contract={r.contract_dependency_digest or '(missing)'}; "
-                f"current={r.computed_dependency_digest or '(unavailable)'}"
-            )
+        if not r.acceptance_criteria.strip():
+            lines.append("**DISPATCH BLOCKED:** this Bead has no acceptance criteria.")
             lines.append("")
         lines.append("**Description:**")
         lines.append("")
@@ -554,16 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo_root = _repo_root()
-    try:
-        acceptance_contracts.load_manifest(acceptance_contracts._DEFAULT_MANIFEST)
-    except SystemExit as exc:
-        print(f"DISPATCH BLOCKED: {exc}", file=sys.stderr)
-        return 2
-    required_ids = set(acceptance_contracts.load_manifest(acceptance_contracts._DEFAULT_MANIFEST))
     records = [_fetch_bead(bead_id) for bead_id in args.bead_ids]
-    for record in records:
-        if record.id not in required_ids:
-            record.contract_errors = [error for error in record.contract_errors if error != _MISSING_CONTRACT_ERROR]
 
     combined_text = _combined_text(records)
     paths = _extract_paths(combined_text)
@@ -591,9 +529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(brief)
 
-    return (
-        2 if any(not r.found or r.contract_errors or r.contract_confidence == "planner-review" for r in records) else 0
-    )
+    return 2 if any(not r.found or not r.acceptance_criteria.strip() for r in records) else 0
 
 
 if __name__ == "__main__":

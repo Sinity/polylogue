@@ -1,24 +1,20 @@
 """beads-state-report: a self-contained HTML state-of-the-backlog report.
 
 Reads ``.beads/issues.jsonl`` and emits one standalone HTML file covering the
-whole bead population -- open AND closed -- across eight views: pulse (now vs
+whole bead population -- open AND closed -- across seven views: pulse (now vs
 7/14 days ago, reconstructed from timestamps), shape (status x priority x
 type), structure (epic/program trees with per-epic trend sparklines), topology
 (the ``blocks`` dependency graph: ready / blocked / top blockers / cycles /
 densest cluster / the parallel frontier), time (creation, closure, burnup, age
-x priority heatmap), health (a review queue of graph defects), themes (where
-open work concentrates by subsystem), and the dated review passes (the
-hand-verified VERIFICATION(...) verdict subset and the 2026-07-31 P0
-reconciliation markers, rendered only when their markers exist in the data).
+x priority heatmap), health (a review queue of graph defects), and themes
+(where open work concentrates by subsystem).
 
 Design rule: **interpretation is computed, never fossilized.** Every claim in
 the findings list is emitted by a conditional generator in ``compute_insights``
 that checks the condition against the live data and renders the variant that
 is actually true (or nothing). There is no hand-authored paragraph that can
 silently go false on regeneration. The only authored content is timeless
-framing (what a section shows, how to read the notation) and two named
-constants from dated review passes, kept as constants precisely so their
-dated provenance is explicit.
+framing about what a section shows and how to read the notation.
 
 Temporal reconstruction: every bead and every dependency edge in the export
 carries ``created_at`` (and beads a ``closed_at``), so the open/ready/blocked
@@ -52,38 +48,6 @@ from devtools import repo_root as _get_root
 IssueDict = dict[str, Any]
 # (src issue, depends-on issue, relation type, edge created_at ISO string)
 Edge = tuple[str, str, str, str]
-
-# --------------------------------------------------------------------------
-# Constants from dated review passes.  These are the ONLY numbers in this
-# module that were not computed from the input file; each is an
-# operator-supplied figure from a specific, dated pass and is rendered with
-# that provenance attached.
-# --------------------------------------------------------------------------
-# 2026-07-31 landing-check lane: the operator's own count of the hand-verified
-# subset (strict regex extraction below finds fewer; the gap is reported).
-OPERATOR_VERIFIED_COUNT = 190
-# 2026-07-31 P0 reconciliation pass: the pass's own summary table covered this
-# many beads (marker extraction below finds fewer; the gap is reported).
-RECONCILIATION_EXPECTED = 24
-
-VERDICT_STRICT = re.compile(r"VERIFICATION\s*\(([^)]*)\)\s*:\s*(STALE|PARTIAL|LIVE)", re.IGNORECASE)
-VERDICT_LOOSE = re.compile(r"\b(STALE|PARTIAL|LIVE)\b")
-
-# The 2026-07-31 P0 reconciliation pass wrote one
-# `RECONCILIATION 2026-07-31[...]: <VERDICT>` marker per bead it touched.
-# Scoping the token search to a window *after* that literal anchor matters:
-# bare tokens like MISFRAMED are ordinary English words that also appear,
-# unrelated, in older notes on other beads.
-RECONCILIATION_ANCHOR = re.compile(r"RECONCILIATION 2026-07-31")
-RECONCILIATION_TOKENS: tuple[str, ...] = (
-    "FIXED-AND-EFFECTIVE",
-    "FIXED-PENDING-REBUILD",
-    "FIXED-PENDING-DEPLOY",
-    "MISFRAMED",
-    "GENUINELY OPEN",
-)
-RECONCILIATION_TOKEN_RE = re.compile("|".join(re.escape(t) for t in RECONCILIATION_TOKENS))
-RECONCILIATION_WINDOW = 1200
 
 # Thresholds for computed insights.  Named so the conditions are auditable.
 STALE_CLAIM_DAYS = 7  # in_progress untouched this long = zombie claim
@@ -219,12 +183,6 @@ def load(path: Path) -> tuple[dict[str, IssueDict], list[Edge]]:
                 )
             )
     return issues, edges
-
-
-def _blob(rec: IssueDict) -> str:
-    parts = [str(rec.get("notes") or "")]
-    parts.extend(str(c.get("text") or "") for c in (rec.get("comments") or []))
-    return "\n".join(parts)
 
 
 def _parse_ts(value: str) -> dt.datetime:
@@ -576,20 +534,6 @@ class Facts:
                     best, score = canon, hits
             self.by_kw_theme[best][str(r["status"])] += 1
 
-        # ---- verdict subset --------------------------------------------------
-        self.verdicts: list[tuple[str, str, str, str]] = []
-        loose: Counter[str] = Counter()
-        for r in rows:
-            text = _blob(r)
-            strict = VERDICT_STRICT.search(text)
-            if strict:
-                self.verdicts.append((str(r["id"]), strict.group(2).upper(), str(r["status"]), strict.group(1).strip()))
-            found = VERDICT_LOOSE.findall(text)
-            if found:
-                loose[Counter(found).most_common(1)[0][0]] += 1
-        self.verdict_counts = Counter(v for _, v, _, _ in self.verdicts)
-        self.loose_counts = loose
-
         # A bulk relation re-type stamps every converted edge with the repair
         # date.  Detect it as a same-day spike on the newest association edge.
         rel_days = Counter(created[:10] for _, _, kind, created in edges if kind == "relates-to" and created)
@@ -618,23 +562,6 @@ class Facts:
             for src, dst, kind, created in edges:
                 if kind == "related" and created > newest_retype_ts:
                     self.related_recurrence.append((src, dst, created))
-
-        # ---- P0 reconciliation pass (2026-07-31) ---------------------------
-        self.reconciliation: list[tuple[str, str, str]] = []
-        self.reconciliation_anchored = 0
-        for r in rows:
-            text = _blob(r)
-            anchor = RECONCILIATION_ANCHOR.search(text)
-            if not anchor:
-                continue
-            self.reconciliation_anchored += 1
-            window = text[anchor.end() : anchor.end() + RECONCILIATION_WINDOW]
-            token = RECONCILIATION_TOKEN_RE.search(window)
-            if token:
-                cut = window.find(token.group()) + len(token.group())
-                snippet = window[:cut].strip()
-                self.reconciliation.append((str(r["id"]), token.group(), snippet))
-        self.reconciliation_counts = Counter(v for _, v, _ in self.reconciliation)
 
     # ---- temporal reconstruction -----------------------------------------
     def open_at(self, rec: IssueDict, as_of: dt.datetime) -> bool:
@@ -851,21 +778,12 @@ def compute_insights(facts: Facts, schema_gap: dict[str, Any], snaps: dict[str, 
 
     # -- schema gap: merged fixes inert until rebuild -----------------------
     if schema_gap.get("available") and schema_gap.get("blockers"):
-        pending = (
-            facts.reconciliation_counts["FIXED-PENDING-REBUILD"] + facts.reconciliation_counts["FIXED-PENDING-DEPLOY"]
-        )
-        pending_note = (
-            f" The dated reconciliation pass confirmed <b>{pending}</b> beads merged and inert behind it."
-            if pending
-            else ""
-        )
         out.append(
             Insight(
                 "bad",
                 f"Live archive is {len(schema_gap['blockers'])} SEMANTIC_REPARSE version(s) behind origin/master "
                 f"(v{schema_gap['live_version']} vs v{schema_gap['declared']})",
-                "Merged fixes at those versions are real, reviewed, and completely inert until "
-                "<code>polylogue ops reset --index &amp;&amp; polylogued run</code> executes." + pending_note,
+                "Merged fixes at those versions remain inert until the selected derived-index rebuild route executes.",
                 ev="measured",
             )
         )
@@ -2271,112 +2189,6 @@ def render(facts: Facts, source: Path, generated: dt.datetime, schema_gap: dict[
     add("</tbody></table></div></details>")
     add("</section>")
 
-    # ---------------- dated review passes ----------------
-    strict_total = sum(facts.verdict_counts.values())
-    loose_total = sum(facts.loose_counts.values())
-    if strict_total or facts.reconciliation:
-        add('<section id="passes"><h2>Dated review passes</h2>')
-        add(
-            "<p>Two hand-verification passes left machine-parseable markers in bead notes; this "
-            "generator extracts them mechanically. They are <em>dated</em> evidence &mdash; "
-            "ground truth as of the day each pass ran, ageing at the speed the code moves, not "
-            "recomputed facts.</p>"
-        )
-    if strict_total:
-        add('<h3>The verified subset <span class="chip">pass of 2026-07-31</span></h3>')
-        add(
-            f"<p><b>{strict_total}</b> beads carry a machine-parseable "
-            "<code>VERIFICATION (&hellip;): STALE|PARTIAL|LIVE</code> verdict written by a human "
-            f"reviewer &mdash; {facts.verdict_counts['LIVE']} LIVE / "
-            f"{facts.verdict_counts['PARTIAL']} PARTIAL / {facts.verdict_counts['STALE']} STALE. "
-            "It is the only subset of this backlog where &ldquo;is this claim still true?&rdquo; "
-            "was answered by inspection rather than assumed. Preserve it as a labelled "
-            "evaluation set.</p>"
-        )
-        add(
-            f"<p>Extraction gap, stated rather than papered over: the operator's own count of "
-            f"the pass is {OPERATOR_VERIFIED_COUNT} beads; the strict pattern finds "
-            f"{strict_total}, and relaxing to any bare verdict token finds {loose_total} "
-            f"({facts.loose_counts['LIVE']}/{facts.loose_counts['PARTIAL']}/"
-            f"{facts.loose_counts['STALE']}), which brackets the figure but includes incidental "
-            "prose. The difference is verdicts phrased outside the parseable form &mdash; a "
-            "review this valuable should write its verdict one way, every time.</p>"
-        )
-        add('<input class="filter" placeholder="filter verdicts&hellip;" oninput="flt(this,\'vd\')">')
-        add('<div class="tablewrap"><table id="vd"><thead><tr><th>bead</th><th>verdict</th>')
-        add("<th>sweep</th><th>title</th></tr></thead><tbody>")
-        badge_of = {"LIVE": "ok", "PARTIAL": "warn", "STALE": "bad"}
-        for bid, verdict, _status, sweep in sorted(facts.verdicts, key=lambda v: (v[1], v[0])):
-            add(
-                f"<tr><td>{chip(facts, bid)}</td>"
-                f'<td><span class="badge {badge_of[verdict]}">{verdict}</span></td>'
-                f"<td>{esc(sweep[:34])}</td>"
-                f"<td>{esc(str(facts.issues[bid]['title'])[:70])}</td></tr>"
-            )
-        add("</tbody></table></div>")
-
-    if facts.reconciliation:
-        add('<h3>P0 reconciliation <span class="chip">pass of 2026-07-31</span></h3>')
-        add(
-            f"<p>A hand-verified pass over the P0 shelf, read against <code>origin/master</code> "
-            "and the live archive. Its sharpest product is a split a flat status field cannot "
-            "express: &ldquo;open&rdquo; work with no code fix yet versus work that is "
-            "<em>done and merged</em> but inert behind the archive/code schema gap (see Health). "
-            f"Marker coverage: {facts.reconciliation_anchored} beads carry the anchor; the "
-            f"pass's own summary covered {RECONCILIATION_EXPECTED}.</p>"
-        )
-        add('<div class="tiles">')
-        for value, label in [
-            (str(facts.reconciliation_counts["FIXED-AND-EFFECTIVE"]), "FIXED-AND-EFFECTIVE &mdash; closed"),
-            (str(facts.reconciliation_counts["FIXED-PENDING-REBUILD"]), "FIXED-PENDING-REBUILD"),
-            (str(facts.reconciliation_counts["FIXED-PENDING-DEPLOY"]), "FIXED-PENDING-DEPLOY"),
-            (str(facts.reconciliation_counts["MISFRAMED"]), "MISFRAMED &mdash; demoted"),
-            (str(facts.reconciliation_counts["GENUINELY OPEN"]), "GENUINELY OPEN"),
-        ]:
-            add(f'<div class="tile"><span class="n">{value}</span><span class="l">{label}</span></div>')
-        add("</div>")
-        rebuild_rows = [
-            (bid, verdict, snippet)
-            for bid, verdict, snippet in facts.reconciliation
-            if verdict in ("FIXED-PENDING-REBUILD", "FIXED-PENDING-DEPLOY")
-        ]
-        if rebuild_rows:
-            add(
-                "<p>The rebuild-blocked set: merged, confirmed inert by direct query, needing no "
-                "further engineering &mdash; the honest measure of how much apparent open work is "
-                "actually done.</p>"
-            )
-            add('<div class="tablewrap"><table id="rb"><thead><tr><th>bead</th><th>title</th>')
-            add('<th>verdict</th><th class="nosort">evidence</th></tr></thead><tbody>')
-            for bid, verdict, snippet in sorted(rebuild_rows, key=lambda t: (t[1], t[0])):
-                title = esc(str(facts.issues[bid]["title"])[:70]) if bid in facts.issues else ""
-                add(
-                    f"<tr><td>{chip(facts, bid)}</td><td>{title}</td>"
-                    f'<td><span class="badge warn">{esc(verdict)}</span></td>'
-                    f"<td>{esc(snippet[-220:])}</td></tr>"
-                )
-            add("</tbody></table></div>")
-        add("<details><summary>Full reconciliation table</summary>")
-        add('<input class="filter" placeholder="filter reconciliation&hellip;" oninput="flt(this,\'rc\')">')
-        add('<div class="tablewrap"><table id="rc"><thead><tr><th>bead</th><th>title</th>')
-        add("<th>verdict</th></tr></thead><tbody>")
-        rc_badge = {
-            "FIXED-AND-EFFECTIVE": "ok",
-            "FIXED-PENDING-REBUILD": "warn",
-            "FIXED-PENDING-DEPLOY": "warn",
-            "MISFRAMED": "info",
-            "GENUINELY OPEN": "bad",
-        }
-        for bid, verdict, _snippet in sorted(facts.reconciliation, key=lambda t: (t[1], t[0])):
-            title = esc(str(facts.issues[bid]["title"])[:74]) if bid in facts.issues else ""
-            add(
-                f"<tr><td>{chip(facts, bid)}</td><td>{title}</td>"
-                f'<td><span class="badge {rc_badge.get(verdict, "info")}">{esc(verdict)}</span></td></tr>'
-            )
-        add("</tbody></table></div></details>")
-    if strict_total or facts.reconciliation:
-        add("</section>")
-
     # ---------------- findings ----------------
     add('<section id="findings"><h2>Findings</h2>')
     add(
@@ -2424,14 +2236,9 @@ def render(facts: Facts, source: Path, generated: dt.datetime, schema_gap: dict[
         ("health checks and review queues", "measured"),
         ("keyword theme classification", "measured, using a hand-written keyword list"),
         ("area-label folding", "measured, using a hand-written synonym map"),
-        ("verdict + reconciliation marker extraction", "measured by regex over notes and comments"),
         ("schema gap (live vs origin/master)", "measured: git show + read-only PRAGMA"),
         ("findings", "derived: conditional generators over all of the above"),
         ("section framing sentences and the notation legend", "authored, deliberately data-free"),
-        (
-            f"two constants from dated passes ({OPERATOR_VERIFIED_COUNT}, {RECONCILIATION_EXPECTED})",
-            "operator-supplied, provenance attached where used",
-        ),
     ]:
         cls = "todo" if origin.startswith(("authored", "operator")) else "info"
         add(f'<tr><td>{esc(part)}</td><td><span class="badge {cls}">{esc(origin)}</span></td></tr>')
@@ -2495,8 +2302,6 @@ def json_payload(facts: Facts, schema_gap: dict[str, Any], generated: dt.datetim
         "parallel_frontier": [
             {"id": c["id"], "open_desc": c["open_desc"], "urgent": c["urgent"]} for c in facts.parallel_frontier()
         ],
-        "verdicts": {"strict": dict(facts.verdict_counts), "loose": dict(facts.loose_counts)},
-        "reconciliation": facts.reconciliation,
         "vocab_state": facts.vocab_state,
         "schema_gap": schema_gap,
         "insights": [{"sev": i.sev, "title": i.title, "body": i.body, "ev": i.ev} for i in insights],

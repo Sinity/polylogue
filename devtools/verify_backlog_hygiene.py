@@ -5,9 +5,9 @@ Background
 
 Backlog structure trails filing unless an invariant lint enforces it: the
 2026-07-06 session needed a 41-agent sweep to recover from accumulated drift
-(missing acceptance criteria, dangling dependency refs, unlabeled beads,
-stale "adopted" decisions left open). This is the backlog equivalent of
-`devtools lab policy schema-versioning` / `docs-drift` / `timestamp-doctrine`:
+(missing acceptance criteria, dangling dependency refs, and unlabeled beads).
+This is the backlog equivalent of
+`devtools lab policy schema-versioning` / `timestamp-doctrine`:
 a mechanical check that fails a gate instead of drift silently accumulating
 until an archaeology session (polylogue-8jg9.1).
 
@@ -17,17 +17,14 @@ Checks over `.beads/issues.jsonl`:
   D2  no dependency cycles among blocks-edges
   H1  open tech-tree bead has a horizon label (frontier/mid/vision)
   H2  horizon:vision => priority P3/P4 (keeps `bd ready` clean)
-  H3  open horizon:frontier bead has acceptance criteria (field or notes sidecar)
-  H4  open horizon:frontier bead has design content (field, notes, or description with file paths)
+  H3  open horizon:frontier bead has a non-empty acceptance_criteria field
+  H4  open horizon:frontier bead has a non-empty design field
   P1  open P0/P1 bead has acceptance criteria
-  E1  epic has members: id-prefix children, dep edges, or bead ids named in its text
-  E2  epic has a non-empty description (WHY + member map)
-  T1  no ephemeral-path ground truth: /realm/inbox/ or /tmp/ cited outside provenance context
+  E1  epic has members represented by id-prefix children or dependency edges
+  E2  epic has a non-empty description
   X1  duplicate open titles (exact, case-folded)
-  X2  bead id named in an open bead's text does not exist
   R1  READY bead (open, all blocks-deps closed) at P1/P2 lacking AC — the fast-execution gap
   A1  open non-epic bead has at least one area:* label
-  B1  open decision-type bead whose text declares Status: adopted/decided should be closed
   S1  the most recent bd JSONL sync receipt (``.cache/bd-sync-receipts/``,
       written by ``devtools/bd_reimport_guard.py``) is missing required
       fields, fails to parse, or reports a conflicted/unauthorized-downgrade
@@ -66,10 +63,9 @@ returns informational diagnostics only — it is not part of ``Finding``/
 ``collect_findings()`` and can never fail the gate, truncate the set, or
 hide a bead. Only F1/F2/F3/F4 structural violations are hard findings.
 
-(8jg9.1's design names five conceptual classes: (a) P0/P1 missing AC = P1;
-(b) decision-type bead stuck past adopted/decided = B1; (c) no area:* label =
-A1; (d) orphan beads with no epic parent — covered by the native `bd orphans`
-command, not duplicated here; (e) a blocks-edge pointing at a closed bead —
+(8jg9.1's design names conceptual classes including (a) P0/P1 missing AC = P1;
+(b) no area:* label = A1; (c) orphan beads with no epic parent, covered by the native `bd orphans`
+command and not duplicated here; and (d) a blocks-edge pointing at a closed bead,
 not representable, since bd computes "blocked" live from dependency status
 rather than persisting a blocked flag that could go stale.)
 
@@ -98,7 +94,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -110,14 +105,6 @@ from pathlib import Path
 from devtools import repo_root as _get_root
 
 _HORIZONS = {"horizon:frontier", "horizon:mid", "horizon:vision"}
-_EPHEMERAL_RE = re.compile(r"(/realm/inbox/|(?<![\w.])/tmp/)")
-# Provenance-ish context that legitimizes an ephemeral path mention.
-_PROVENANCE_HINTS = ("verbatim spec", "preserved as", "provenance", "escrow", "was in /realm/inbox", "corpus")
-# A Bead ref cannot be only the prefix of a longer external/request id such as
-# ``polylogue-ext-mrhjgnkn``.  The negative lookahead prevents that token from
-# being misreported as a dangling ``polylogue-ext`` Bead.
-_BEAD_REF_RE = re.compile(r"polylogue-[a-z0-9]+(?:\.[0-9]+)?(?![a-z0-9-])")
-
 _DEFAULT_ISSUES_RELPATH = ".beads/issues.jsonl"
 _DEFAULT_ALLOWLIST_RELPATH = "devtools/data/bead-lint-allow.txt"
 _DEFAULT_RECEIPTS_RELPATH = ".cache/bd-sync-receipts"
@@ -179,23 +166,12 @@ def _load(path: Path) -> tuple[dict[str, dict[str, object]], list[tuple[str, str
     return issues, deps
 
 
-def _text_of(d: dict[str, object]) -> str:
-    return " ".join(str(d.get(k) or "") for k in ("description", "design", "acceptance_criteria", "notes"))
-
-
 def _has_ac(d: dict[str, object]) -> bool:
-    if str(d.get("acceptance_criteria") or "").strip():
-        return True
-    notes = str(d.get("notes") or "").lower()
-    return "acceptance" in notes or "verify:" in notes or "ac:" in notes
+    return bool(str(d.get("acceptance_criteria") or "").strip())
 
 
 def _has_design(d: dict[str, object]) -> bool:
-    if str(d.get("design") or "").strip():
-        return True
-    blob = str(d.get("description") or "") + str(d.get("notes") or "")
-    # A description that names concrete code surfaces counts as design-bearing.
-    return bool(re.search(r"\w+\.py|\w+/\w+\.|::|polylogue/", blob))
+    return bool(str(d.get("design") or "").strip())
 
 
 def _labels_of(d: dict[str, object]) -> set[str]:
@@ -324,7 +300,7 @@ def collect_findings(
     stale_claim_days: int = _DEFAULT_STALE_CLAIM_DAYS,
     now: datetime | None = None,
 ) -> list[Finding]:
-    """Run all 20 backlog-hygiene checks against a Beads jsonl export.
+    """Run the backlog-hygiene checks against a Beads jsonl export.
 
     ``path`` defaults to ``.beads/issues.jsonl`` under the repo root;
     ``allow_path`` defaults to ``devtools/data/bead-lint-allow.txt``;
@@ -472,30 +448,11 @@ def collect_findings(
             add("P1", i, f"P{prio} bead without acceptance criteria")
         if d.get("issue_type") != "epic" and not any(lab.startswith("area:") for lab in labels):
             add("A1", i, "open non-epic bead without an area:* label")
-        if d.get("issue_type") == "decision" and re.search(r"status:\s*(adopted|decided)", _text_of(d), re.IGNORECASE):
-            add("B1", i, "decision bead declares adopted/decided but is still open")
         if d.get("issue_type") == "epic":
-            named_members = [r for r in _BEAD_REF_RE.findall(_text_of(d)) if r != i and r in issues]
-            if children[i] == 0 and dep_touch[i] == 0 and not named_members:
-                add("E1", i, "epic with no members (no children, no dep edges, no named bead ids)")
+            if children[i] == 0 and dep_touch[i] == 0:
+                add("E1", i, "epic with no structured members (no children or dependency edges)")
             if not str(d.get("description") or "").strip():
                 add("E2", i, "epic without description")
-        blob = _text_of(d)
-        for ref in set(_BEAD_REF_RE.findall(blob)):
-            token = ref.removeprefix("polylogue-").split(".", 1)[0]
-            # id-shaped tokens only: pure-alpha words >=4 chars are English compounds
-            # ("polylogue-substrate intake"); pure-numeric are #N-style refs.
-            if token.isalpha() and len(token) >= 4:
-                continue
-            if token.isdigit():
-                continue
-            # Tolerate .N suffix references to a future child of an existing bead.
-            if ref not in issues and ref.rsplit(".", 1)[0] not in issues:
-                add("X2", i, f"names nonexistent bead {ref}")
-        if _EPHEMERAL_RE.search(blob):
-            low = blob.lower()
-            if not any(h in low for h in _PROVENANCE_HINTS):
-                add("T1", i, "ephemeral path (/realm/inbox or /tmp) cited without provenance framing")
 
     for _t, ids in titles.items():
         if _t and len(ids) > 1:

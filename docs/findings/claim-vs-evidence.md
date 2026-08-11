@@ -2,7 +2,6 @@
 
 ## Claim
 
-<!-- public-claim:finding.silent-proceed-lower-bound -->
 The historical packet generated on 2026-07-04 reported that, in one bounded private-archive sample, at least 24.1% of sampled structured failures were followed by an assistant turn that proceeded without an acknowledgment marker. Most sampled cases remained ambiguous. It is a historical observation, not a current headline.
 
 ## Current construct-validity verdict (2026-07-18)
@@ -42,7 +41,7 @@ falsified by a representative, sufficiently large calibration frame showing
 that visible marker absence does not track human labels for this narrow
 observable.
 
-The generated [findings-page public-claims view](../generated/public-claims/findings-page.md) is the authority for whether this historical number is currently supported, stale, private-held, or unresolved.
+This page records historical evidence. It does not certify the number as current; that requires rerunning the method against a current, representative frame.
 
 This is a lower-bound field observation from one archive and one method. It is not a prevalence estimate for all agents, models, users, providers, or tasks.
 
@@ -62,7 +61,6 @@ The next-turn silent lower bound is therefore 1,205 / 5,000 = 24.1%.
 
 ## Handler-class split
 
-<!-- public-claim:finding.handler-class-split -->
 The packet partitioned the same 5,000 inspected failures using explicit tool-name methodology classes:
 
 | Handler class | Inspected failures | Silent proceed | Ambiguous | Silent lower bound |
@@ -75,7 +73,6 @@ These are method-defined groups, not severity labels. The ambiguous remainder re
 
 ## Per-origin inspection counts
 
-<!-- public-claim:finding.per-origin-inspection-counts -->
 The bounded origin-stratified allocation was:
 
 | Origin | Inspected | Requested | Complete origin frame |
@@ -110,8 +107,8 @@ The current report is a regenerable local evidence artifact, not a registered
 analysis definition, immutable analysis run, or finding. Those first-party
 objects require the pending durable user-tier kernel and migration admission;
 until that work is accepted, this page must not promote a newly generated
-packet into a current public claim. The generated public-claims view remains
-the authority for claim status.
+packet into a current public claim. A current claim requires a fresh run and an
+independently reviewed evidence-integrity verdict.
 
 ## Interpretation
 

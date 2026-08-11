@@ -228,18 +228,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "GitHub and Beads authority split, and the reconciliation script that checks it.",
         "operations",
     ),
-    _entry(
-        "Acceptance Contract Wave",
-        "plans/beads-acceptance-contracts-2026-08-07.md",
-        "Guarded structured acceptance contracts for the current Beads execution wave.",
-        "operations",
-    ),
-    _entry(
-        "Acceptance Contract Reconciliation",
-        "plans/beads-acceptance-reconciliation.md",
-        "Read-only authority reconciliation and guarded targeted import protocol for the acceptance-contract wave.",
-        "operations",
-    ),
     # Evidence and product
     _entry(
         "Demos and Proofs",
@@ -272,30 +260,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
-        "README Public-Claims View",
-        "generated/public-claims/readme.md",
-        "Generated compact status view for claims used in README-facing copy.",
-        "evidence",
-    ),
-    _entry(
-        "Launch Public-Claims View",
-        "generated/public-claims/launch.md",
-        "Generated launch-copy claim status with evidence blockers and remediation refs.",
-        "evidence",
-    ),
-    _entry(
-        "Findings-Page Public-Claims View",
-        "generated/public-claims/findings-page.md",
-        "Generated finding status with judgment, privacy, evidence, epoch, and frame qualifiers.",
-        "evidence",
-    ),
-    _entry(
-        "Verified Public-Claims Export",
-        "generated/public-claims/verified-export.md",
-        "Generated full public-claim projection corresponding to the machine-readable export.",
-        "evidence",
-    ),
-    _entry(
         "Structured Failure Follow-Up",
         "findings/claim-vs-evidence.md",
         "Bounded field finding with oracle, sample frame, calibration, and caveats.",
@@ -320,19 +284,10 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
-        "Demo Corpus Construct Audit",
+        "Demo Corpus Datasheet",
         "plans/demo-corpus-construct-audit.md",
-        "Generated construct-coverage audit for the demo fixture world.",
+        "Measured construct coverage for the deterministic demo fixture world.",
         "evidence",
-    ),
-    _entry(
-        "Release Readiness Gate",
-        "plans/release-readiness-gate.md",
-        "Externally presentable release gate and required proof contract.",
-        "evidence",
-    ),
-    _entry(
-        "Demo Packet v2", "examples/demo-packet-v2/README.md", "Worked private-data-free evidence packet.", "evidence"
     ),
     _entry(
         "Demo Tour Report",
@@ -398,12 +353,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
     _entry(
-        "Storage Twins Divergences",
-        "plans/STORAGE_TWINS_DIVERGENCES.md",
-        "Documented sync/async storage backend divergences, tracked for the twins regression test.",
-        "design",
-    ),
-    _entry(
         "Query-Action Workflows Design",
         "design/query-action-workflows.md",
         "Historical design pointer for the workflow contract.",
@@ -422,12 +371,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Content, Identity, and Lineage Architecture",
         "plans/content-identity-lineage-design.md",
         "Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority.",
-        "design",
-    ),
-    _entry(
-        "Bead Readiness Audit",
-        "plans/bead-readiness-audit-implementation-cluster.md",
-        "Execution-readiness audit for the implementation-cluster Beads and their verification boundaries.",
         "design",
     ),
     _entry(
@@ -512,12 +455,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "archive",
     ),
     _entry("Retrospective Index", "retro/README.md", "Index of historical incident retrospectives.", "archive"),
-    _entry(
-        "Query Pipeline Substrate Plan",
-        "plans/query-pipeline-substrate.md",
-        "Historical/active query pipeline design plan.",
-        "archive",
-    ),
     _entry(
         "Nine-Bead Decision Adjudication",
         "plans/decision-adjudication-kea7p-avna-cijx-uh6c-rxdo9-ze5-dx1-fie-ca4.md",

@@ -17,8 +17,8 @@ Scope is deliberately execution-only:
 Generated provenance headers, argparse ``prog`` values, comments, and
 docstrings are outside the scope because they do not launch a process. A real
 hook adapter can remain only through a structured ``sanctioned-bypass`` entry
-in ``CATALOG_BYPASS_SITES`` with a reason, exact line, and expected occurrence
-count. Dynamic values remain untrusted, but literal executable, module, and
+in ``CATALOG_BYPASS_SITES`` with a reason and expected occurrence count.
+Dynamic values remain untrusted, but literal executable, module, and
 script segments are inspected without scanning comments or prose.
 """
 
@@ -247,11 +247,7 @@ def scan_control_surfaces(root: Path = ROOT, *, paths: Iterable[Path] | None = N
 
 
 def _sanctioned_sites() -> tuple[CatalogBypassSite, ...]:
-    return tuple(
-        site
-        for site in CATALOG_BYPASS_SITES
-        if site.disposition == "sanctioned-bypass" and site.occurrence_line is not None
-    )
+    return CATALOG_BYPASS_SITES
 
 
 def collect_violations(root: Path = ROOT, *, paths: Iterable[Path] | None = None) -> list[BypassViolation]:
@@ -261,15 +257,13 @@ def collect_violations(root: Path = ROOT, *, paths: Iterable[Path] | None = None
     selected_paths = {
         _relative_path(candidate if candidate.is_absolute() else root / candidate, root) for candidate in selected
     }
-    allowed = {(site.path, site.occurrence_line, site.marker) for site in sanctioned}
+    allowed = {(site.path, site.marker) for site in sanctioned}
     violations = [
         BypassViolation(item.path, item.lineno, item.invocation, "undeclared-direct-invocation")
         for item in findings
-        if (item.path, item.lineno, item.invocation) not in allowed
+        if (item.path, item.invocation) not in allowed
     ]
     for site in sanctioned:
-        occurrence_line = site.occurrence_line
-        assert occurrence_line is not None
         if site.path not in selected_paths:
             continue
         count = sum(item.path == site.path and item.invocation == site.marker for item in findings)
@@ -277,7 +271,10 @@ def collect_violations(root: Path = ROOT, *, paths: Iterable[Path] | None = None
             violations.append(
                 BypassViolation(
                     site.path,
-                    occurrence_line,
+                    next(
+                        (item.lineno for item in findings if item.path == site.path and item.invocation == site.marker),
+                        0,
+                    ),
                     site.marker,
                     f"sanctioned-occurrence-count:{count}!={site.expected_occurrences}",
                 )

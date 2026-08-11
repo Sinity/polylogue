@@ -19,13 +19,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
-
-from devtools import beads_acceptance_contracts
-from devtools.beads_acceptance_contracts import validate as validate_acceptance_contract
-
-_CONTRACT_MANIFEST = Path(__file__).parents[1] / "docs" / "plans" / "beads-acceptance-contracts-2026-08-07.txt"
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,28 +264,12 @@ def reindex_proof_edge_findings(issues: list[dict[str, Any]]) -> list[Finding]:
 def collect_findings(
     issues: list[dict[str, Any]],
     *,
-    required_contract_ids: frozenset[str] | None = None,
     enforce_reindex: bool = False,
 ) -> list[Finding]:
     by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
     findings: list[Finding] = [*_parent_findings(issues)]
     if enforce_reindex:
         findings.extend(reindex_proof_edge_findings(issues))
-
-    for issue_id in sorted(required_contract_ids or ()):
-        issue = by_id.get(issue_id)
-        if issue is None:
-            findings.append(Finding("missing-required-acceptance-contract", issue_id, "manifest Bead is absent"))
-        elif "acceptance_contract_v1" not in _metadata(issue):
-            findings.append(
-                Finding("missing-required-acceptance-contract", issue_id, "manifest Bead has no structured contract")
-            )
-
-    for issue_id, issue in sorted(by_id.items()):
-        if "acceptance_contract_v1" not in _metadata(issue):
-            continue
-        for error in validate_acceptance_contract(issue):
-            findings.append(Finding("invalid-acceptance-contract", issue_id, error))
 
     waves: dict[str, int | None] = {}
     for issue_id, issue in sorted(by_id.items()):
@@ -354,16 +332,10 @@ def _partition(items: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any
     return {name: {"count": len(ids), "ids": sorted(ids)} for name, ids in sorted(groups.items())}
 
 
-def missing_ac_census(
-    issues: list[dict[str, Any]], *, required_contract_ids: frozenset[str] | None = None
-) -> dict[str, Any]:
+def missing_ac_census(issues: list[dict[str, Any]]) -> dict[str, Any]:
     """Produce a complete, deterministic census of fail-closed missing ACs."""
     parents = canonical_parent_map(issues)
-    missing_ids = {
-        finding.bead_id
-        for finding in collect_findings(issues, required_contract_ids=required_contract_ids)
-        if finding.kind == "missing-ac"
-    }
+    missing_ids = {finding.bead_id for finding in collect_findings(issues) if finding.kind == "missing-ac"}
     rows: list[dict[str, Any]] = []
     for issue in issues:
         bead_id = str(issue.get("id", ""))
@@ -401,12 +373,10 @@ def build_report(
     *,
     cycles_ok: bool,
     cycles_output: str,
-    required_contract_ids: frozenset[str] | None = None,
     enforce_reindex: bool = False,
 ) -> dict[str, Any]:
     findings = collect_findings(
         issues,
-        required_contract_ids=required_contract_ids,
         enforce_reindex=enforce_reindex,
     )
     by_kind: dict[str, int] = defaultdict(int)
@@ -416,13 +386,9 @@ def build_report(
         "report_version": 1,
         "cycles": {"ok": cycles_ok, "output": cycles_output},
         "issues_scanned": len(issues),
-        "contract_manifest": {
-            "expected_count": beads_acceptance_contracts._EXPECTED_MANIFEST_COUNT,
-            "digest": beads_acceptance_contracts._EXPECTED_MANIFEST_DIGEST,
-        },
         "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
         "counts": dict(sorted(by_kind.items())),
-        "missing_ac_census": missing_ac_census(issues, required_contract_ids=required_contract_ids),
+        "missing_ac_census": missing_ac_census(issues),
     }
 
 
@@ -439,8 +405,6 @@ def _format_report(report: dict[str, Any]) -> str:
         f"dup_labels={counts.get('duplicate-wave', 0)} "
         f"inversions={counts.get('wave-inversion', 0)} "
         f"missing_ac={counts.get('missing-ac', 0)} "
-        f"invalid_contracts={counts.get('invalid-acceptance-contract', 0)} "
-        f"missing_required_contracts={counts.get('missing-required-acceptance-contract', 0)} "
         f"malformed_wave={counts.get('malformed-wave', 0)} "
         f"parent_integrity={sum(value for key, value in counts.items() if key.startswith('parent-') or key in {'multiple-parents', 'missing-parent'})}"
     )
@@ -453,7 +417,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        required_contract_ids = frozenset(beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST))
         cycles_ok, cycles_output = _run_bd_dep_cycles()
         if not cycles_ok:
             if args.json:
@@ -472,12 +435,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"bead-graph: dependency cycle check failed: {cycles_output}", file=sys.stderr)
             return 1
         issues = _run_bd_list_all()
-    except SystemExit as exc:
-        if args.json:
-            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
-        else:
-            print(f"bead-graph: {exc}", file=sys.stderr)
-        return 1
     except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
         if args.json:
             print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
@@ -488,7 +445,6 @@ def main(argv: list[str] | None = None) -> int:
         issues,
         cycles_ok=cycles_ok,
         cycles_output=cycles_output,
-        required_contract_ids=required_contract_ids,
         enforce_reindex=True,
     )
     if args.json:

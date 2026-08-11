@@ -87,10 +87,11 @@ direnv exec . env POLYLOGUE_PYTEST_WORKERS=1 python -m devtools verify --quick
 exit 0; format, lint, mypy, render, layering, and policy checks passed
 ```
 
-`git diff --check` passed. The acceptance-contract policy command also reports
-an inherited failure for `polylogue-7rds`: `source_digest does not match the
-Bead source snapshot`. This lane did not invoke `bd`, edit `.beads`, or change
-that Bead state.
+`git diff --check` passed. The then-current tracker policy also reported an
+inherited source-snapshot mismatch for `polylogue-7rds`. That generated policy
+was retired later; this line records the historical branch result rather than
+a command that remains available. This lane did not invoke `bd`, edit `.beads`,
+or change that Bead state.
 
 The full suite and `--seed-testmon` were not run. No production or live canary
 was run.

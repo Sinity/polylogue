@@ -1,4 +1,4 @@
-"""Unit tests for the z9gh.7 mandate-replay wiring artifact.
+"""Unit tests for the continuity replay wiring.
 
 Anti-vacuity: the discovery-coverage lane runs against the real shipped
 ``QUERY_DISCOVERY_EXAMPLES`` catalog and t8t's real ``CONTINUITY_SCENARIOS``
@@ -45,8 +45,8 @@ def _commit(path: Path, *, filename: str, message: str) -> str:
 # ── Command registration ──────────────────────────────────────────────
 
 
-def test_mandate_replay_registered_in_command_catalog() -> None:
-    spec = COMMANDS["workspace mandate-continuity-replay"]
+def test_continuity_replay_registered_in_command_catalog() -> None:
+    spec = COMMANDS["workspace continuity-replay"]
     assert spec.module == "devtools.mandate_continuity_replay"
     assert spec.entrypoint == "main"
 
@@ -213,65 +213,3 @@ def test_redact_report_is_deterministic() -> None:
 
 
 # ── AC matrix ──────────────────────────────────────────────────────────
-
-
-def _fake_continuity_report(*, status: str, passed: int = 8, failed: int = 0) -> JSONDocument:
-    return {"status": status, "scenario_count": passed + failed, "passed": passed, "failed": failed}
-
-
-def test_ac_matrix_marks_incident_replay_deferred_without_a_live_archive() -> None:
-    discovery = mcr.DiscoveryCoverageReport(checked_steps=5, covered_steps=5, gaps=())
-    effect_proof = mcr.WorkEvidenceEffectProof(
-        graph_id="g",
-        claims_total=1,
-        claims_evaluated=1,
-        claims_unevaluated=0,
-        effect_count_by_authority={"git": 1, "beads": 1},
-        judgment_count_by_evaluation={"supported": 1},
-        adapter_failures=({"authority": "github", "reason": "not implemented"},),
-    )
-
-    matrix = mcr.build_ac_matrix(
-        continuity_report=_fake_continuity_report(status="pass"),
-        discovery_report=discovery,
-        effect_proof=effect_proof,
-        live_archive=False,
-    )
-
-    assert len(matrix) == 7
-    by_index = {item.index: item for item in matrix}
-    assert by_index[1].status == "satisfied"
-    assert by_index[2].status == "deferred"
-    assert by_index[3].status == "satisfied"
-    assert by_index[5].status == "satisfied"
-    assert by_index[7].status == "satisfied"
-
-
-def test_ac_matrix_marks_blocking_when_a_lane_fails() -> None:
-    discovery = mcr.DiscoveryCoverageReport(
-        checked_steps=5,
-        covered_steps=4,
-        gaps=(mcr.DiscoveryCoverageGap(scenario_id="x", step_id="y", plan_atom="query:runs", reason="missing"),),
-    )
-    effect_proof = mcr.WorkEvidenceEffectProof(
-        graph_id="g",
-        claims_total=0,
-        claims_evaluated=0,
-        claims_unevaluated=0,
-        effect_count_by_authority={},
-        judgment_count_by_evaluation={},
-        adapter_failures=(),
-    )
-
-    matrix = mcr.build_ac_matrix(
-        continuity_report=_fake_continuity_report(status="fail", passed=6, failed=2),
-        discovery_report=discovery,
-        effect_proof=effect_proof,
-        live_archive=True,
-    )
-
-    by_index = {item.index: item for item in matrix}
-    assert by_index[1].status == "blocking"
-    assert by_index[2].status == "deferred"  # continuity itself failed, so the live incident claim can't be satisfied
-    assert by_index[3].status == "blocking"
-    assert by_index[5].status == "blocking"

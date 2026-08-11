@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from devtools.manifest_models import validate_layering_manifest
 from polylogue.core.json import dumps
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 
@@ -745,6 +746,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = _load_manifest(rules_path)
+    schema_errors = validate_layering_manifest(manifest, path=str(rules_path))
+    if schema_errors:
+        if args.json:
+            print(dumps({"ok": False, "schema_errors": schema_errors}, indent=2))
+        else:
+            for error in schema_errors:
+                print(f"  ✗ {error}", file=sys.stderr)
+        return 1
     rules = _load_rules(rules_path)
     violations: list[dict[str, object]] = []
     baselined: list[dict[str, object]] = []

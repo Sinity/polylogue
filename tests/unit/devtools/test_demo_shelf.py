@@ -361,16 +361,3 @@ def test_tracked_projection_is_byte_identical_in_clean_clone(
     assert payload["changed"] == dict.fromkeys(("manifest", "summary_index", "readme", "catalog"), False)
     for name in GENERATED_SHELF_FILES:
         assert (cloned_root / name).read_bytes() == (root / name).read_bytes()
-
-
-def test_current_repository_closure_keeps_uplift_corpus_indexed() -> None:
-    root = Path(".agent/demos")
-
-    rendered = demo_shelf.render_demo_shelf(root)
-
-    manifest = json.loads(rendered.manifest_text)
-    paths = {record["path"] for record in manifest["files"]}
-    assert "uplift-two-arm/current/report.md" in paths
-    assert "uplift-two-arm/current/arms/pair1-handoff-pack-output.md" in paths
-    assert "uplift-two-arm/current/metrics/score.json" in paths
-    assert "uplift-two-arm" in rendered.unsummarized_demos

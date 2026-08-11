@@ -35,14 +35,6 @@ RESOURCE_POLICY: dict[str, dict[str, Any]] = {
 }
 
 _MAX_FRONTIER_RECORDS = 100_000
-_SCHEMA_TEXT_MARKERS = (
-    "index_schema_version",
-    "source_schema_version",
-    "user_schema_version",
-    "canonical ddl",
-    "schema migration",
-    "schema change",
-)
 _CANONICAL_TIER_DDL_SUFFIXES = (
     "storage/sqlite/archive_tiers/index.py",
     "storage/sqlite/archive_tiers/source.py",
@@ -176,12 +168,10 @@ def _valid_active_leaf_ids(issues: list[dict[str, Any]]) -> set[str]:
 
 def _resource_classes(issue: dict[str, Any], footprint: bead_cluster.Footprint) -> tuple[str, ...]:
     labels = _labels(issue)
-    text = " ".join(str(issue.get(field, "")) for field in ("design", "acceptance_criteria", "description")).lower()
     resources: list[str] = []
     if (
         footprint.migration_slots
         or "area:schema" in labels
-        or any(marker in text for marker in _SCHEMA_TEXT_MARKERS)
         or any("schema" in path.lower() and "storage" in path.lower() for path in footprint.files)
         or any(path.lower().endswith(suffix) for path in footprint.files for suffix in _CANONICAL_TIER_DDL_SUFFIXES)
     ):

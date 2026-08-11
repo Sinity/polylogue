@@ -19,7 +19,6 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "lab probe cost-reconciliation" in commands
     assert "lab projections" in commands
     assert "render devtools-reference" in commands
-    assert "release readiness" in commands
     assert "workspace tasks" in commands
     assert "status" in commands
 

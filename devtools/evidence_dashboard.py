@@ -221,7 +221,6 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
     "render all",
     "verify layering",
     "lab schema roundtrip",
-    "verify manifests",
 )
 
 

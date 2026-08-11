@@ -142,11 +142,9 @@ def test_generated_surface_cache_inputs_include_contract_owners() -> None:
     }.issubset(_surface_inputs("demo-corpus-datasheet"))
 
     assert {
+        "devtools/authored_scenario_catalog.py",
         "devtools/benchmark_catalog.py",
         "devtools/mutation_catalog.py",
-        "devtools/quality_registry.py",
-        "devtools/scenario_coverage.py",
-        "devtools/scenario_projection_catalog.py",
         "devtools/validation_lane_catalog_contracts.py",
         "devtools/validation_lane_catalog_live.py",
         "polylogue/operations/specs.py",

@@ -159,15 +159,7 @@ def test_seeded_violation_per_check_class(tmp_path: Path) -> None:
                 "polylogue-a1",
                 acceptance_criteria="Verify: r.",
             ),
-            # B1: decision bead that declares adopted/decided but is still open.
-            _issue(
-                "polylogue-b1",
-                acceptance_criteria="Verify: s.",
-                description="Status: adopted.",
-                labels=["area:ops"],
-                issue_type="decision",
-            ),
-            # E1: epic with no children, no dep edges, no named members.
+            # E1: epic with no children or dependency edges.
             _issue(
                 "polylogue-e1",
                 description="An epic that groups nothing yet.",
@@ -180,13 +172,6 @@ def test_seeded_violation_per_check_class(tmp_path: Path) -> None:
                 labels=["area:ops"],
                 issue_type="epic",
             ),
-            # T1: ephemeral path cited without provenance framing.
-            _issue(
-                "polylogue-t1",
-                acceptance_criteria="Verify: t.",
-                description="See /tmp/scratch-notes for details.",
-                labels=["area:ops"],
-            ),
             # X1: duplicate open titles (case-folded).
             _issue(
                 "polylogue-x1a",
@@ -198,13 +183,6 @@ def test_seeded_violation_per_check_class(tmp_path: Path) -> None:
                 "polylogue-x1b",
                 title="duplicate title example",
                 acceptance_criteria="Verify: u.",
-                labels=["area:ops"],
-            ),
-            # X2: names a bead id that does not exist.
-            _issue(
-                "polylogue-x2",
-                acceptance_criteria="Verify: v.",
-                description="See polylogue-9zk2 for prior discussion.",
                 labels=["area:ops"],
             ),
         ],
@@ -235,7 +213,7 @@ def test_seeded_violation_per_check_class(tmp_path: Path) -> None:
         receipts_path=receipts_dir,
     )
     fired = {f.check for f in findings}
-    expected = {"D1", "D2", "H1", "H2", "H3", "H4", "P1", "A1", "B1", "E1", "E2", "T1", "X1", "X2", "R1", "S1"}
+    expected = {"D1", "D2", "H1", "H2", "H3", "H4", "P1", "A1", "E1", "E2", "X1", "R1", "S1"}
     assert expected <= fired, f"missing checks: {expected - fired}"
 
 
@@ -273,16 +251,16 @@ def test_check_filter_limits_findings_to_requested_classes(tmp_path: Path) -> No
     assert [(finding.check, finding.bead_id) for finding in findings] == [("D1", "polylogue-filtered")]
 
 
-def test_external_request_id_is_not_parsed_as_truncated_bead_ref(tmp_path: Path) -> None:
+def test_prose_does_not_satisfy_structured_ac_or_design_fields(tmp_path: Path) -> None:
     path = tmp_path / "issues.jsonl"
     _write_jsonl(
         path,
         [
             _issue(
-                "polylogue-request-ref",
-                acceptance_criteria="Verify the receiver receipt.",
-                description="Receiver request polylogue-ext-mrhjgnkn-hzbd33l3 was acknowledged.",
-                labels=["area:capture"],
+                "polylogue-prose-only",
+                description="Implementation lives in polylogue/example.py.",
+                notes="AC: verify the implementation.",
+                labels=["horizon:frontier", "area:ops"],
             )
         ],
     )
@@ -290,9 +268,14 @@ def test_external_request_id_is_not_parsed_as_truncated_bead_ref(tmp_path: Path)
     findings = verify_backlog_hygiene.collect_findings(
         path=path,
         allow_path=tmp_path / "no-allowlist.txt",
+        checks={"H3", "H4"},
         receipts_path=tmp_path / "no-receipts",
     )
-    assert not [finding for finding in findings if finding.check == "X2"]
+
+    assert {(finding.check, finding.bead_id) for finding in findings} == {
+        ("H3", "polylogue-prose-only"),
+        ("H4", "polylogue-prose-only"),
+    }
 
 
 def test_main_json_reports_findings_and_nonzero_exit(

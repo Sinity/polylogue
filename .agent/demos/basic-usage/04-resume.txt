@@ -1,2 +1,0 @@
-$ polylogue find id:codex-session:demo-receipts then continue
-codex resume demo-receipts

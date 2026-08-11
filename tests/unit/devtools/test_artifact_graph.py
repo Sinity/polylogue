@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
-
-import pytest
 
 from devtools import artifact_graph
-from devtools.scenario_coverage import build_runtime_scenario_coverage
 
 
 def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None:
@@ -15,8 +11,6 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "Artifact Paths:" in rendered
     assert "Artifact Operations:" in rendered
     assert "Maintenance Targets:" in rendered
-    assert "Runtime Path Coverage:" in rendered
-    assert "Runtime Scenario Coverage:" in rendered
     assert "raw-reparse-loop" in rendered
     assert "raw-archive-ingest-loop" in rendered
     assert "message-fts-readiness-loop" in rendered
@@ -43,18 +37,9 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "query-archive-debt" in rendered
     assert "project-session-insight-readiness" in rendered
     assert "project-archive-readiness" in rendered
-    assert "startup-readiness" in rendered
-    assert "retrieval-checks" in rendered
-    assert "synthetic-benchmark:session-insight-materialization" in rendered
-    assert "validation-lane:live-insights-profiles-evidence" in rendered
-    assert "validation-lane:live-insights-work-events" in rendered
-    assert "validation-lane:live-insights-status" in rendered
-    assert "validation-lane:live-insights-debt" in rendered
-    assert "maintenance session_insights:" in rendered
-    assert "validation-lane:mutation-routes" in rendered
-    assert "validation-lane:insight-query-routes" in rendered
-    assert "validation-lane:maintenance-target-routes" in rendered
-    assert "uncovered " not in rendered
+    # Validation lanes and benchmark campaigns have their own executable
+    # catalogs. The artifact graph reports product data paths and operations,
+    # not a second copy of those control-plane registries.
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -88,132 +73,4 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert any(operation["name"] == "ingest-archive-runtime" for operation in payload["operations"])
     assert any(operation["name"] == "index-message-fts" for operation in payload["operations"])
     assert any(operation["kind"] == "projection" for operation in payload["operations"])
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["session_insight_rows"]
-    } >= {
-        ("synthetic-benchmark", "session-insight-materialization", "authored.synthetic-benchmark"),
-        ("validation-lane", "live-session-insight-repair", "authored.validation-lane"),
-    }
-    assert ("validation-lane", "live-session-insight-repair", "authored.validation-lane") in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["project-session-insight-readiness"]
-    }
-    assert ("validation-lane", "live-session-insight-repair", "authored.validation-lane") in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["maintenance_targets"]["session_insights"]
-    }
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["archive_session_rows"]
-    } >= {
-        ("validation-lane", "pipeline-probe-chatgpt", "authored.validation-lane"),
-        ("validation-lane", "live-archive-subset-parse-probe", "authored.validation-lane"),
-    }
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["ingest-archive-runtime"]
-    } >= {
-        ("validation-lane", "pipeline-probe-chatgpt", "authored.validation-lane"),
-        ("validation-lane", "live-archive-subset-parse-probe", "authored.validation-lane"),
-    }
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["message_source_rows"]
-    } >= {
-        ("synthetic-benchmark", "fts-rebuild", "authored.synthetic-benchmark"),
-        ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
-    }
-    assert {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["index-message-fts"]
-    } >= {
-        ("synthetic-benchmark", "fts-rebuild", "authored.synthetic-benchmark"),
-        ("synthetic-benchmark", "incremental-index", "authored.synthetic-benchmark"),
-    }
-    assert any(
-        ref["name"] == "retrieval-checks" for ref in payload["scenario_coverage"]["operations"]["query-sessions"]
-    )
-    assert any(
-        ref["name"] == "startup-readiness" for ref in payload["scenario_coverage"]["artifacts"]["archive_readiness"]
-    )
-    assert any(
-        ref["name"] == "live-readiness-json"
-        for ref in payload["scenario_coverage"]["operations"]["project-archive-readiness"]
-    )
-    assert (
-        "synthetic-benchmark",
-        "session-insight-materialization",
-        "authored.synthetic-benchmark",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["artifacts"]["session_insight_source_sessions"]
-    }
-    assert (
-        "synthetic-benchmark",
-        "session-insight-materialization",
-        "authored.synthetic-benchmark",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["materialize-session-insights"]
-    }
-    assert (
-        "validation-lane",
-        "live-insights-profiles-evidence",
-        "authored.validation-lane",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-session-profiles"]
-    }
-    assert (
-        "validation-lane",
-        "live-insights-work-events",
-        "authored.validation-lane",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-session-work-events"]
-    }
-    assert (
-        "validation-lane",
-        "live-insights-status",
-        "authored.validation-lane",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-session-insight-status"]
-    }
-    assert (
-        "validation-lane",
-        "live-insights-debt",
-        "authored.validation-lane",
-    ) in {
-        (ref["source"], ref["name"], ref["origin"])
-        for ref in payload["scenario_coverage"]["operations"]["query-archive-debt"]
-    }
-    assert payload["scenario_coverage"]["paths"]["session-profile-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-work-event-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["thread-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["archive-coverage-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == []
-    assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["message-fts-readiness-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["uncovered_artifacts"] == []
-    assert payload["scenario_coverage"]["uncovered_operations"] == []
-    assert payload["scenario_coverage"]["uncovered_declared_operations"] == []
-
-
-def test_strict_graph_rejects_an_uncovered_declared_operation(monkeypatch: pytest.MonkeyPatch) -> None:
-    coverage = build_runtime_scenario_coverage()
-    monkeypatch.setattr(
-        artifact_graph,
-        "build_runtime_scenario_coverage",
-        lambda: replace(coverage, uncovered_declared_operations=("cross-surface-operation",)),
-    )
-
-    assert artifact_graph.main(["--strict"]) == 1
+    assert "scenario_coverage" not in payload

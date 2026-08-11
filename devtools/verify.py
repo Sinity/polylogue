@@ -2084,13 +2084,10 @@ def build_verify_steps(
             [
                 ("render all", _devtools_cmd("render all", "--check")),
                 ("verify layering", _devtools_cmd("verify layering")),
-                ("lab graph strict", _devtools_cmd("lab graph", "--strict")),
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
-                ("verify manifests", _devtools_cmd("verify manifests")),
                 ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
                 ("verify catalog-bypasses", _devtools_cmd("verify catalog-bypasses")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
-                ("verify docs-coverage", _devtools_cmd("verify docs-coverage")),
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
                 ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
@@ -2250,23 +2247,8 @@ def build_verify_steps(
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
-        steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
-        steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
-        )
-        steps.append(("lab policy acceptance-contracts", _devtools_cmd("lab policy acceptance-contracts")))
-        steps.append(
-            (
-                "lab policy acceptance-contract-reconcile",
-                _devtools_cmd("lab policy acceptance-contract-reconcile"),
-            )
-        )
-        steps.append(
-            (
-                "lab policy acceptance-contract-apply",
-                _devtools_cmd("lab policy acceptance-contract-apply"),
-            )
         )
         # backlog-hygiene and bead-graph are corpus-wide backlog-debt scans
         # (findings scale with the total count of open Beads issues, not

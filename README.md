@@ -9,15 +9,13 @@
   <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
 </p>
 
-<!-- public-claim:category.local-evidence-system -->
 Polylogue archives AI conversations and coding-agent runs from multiple tools in
 one searchable local archive. It imports supported histories from ChatGPT,
 Claude and Claude Code, Codex, Gemini, Hermes, and other sources, then exposes
 sessions, messages, tool calls and results, branches, subagents, usage, and costs
 through a CLI, Python API, local HTTP reader, and MCP server.
 
-By default, the archive stays on your machine. The author's archive contains
-more than **18,000 sessions and 4.7 million messages**.
+By default, the archive stays on your machine.
 
 [Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
 

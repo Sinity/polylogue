@@ -30,13 +30,7 @@ from devtools import repo_root as _get_root
 from .authored_scenario_catalog import get_authored_scenario_catalog
 from .mutation_catalog import MutationCampaignEntry
 from .verify_mutation_freshness import (
-    MANIFEST as _FRESHNESS_MANIFEST,
-)
-from .verify_mutation_freshness import (
     assess_campaign as _freshness_assess,
-)
-from .verify_mutation_freshness import (
-    load_manifest as _freshness_load_manifest,
 )
 
 ROOT = _get_root()
@@ -581,14 +575,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     status_parser = subparsers.add_parser(
         "status",
-        help="Show per-campaign last-run, kill rate, and freshness against docs/plans/campaign-coverage.yaml.",
+        help="Show per-campaign last-run, kill rate, and freshness from the executable catalog.",
     )
     status_parser.add_argument("--json", action="store_true")
     status_parser.add_argument(
         "--default-freshness-days",
         type=int,
         default=60,
-        help="Freshness budget for manifest entries without freshness_days (default 60).",
+        help="Freshness budget for campaign artifacts (default 60).",
     )
     status_parser.set_defaults(command_fn=cmd_status)
 
@@ -651,19 +645,15 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    manifest = _freshness_load_manifest(_FRESHNESS_MANIFEST)
-    raw_entries = manifest.get("mutation_campaigns") or []
-    entries: list[object] = list(raw_entries) if isinstance(raw_entries, list) else []
     now = datetime.now(UTC)
     assessments = [
         _freshness_assess(
-            entry,
+            campaign.name,
             repo_root=ROOT,
             now=now,
-            default_freshness_days=args.default_freshness_days,
+            freshness_days=args.default_freshness_days,
         )
-        for entry in entries
-        if isinstance(entry, dict) and "name" in entry
+        for campaign in CAMPAIGNS.values()
     ]
     if args.json:
         json.dump(

@@ -1,12 +1,10 @@
-"""End-to-end proof of the z9gh.7 mandate-replay artifact.
+"""End-to-end proof of the continuity replay artifact.
 
 Runs the full wiring: t8t's real continuity scenario catalog over real MCP
 stdio JSON-RPC against a freshly seeded synthetic archive, the real
 ``polylogue.insights.work_effects`` adapters against a genuine (fixture) git
-repository and Beads ledger, and the real query-discovery catalog -- combined
-into one JSON artifact with a mandate acceptance-criteria matrix. This is the
-one privacy-safe live-scale artifact polylogue-z9gh.7's own 2026-07-20 notes
-named as the missing residual scope.
+repository and Beads ledger, and the real query-discovery catalog in one JSON
+report.
 """
 
 from __future__ import annotations
@@ -66,7 +64,6 @@ async def test_mandate_continuity_replay_end_to_end_synthetic_lane(repo_fixture:
         redact=False,
     )
 
-    assert report["mandate_bead"] == "polylogue-z9gh.7"
     assert report["live_archive"] is False
 
     continuity = report["continuity"]
@@ -85,25 +82,6 @@ async def test_mandate_continuity_replay_end_to_end_synthetic_lane(repo_fixture:
     assert effect_proof["claims_evaluated"] == 1
     assert effect_proof["status"] == "pass"
 
-    ac_matrix = report["ac_matrix"]
-    assert isinstance(ac_matrix, list)
-    assert len(ac_matrix) == 7
-    statuses: dict[object, object] = {}
-    for item in ac_matrix:
-        assert isinstance(item, dict)
-        statuses[item["index"]] = item["status"]
-    # Every lane this artifact actually runs (1, 3, 4, 5, 7) is satisfied
-    # against the synthetic corpus; the two mandate items requiring either an
-    # authorized live archive (2) or t8t's separately-owned mutation suite (6)
-    # are honestly deferred, never fabricated as satisfied.
-    assert statuses[1] == "satisfied"
-    assert statuses[2] == "deferred"
-    assert statuses[3] == "satisfied"
-    assert statuses[4] == "satisfied"
-    assert statuses[5] == "satisfied"
-    assert statuses[6] == "deferred"
-    assert statuses[7] == "satisfied"
-
     assert report["status"] == "pass"
 
     # Full report round-trips through JSON (it must be a valid standalone artifact).
@@ -116,15 +94,14 @@ async def test_mandate_continuity_replay_redacts_evidence_prose_by_default(repo_
 
     report = await run_mandate_continuity_replay(repo_path=repo_path, beads_ledger_path=ledger_path)
 
-    ac_matrix = report["ac_matrix"]
-    assert isinstance(ac_matrix, list)
-    for item in ac_matrix:
-        assert isinstance(item, dict)
-        note = item["note"]
-        assert isinstance(note, str)
-        # AC notes are authored text, not evidence prose, and are not
-        # redaction targets themselves -- but any raw commit/claim label this
-        # report embeds elsewhere must be hashed.
+    effect_proof = report["work_evidence_effect_proof"]
+    assert isinstance(effect_proof, dict)
+    adapter_failures = effect_proof["adapter_failures"]
+    assert isinstance(adapter_failures, list)
+    assert all(
+        isinstance(item, dict) and isinstance(item["reason"], str) and item["reason"].startswith("redacted:sha256:")
+        for item in adapter_failures
+    )
     assert report["status"] == "pass"
 
 
@@ -148,5 +125,4 @@ def test_main_cli_writes_json_output_and_returns_pass_exit_code(
 
     assert exit_code == 0
     payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert payload["mandate_bead"] == "polylogue-z9gh.7"
     assert payload["status"] == "pass"

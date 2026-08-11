@@ -71,6 +71,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-session-excision",
         "mutate-session-lifecycle-request",
         "mutate-identity-reset",
+        "mutate-maintenance-target-run",
+        "mutate-filesystem-reset",
     }
     assert specs["acquire-raw-sessions"].kind is OperationKind.MATERIALIZATION
     assert specs["acquire-raw-sessions"].mutates_state is True
@@ -135,6 +137,19 @@ def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None
     for spec in build_runtime_operation_catalog().specs:
         assert spec.surfaces
         assert spec.code_refs
+
+
+def test_non_routed_mutations_carry_typed_debt_reasons() -> None:
+    specs = build_declared_operation_catalog().by_name()
+
+    for name in (
+        "mutate-maintenance-target-run",
+        "mutate-filesystem-reset",
+        "seed-demo-archive",
+    ):
+        assert specs[name].mutates_state is True
+        assert specs[name].executor_status in {"declared-not-routed", "typed-exemption"}
+        assert specs[name].executor_reason
 
 
 def test_raw_authority_recovery_specs_declare_their_exact_target_kinds() -> None:

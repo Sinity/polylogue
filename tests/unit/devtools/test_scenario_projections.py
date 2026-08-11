@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from devtools import scenario_projections
-from devtools.scenario_projection_catalog import build_scenario_projection_entries
+from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from polylogue.scenarios import (
     ScenarioProjectionSource,
     ScenarioProjectionSourceKind,
@@ -97,14 +97,14 @@ def test_render_scenario_projections_supports_targeted_filters() -> None:
 def test_all_projection_operation_targets_are_declared() -> None:
     declared = set(declared_operation_target_names())
 
-    for entry in build_scenario_projection_entries():
+    for entry in get_authored_scenario_catalog().compile_projection_entries():
         assert set(entry.operation_targets).issubset(declared)
 
 
 def test_validation_lane_projection_entries_include_composite_metadata_unions() -> None:
     frontier_local = next(
         entry
-        for entry in build_scenario_projection_entries()
+        for entry in get_authored_scenario_catalog().compile_projection_entries()
         if entry.source_kind.value == "validation-lane" and entry.name == "frontier-local"
     )
 

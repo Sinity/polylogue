@@ -1,66 +1,8 @@
 {
   "archive_root": "archive",
-  "baseline": {
-    "name": "command-exit-only smoke test",
-    "result": {
-      "would_not_verify_planted_constructs": true
-    }
-  },
-  "claim": {
-    "declared_before_execution": true,
-    "scope": "the generated fixture archive and commands in this report only",
-    "statement": "The recorded tour commands complete successfully against the deterministic private-data-free archive.",
-    "status": "supported"
-  },
-  "controls": {
-    "missing_evidence": {
-      "description": "The report retains verifier problems and does not convert absent overlays or constructs into success.",
-      "passed": true
-    },
-    "negative": {
-      "description": "A failed command or failed semantic verifier makes the tour fail.",
-      "passed": true
-    }
-  },
-  "demo_packet_contract_version": "2.0.0",
-  "falsifier": {
-    "condition": "The semantic verifier fails, a public command exits nonzero, or a timing budget is exceeded.",
-    "result": "pass",
-    "triggered": false
-  },
   "first_result_s": 1.362,
-  "non_claims": [
-    "The deterministic tour does not establish field prevalence, production scale, or provider completeness.",
-    "The deterministic tour does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
-    "The private-archive Receipts benchmark is a separate local-only lane and is not simulated by this fixture."
-  ],
   "ok": true,
-  "oracle": {
-    "description": "The semantic fixture verifier checks planted archive constructs independently of the tour narration.",
-    "expected": {
-      "command_exit_codes": [
-        0,
-        0,
-        0,
-        0
-      ],
-      "verify_ok": true
-    },
-    "independent": true,
-    "method": "Run demo verification before the public CLI steps and retain its structured result."
-  },
   "output_dir": ".",
-  "primary_construct": {
-    "id": "demo.public-tour",
-    "product_primitives": [
-      "demo seed",
-      "demo verify",
-      "find",
-      "read",
-      "analyze"
-    ],
-    "statement": "The deterministic tour exercises public read and analysis paths over a verified fixture archive."
-  },
   "problems": [],
   "recording_tape_path": "recording.tape",
   "report_json_path": "report.json",

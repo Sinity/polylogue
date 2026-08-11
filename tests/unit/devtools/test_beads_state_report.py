@@ -2,9 +2,8 @@
 
 The report's contract: interpretation is computed, never fossilized.  These
 tests pin the load-bearing computations -- temporal snapshot reconstruction,
-conditional insight emission, parallel-frontier independence -- and the render
-invariants the operator relies on (health queues and VERIFICATION verdicts
-survive presentation changes).
+conditional insight emission, parallel-frontier independence, and the health
+queues that must survive presentation changes.
 """
 
 from __future__ import annotations
@@ -212,9 +211,8 @@ class TestParallelFrontier:
 # render invariants
 # ---------------------------------------------------------------------------
 class TestRender:
-    def test_verification_verdicts_and_health_queues_survive(self, tmp_path: Any) -> None:
+    def test_health_queues_survive(self, tmp_path: Any) -> None:
         beads = [
-            _bead("verified", notes="VERIFICATION (sweep-3): STALE because superseded"),
             _bead("parent", deps=[]),
             _bead(
                 "kid",
@@ -225,11 +223,8 @@ class TestRender:
             _bead("dangler", deps=[_dep("dangler", "20d.14", "blocks")]),
         ]
         facts = _facts(beads)
-        assert facts.verdicts == [("verified", "STALE", "open", "sweep-3")]
         assert facts.open_parent_all_closed == ["parent"]
         html = render(facts, tmp_path / "issues.jsonl", NOW, {})
-        # VERIFICATION verdict subset preserved
-        assert "STALE" in html and "sweep-3" in html
         # graph-health queues preserved
         assert "open parent, all children closed" in html
         assert "dangling dependency references" in html

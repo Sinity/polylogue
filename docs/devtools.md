@@ -59,16 +59,12 @@ They are not a proof ledger or end-user archive workflow.
 
 | Command | Role |
 | --- | --- |
-| `devtools lab graph` | Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations. |
+| `devtools lab graph` | Inspect declared runtime artifacts, operations, paths, and maintenance targets. |
 | `devtools lab lanes` | List, dry-run, or execute authored validation lanes from the executable lane registry. |
-| `devtools lab policy backlog-hygiene` | Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 20 checks over the Beads export catching dangling dependency refs, blocks-cycles, missing horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance criteria, unlabeled non-epic beads, epics with no members or description, stale 'adopted' decisions left open, duplicate titles, bead ids named but never created, an unclean/corrupt bd JSONL sync receipt (S1, consuming polylogue-gxjh.1's monotonic sync contract), an active leaf that is itself an epic (F1), an active leaf with a missing/dangling/mismatched program ref (F2), a stale in_progress claim with no recent activity (F3, configurable window), and a frontier_program=active program with no admitted active leaves (F4) -- catches backlog structure drift before it needs an archaeology sweep to recover, instead of only a manually-invoked script. Also reports a non-blocking active-set size diagnostic (soft target/warn bands, never a hard cap or failure). |
+| `devtools lab policy backlog-hygiene` | Enforce structured backlog invariants over the Beads export: dangling dependency refs, blocks-cycles, horizon/priority/AC/design fields, area labels, structured epic membership, duplicate titles, an unclean/corrupt bd JSONL sync receipt (S1, consuming polylogue-gxjh.1's monotonic sync contract), an active leaf that is itself an epic (F1), an active leaf with a missing/dangling/mismatched program ref (F2), a stale in_progress claim with no recent activity (F3, configurable window), and a frontier_program=active program with no admitted active leaves (F4) -- catches backlog structure drift before it needs an archaeology sweep to recover, instead of only a manually-invoked script. Also reports a non-blocking active-set size diagnostic (soft target/warn bands, never a hard cap or failure). |
 | `devtools lab policy bead-graph` | Run right before shipping a bead-state delta (matches the sinex bead-graph-lint convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. It fails closed for real missing acceptance criteria and validates zero-or-one structured parent-child parents. `--json` emits the complete deterministic missing-AC census, never a display page. INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged (polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here). |
-| `devtools lab policy acceptance-contracts` | Run the source-digest-bound acceptance-contract gate before shipping Beads state. It validates typed contract fields, rendered criteria equality, planner-review dispatch markers, safety and receipt clauses, and the committed 218-Bead manifest. |
-| `devtools lab policy acceptance-contract-reconcile` | Run this file-level dry run before a coordinator applies acceptance contracts. It reports authority differences, refuses source-digest mismatches, and emits a targeted wave made from live rows with only acceptance_criteria and metadata.acceptance_contract_v1 changed. It never invokes bd or mutates Dolt. |
 | `devtools lab policy campaign-archive-boundaries` | Catch a regression of the phantom-benchmark.db bug (polylogue-ovme.3): a campaign reintroducing a 'benchmark.db' sentinel, an ad hoc tier-path sibling derivation, or an entry point (generate_archive/run_full_campaign/run_campaign._run) that no longer routes through CampaignArchiveLocation. Scoped to the devtools campaign boundary only -- the broader storage/diagnostics/daemon/maintenance/transitions boundary audit is polylogue-ovme.2's migration surface. |
-| `devtools lab policy demo-packet-registry` | Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in .agent/demos/registry.json must have a packet directory carrying PROMPT.md, finding.yaml (five-part provenance stanza), report.md (fixed section order), evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing or malformed packet before it silently drops out of the demo shelf. |
 | `devtools lab policy demo-tour-freshness` | Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, report, per-step command output, recording tape) and the committed copies under docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). Runs the real tour (~10s), so it lives in the lab tier rather than --quick. |
-| `devtools lab policy docs-drift` | Catch doc-vs-code drift in the hand-maintained Reference-docs table (CLAUDE.md): a backtick-quoted file path that no longer exists, a '<Tier> schema version N' claim ahead of the tier's current constant, or a watchlisted table name renamed to a different current name (e.g. `artifact_observations` renamed to `raw_artifacts`) still asserted as current (polylogue-9e5.13). |
 | `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
@@ -77,7 +73,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
 | `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
 | `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
-| `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
+| `devtools lab projections` | Inspect descriptive projection metadata for executable lanes, inferred fixtures, and benchmarks. |
 | `devtools lab run` | Run a scenario such as rebuild-safety through the direct lab command path. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
@@ -112,34 +108,6 @@ These are the commands worth remembering during normal repo work:
 - `devtools bench campaign`: Record durable benchmark artifacts or compare a candidate run against a baseline artifact.
   Common forms: `devtools bench campaign list`, `devtools bench campaign run search-filters`, `devtools bench campaign compare baseline.json candidate.json`.
 
-## Workspace disposition audit
-
-The utf.1 triage retains workspace commands with operator history, reusable output, or focused tests. The stale archive-schema-fast-forward name is removed in favor of the registered index fast-forward command.
-
-| Named entry | Disposition | Evidence | Replacement |
-| --- | --- | --- | --- |
-| `devtools workspace index-fast-forward` | `retain` | Recent production commits plus focused devtools/storage tests; emits a reusable proof receipt. | Keep the registered command as the index-tier actuator. |
-| `workspace archive-schema-fast-forward` | `remove` | No current CommandSpec, implementation module, focused test, or history entry exists for this name. | Use workspace index-fast-forward for declared derived-index fast-forwards. |
-| `devtools workspace degraded-archive-proof` | `retain` | Focused tests and deterministic self-healing proof artifacts cover the command. | Keep the registered command for archive repair evidence. |
-| `devtools workspace frontier` | `retain` | Operator-facing frontier report with documented workflow use and structured report output. | Keep the registered command for frontier batching and wait-ahead decisions. |
-| `devtools workspace temporal-read-profile` | `retain` | Focused tests cover the report and JSON timing output is reusable for read tuning. | Keep the registered command as the temporal read profiling entrypoint. |
-| `devtools workspace temporal-devloop` | `retain` | Focused tests cover structured and Markdown event sources; output is a reusable evidence window. | Keep the registered command as the devloop temporal evidence entrypoint. |
-| `devtools workspace temporal-archive-aggregates` | `retain` | Focused tests cover aggregate report construction and reusable archive artifacts. | Keep the registered command as the run-projection aggregate entrypoint. |
-| `devtools workspace lineage-validation` | `retain` | Focused tests cover lineage evidence and the command emits reusable count and composition proof. | Keep the registered command before publishing archive cardinality claims. |
-| `devtools workspace cli-surface-audit` | `retain` | Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable. | Keep the registered command as the current CLI surface audit entrypoint. |
-| `devtools demo real-slice-screen` | `retain` | Focused privacy-screening tests cover redaction, PII review, and report generation. | Keep the registered command as the read-only real-archive screening entrypoint. |
-
-Catalog bypass audit sites are machine-checked across workflow runs, CI-owned npm scripts, hooks, and devtools process launches. Direct hook adapters require declared sanctioned exceptions with an exact occurrence and cardinality.
-
-| Site | Status | Registered command | Occurrence | Reason |
-| --- | --- | --- | --- | --- |
-| `.github/workflows/mutation-testing.yml` | `registered` | `devtools verify mutation-freshness` | not applicable | CI invokes the catalog command so inventory and workflow validation see the freshness gate. |
-| `.github/workflows/nightly-scale.yml` | `registered` | `devtools bench nightly-compare` | not applicable | CI invokes the catalog command so the nightly comparison is discoverable and checked. |
-| `devtools/pre_push_gate.py` | `registered` | `devtools lab policy backlog-hygiene` | not applicable | The intentional Beads-only route remains narrow while using the registered policy command. |
-| `docs/test-economics.md` | `sanctioned-bypass` | `devtools lab test-economics` | not applicable | The generated provenance header preserves the module that emitted the document; operators use the catalog command. |
-| `.githooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) | The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate. |
-| `.beads-hooks/pre-push` | `sanctioned-bypass` | `hook adapter` | line 21 (1 expected) | The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs. |
-
 ### Core
 
 | Command | Description |
@@ -159,11 +127,9 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render mcp-equivalence` | Render docs/generated/mcp-equivalence.json from executable MCP declarations. |
-| `devtools render mcp-tool-index` | Render the generated exhaustive tool-name appendix into docs/mcp-reference.md. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
 | `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
 | `devtools render product-workflows` | Render docs/product/workflows.md from executable query-action workflow registries. |
-| `devtools render public-claims` | Render README, launch, findings-page, and verified-export claim views from FINDING assertions. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries. |
 | `devtools render query-discovery` | Render parser-gated query discovery examples and result semantics into docs/search.md. |
 | `devtools render visual-tapes` | Write VHS tape files and optionally capture GIFs for the default visual evidence specs. |
@@ -175,25 +141,19 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | Command | Description |
 | --- | --- |
 | `devtools release build-package` | Build the default Nix package with the out-link under .local/result. |
-| `devtools release readiness` | Validate the externally-presentable release gate definition. |
 | `devtools release verify-distribution` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 
 ### Lab Checks
 
 | Command | Description |
 | --- | --- |
-| `devtools lab graph` | Render the runtime artifact, operation, and scenario-coverage map. |
+| `devtools lab graph` | Render the runtime artifact and operation graph. |
 | `devtools lab lanes` | Run named validation lanes. |
-| `devtools lab policy acceptance-contract-apply` | Apply an exact acceptance wave to a guarded JSONL file copy. |
-| `devtools lab policy acceptance-contract-reconcile` | Reconcile canonical acceptance contracts with a read-only live Beads export. |
-| `devtools lab policy acceptance-contracts` | Validate structured Beads acceptance contracts and the committed contract manifest. |
 | `devtools lab policy backlog-hygiene` | Verify Beads backlog structure invariants (.beads/issues.jsonl). |
 | `devtools lab policy bead-graph` | Bead-graph invariant lint and complete missing-AC census over live `bd` state. |
 | `devtools lab policy campaign-archive-boundaries` | Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation. |
 | `devtools lab policy classifier-fingerprints` | Verify parser/classifier decision-boundary changes are declared as reparse-requiring or acknowledged. |
-| `devtools lab policy demo-packet-registry` | Verify every registered 212 demo has a conforming Demo Finding Packet. |
 | `devtools lab policy demo-tour-freshness` | Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts. |
-| `devtools lab policy docs-drift` | Verify checkable factual claims in the Reference-docs table against current source. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools lab policy position-derived-identity` | Verify no parser mints cross-revision comparison identity from positional/index data. |
 | `devtools lab policy raw-authority-frontier-executability` | Verify every raw-authority frontier state has a reachable actuator. |
@@ -238,12 +198,9 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools verify degrade-loudly` | Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure. |
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
-| `devtools verify docs-coverage` | Verify every public CLI command, MCP tool, config key, and stable daemon route is named in the docs tree. |
 | `devtools verify evidence` | Render the pytest-first evidence dashboard. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
-| `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
-| `devtools verify mutation-freshness` | Verify fresh mutation campaigns meet their declared kill-rate thresholds. |
-| `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
+| `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
 | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
 | `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
@@ -285,8 +242,8 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace chatgpt-lifecycle-anchor-audit` | Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
+| `devtools workspace continuity-replay` | Run continuity scenarios with query-discovery and repository-effect checks. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
-| `devtools workspace delivery-gate-status` | Per-release-gate progress board over .beads/issues.jsonl (delivery:<release> / lane:<lane> overlay). |
 | `devtools workspace demo-shelf` | Refresh or verify current demo shelf indexes. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
@@ -296,7 +253,6 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace lane-brief` | Generate a dispatch brief for a bead lane with live footprint/prior-art evidence. |
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace mandate-continuity-replay` | Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact. |
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
@@ -316,7 +272,6 @@ Catalog bypass audit sites are machine-checked across workflow runs, CI-owned np
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
-| `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
 | `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
 | `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |

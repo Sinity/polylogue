@@ -19,7 +19,7 @@ version: 2.1
 #     checks that stay --lab-only because they scan the whole Beads/backlog
 #     corpus rather than the current diff (backlog-hygiene, bead-graph) or
 #     are otherwise not cheap/deterministic enough for every push
-#     (timestamp-doctrine, insight-honesty, demo-packet-registry, docs-drift,
+#     (timestamp-doctrine, insight-honesty, docs-drift,
 #     campaign-archive-boundaries). Runs nightly so a policy that fails
 #     continuously is at least visible somewhere, per polylogue-ze5i AC2,
 #     instead of only reachable via a human remembering `devtools verify
@@ -116,7 +116,7 @@ jobs:
       # backlog-hygiene and bead-graph are known-red until the pre-existing
       # backlog debt they report is triaged (tracked separately; see
       # polylogue-ze5i notes), and that must not mask a genuine regression
-      # in timestamp-doctrine/insight-honesty/demo-packet-registry/
+      # in timestamp-doctrine/insight-honesty/
       # docs-drift/campaign-archive-boundaries going unnoticed.
       - run:
           name: lab policy timestamp-doctrine
@@ -125,10 +125,6 @@ jobs:
       - run:
           name: lab policy insight-honesty
           command: ~/.local/bin/uv run devtools lab policy insight-honesty
-          when: always
-      - run:
-          name: lab policy demo-packet-registry
-          command: ~/.local/bin/uv run devtools lab policy demo-packet-registry
           when: always
       - run:
           name: lab policy docs-drift

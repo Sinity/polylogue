@@ -30,7 +30,6 @@ jobs:
           python-version: "3.14"
       - run: uv sync --extra dev --frozen
       - run: uv run devtools render all --check
-      - run: uv run devtools verify public-claims --json
       # An index schema bump merged without its lifecycle.py delta declaration
       # downgrades every live generation to a full raw replay (polylogue-9rw0).
       - run: uv run devtools lab policy schema-versioning

@@ -1,5 +1,0 @@
-{
-  "pass": true,
-  "unsupported_claims": [],
-  "coverage_notes": "All 6 queries and the required explain route executed through polylogue at d23f5dd27a0bda0a9c0a4306ef98c898d4d920ce against a private synthetic seeded demo corpus with 19 sessions and 71 messages. Query 4 returned one hit with only 2 of 71 messages embedded, so the packet does not claim semantic completeness. Query 5 is scoped as a time-filter demonstration, not abandonment classification. The bare-find predicate defect remains explicit and is retained as a historical finding."
-}

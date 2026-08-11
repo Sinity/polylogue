@@ -7,13 +7,7 @@
     "without_proof_fields": [],
     "without_caveat_fields": [],
     "unsummarized_demos": [
-      "_packet-contract-stub",
-      "anti-demo-multi-source-reconstruction",
-      "attachment-acquisition-census",
-      "basic-usage",
-      "d1-receipts",
-      "d4-behavioral-archaeology",
-      "uplift-two-arm"
+      "attachment-acquisition-census"
     ]
   },
   "records": [

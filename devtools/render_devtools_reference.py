@@ -7,8 +7,6 @@ import sys
 from pathlib import Path
 
 from devtools.command_catalog import (
-    CATALOG_BYPASS_SITES,
-    WORKSPACE_COMMAND_DISPOSITIONS,
     CommandSpec,
     control_plane_command,
     featured_command_specs,
@@ -67,40 +65,6 @@ def _render_verification_lab_surface(commands: tuple[CommandSpec, ...]) -> list[
     return lines
 
 
-def _render_workspace_dispositions() -> list[str]:
-    lines = [
-        "## Workspace disposition audit",
-        "",
-        "The utf.1 triage retains workspace commands with operator history, reusable output, or focused tests. "
-        "The stale archive-schema-fast-forward name is removed in favor of the registered index fast-forward command.",
-        "",
-        "| Named entry | Disposition | Evidence | Replacement |",
-        "| --- | --- | --- | --- |",
-    ]
-    for item in WORKSPACE_COMMAND_DISPOSITIONS:
-        display_name = item.name if item.disposition == "remove" else control_plane_command(item.name)
-        lines.append(f"| `{display_name}` | `{item.disposition}` | {item.evidence} | {item.replacement} |")
-    lines.extend(
-        [
-            "",
-            "Catalog bypass audit sites are machine-checked across workflow runs, CI-owned npm scripts, hooks, and devtools process launches. Direct hook adapters require declared sanctioned exceptions with an exact occurrence and cardinality.",
-            "",
-            "| Site | Status | Registered command | Occurrence | Reason |",
-            "| --- | --- | --- | --- | --- |",
-        ]
-    )
-    for site in CATALOG_BYPASS_SITES:
-        command = control_plane_command(site.command_name) if site.command_name is not None else "hook adapter"
-        occurrence = (
-            f"line {site.occurrence_line} ({site.expected_occurrences} expected)"
-            if site.occurrence_line is not None
-            else "not applicable"
-        )
-        lines.append(f"| `{site.path}` | `{site.disposition}` | `{command}` | {occurrence} | {site.reason} |")
-    lines.append("")
-    return lines
-
-
 def build_command_catalog() -> str:
     groups = grouped_command_specs()
     featured = featured_command_specs()
@@ -123,7 +87,6 @@ def build_command_catalog() -> str:
     lines.extend(_render_verification_lab_surface(verification_lab))
     if featured:
         lines.extend(_render_featured_commands(featured))
-    lines.extend(_render_workspace_dispositions())
     for category, commands in groups.items():
         lines.extend(_render_table(category, commands))
     lines.append("<!-- END GENERATED: devtools-command-catalog -->")

@@ -3,7 +3,7 @@
 The tool exists so execution plans quote measured distributions instead of
 guesses; these tests pin the measurement semantics that make those numbers
 trustworthy: percentile math, right-censoring honesty (survival cohort),
-close-reason classification, discovery accounting that excludes the bulk
+discovery accounting that excludes the bulk
 import day, and PR latency that reads the merge train rather than guessing
 implementation time.
 """
@@ -18,7 +18,6 @@ import pytest
 
 from devtools.backlog_calibration import (
     build_report,
-    classify_close_reason,
     main,
     summarize_days,
 )
@@ -66,23 +65,6 @@ class TestSummarizeDays:
         assert summarize_days([]) == {"n": 0}
 
 
-class TestCloseReasonClassification:
-    @pytest.mark.parametrize(
-        ("reason", "expected"),
-        [
-            ("Duplicate of polylogue-abc", "duplicate"),
-            ("AC already satisfied by #3413", "already-satisfied"),
-            ("Fixed in PR #3397", "already-satisfied"),
-            ("Superseded by the v46 design", "obsolete"),
-            ("Misframed: the gate works as designed", "misframed"),
-            ("Implemented the parser change and merged #3400", "worked"),
-            (None, "worked"),
-        ],
-    )
-    def test_classes(self, reason: str | None, expected: str) -> None:
-        assert classify_close_reason(reason) == expected
-
-
 class TestBuildReport:
     def test_closed_lead_splits_by_priority_and_epic_membership(self) -> None:
         beads = [
@@ -116,18 +98,6 @@ class TestBuildReport:
         assert overall["n"] == 2
         assert overall["closed_within_1d_pct"] == pytest.approx(50.0)
         assert overall["closed_within_14d_pct"] == pytest.approx(50.0)
-
-    def test_no_implementation_share_measures_the_verify_first_economy(self) -> None:
-        beads = [
-            _bead("w", close_reason="implemented and merged"),
-            _bead("s", close_reason="already satisfied by #1"),
-            _bead("d", close_reason="duplicate of x"),
-            _bead("n", close_reason=None),  # no reason -> excluded from the denominator
-        ]
-        report = build_report(beads, as_of=AS_OF)
-        reasons = report["close_reasons"]
-        assert reasons["closed_with_reason"] == 3
-        assert reasons["no_implementation_pct"] == pytest.approx(66.7)
 
     def test_discovery_excludes_the_import_day_and_reports_ratio(self) -> None:
         beads = [
@@ -189,7 +159,6 @@ class TestCli:
             "population",
             "closed_lead_days",
             "survival",
-            "close_reasons",
             "discovery",
         }
 
@@ -200,7 +169,6 @@ class TestCli:
         assert main(["--input", str(export)]) == 0
         out = capsys.readouterr().out
         assert "survivorship-biased" in out
-        assert "close reasons" in out
 
     def test_invalid_jsonl_line_fails_with_location(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.jsonl"

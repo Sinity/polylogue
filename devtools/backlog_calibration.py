@@ -8,9 +8,6 @@ Fits the numbers a backlog-execution plan needs from the actual bead history
   - a right-censoring-honest survival view (fraction of a >=14d-old cohort
     closed within 1/3/7/14 days) -- closed-only medians are survivorship-
     biased and this section is the corrective;
-  - close-reason classification (worked vs already-satisfied / obsolete /
-    duplicate / misframed) with median age-at-closure per class -- the
-    "verify before dispatching" economy;
   - discovery-vs-drain dynamics: created and closed per day, the
     created-per-close ratio, and net backlog growth;
   - optionally, PR open->merge latency by changed-file bucket from a
@@ -48,8 +45,6 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from re import IGNORECASE
-from re import compile as re_compile
 from typing import Any
 
 BeadDict = dict[str, Any]
@@ -58,25 +53,6 @@ _DAY_SECONDS = 86400.0
 _PERCENTILES = (10, 25, 50, 75, 90, 95)
 _SURVIVAL_WINDOWS_DAYS = (1, 3, 7, 14)
 _COHORT_MIN_AGE_DAYS = 14.0
-
-# Close-reason classes, checked in order; first match wins. "worked" is the
-# fall-through. Regexes over free text are advisory classification, not truth.
-_CLOSE_REASON_CLASSES: tuple[tuple[str, Any], ...] = (
-    ("duplicate", re_compile(r"\bdup(?:e|licate)?\b", IGNORECASE)),
-    (
-        "already-satisfied",
-        re_compile(r"\balready\b|\bsatisfied by\b|\bfixed by\b|\bfixed in\b", IGNORECASE),
-    ),
-    (
-        "obsolete",
-        re_compile(r"\bobsolete\b|\bsuperseded\b|\bno longer\b|\bstale\b|\bmoot\b", IGNORECASE),
-    ),
-    (
-        "misframed",
-        re_compile(r"\bmisframed\b|\binvalid\b|\bnot a bug\b|\bworking as\b", IGNORECASE),
-    ),
-)
-NO_IMPLEMENTATION_CLASSES = frozenset(c for c, _ in _CLOSE_REASON_CLASSES)
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -114,15 +90,6 @@ def summarize_days(values: list[float]) -> dict[str, Any]:
         summary[f"p{pct}_days"] = round(_percentile(ordered, pct), 3)
     summary["max_days"] = round(ordered[-1], 3)
     return summary
-
-
-def classify_close_reason(reason: str | None) -> str:
-    """Classify a free-text close reason; 'worked' is the fall-through."""
-    text = reason or ""
-    for name, pattern in _CLOSE_REASON_CLASSES:
-        if pattern.search(text):
-            return name
-    return "worked"
 
 
 def _lead_days(bead: BeadDict) -> float | None:
@@ -214,19 +181,6 @@ def _discovery(beads: list[BeadDict]) -> dict[str, Any]:
     }
 
 
-def _close_reasons(closed: list[tuple[BeadDict, float]]) -> dict[str, Any]:
-    with_reason = [(bead, lead) for bead, lead in closed if bead.get("close_reason")]
-    classes: dict[str, list[float]] = defaultdict(list)
-    for bead, lead in with_reason:
-        classes[classify_close_reason(bead.get("close_reason"))].append(lead)
-    no_impl = sum(len(v) for name, v in classes.items() if name in NO_IMPLEMENTATION_CLASSES)
-    return {
-        "closed_with_reason": len(with_reason),
-        "no_implementation_pct": (round(100.0 * no_impl / len(with_reason), 1) if with_reason else None),
-        "classes": {name: summarize_days(values) for name, values in sorted(classes.items())},
-    }
-
-
 _PR_FILE_BUCKETS: tuple[tuple[int, int, str], ...] = (
     (1, 3, "1-2"),
     (3, 6, "3-5"),
@@ -301,7 +255,6 @@ def build_report(
             ),
         },
         "survival": _survival(beads, as_of),
-        "close_reasons": _close_reasons(closed),
         "discovery": _discovery(beads),
     }
     if prs is not None:
@@ -377,13 +330,6 @@ def _render_human(report: dict[str, Any]) -> str:
             continue
         windows = "  ".join(f"{window}d={row[f'closed_within_{window}d_pct']}%" for window in _SURVIVAL_WINDOWS_DAYS)
         lines.append(f"  {name:<8} n={row['n']:<5} {windows}")
-    reasons = report["close_reasons"]
-    lines.append(
-        f"\nclose reasons (n={reasons['closed_with_reason']} with reason; "
-        f"{reasons['no_implementation_pct']}% needed no implementation):"
-    )
-    for name, summary in reasons["classes"].items():
-        lines.append(_render_summary_line(name, summary))
     discovery = report["discovery"]
     lines.append(
         f"\ndiscovery vs drain (excluding import day {discovery.get('import_day_excluded')}): "

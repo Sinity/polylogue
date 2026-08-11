@@ -8,157 +8,9 @@ during validation rather than silently ignored.
 
 from __future__ import annotations
 
-from datetime import date
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-# ──────────────────────────────────────────────────────────────────────
-# Coverage Gap  (shared fragment in many *coverage*.yaml manifests)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class CoverageGap(BaseModel):
-    """A known coverage gap record."""
-
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    gap: str
-    owner: str
-    severity: str
-    declared_at: str  # ISO-8601 date
-    review_after: str  # ISO-8601 date
-    issue: int | str | None = None
-    suppression: str | None = None
-    bead: str | None = None
-    next_evidence: str | None = None
-    subject: str | None = None
-    dimension: str | None = None
-    axis: str | None = None
-    area: str | None = None
-    artifact: str | None = None
-    platform: str | None = None
-    concern: str | None = None
-    domain: str | None = None
-
-    VALID_SEVERITIES: ClassVar[frozenset[str]] = frozenset({"info", "minor", "major", "serious"})
-
-    @field_validator("severity")
-    @classmethod
-    def _check_severity(cls, v: str) -> str:
-        if v not in cls.VALID_SEVERITIES:
-            raise ValueError(f"severity must be one of {sorted(cls.VALID_SEVERITIES)}, got {v!r}")
-        return v
-
-    @field_validator("declared_at", "review_after")
-    @classmethod
-    def _check_date(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except (ValueError, TypeError) as err:
-            raise ValueError(f"not a valid ISO date: {v!r}") from err
-        return v
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Generic coverage manifest  (*coverage*.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class CoverageManifest(BaseModel):
-    """Generic root for *coverage*.yaml files that carry a coverage_gaps list."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    coverage_gaps: list[CoverageGap] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Campaign-coverage manifest  (campaign-coverage.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class MutationCampaignEntry(BaseModel):
-    """A single mutation-campaign record."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    description: str
-    paths_to_mutate: list[str]
-    tests: list[str]
-    status: str = "active"
-    freshness_days: int | None = None
-    artifact_glob: str | None = None
-    min_kill_rate: float | None = None
-
-    VALID_STATUSES: ClassVar[frozenset[str]] = frozenset({"active", "inactive", "draft", "archived"})
-
-    @field_validator("status")
-    @classmethod
-    def _check_status(cls, v: str) -> str:
-        if v not in cls.VALID_STATUSES:
-            raise ValueError(f"status must be one of {sorted(cls.VALID_STATUSES)}, got {v!r}")
-        return v
-
-    @field_validator("freshness_days")
-    @classmethod
-    def _check_freshness(cls, v: int | None) -> int | None:
-        if v is not None and v <= 0:
-            raise ValueError(f"freshness_days must be positive, got {v!r}")
-        return v
-
-    @field_validator("min_kill_rate")
-    @classmethod
-    def _check_min_kill_rate(cls, v: float | None) -> float | None:
-        if v is not None and not (0.0 <= v <= 1.0):
-            raise ValueError(f"min_kill_rate must be within [0, 1], got {v!r}")
-        return v
-
-
-class BenchmarkCampaignEntry(BaseModel):
-    """A single benchmark-campaign record."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    description: str
-    tests: list[str]
-    status: str = "active"
-    freshness_days: int | None = None
-    artifact_glob: str | None = None
-
-    VALID_STATUSES: ClassVar[frozenset[str]] = frozenset({"active", "inactive", "draft", "archived"})
-
-    @field_validator("status")
-    @classmethod
-    def _check_status(cls, v: str) -> str:
-        if v not in cls.VALID_STATUSES:
-            raise ValueError(f"status must be one of {sorted(cls.VALID_STATUSES)}, got {v!r}")
-        return v
-
-    @field_validator("freshness_days")
-    @classmethod
-    def _check_freshness(cls, v: int | None) -> int | None:
-        if v is not None and v <= 0:
-            raise ValueError(f"freshness_days must be positive, got {v!r}")
-        return v
-
-
-class CampaignCoverageManifest(BaseModel):
-    """Root of campaign-coverage.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    default_min_kill_rate: float | None = None
-    mutation_campaigns: list[MutationCampaignEntry] = Field(default_factory=list)
-    benchmark_campaigns: list[BenchmarkCampaignEntry] = Field(default_factory=list)
-
-    @field_validator("default_min_kill_rate")
-    @classmethod
-    def _check_default_min_kill_rate(cls, v: float | None) -> float | None:
-        if v is not None and not (0.0 <= v <= 1.0):
-            raise ValueError(f"default_min_kill_rate must be within [0, 1], got {v!r}")
-        return v
-
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ──────────────────────────────────────────────────────────────────────
 # Layering manifest  (layering.yaml)
@@ -250,95 +102,18 @@ class LayeringManifest(BaseModel):
     rules: list[LayeringRule]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# ──────────────────────────────────────────────────────────────────────
-# Distribution-coverage manifest  (distribution-coverage.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class DistributionArtifact(BaseModel):
-    """A single distribution artifact entry.
-
-    Only fields consumed by an executable check are retained
-    (#1064 Pack C). ``ci_build`` / ``ci_test`` / ``ci_present`` drive
-    ``verify_manifests.check_distribution_ci_claims`` against committed
-    workflow YAML; ``build_command`` / ``verification_command`` /
-    ``config_location`` resolve through ``check_coverage_references``.
-    The previous ``freshness_days`` field was removed because no check
-    consumed it.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    build_system: str | None = None
-    config_location: str | None = None
-    build_command: str | None = None
-    install_command: str | None = None
-    verification_command: str | None = None
-    ci_build: bool = False
-    ci_test: bool = False
-    notes: str | None = None
-    ci_present: bool = False
-
-
-class PlatformCoverage(BaseModel):
-    """Platform coverage entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    linux: str | bool = False
-    macos: bool = False
-    windows: bool = False
-    notes: str | None = None
-
-
-class PipDependencies(BaseModel):
-    """Pip dependencies metadata stored inside the artifacts dict."""
-
-    model_config = ConfigDict(extra="forbid")
-    count: int | None = None
-    resolved_by: str | None = None
-
-
-class DistributionCoverageManifest(BaseModel):
-    """Root of distribution-coverage.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    artifacts: dict[str, DistributionArtifact | PipDependencies | PlatformCoverage] = Field(default_factory=dict)
-    coverage_gaps: list[CoverageGap] = Field(default_factory=list)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Manifest-type dispatch table
-# ──────────────────────────────────────────────────────────────────────
-
-# Maps YAML filename → Pydantic model class for structural validation.
-MANIFEST_MODELS: dict[str, type[BaseModel]] = {
-    "campaign-coverage.yaml": CampaignCoverageManifest,
-    "layering.yaml": LayeringManifest,
-    "distribution-coverage.yaml": DistributionCoverageManifest,
-}
-
-
-def validate_manifest(manifest_path: str, data: dict[str, object]) -> list[str]:
-    """Validate a single parsed YAML manifest against its Pydantic model.
+def validate_layering_manifest(data: dict[str, object], *, path: str) -> list[str]:
+    """Validate the layering policy before its owning gate consumes it.
 
     Returns a list of human-readable error strings (empty == valid).
     Each error includes the manifest file name and the field path so
     that operators can locate the problem without opening the file
     in an editor.
     """
-    import os
-
-    filename = os.path.basename(manifest_path)
-    model_cls = MANIFEST_MODELS.get(filename)
-    if model_cls is None:
-        return []  # unknown manifest skipped (not an error)
-
     try:
-        model_cls.model_validate(data)
+        LayeringManifest.model_validate(data)
     except Exception as exc:
-        errors = _format_pydantic_errors(manifest_path, exc)
+        errors = _format_pydantic_errors(path, exc)
         return errors
 
     return []
@@ -365,20 +140,11 @@ def _format_pydantic_errors(path: str, exc: Exception) -> list[str]:
 
 
 __all__ = [
-    "BenchmarkCampaignEntry",
-    "CampaignCoverageManifest",
-    "CoverageGap",
-    "CoverageManifest",
-    "DistributionArtifact",
-    "DistributionCoverageManifest",
     "LayeringManifest",
     "LayeringRule",
     "TwinWriteContract",
     "WriterModuleEntry",
     "WriterModulePolicy",
     "WriterModuleSurface",
-    "MANIFEST_MODELS",
-    "MutationCampaignEntry",
-    "PlatformCoverage",
-    "validate_manifest",
+    "validate_layering_manifest",
 ]

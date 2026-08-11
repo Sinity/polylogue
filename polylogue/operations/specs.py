@@ -34,12 +34,7 @@ SafetyGuard = Literal["write_role_required", "confirmed_before_execute", "explic
 """Declared safety guard that a mutating operation's public surfaces must enforce."""
 
 ExecutorStatus = Literal["executor-routed", "declared-not-routed", "typed-exemption"]
-"""t46.9 AC1 inventory status: whether a ``mutates_state=True`` operation's
-production surfaces drive it through ``operations.mutation_transaction
-.OperationExecutor`` (``executor-routed``), still enforce authorization
-independently pending Phase 2 migration (``declared-not-routed``, visible
-debt rather than silent absence), or are exempt with a typed reason recorded
-in ``docs/plans/mutation-census.yaml`` (``typed-exemption``)."""
+"""Whether a mutating operation uses ``OperationExecutor`` or carries typed debt."""
 
 
 class OperationKind(str, Enum):
@@ -76,6 +71,8 @@ class OperationSpec:
     safety_guards: tuple[SafetyGuard, ...] = ()
     executor_status: ExecutorStatus | None = None
     """t46.9 AC1: required (non-``None``) whenever ``mutates_state`` is ``True``."""
+    executor_reason: str | None = None
+    """Required explanation for ``declared-not-routed`` and ``typed-exemption`` operations."""
     operation_version: int = 1
     capability_family: Literal["write", "judge", "maintenance"] = "write"
     allowed_surfaces: tuple[Surface, ...] = ()
@@ -103,6 +100,7 @@ class OperationSpec:
                 "effects": list(self.effects),
                 "safety_guards": list(self.safety_guards),
                 "executor_status": self.executor_status,
+                "executor_reason": self.executor_reason,
                 "operation_version": self.operation_version,
                 "capability_family": self.capability_family,
                 "allowed_surfaces": list(self.allowed_surfaces),
@@ -164,6 +162,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         effects=("Network", "DbWrite", "LiveArchive"),
         executor_status="declared-not-routed",
+        executor_reason=(
+            "Daemon acquisition uses the single-writer ingest coordinator and has not yet been adapted to the "
+            "general mutation executor; polylogue-t46.9 owns internal-system actor convergence."
+        ),
     ),
     OperationSpec(
         name="plan-validation-backlog",
@@ -214,6 +216,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
         executor_status="declared-not-routed",
+        executor_reason=(
+            "The daemon ingest transaction remains governed by its dedicated batch/write coordinator; "
+            "polylogue-t46.9 owns convergence on shared mutation authority."
+        ),
     ),
     OperationSpec(
         name="index-message-fts",
@@ -231,6 +237,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
         executor_status="declared-not-routed",
+        executor_reason=(
+            "Automatic FTS convergence and repair use daemon ownership directly; polylogue-t46.9 owns the "
+            "remaining internal-system executor route."
+        ),
     ),
     OperationSpec(
         name="materialize-transcript-embeddings",
@@ -248,6 +258,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
         executor_status="declared-not-routed",
+        executor_reason=(
+            "Embedding convergence uses its bounded daemon/provider workflow directly; polylogue-t46.9 owns "
+            "the remaining internal-system executor route."
+        ),
     ),
     OperationSpec(
         name="query-sessions",
@@ -290,6 +304,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
         executor_status="declared-not-routed",
+        executor_reason=(
+            "Insight convergence uses daemon-owned refresh transactions directly; polylogue-t46.9 owns the "
+            "remaining internal-system executor route."
+        ),
     ),
     OperationSpec(
         name="project-retrieval-band-readiness",
@@ -1444,6 +1462,57 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
+        name="mutate-maintenance-target-run",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Execute resumable maintenance targets through the CLI replay route or the MCP/daemon planner route. "
+            "These routes retain operation ids, cursor checkpoints, failure isolation, and explicit confirmation, "
+            "but do not yet run through OperationExecutor."
+        ),
+        code_refs=(
+            "polylogue.cli.commands.maintenance._run.run_command",
+            "polylogue.maintenance.replay.execute_replay",
+            "polylogue.maintenance.planner.execute_backfill",
+            "polylogue.mcp.server_cutover._dispatch_maintenance",
+            "polylogue.daemon.http.DaemonAPIHandler._handle_maintenance_run",
+        ),
+        surfaces=("cli", "mcp", "daemon"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required", "confirmed_before_execute"),
+        executor_status="declared-not-routed",
+        executor_reason=(
+            "The resumable target-catalog routes have an independent operation-id, cursor, failure-isolation, "
+            "and partial-resume protocol; polylogue-t46.9 owns migration to the shared executor."
+        ),
+        resumable=True,
+    ),
+    OperationSpec(
+        name="mutate-filesystem-reset",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Delete selected archive databases, blob/assets/cache trees, or authentication state after an exact "
+            "target preview and explicit confirmation. Session/source identity reset is a separate executor-routed operation."
+        ),
+        code_refs=(
+            "polylogue.cli.commands.reset.reset_command",
+            "polylogue.cli.commands.reset._archive_database_targets",
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("FileWrite", "Destructive"),
+        safety_guards=("confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="declared-not-routed",
+        executor_reason=(
+            "MutationPlan cannot yet express whole-file and directory target identities; polylogue-t46.9 owns the "
+            "route-or-permanent-exemption decision."
+        ),
+    ),
+    OperationSpec(
         name="project-archive-readiness",
         kind=OperationKind.PROJECTION,
         description="Project archive-wide readiness and debt semantics from message FTS and durable derived-model readiness.",
@@ -1501,6 +1570,10 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         previewable=False,
         effects=("DbWrite",),
         executor_status="typed-exemption",
+        executor_reason=(
+            "Seeds only a caller-selected disposable demo archive from deterministic fixtures; it cannot mutate "
+            "the configured production archive."
+        ),
     ),
     OperationSpec(
         name="verify-demo-archive",
@@ -1743,6 +1816,16 @@ def _validate_executor_status() -> None:
         raise ValueError(
             "OperationSpec entries with mutates_state=True must declare executor_status "
             f"(missing: {', '.join(sorted(missing))})"
+        )
+    missing_reasons = [
+        spec.name
+        for spec in DECLARED_OPERATION_SPECS
+        if spec.executor_status in {"declared-not-routed", "typed-exemption"} and not spec.executor_reason
+    ]
+    if missing_reasons:
+        raise ValueError(
+            "Non-routed OperationSpec entries must declare executor_reason "
+            f"(missing: {', '.join(sorted(missing_reasons))})"
         )
 
 

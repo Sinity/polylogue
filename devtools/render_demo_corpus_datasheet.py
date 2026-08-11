@@ -38,11 +38,6 @@ class DemoCorpusMeasurement:
     context_snapshot_rows: int
 
 
-RESIDUAL_GAPS: tuple[tuple[str, str, str], ...] = (
-    ("None", "Every declared construct currently has non-empty seeded coverage.", "—"),
-)
-
-
 def _code_list(items: tuple[str, ...]) -> str:
     if not items:
         return "—"
@@ -105,16 +100,6 @@ def _render_construct_table(seed: DemoSeedResult) -> list[str]:
     return lines
 
 
-def _render_residual_table() -> list[str]:
-    lines = [
-        "| Gap | Current evidence | Driver beads |",
-        "| --- | --- | --- |",
-    ]
-    for gap, evidence, beads in RESIDUAL_GAPS:
-        lines.append(f"| {gap} | {evidence} | {beads} |")
-    return lines
-
-
 def build_document(
     seed: DemoSeedResult,
     verify: DemoVerifyResult,
@@ -123,7 +108,7 @@ def build_document(
     """Render the datasheet from declared families plus measured archive rows."""
 
     parts = [
-        "# Demo Corpus Construct Audit",
+        "# Demo Corpus Datasheet",
         "",
         GENERATED_NOTE,
         "",
@@ -183,10 +168,6 @@ def build_document(
         "- Embedding coverage uses deterministic synthetic vectors over authored "
         "demo prose; it proves non-empty embedding-tier/status surfaces without "
         "contacting an external provider.",
-        "",
-        "## Residual Gaps",
-        "",
-        *_render_residual_table(),
         "",
     ]
     return "\n".join(parts)

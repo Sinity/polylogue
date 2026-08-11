@@ -32,13 +32,11 @@ change belongs or which production route must be exercised.
 
 ## Guardrails
 
-Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
+Load-bearing policy files are parsed and enforced by the gate that owns their semantics.
 
 | Manifest | Lint | What it prevents |
 |----------|------|-----------------|
 | `layering.yaml` | `verify layering` | Surface-to-substrate coupling |
-| `campaign-coverage.yaml` | `verify manifests` | Missing campaign declarations |
-| `coverage-manifest.yaml` | `verify manifests` | Stale gap/coverage declarations |
 
 ## Major Decisions
 

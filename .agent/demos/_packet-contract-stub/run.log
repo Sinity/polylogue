@@ -1,4 +1,0 @@
-$ polylogue demo seed --seed 1843
-seeded demo corpus at seed 1843
-$ polylogue --format json find
-{"sessions": ["stub"], "count": 1}

@@ -2,8 +2,8 @@
 
 # Reader-Comprehension Test Harness (polylogue-3tl.19)
 
-A structural coverage lint (`devtools verify docs-coverage`) or a public-claims
-ledger entry can prove a README claim is *true*. Neither proves it *lands* —
+A structural source check or a human review can prove a README claim is *true*.
+Neither proves it *lands*:
 that a stranger who sees the first fold for a fixed exposure can actually
 state the category, the outcome, the differentiator, and the one thing it
 explicitly does not claim. This harness measures that, as a bounded,
