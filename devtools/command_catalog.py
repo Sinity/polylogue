@@ -743,22 +743,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace frontier",
-        "workspace",
-        "Derive a complete, non-mutating execution focus from live Beads state.",
-        "devtools.frontier_report",
-        use_when=(
-            "During Direction, Velocity, or wait-ahead windows, distinguish the full ambition, admitted "
-            "active set, current claims, dependency-ready work, and resource-permitted execution focus before "
-            "claiming or dispatching work."
-        ),
-        examples=(
-            "devtools workspace frontier",
-            "devtools workspace frontier --json",
-            "devtools workspace frontier --out .agent/task-history/frontier-latest.md",
-        ),
-    ),
-    CommandSpec(
         "workspace deployment-smoke",
         "workspace",
         "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
