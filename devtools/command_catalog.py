@@ -774,19 +774,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace pr-scope",
         "workspace",
-        "Render and validate the versioned PR Bead-scope carrier.",
+        "Render stable PR scope intent and inspect its mutable merge attestation.",
         "devtools.pr_scope",
         use_when=(
-            "Before publishing a non-draft PR, render the machine-readable carrier from the assigned "
-            "Bead dispositions, then validate the exact body against its head SHA and committed Bead records. "
-            "CircleCI quick-gate and `workspace merge` run the same validator; the command never interprets "
-            "acceptance prose."
+            "Before publishing a non-draft PR, render the machine-readable v2 intent from assigned and mutated "
+            "Beads plus typed dispositions. The PR body stays stable across commits; `sync --pr` reports the "
+            "current head- and Bead-bound attestation consumed by merge-gate. CircleCI quick-gate and "
+            "`workspace merge` run the same validator; the command never interprets acceptance prose."
         ),
         examples=(
             "devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md",
             "devtools workspace pr-scope check --pr 3517",
+            "devtools workspace pr-scope sync --pr 3517",
             "devtools workspace pr-scope check-ci --pr 3517 --repo Sinity/polylogue --expected-head-sha $(git rev-parse HEAD)",
-            "devtools workspace pr-scope check --body-file pr-body.md --head-sha $(git rev-parse HEAD)",
+            "devtools workspace pr-scope check --body-file pr-body.md --head-sha $(git rev-parse HEAD) --base-sha $(git rev-parse origin/master)",
         ),
     ),
     CommandSpec(
@@ -805,7 +806,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "3x20s, covering CodeRabbit's 30-60s late-arrival window) and BLOCKs unless a receipt exists "
             "for the CURRENT head sha within a freshness window with exit_code 0, and no review comment's "
             "created_at is newer than the head commit's timestamp unless explicitly `ack`'d for that exact "
-            "head sha. The receipt binds the carrier digest, so a changed scope requires re-recording. Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
+            "head sha. The receipt binds the carrier digest plus a fresh head- and Bead-bound scope attestation, so a changed scope or Bead state requires re-recording. Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
             "posted, and PR #3517 nearly merged with a 43-test regression no CI check or review comment "
             "ever flagged -- plus review findings on this tool itself (recording from an unrelated "
             "checkout, a --quick example that would have missed its own motivating regression, a single "

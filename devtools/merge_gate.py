@@ -255,6 +255,12 @@ def _terminal_authorization(stdout: str) -> str | None:
     return value if value in {authorization.value for authorization in TerminalAuthorization} else None
 
 
+def _base_sha(info: dict[str, Any]) -> str | None:
+    """Read the PR base commit SHA when GitHub reported one."""
+    value = info.get("baseRefOid")
+    return value if isinstance(value, str) else None
+
+
 def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.ScopeVerdict:
     """Use the same carrier or typed bot exception for record and check."""
     author = info.get("author")
@@ -278,11 +284,12 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
         info.get("body") or "",
         head_sha=head_sha,
         is_draft=bool(info.get("isDraft")),
+        base_sha=_base_sha(info),
     )
 
 
 def cmd_record(pr: int, command: str) -> int:
-    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,body,isDraft,author,files"])
+    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,baseRefOid,body,isDraft,author,files"])
     head_sha = info["headRefOid"]
 
     local_head = _git_head_sha()
@@ -328,6 +335,12 @@ def cmd_record(pr: int, command: str) -> int:
         "pr_scope_digest": scope.scope_digest,
         "pr_scope_beads_digest": scope.beads_digest,
         "pr_scope_assigned_beads": scope.assigned_beads,
+        "pr_scope_mutated_beads": scope.mutated_beads,
+        "pr_scope_attestation_digest": pr_scope.attestation_payload(
+            scope,
+            head_sha=head_sha,
+            base_sha=_base_sha(info),
+        )["attestation_digest"],
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
@@ -459,7 +472,7 @@ def cmd_check(
                 "view",
                 str(pr),
                 "--json",
-                "headRefOid,mergeStateStatus,state,commits,body,isDraft,author,files",
+                "headRefOid,baseRefOid,mergeStateStatus,state,commits,body,isDraft,author,files",
             ]
         )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
@@ -471,6 +484,19 @@ def cmd_check(
 
     head_sha = info["headRefOid"]
     verdict.head_sha = head_sha
+
+    local_head = _git_head_sha()
+    if local_head != head_sha:
+        verdict.ok = False
+        verdict.reasons.append(
+            f"current checkout HEAD ({local_head[:8] if local_head else '?'}) does not match PR #{pr}'s "
+            f"head ({head_sha[:8]}); check out the exact PR commit before checking"
+        )
+    if not _git_is_clean():
+        verdict.ok = False
+        verdict.reasons.append(
+            "current checkout has uncommitted changes; merge-gate check requires committed PR content"
+        )
 
     scope = _scope_verdict(pr, info, head_sha=head_sha)
     verdict.pr_scope = asdict(scope)
@@ -528,6 +554,21 @@ def cmd_check(
                 verdict.ok = False
                 verdict.reasons.append(
                     "receipt pr_scope_assigned_beads does not match the current carrier -- re-record"
+                )
+            if receipt.get("pr_scope_mutated_beads") != scope.mutated_beads:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_mutated_beads does not match the complete current Bead mutation scope -- re-record"
+                )
+            expected_attestation_digest = pr_scope.attestation_payload(
+                scope,
+                head_sha=head_sha,
+                base_sha=_base_sha(info),
+            )["attestation_digest"]
+            if receipt.get("pr_scope_attestation_digest") != expected_attestation_digest:
+                verdict.ok = False
+                verdict.reasons.append(
+                    "receipt pr_scope_attestation_digest does not match the current head-bound scope attestation -- re-record"
                 )
             age_s = time.time() - receipt.get("recorded_at", 0)
             if age_s > max_age_s:

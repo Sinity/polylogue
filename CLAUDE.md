@@ -381,12 +381,14 @@ workflow, not optional conveniences — use them at the point named, every time:
 - **Before opening a non-draft PR for a Bead lane**: render the versioned
   carrier with `devtools workspace pr-scope render --input <scope.json>`, put
   it in the PR body beside the human whole-Bead disposition matrix, then run
-  `devtools workspace pr-scope check --pr <PR>`. The carrier binds the exact
-  head SHA, canonical Bead records, typed dispositions, evidence refs, and
-  open successors for residual work; it never parses acceptance prose. After
-  the final commit is created, regenerate the carrier for that exact SHA and
-  update the PR body before pushing; CircleCI does not rerun for a body-only
-  edit.
+  `devtools workspace pr-scope check --pr <PR>`. The v2 carrier is stable PR
+  intent: scope kind, assigned and mutated Beads, typed dispositions, evidence
+  refs, and open successors for residual work. It never parses acceptance
+  prose. `devtools workspace pr-scope sync --pr <PR>` reports the current
+  head-bound attestation, including canonical Bead state, without editing the
+  PR body after every commit. `mutated_beads` must name every Bead record this
+  PR changes. A self-contained PR uses the typed `self_contained` scope with
+  empty Bead lists.
   CircleCI uses `pr-scope check-ci`, resolves PR metadata through public GitHub
   REST when `CIRCLE_PULL_REQUEST` is absent, and executes the validator from
   the PR base revision so a PR cannot weaken its own scope gate.
@@ -404,7 +406,7 @@ workflow, not optional conveniences — use them at the point named, every time:
   then auto-records a receipt if none is fresh for the current head
   sha (running `--command`, default `devtools verify`), BLOCKs the merge on
   any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
-  exit, a changed carrier digest, or an unacked review comment newer than the head commit), strips a
+  exit, a changed head-bound scope attestation, or an unacked review comment newer than the head commit), strips a
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
   `gh pr merge --squash`. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal

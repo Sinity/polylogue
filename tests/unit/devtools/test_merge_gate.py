@@ -321,6 +321,30 @@ def test_check_ok_when_receipt_fresh_and_matches_head_with_no_late_comments(
     assert exit_code == 0
 
 
+def test_check_refuses_an_unrelated_local_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, [], local_head_sha="other-head"))
+
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
+    assert "does not match PR #42's head" in capsys.readouterr().out
+
+
+def test_check_refuses_a_dirty_local_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, [], dirty=True))
+
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
+    assert "has uncommitted changes" in capsys.readouterr().out
+
+
 def test_check_rejects_command_text_without_typed_scope_or_permission(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -343,6 +367,8 @@ def test_check_rejects_command_text_without_typed_scope_or_permission(
         ("pr_scope_digest", "changed-body-digest", "pr_scope_digest"),
         ("pr_scope_beads_digest", "stale", "pr_scope_beads_digest"),
         ("pr_scope_assigned_beads", ["polylogue-other"], "pr_scope_assigned_beads"),
+        ("pr_scope_mutated_beads", ["polylogue-unlisted"], "pr_scope_mutated_beads"),
+        ("pr_scope_attestation_digest", "stale-attestation", "pr_scope_attestation_digest"),
     ],
 )
 def test_check_blocks_when_receipt_scope_components_are_mutated(
@@ -653,6 +679,7 @@ def test_check_post_status_posts_failure_with_block_reason_for_block_verdict(
 
     status_calls: list[list[str]] = []
     monkeypatch.setattr(subprocess, "run", _fake_run_with_status_capture(pr_view, [], status_calls=status_calls))
+    monkeypatch.setattr(merge_gate, "_git_head_sha", lambda: "def456")
 
     exit_code = merge_gate.cmd_check(
         42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False, post_status=True

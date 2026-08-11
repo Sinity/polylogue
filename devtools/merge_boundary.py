@@ -77,7 +77,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from devtools import merge_gate
+from devtools import merge_gate, pr_scope
 from devtools.testmon_state import TerminalAuthorization, VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
@@ -418,11 +418,34 @@ def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str
     ]
 
 
-def _receipt_is_fresh_for_head(pr: int, head_sha: str, max_age_s: int) -> bool:
+def _receipt_is_fresh_for_scope(
+    pr: int,
+    *,
+    head_sha: str,
+    scope: pr_scope.ScopeVerdict,
+    base_sha: str | None,
+    max_age_s: int,
+) -> bool:
     receipt = merge_gate._read_json_object(merge_gate._receipt_path(pr))
     if receipt is None:
         return False
     if receipt.get("head_sha") != head_sha:
+        return False
+    expected_attestation = pr_scope.attestation_payload(scope, head_sha=head_sha, base_sha=base_sha)[
+        "attestation_digest"
+    ]
+    if receipt.get("pr_scope_attestation_digest") != expected_attestation:
+        return False
+    if receipt.get("exit_code") != 0:
+        return False
+    verification_scope = receipt.get("verification_scope")
+    valid_scopes = {scope.value for scope in VerificationScope}
+    if verification_scope not in valid_scopes:
+        return False
+    release_allowed = receipt.get("release_baseline_allowed")
+    if not isinstance(release_allowed, bool):
+        return False
+    if verification_scope == VerificationScope.RELEASE_BASELINE.value and not release_allowed:
         return False
     age_s = time.time() - float(receipt.get("recorded_at", 0))
     return bool(age_s <= max_age_s)
@@ -567,7 +590,15 @@ def cmd_merge(
     verify_command: str,
 ) -> int:
     try:
-        info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,title,state"])
+        info = _gh_json(
+            [
+                "pr",
+                "view",
+                str(pr),
+                "--json",
+                "headRefOid,baseRefOid,title,state,body,isDraft,author,files",
+            ]
+        )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
         print(f"REFUSING to merge PR #{pr}: gh pr view failed: {exc}", file=sys.stderr)
         return 1
@@ -577,8 +608,21 @@ def cmd_merge(
         return 1
 
     head_sha = info["headRefOid"]
+    scope = merge_gate._scope_verdict(pr, info, head_sha=head_sha)
 
-    if not _receipt_is_fresh_for_head(pr, head_sha, max_age_s):
+    if not scope.ok:
+        print(f"REFUSING to merge PR #{pr}: invalid structured pr-scope carrier:", file=sys.stderr)
+        for reason in scope.reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        return 2
+
+    if not _receipt_is_fresh_for_scope(
+        pr,
+        head_sha=head_sha,
+        scope=scope,
+        base_sha=merge_gate._base_sha(info),
+        max_age_s=max_age_s,
+    ):
         print(
             f"no fresh merge-gate receipt for PR #{pr} @ {head_sha[:8]} -- recording one now via {command!r}",
             file=sys.stderr,
@@ -604,6 +648,34 @@ def cmd_merge(
     if dry_run:
         print(f"PR #{pr} @ {head_sha[:8]}: merge-gate OK -- dry-run, not merging (title would be {clean_title!r})")
         return 0
+
+    try:
+        final_info = _gh_json(
+            ["pr", "view", str(pr), "--json", "headRefOid,baseRefOid,state,body,isDraft,author,files"]
+        )
+    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"REFUSING to merge PR #{pr}: final authority check failed: {exc}", file=sys.stderr)
+        return 1
+    if (
+        final_info.get("state") != "OPEN"
+        or final_info.get("headRefOid") != head_sha
+        or merge_gate._base_sha(final_info) != merge_gate._base_sha(info)
+    ):
+        print(
+            f"REFUSING to merge PR #{pr}: head, base, or state changed after merge-gate validation",
+            file=sys.stderr,
+        )
+        return 1
+    final_scope = merge_gate._scope_verdict(pr, final_info, head_sha=head_sha)
+    initial_attestation = pr_scope.attestation_payload(
+        scope, head_sha=head_sha, base_sha=merge_gate._base_sha(info)
+    ).get("attestation_digest")
+    final_attestation = pr_scope.attestation_payload(
+        final_scope, head_sha=head_sha, base_sha=merge_gate._base_sha(final_info)
+    ).get("attestation_digest")
+    if not final_scope.ok or final_attestation != initial_attestation:
+        print(f"REFUSING to merge PR #{pr}: structured scope changed after merge-gate validation", file=sys.stderr)
+        return 1
 
     try:
         _record_merge_intent(pr, head_sha, clean_title)
