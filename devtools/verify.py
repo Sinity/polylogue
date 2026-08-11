@@ -1489,6 +1489,7 @@ def _run(
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
+                full_suite=not label.startswith("pytest focused"),
             )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0

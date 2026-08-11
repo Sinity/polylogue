@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
+
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
@@ -664,6 +666,9 @@ def adaptive_pytest_runtime_policy(
     """
     if available_kb is None:
         available_kb = _meminfo().get("MemAvailable")
+        cgroup_headroom_bytes = read_cgroup_memory_headroom_bytes()
+        if available_kb is not None and cgroup_headroom_bytes is not None:
+            available_kb = min(available_kb, cgroup_headroom_bytes // 1024)
     if available_kb is None:
         raise PytestResourceError("cannot read MemAvailable; refusing an unbudgeted pytest run")
     if available_kb < MIN_PYTEST_AVAILABLE_KB:
@@ -714,7 +719,7 @@ def adaptive_pytest_runtime_policy(
 
 
 def apply_managed_pytest_runtime_policy(
-    env: Mapping[str, str], *, worker_count: int | None = None
+    env: Mapping[str, str], *, worker_count: int | None = None, full_suite: bool = True
 ) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
     """Enable bounded tmpfs by default; preserve explicit storage choices.
 
@@ -725,12 +730,17 @@ def apply_managed_pytest_runtime_policy(
     unrelated command minutes or hours later.
     """
     normalized = normalize_pytest_basetemp_env(env)
-    policy: PytestRuntimePolicy | None = None
-    if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0":
-        policy = adaptive_pytest_runtime_policy(worker_count=worker_count)
+    manages_tmpfs = (
+        not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0"
+    )
+    policy = adaptive_pytest_runtime_policy(
+        worker_count=worker_count,
+        shm_free_kb=None if manages_tmpfs else 0,
+    )
+    if manages_tmpfs:
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
         normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
-        if policy.tmpfs_predicted_mb is not None:
+        if full_suite and policy.tmpfs_predicted_mb is not None:
             normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
         effective_tmpfs_budget_kb = pytest_tmpfs_budget_kb(normalized)
         policy_tmpfs_budget_kb = policy.tmpfs_budget_mb * 1024
@@ -748,16 +758,15 @@ def apply_managed_pytest_runtime_policy(
     if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:
         normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(selected_root)
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
-    if policy is not None:
-        free_kb = _headroom_kb(selected_root)
-        required_kb = pytest_basetemp_required_kb(normalized)
-        policy = replace(
-            policy,
-            basetemp_root=str(selected_root),
-            basetemp_label=selected_label,
-            basetemp_required_mb=round(required_kb / 1024) if required_kb is not None else None,
-            basetemp_free_mb=round(free_kb / 1024) if free_kb is not None else None,
-        )
+    free_kb = _headroom_kb(selected_root)
+    required_kb = pytest_basetemp_required_kb(normalized)
+    policy = replace(
+        policy,
+        basetemp_root=str(selected_root),
+        basetemp_label=selected_label,
+        basetemp_required_mb=round(required_kb / 1024) if required_kb is not None else None,
+        basetemp_free_mb=round(free_kb / 1024) if free_kb is not None else None,
+    )
     return normalized, policy
 
 

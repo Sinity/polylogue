@@ -1700,11 +1700,43 @@ def test_managed_pytest_policy_refuses_low_memory() -> None:
         )
 
 
-def test_managed_pytest_policy_preserves_explicit_custom_root(tmp_path: Path) -> None:
-    env, policy = apply_managed_pytest_runtime_policy({"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)})
+def test_adaptive_pytest_policy_caps_host_capacity_to_cgroup_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 16 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: 4 * 1024 * 1024 * 1024)
+
+    with pytest.raises(PytestResourceError, match="cannot reserve measured pytest cgroup memory"):
+        adaptive_pytest_runtime_policy(
+            memory_full_avg10=0.0,
+            cpu_count=24,
+            shm_free_kb=16 * 1024 * 1024,
+            worker_count=4,
+        )
+
+
+def test_managed_pytest_policy_preserves_explicit_custom_root_and_memory_admission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda _path: {"used_kb": 0, "free_kb": 16 * 1024 * 1024})
+    env, policy = apply_managed_pytest_runtime_policy({"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}, worker_count=4)
 
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(tmp_path)
-    assert policy is None
+    assert policy is not None
+    assert policy.workers == 4
+    assert policy.basetemp_label == "configured"
+
+
+def test_managed_pytest_policy_rejects_explicit_root_when_workers_exceed_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 4 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+
+    with pytest.raises(PytestResourceError, match="cannot reserve measured pytest cgroup memory"):
+        apply_managed_pytest_runtime_policy({"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}, worker_count=12)
 
 
 # ── basetemp placement: one resolution order, disk-headroom preflight ──────
@@ -1753,6 +1785,7 @@ def _patch_resource_capacity(
     available_mb: int,
 ) -> None:
     monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": available_mb * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
     monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
     monkeypatch.setattr(os, "cpu_count", lambda: 24)
 
@@ -1796,6 +1829,29 @@ def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
     assert policy.tmpfs_predicted_mb == 1522
     assert policy.basetemp_label == "scratch"
     assert env["POLYLOGUE_PYTEST_TMPFS_MAX_MB"] == "512"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
+def test_focused_policy_keeps_full_suite_basetemp_demand_out_of_scratch_preflight(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=8192)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path == shm:
+            return None
+        if path == scratch.parent:
+            return {"used_kb": 0, "free_kb": 1200 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+    env, policy = apply_managed_pytest_runtime_policy({}, worker_count=0, full_suite=False)
+
+    assert policy is not None
+    assert policy.basetemp_required_mb is None
+    assert policy.basetemp_label == "scratch"
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
@@ -2178,8 +2234,33 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
 
     assert rc == 0
     assert apply_policy.call_args.kwargs["worker_count"] == 4
+    assert apply_policy.call_args.kwargs["full_suite"] is True
     assert metadata["pytest_runtime_policy"] == {"workers": 12}
     assert metadata["workload_receipt"]["spec"]["concurrency"] == 4
+
+
+def test_focused_run_does_not_apply_full_suite_basetemp_demand(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+
+    class FocusedPolicy:
+        workers = 0
+
+        def to_dict(self) -> dict[str, int]:
+            return {"workers": self.workers}
+
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    with (
+        patch(
+            "devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, FocusedPolicy())
+        ) as apply_policy,
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest", "tests/unit/example.py", "-n", "0"], run=run)
+
+    assert rc == 0
+    assert apply_policy.call_args.kwargs["worker_count"] == 0
+    assert apply_policy.call_args.kwargs["full_suite"] is False
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
