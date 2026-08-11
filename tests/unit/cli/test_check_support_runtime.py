@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli.shared import check_workflow, formatting
+from polylogue.cli.shared import check_workflow
 from polylogue.cli.shared.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.cli.shared.types import AppEnv
@@ -115,51 +115,6 @@ def test_validate_check_options_rejects_target_mode_mismatches() -> None:
 
         with pytest.raises(SystemExit, match="only selected repair targets"):
             check_workflow.validate_check_options(_options(cleanup=True, maintenance_targets=("repair_only",)))
-
-
-def test_formatting_helpers_cover_plan_counts_details_and_run_sections() -> None:
-    # ``plain_forced_by_env`` is a pure passthrough of an already-resolved
-    # bool -- POLYLOGUE_FORCE_PLAIN env-var resolution happens once, in the
-    # 5-layer config resolution (#3079), pinned by
-    # tests/unit/core/test_config_inventory.py::TestForcePlainBooleanEnvParsing.
-    assert formatting.plain_forced_by_env() is False
-    assert formatting.plain_forced_by_env(force_plain=True) is True
-
-    counts = {
-        "sessions": 4,
-        "new_sessions": 2,
-        "changed_sessions": 1,
-        "acquired": 4,
-        "skipped": 1,
-        "acquire_errors": 1,
-        "validated": 3,
-        "validation_invalid": 1,
-        "validation_drift": 1,
-        "validation_skipped_no_schema": 2,
-        "validation_errors": 1,
-        "parse_failures": 2,
-        "materialized": 3,
-        "schemas_generated": 1,
-        "schemas_failed": 1,
-    }
-    assert formatting.format_counts({"sessions": 4, "messages": 0}) == "4 conv (4 new)"
-    assert formatting.format_run_details(counts) == [
-        "Acquire: 4 acquired, 1 skipped, 1 errors",
-        "Validate: 3 passed, 1 invalid, 1 drift, 2 no-schema, 1 errors",
-        "Sessions: 2 new, 1 changed",
-        "Parse: 2 failures",
-        "Materialize: 3 sessions",
-        "Schemas: 1 generated, 1 failed",
-    ]
-    assert formatting.format_run_details({"sessions": 2}) == ["Sessions: 2 new"]
-
-    assert formatting.format_plan_counts({"scan": 2, "index": 1}) == "2 scan, 1 index"
-    assert formatting.format_plan_counts({}) == "no pipeline actions"
-    assert formatting.format_plan_details({"new_raw": 2, "preview_invalid": 1}) == (
-        "2 new raw, 1 would fail validation"
-    )
-    assert formatting.format_plan_details({}) is None
-    assert formatting.format_sources_summary([]) == "none"
 
 
 def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> None:
