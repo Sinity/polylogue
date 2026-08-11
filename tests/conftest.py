@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -35,6 +36,7 @@ from devtools.checkout_guard import (
     assert_polylogue_matches_checkout,
     resolved_polylogue_path,
 )
+from devtools.pytest_supervisor import _process_start_ticks
 from devtools.verify_runs import PytestResourceError, normalize_pytest_basetemp_env, resolve_pytest_basetemp_root
 
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
@@ -163,20 +165,51 @@ def _managed_pytest_temp_root() -> tuple[Path, str]:
 
 
 def _mark_basetemp_owner(basetemp: Path) -> None:
-    """Record the owning process pid so a stale-directory sweep never races a live run."""
+    """Record the owning process identity so a sweep never races a live run."""
     with contextlib.suppress(OSError):
         basetemp.mkdir(parents=True, exist_ok=True)
-        (basetemp / _OWNER_PID_MARKER).write_text(str(os.getpid()), encoding="utf-8")
+        pid = os.getpid()
+        start_ticks = _process_start_ticks(pid)
+        identity = f"{pid}:{start_ticks}" if start_ticks is not None else str(pid)
+        (basetemp / _OWNER_PID_MARKER).write_text(identity, encoding="utf-8")
 
 
 def _basetemp_owner_alive(entry: Path) -> bool | None:
-    """True/False when the owner pid marker resolves a live/dead process, else None (unknown)."""
+    """True/False when the owner marker resolves a live/dead process, else None."""
     marker = entry / _OWNER_PID_MARKER
     try:
-        pid = int(marker.read_text(encoding="utf-8").strip())
+        raw_identity = marker.read_text(encoding="utf-8").strip()
+        raw_pid, separator, raw_start_ticks = raw_identity.partition(":")
+        pid = int(raw_pid)
+        start_ticks = int(raw_start_ticks) if separator else None
     except (OSError, ValueError):
         return None
-    return Path(f"/proc/{pid}").exists()
+    if not Path(f"/proc/{pid}").exists():
+        return False
+    return start_ticks is None or _process_start_ticks(pid) == start_ticks
+
+
+def _remove_stale_basetemp(entry: Path) -> None:
+    """Remove an already-adjudicated stale tree, including read-only fixtures."""
+    owner_directory_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+    owner_file_mode = stat.S_IRUSR | stat.S_IWUSR
+    for current_root, directories, files in os.walk(entry):
+        root = Path(current_root)
+        with contextlib.suppress(OSError):
+            root.chmod(root.stat().st_mode | owner_directory_mode)
+        for name in directories:
+            child = root / name
+            if child.is_symlink():
+                continue
+            with contextlib.suppress(OSError):
+                child.chmod(child.stat().st_mode | owner_directory_mode)
+        for name in files:
+            child = root / name
+            if child.is_symlink():
+                continue
+            with contextlib.suppress(OSError):
+                child.chmod(child.stat().st_mode | owner_file_mode)
+    shutil.rmtree(entry)
 
 
 def _mark_btrfs_nocow(path: Path) -> None:
@@ -249,9 +282,9 @@ def _sweep_stale_polylogue_basetemps(
                 mtime = entry.stat().st_mtime
                 if owner_alive is False:
                     if mtime < cutoff:
-                        shutil.rmtree(entry, ignore_errors=True)
+                        _remove_stale_basetemp(entry)
                 elif mtime < unknown_owner_cutoff:
-                    shutil.rmtree(entry, ignore_errors=True)
+                    _remove_stale_basetemp(entry)
             except OSError:
                 pass
 

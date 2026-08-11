@@ -1571,6 +1571,15 @@ def test_pytest_tmpfs_budget_is_shared_and_bounded() -> None:
         )
         is None
     )
+    assert (
+        pytest_tmpfs_budget_kb(
+            {
+                "POLYLOGUE_PYTEST_TMPFS": "1",
+                "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/polylogue-explicit",
+            }
+        )
+        == 512 * 1024
+    )
 
 
 def test_adaptive_pytest_policy_uses_host_capacity_not_ten_percent_cap() -> None:
@@ -1752,6 +1761,27 @@ def test_managed_pytest_policy_preserves_explicit_custom_root_and_memory_admissi
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(tmp_path)
     assert policy is not None
     assert policy.workers == 4
+    assert policy.basetemp_label == "configured"
+
+
+def test_managed_pytest_policy_bounds_explicit_tmpfs_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
+    monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda _path: {"used_kb": 0, "free_kb": 16 * 1024 * 1024})
+
+    env, policy = apply_managed_pytest_runtime_policy(
+        {
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/polylogue-explicit",
+            "POLYLOGUE_PYTEST_TMPFS": "0",
+        },
+        worker_count=4,
+        full_suite=False,
+    )
+
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == "/dev/shm/polylogue-explicit"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "1"
+    assert pytest_tmpfs_budget_kb(env) == policy.tmpfs_budget_mb * 1024
     assert policy.basetemp_label == "configured"
 
 
@@ -2266,6 +2296,7 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
 def test_explicit_basetemp_root_retains_managed_resource_monitoring(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", tmp_path / "unselected-tmpfs")
     nvme_root = tmp_path / "realm-tmp" / "polylogue-pytest"
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(nvme_root))
     run = VerifyRun(tier="configured-nvme", argv=[], git_head=None, root=tmp_path)

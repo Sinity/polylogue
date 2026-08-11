@@ -571,6 +571,15 @@ _CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
 
 
+def _is_beneath(path: Path, root: Path) -> bool:
+    """Return whether *path* resolves within *root*, including *root* itself."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
     """Keep cloud pytest defaults from escaping a workstation scratch volume.
 
@@ -597,13 +606,8 @@ def force_managed_pytest_scratch(env: Mapping[str, str]) -> dict[str, str]:
     """
     normalized = normalize_pytest_basetemp_env(env)
     configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
-    if configured_root is not None:
-        try:
-            Path(configured_root).resolve().relative_to(PYTEST_TMPFS_ROOT.resolve())
-        except ValueError:
-            pass
-        else:
-            normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
+    if configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT):
+        normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
     normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     return normalized
 
@@ -763,9 +767,9 @@ def apply_managed_pytest_runtime_policy(
         and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
         and "POLYLOGUE_PYTEST_TMPFS" not in normalized
     )
-    manages_tmpfs = (
-        not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0"
-    )
+    configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
+    manages_tmpfs = configured_tmpfs or (configured_root is None and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0")
     policy = adaptive_pytest_runtime_policy(
         worker_count=worker_count,
         shm_free_kb=None if manages_tmpfs else 0,
@@ -998,7 +1002,9 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
 
 def pytest_tmpfs_budget_kb(env: Mapping[str, str]) -> int | None:
     """Return the bounded per-run tmpfs budget shared by all pytest workers."""
-    if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT"):
+    configured_root = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
+    if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or (configured_root is not None and not configured_tmpfs):
         return None
     raw = env.get(PYTEST_TMPFS_MAX_MB_ENV, str(DEFAULT_PYTEST_TMPFS_MAX_MB))
     with contextlib.suppress(ValueError):

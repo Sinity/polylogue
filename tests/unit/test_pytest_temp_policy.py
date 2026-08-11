@@ -270,6 +270,39 @@ def test_sweep_stale_polylogue_basetemps_reclaims_a_confirmed_dead_owner(
     assert not dead.exists()
 
 
+def test_sweep_stale_polylogue_basetemps_reclaims_reused_pid_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stale = tmp_path / "pytest-polylogue-reused-pid-123"
+    stale.mkdir()
+    (stale / conftest._OWNER_PID_MARKER).write_text(f"{os.getpid()}:100", encoding="utf-8")
+    monkeypatch.setattr(conftest, "_process_start_ticks", lambda _pid: 200)
+    old = 1.0
+    os.utime(stale, (old, old))
+
+    conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
+
+    assert not stale.exists()
+
+
+def test_sweep_stale_polylogue_basetemps_reclaims_read_only_fixture_tree(tmp_path: Path) -> None:
+    stale = tmp_path / "pytest-polylogue-read-only-123"
+    nested = stale / "published" / "artifact"
+    nested.mkdir(parents=True)
+    payload = nested / "payload.json"
+    payload.write_text("{}", encoding="utf-8")
+    payload.chmod(0o400)
+    nested.chmod(0o500)
+    (stale / "published").chmod(0o500)
+    old = 1.0
+    os.utime(stale, (old, old))
+
+    conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
+
+    assert not stale.exists()
+
+
 def test_sweep_stale_polylogue_basetemps_gives_unknown_owner_a_long_grace_period(
     tmp_path: Path,
 ) -> None:

@@ -123,10 +123,12 @@ MiB to 2 GiB) once a tmpfs root is chosen. Per-run `pytest-polylogue-*`
 basetemps are removed at normal pytest shutdown, and pytest startup sweeps
 stale per-run dirs from every known root (`/dev/shm`, `/realm/tmp/polylogue-pytest`,
 `/tmp/polylogue-pytest`, plus any explicit configured root) — never based on
-age alone: each managed basetemp carries an owner-pid marker, and a
-directory whose owner process is still alive is never removed regardless of
-age; an owner that cannot be confirmed dead (no marker) gets a multi-hour
-grace period rather than the normal ~30-minute one. Shared
+age alone: each managed basetemp carries a PID plus process-start identity,
+and a directory whose exact owner process is still alive is never removed
+regardless of age. An owner that cannot be confirmed dead (no marker) gets a
+multi-hour grace period rather than the normal ~30-minute one. The sweeper
+restores owner-write permission only after a tree is adjudicated stale, so
+published read-only fixture copies cannot leak tmpfs indefinitely. Shared
 `pytest-polylogue-*-seeded-*` caches are never touched by the sweep — they
 are shared, reused, and built once behind their own `.build.done` guard.
 
