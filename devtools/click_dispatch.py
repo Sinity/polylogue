@@ -179,10 +179,8 @@ def _make_command(spec: CommandSpec) -> click.Command:
         callback=callback,
         params=params,
     )
-    # Subcommands that use argparse internally need unknown options forwarded
-    # as-is rather than rejected by Click's option parser.  This allows
-    # modules like devtools/task_history.py with their own sub-subcommands and
-    # --flags to work transparently.
+    # Subcommands use argparse internally, so unknown options must be forwarded
+    # as-is rather than rejected by Click's option parser.
     cmd.allow_extra_args = True
     cmd.ignore_unknown_options = True
     return cmd
@@ -270,18 +268,7 @@ def _dispatch(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for programmatic use of the Click-based devtools CLI.
-
-    Converts argv to Click invocation and returns the exit code.  Every
-    invocation appends a JSONL record to ``.agent/task-history/tasks.jsonl`` so
-    agent task history is self-populating (see ``devtools workspace tasks``).  Set
-    ``POLYLOGUE_TASK_HISTORY_DISABLE=1`` to opt out (also suppressed during a
-    ``devtools workspace tasks replay`` to avoid double-logging the outer wrapper).
-    """
-    import os
-    import time
-
-    from devtools import task_history as task_history_mod
+    """Entry point for programmatic use of the Click-based devtools CLI."""
 
     try:
         assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
@@ -289,34 +276,4 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"{exc}\n")
         return 125
 
-    args_list = list(argv or [])
-    if not args_list or args_list[0].startswith("-"):
-        # Bare invocation or root option only — skip auto-log.
-        return _dispatch(args_list)
-
-    command_name = args_list[0]
-    inner_args = args_list[1:]
-    for spec in sorted(COMMAND_SPECS, key=lambda item: len(item.command_path), reverse=True):
-        path = spec.command_path
-        if tuple(args_list[: len(path)]) == path:
-            command_name = " ".join(path)
-            inner_args = args_list[len(path) :]
-            break
-
-    if task_history_mod.auto_log_disabled():
-        return _dispatch(args_list)
-
-    started = time.perf_counter()
-    exit_code = 0
-    try:
-        exit_code = _dispatch(args_list)
-        return exit_code
-    finally:
-        duration_ms = (time.perf_counter() - started) * 1000.0
-        task_history_mod.record_invocation(
-            command=command_name,
-            args=inner_args,
-            duration_ms=duration_ms,
-            exit_code=exit_code,
-            cwd=os.getcwd(),
-        )
+    return _dispatch(list(argv or []))

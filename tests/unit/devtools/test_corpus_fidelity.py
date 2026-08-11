@@ -45,7 +45,6 @@ def test_registered_route_preserves_all_existing_archive_tiers(
     ``embeddings.db`` would fail the exact-byte assertion below. The previous
     source/index-only snapshot left those unchecked-tier mutations green.
     """
-    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
     before = _archive_tier_bytes(corpus_fidelity_archive.root)
 
     exit_code = _run_registered_route(corpus_fidelity_archive.root, json_output=json_output)
@@ -141,7 +140,6 @@ def test_command_blocks_real_seeded_archive_fidelity_violations(
                 ),
             )
 
-    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
     before = _archive_tier_bytes(root)
     exit_code = _run_registered_route(root, json_output=json_output)
     assert exit_code == 1

@@ -18,7 +18,6 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     assert "lab probe capture-regression" in commands
     assert "lab probe cost-reconciliation" in commands
     assert "render devtools-reference" in commands
-    assert "workspace tasks" in commands
     assert "status" in commands
 
 
@@ -134,12 +133,12 @@ def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytes
 
     monkeypatch.setitem(
         COMMANDS,
-        "workspace tasks",
-        CommandSpec("workspace tasks", "workspace", "fake workspace tasks", fake_module.__name__),
+        "workspace failure-context",
+        CommandSpec("workspace failure-context", "workspace", "fake workspace command", fake_module.__name__),
     )
 
-    assert devtools_main.main(["workspace", "tasks", "recent", "--json"]) == 0
-    assert captured == [["recent", "--json"]]
+    assert devtools_main.main(["workspace", "failure-context", "node-id", "--json"]) == 0
+    assert captured == [["node-id", "--json"]]
 
 
 def test_help_output_includes_devtools_prog_name(capsys: pytest.CaptureFixture[str]) -> None:

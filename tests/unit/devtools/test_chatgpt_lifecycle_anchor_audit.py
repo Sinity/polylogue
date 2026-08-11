@@ -408,7 +408,6 @@ def test_audit_accepts_shared_json_flag_through_real_devtools_dispatch(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _archive_with_ordered_exports(tmp_path)
-    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
 
     assert (
         devtools_main.main(

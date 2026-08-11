@@ -1824,21 +1824,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace tasks",
-        "workspace",
-        "Record and query local agent task execution history.",
-        "devtools.task_history",
-        use_when="Log, view recent, or summarize agent task execution history during development sessions.",
-        examples=(
-            "devtools workspace tasks log --command 'devtools render all' --duration-ms 3200 --exit-code 0",
-            "devtools workspace tasks recent",
-            "devtools workspace tasks recent --count 20",
-            "devtools workspace tasks stats",
-            "devtools workspace tasks stats --json",
-            "devtools workspace tasks stats --resources",
-        ),
-    ),
-    CommandSpec(
         "workspace failure-context",
         "workspace",
         "Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope.",

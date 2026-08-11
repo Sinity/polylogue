@@ -243,7 +243,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace raw-quarantine-group-dedup-apply` | Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
-| `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
 | `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
