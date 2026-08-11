@@ -1781,6 +1781,30 @@ def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
 
+def test_managed_policy_uses_scratch_when_tmpfs_is_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 15_190 * 1024})
+    monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
+    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path == shm:
+            return None
+        if path == scratch.parent:
+            return {"used_kb": 0, "free_kb": 16 * 1024 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+
+    env, policy = apply_managed_pytest_runtime_policy({}, worker_count=4)
+
+    assert policy is not None
+    assert policy.tmpfs_budget_mb == 0
+    assert policy.basetemp_label == "scratch"
+    assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
 def test_resolve_basetemp_prefers_tmpfs_when_it_has_headroom(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
     monkeypatch.setattr(

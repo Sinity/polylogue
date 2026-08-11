@@ -675,9 +675,7 @@ def adaptive_pytest_runtime_policy(
         memory_full_avg10 = _pressure("memory").get("full_avg10", 0.0)
     if shm_free_kb is None:
         shm = _fs_usage(PYTEST_TMPFS_ROOT)
-        shm_free_kb = shm.get("free_kb") if shm is not None else None
-    if shm_free_kb is None:
-        raise PytestResourceError("/dev/shm is unavailable; refusing to fall back to disk-backed pytest")
+        shm_free_kb = shm.get("free_kb", 0) if shm is not None else 0
 
     logical_cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
     cpu_cap = max(1, logical_cpus // 2)
@@ -694,22 +692,17 @@ def adaptive_pytest_runtime_policy(
 
     fixed_reserve_kb = _pytest_non_tmpfs_memory_reserve_kb(reserved_workers)
     tmpfs_predicted_kb = PYTEST_BASETEMP_PEAK_KB
-    if fixed_reserve_kb + MIN_PYTEST_TMPFS_BUDGET_KB > available_kb:
+    tmpfs_floor_kb = MIN_PYTEST_TMPFS_BUDGET_KB if shm_free_kb >= MIN_PYTEST_TMPFS_BUDGET_KB else 0
+    if fixed_reserve_kb + tmpfs_floor_kb > available_kb:
         raise PytestResourceError(
             "cannot reserve measured pytest cgroup memory and host headroom "
             f"(available={available_kb / 1024:.0f} MiB, workers={reserved_workers}, "
-            f"required={(fixed_reserve_kb + MIN_PYTEST_TMPFS_BUDGET_KB) / 1024:.0f} MiB)"
+            f"required={(fixed_reserve_kb + tmpfs_floor_kb) / 1024:.0f} MiB)"
         )
     memory_safe_tmpfs_kb = available_kb - fixed_reserve_kb
     safe_shm_budget_kb = int(shm_free_kb * 0.80)
     tmpfs_budget_kb = min(MAX_PYTEST_TMPFS_MAX_MB * 1024, safe_shm_budget_kb, memory_safe_tmpfs_kb)
     tmpfs_budget_mb = int(tmpfs_budget_kb / 1024)
-    if tmpfs_budget_mb < 64:
-        raise PytestResourceError(
-            "cannot reserve measured pytest workers, host headroom, and a 64 MiB tmpfs budget "
-            f"(available={available_kb / 1024:.0f} MiB, workers={reserved_workers}, "
-            f"/dev/shm free={shm_free_kb / 1024:.0f} MiB)"
-        )
 
     return PytestRuntimePolicy(
         available_kb=available_kb,
