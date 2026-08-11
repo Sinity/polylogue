@@ -78,13 +78,13 @@ async def periodic_embedding_orphan_reconcile_check(
 ) -> None:
     """Periodically reconcile one bounded batch of orphan embedding rows.
 
-    An index rebuild (full re-ingest, ``ops reset --index``, a provider
+    An index rebuild (full re-ingest, ``ops maintenance rebuild-index``, a provider
     full-replace parse) can leave ``embeddings.db`` rows pointing at
     message/session identities that no longer exist in the rebuilt
     ``index.db`` (polylogue-1dk1). This drains that debt in the background,
     the same way :func:`periodic_embedding_backlog_check` drains pending
     embed work; manual CLI (``polylogue maintenance embedding-orphan-reconcile``)
-    remains the break-glass inspect/apply path.
+    remains a read-only diagnostic preview.
     """
     from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root

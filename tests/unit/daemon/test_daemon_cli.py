@@ -291,7 +291,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     components = cast(dict[str, dict[str, object]], components_raw)
     archive_component = components["archive_storage"]
     assert archive_component["state"] == "blocked"
-    assert archive_component["repair_hint"] == "polylogue ops reset --index && polylogued run"
+    assert archive_component["repair_hint"] == "polylogue ops maintenance rebuild-index"
 
 
 def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:

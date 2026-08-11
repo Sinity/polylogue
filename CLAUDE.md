@@ -197,7 +197,7 @@ Two evolution regimes, enforced by `devtools lab policy schema-versioning`:
   non-semantic delta upgrades an existing generation **in place** through
   `index_fast_forward_plan()` on connect. Only a `SEMANTIC_REPARSE` delta — one
   whose result depends on parser semantics — routes to
-  `polylogue ops reset --index && polylogued run`. A bump without a declaration
+  `polylogue ops maintenance rebuild-index`. A bump without a declaration
   is a policy violation, not a free rebuild: the lint fails and the archive
   silently falls back to full raw replay.
 
@@ -354,7 +354,7 @@ Don't treat CI as the first verification pass — anticipate failures locally.
 
 See [Schema regimes](#schema-regimes-durability-keyed). Durable tiers → numbered
 additive migration + backup manifest; derived tiers → edit canonical DDL +
-rebuild plan (`polylogue ops reset --index && polylogued run`), never an upgrade
+rebuild plan (`polylogue ops maintenance rebuild-index`), never an upgrade
 helper (`devtools lab policy schema-versioning` rejects them).
 
 ### Multi-lane / merge-train tooling — use these, don't reinvent the discipline by hand
