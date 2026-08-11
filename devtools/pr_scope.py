@@ -260,15 +260,40 @@ def _ensure_local_commit(revision: str) -> None:
         raise ValueError(f"fetched base revision {revision[:8]} is not a local commit")
 
 
+def _merge_base(base_sha: str) -> str:
+    """Resolve the PR merge base, recovering complete history in shallow CI clones."""
+    result = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
+    if result.returncode == 0 and _GIT_OBJECT_PATTERN.fullmatch(result.stdout.strip()):
+        return result.stdout.strip()
+
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"], capture_output=True, text=True, check=False
+    )
+    if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+        fetched = subprocess.run(
+            ["git", "fetch", "--no-tags", "--quiet", "--unshallow", "origin"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        if fetched.returncode != 0:
+            detail = fetched.stderr.strip()
+            suffix = f": {detail}" if detail else ""
+            raise ValueError(f"cannot deepen shallow history from origin{suffix}")
+        result = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
+        if result.returncode == 0 and _GIT_OBJECT_PATTERN.fullmatch(result.stdout.strip()):
+            return result.stdout.strip()
+
+    raise ValueError(f"cannot resolve PR merge base from base revision {base_sha[:8]}")
+
+
 def changed_bead_ids(*, base_sha: str, beads_path: Path = _BEADS_PATH) -> list[str]:
     """Return the complete Bead-record mutation set from the PR merge base."""
     if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
         raise ValueError("base revision must be a hexadecimal Git object name")
     _ensure_local_commit(base_sha)
-    merge_base = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
-    if merge_base.returncode != 0 or not _GIT_OBJECT_PATTERN.fullmatch(merge_base.stdout.strip()):
-        raise ValueError(f"cannot resolve PR merge base from base revision {base_sha[:8]}")
-    before = _bead_records_at(merge_base.stdout.strip())
+    before = _bead_records_at(_merge_base(base_sha))
     after = load_bead_records(beads_path)
     return sorted(bead_id for bead_id in set(before) | set(after) if before.get(bead_id) != after.get(bead_id))
 
@@ -547,6 +572,14 @@ def _beads_snapshot_matches_head(beads_path: Path) -> bool:
         return beads_path.read_bytes() == blob.stdout
     except OSError:
         return False
+
+
+def _require_checkout_authority(*, head_sha: str, beads_path: Path) -> None:
+    """Require validation inputs to be the exact committed PR revision."""
+    if _git_head_sha() != head_sha:
+        raise ValueError("current checkout HEAD does not match the fetched PR head")
+    if not _beads_snapshot_matches_head(beads_path):
+        raise ValueError("Beads snapshot does not match the committed PR head")
 
 
 def _repository_from_remote(remote: str) -> str | None:
@@ -922,10 +955,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             repository = resolve_repository(args.repo)
             metadata = fetch_pr_metadata(args.pr, repository=repository)
-            if _git_head_sha() != metadata.head_sha:
-                raise ValueError("current checkout HEAD does not match the fetched PR head")
-            if not _beads_snapshot_matches_head(args.beads_path):
-                raise ValueError("Beads snapshot does not match the committed PR head")
+            _require_checkout_authority(head_sha=metadata.head_sha, beads_path=args.beads_path)
             verdict = validate_pr_body(
                 metadata.body,
                 head_sha=metadata.head_sha,
@@ -953,8 +983,7 @@ def main(argv: list[str] | None = None) -> int:
             head_sha = metadata.head_sha
             is_draft = metadata.is_draft
             base_sha = metadata.base_sha
-            if _git_head_sha() != head_sha:
-                raise ValueError("current checkout HEAD does not match the fetched PR head")
+            _require_checkout_authority(head_sha=head_sha, beads_path=args.beads_path)
         else:
             if not args.head_sha:
                 raise ValueError("--head-sha is required with --body-file")
@@ -965,6 +994,8 @@ def main(argv: list[str] | None = None) -> int:
             extracted_carrier, _carrier_reasons = extract_carrier(body)
             if extracted_carrier is not None and extracted_carrier.get("version") == _VERSION and base_sha is None:
                 raise ValueError("--base-sha is required with --body-file for a v2 carrier")
+            if extracted_carrier is not None and extracted_carrier.get("version") == _VERSION:
+                _require_checkout_authority(head_sha=head_sha, beads_path=args.beads_path)
         verdict = validate_pr_body(
             body,
             head_sha=head_sha,

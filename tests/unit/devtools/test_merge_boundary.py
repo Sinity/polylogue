@@ -25,10 +25,11 @@ _SCOPE_BEAD = {
 
 
 @pytest.fixture(autouse=True)
-def _scope_bead_record(tmp_path: Path) -> None:
+def _scope_bead_record(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     beads_dir = tmp_path / ".beads"
     beads_dir.mkdir()
     (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
 
 def _scope_body(head_sha: str) -> str:
@@ -53,6 +54,7 @@ def _scope_body(head_sha: str) -> str:
 def _base_pr_view(head_sha: str = "abc123", title: str = "fix: thing (#42)", state: str = "OPEN") -> dict[str, object]:
     return {
         "headRefOid": head_sha,
+        "baseRefOid": "b" * 40,
         "headRefName": "feature/x",
         "title": title,
         "state": state,
@@ -215,6 +217,41 @@ def test_merge_strips_doubled_pr_suffix_before_merging(monkeypatch: pytest.Monke
     assert captured["cmd"][subject_index] == "fix: thing (#42)"
     match_index = captured["cmd"].index("--match-head-commit") + 1
     assert captured["cmd"][match_index] == "abc123"
+
+
+def test_merge_refuses_when_the_target_base_changes_after_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    initial = _base_pr_view()
+    changed = dict(initial, baseRefOid="advanced-base")
+    views = iter([initial, changed])
+    monkeypatch.setattr(merge_boundary, "_gh_json", lambda _args: next(views))
+    merge_calls: list[list[str]] = []
+    base_run = _fake_run(initial)
+
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            merge_calls.append(cmd)
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify --all",
+        )
+        == 1
+    )
+    assert not merge_calls
+    assert "base, or state changed" in capsys.readouterr().err
 
 
 def test_merge_refuses_when_pr_not_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

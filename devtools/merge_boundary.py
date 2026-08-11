@@ -610,7 +610,13 @@ def cmd_merge(
     head_sha = info["headRefOid"]
     scope = merge_gate._scope_verdict(pr, info, head_sha=head_sha)
 
-    if not scope.ok or not _receipt_is_fresh_for_scope(
+    if not scope.ok:
+        print(f"REFUSING to merge PR #{pr}: invalid structured pr-scope carrier:", file=sys.stderr)
+        for reason in scope.reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        return 2
+
+    if not _receipt_is_fresh_for_scope(
         pr,
         head_sha=head_sha,
         scope=scope,
@@ -642,6 +648,22 @@ def cmd_merge(
     if dry_run:
         print(f"PR #{pr} @ {head_sha[:8]}: merge-gate OK -- dry-run, not merging (title would be {clean_title!r})")
         return 0
+
+    try:
+        final_info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,baseRefOid,state"])
+    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+        print(f"REFUSING to merge PR #{pr}: final authority check failed: {exc}", file=sys.stderr)
+        return 1
+    if (
+        final_info.get("state") != "OPEN"
+        or final_info.get("headRefOid") != head_sha
+        or merge_gate._base_sha(final_info) != merge_gate._base_sha(info)
+    ):
+        print(
+            f"REFUSING to merge PR #{pr}: head, base, or state changed after merge-gate validation",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         _record_merge_intent(pr, head_sha, clean_title)

@@ -189,6 +189,38 @@ def test_v2_body_file_check_requires_base_revision(
     assert "--base-sha is required" in capsys.readouterr().err
 
 
+def test_v2_body_file_check_refuses_a_checkout_other_than_the_supplied_head(
+    monkeypatch: pytest.MonkeyPatch, beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scope_input = tmp_path / "scope.json"
+    scope_input.write_text(json.dumps(_v2_input()))
+    assert (
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        == 0
+    )
+    body_path = tmp_path / "body.md"
+    body_path.write_text(capsys.readouterr().out)
+    monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: "c" * 40)
+
+    assert (
+        pr_scope.main(
+            [
+                "check",
+                "--body-file",
+                str(body_path),
+                "--head-sha",
+                HEAD_SHA,
+                "--base-sha",
+                "b" * 40,
+                "--beads-path",
+                str(beads_path),
+            ]
+        )
+        == 2
+    )
+    assert "current checkout HEAD does not match" in capsys.readouterr().err
+
+
 def test_base_revision_fetch_has_a_finite_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     responses = [
@@ -228,6 +260,7 @@ def test_render_rejects_non_integer_carrier_versions(
 def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(pr_scope, "_require_checkout_authority", lambda **_kwargs: None)
     repository = tmp_path / "repository"
     beads_path = repository / ".beads" / "issues.jsonl"
     beads_path.parent.mkdir(parents=True)
@@ -343,6 +376,7 @@ def test_v2_self_contained_scope_rejects_a_real_bead_mutation(
 def test_v2_deleted_mutated_bead_stays_in_bead_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(pr_scope, "_require_checkout_authority", lambda **_kwargs: None)
     repository = tmp_path / "repository"
     beads_path = repository / ".beads" / "issues.jsonl"
     beads_path.parent.mkdir(parents=True)
@@ -409,6 +443,7 @@ def test_v2_deleted_mutated_bead_stays_in_bead_scope(
 def test_v2_mutation_scope_uses_the_pr_merge_base_not_the_moved_target_tip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    monkeypatch.setattr(pr_scope, "_require_checkout_authority", lambda **_kwargs: None)
     repository = tmp_path / "repository"
     beads_path = repository / ".beads" / "issues.jsonl"
     beads_path.parent.mkdir(parents=True)
@@ -554,6 +589,7 @@ def test_pr_check_uses_public_github_rest_without_cli_auth(
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setattr(request, "urlopen", _urlopen)
     monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
     exit_code = pr_scope.main(["check", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)])
@@ -577,6 +613,21 @@ def test_pr_check_refuses_a_checkout_other_than_the_fetched_head(
 
     assert pr_scope.main(["check", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)]) == 2
     assert "current checkout HEAD does not match the fetched PR head" in capsys.readouterr().err
+
+
+def test_pr_check_refuses_uncommitted_bead_contents(
+    monkeypatch: pytest.MonkeyPatch, beads_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    metadata = pr_scope.PullRequestMetadata(
+        body=_body(_input(), beads_path), head_sha=HEAD_SHA, base_sha="b" * 40, is_draft=False
+    )
+    monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
+    monkeypatch.setattr(pr_scope, "fetch_pr_metadata", lambda *_args, **_kwargs: metadata)
+    monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
+    monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: False)
+
+    assert pr_scope.main(["check", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)]) == 2
+    assert "Beads snapshot does not match the committed PR head" in capsys.readouterr().err
 
 
 def test_ci_resolves_pr_from_exact_head_when_circle_pr_url_is_absent(
@@ -928,6 +979,38 @@ def test_changed_bead_ids_fetches_missing_target_commit_before_merge_base(
     assert calls.index(["git", "fetch", "--no-tags", "--quiet", "origin", base_sha]) < calls.index(
         ["git", "merge-base", base_sha, "HEAD"]
     )
+
+
+def test_changed_bead_ids_unshallows_before_retrying_the_merge_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_sha = "b" * 40
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    merge_base_attempts = 0
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal merge_base_attempts
+        calls.append((argv, kwargs))
+        if argv[:3] == ["git", "cat-file", "-e"]:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:2] == ["git", "merge-base"]:
+            merge_base_attempts += 1
+            output = "a" * 40 + "\n" if merge_base_attempts == 2 else ""
+            return subprocess.CompletedProcess(argv, 0 if output else 1, output, "")
+        if argv == ["git", "rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(argv, 0, "true\n", "")
+        if argv[:2] == ["git", "fetch"]:
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _sha: {})
+    monkeypatch.setattr(pr_scope, "load_bead_records", lambda _path: {})
+
+    assert pr_scope.changed_bead_ids(base_sha=base_sha) == []
+    unshallow = next(item for item in calls if "--unshallow" in item[0])
+    assert unshallow[1]["timeout"] == 120
+    assert merge_base_attempts == 2
 
 
 def test_check_rejects_carrier_bound_to_a_different_head_sha(
