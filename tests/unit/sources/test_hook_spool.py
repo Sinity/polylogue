@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -300,6 +301,7 @@ async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
     monkeypatch.setattr(watchfiles, "awatch", emit_added_shard)
 
     await watcher._watch_changes([pending])
+    watcher.stop()
 
     assert list(acknowledged_hook_spool_dir(spool_root).rglob("directory-notification.json")) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -307,11 +309,11 @@ async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
 
 
 @pytest.mark.asyncio
-async def test_live_watcher_redrains_added_hook_shard_after_atomic_publish(
+async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The directory event can precede its first atomically published envelope."""
+    """A late first envelope drains without its own child-file notification."""
 
     spool_root = tmp_path / "hooks"
     pending = pending_hook_spool_dir(spool_root)
@@ -322,36 +324,42 @@ async def test_live_watcher_redrains_added_hook_shard_after_atomic_publish(
         (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
         cursor=CursorStore(archive_root / "ops.db"),
     )
-    original_drain = watcher._drain_hook_spool
-    drain_calls = 0
+    publish_task: asyncio.Task[None] | None = None
 
-    async def drain_then_publish_first_envelope() -> None:
-        nonlocal drain_calls
-        await original_drain()
-        drain_calls += 1
-        if drain_calls == 1:
-            enqueue_hook_event(
-                event_id="published-after-directory-event",
-                provider="codex",
-                event_type="SessionStart",
-                session_id="session-2",
-                timestamp="2026-07-12T10:00:00Z",
-                payload={"cwd": "/workspace"},
-                root=spool_root,
-            )
+    async def publish_after_fixed_grace() -> None:
+        # The old one-shot 50 ms re-drain has already completed by the time
+        # this producer publishes.  The retry must keep watching this shard.
+        await asyncio.sleep(0.10)
+        enqueue_hook_event(
+            event_id="published-after-directory-event",
+            provider="codex",
+            event_type="SessionStart",
+            session_id="session-2",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"cwd": "/workspace"},
+            root=spool_root,
+        )
 
     async def emit_empty_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
+        nonlocal publish_task
         assert roots == (pending,)
         shard = pending / "2026-08-11"
         shard.mkdir(parents=True)
+        publish_task = asyncio.create_task(publish_after_fixed_grace())
         yield {(Change.added, str(shard))}
 
-    monkeypatch.setattr(watcher, "_drain_hook_spool", drain_then_publish_first_envelope)
     monkeypatch.setattr(watchfiles, "awatch", emit_empty_shard)
 
     await watcher._watch_changes([pending])
+    assert publish_task is not None
+    await publish_task
 
-    assert drain_calls == 2
+    for _ in range(30):
+        if list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")):
+            break
+        await asyncio.sleep(0.01)
+    watcher.stop()
+
     assert list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-2",)
