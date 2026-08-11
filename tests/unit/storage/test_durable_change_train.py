@@ -18,6 +18,12 @@ from typing import cast
 import pytest
 
 import polylogue.storage.sqlite.durable_change_train as durable_change_train_module
+from polylogue.daemon.backup import backup_archive
+from polylogue.operations.durable_change_train import (
+    acquire_durable_archive_ownership,
+    adopt_missing_audit_tier,
+    audit_adoption_receipt_path,
+)
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1667,6 +1673,36 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
+
+
+def test_audit_adoption_receipt_survives_startup_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The storage startup route validates the receipt created by the real adopter."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    initialize_active_archive_root(archive_root)
+    (archive_root / "audit.db").unlink()
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    backup = backup_archive(output_dir=tmp_path / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-adoption") as owner:
+        version, receipt = adopt_missing_audit_tier(
+            archive_root / "audit.db",
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    assert version == 1
+    assert receipt == audit_adoption_receipt_path(archive_root)
+    assert reconcile_durable_change_train_startup(archive_root) == ()
+    receipt.write_text("tampered", encoding="utf-8")
+    with pytest.raises(MigrationError, match="invalid audit adoption receipt"):
+        reconcile_durable_change_train_startup(archive_root)
     assert reconcile_durable_change_train_startup(tmp_path) == ()
     initialize_active_archive_root(tmp_path)
 

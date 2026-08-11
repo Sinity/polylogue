@@ -2282,6 +2282,9 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
+    from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
+
+    validate_audit_adoption_receipt(archive_root)
     deferred_tiers = _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     reconciled: list[Path] = []
@@ -2291,7 +2294,7 @@ def _reconcile_durable_change_train_startup_locked(
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
-    manifest_paths = tuple(sorted(manifest_root.glob("*.json")))
+    manifest_paths = tuple(path for path in sorted(manifest_root.glob("*.json")) if path.name != "audit-adoption.json")
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:

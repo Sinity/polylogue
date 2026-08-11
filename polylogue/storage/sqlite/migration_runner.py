@@ -844,6 +844,86 @@ def validate_migration_backup_live_fingerprint(
     return receipt_path
 
 
+def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root: Path) -> tuple[Path, Path]:
+    """Authorize creation of a missing audit tier in an established archive.
+
+    Unlike a normal tier migration there is no live ``audit.db`` connection to
+    attest.  The route therefore requires the complete pre-audit file set,
+    validates the existing source/user attestations, and compares every
+    retained tier's recorded source fingerprint with the still-offline live
+    archive.  This is intentionally stricter than ordinary migration backup
+    validation: an adoption is only safe when the backup is full evidence for
+    this exact established archive, not merely a restorable subset.
+    """
+    manifest_path = _backup_manifest_path(path)
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        raise MigrationError(f"audit adoption requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
+        raise MigrationError("audit adoption requires a verified full_evidence backup")
+    required_tiers = {"source", "index", "embeddings", "user", "ops"}
+    included = set(_json_str_list(manifest.get("included_tiers")))
+    if included != {f"{tier}.db" for tier in required_tiers}:
+        raise MigrationError("audit adoption backup must contain exactly the established non-audit tier set")
+    receipt_path = _receipt_path(manifest_path)
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        raise MigrationError(
+            f"audit adoption requires a successful backup verification receipt; missing {receipt_path}"
+        )
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
+        raise MigrationError("audit adoption requires a successful backup verification receipt")
+    archive_root = archive_root.resolve()
+    for authority_tier in ("source", "user"):
+        try:
+            verify_verification_receipt(
+                receipt,
+                tier=authority_tier,
+                live_tier_path=archive_root / f"{authority_tier}.db",
+            )
+        except BackupAttestationError as exc:
+            raise MigrationError(f"audit adoption backup authentication failed: {exc}") from exc
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
+        raise MigrationError("audit adoption backup receipt does not match manifest size")
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
+        raise MigrationError("audit adoption backup receipt does not match manifest bytes")
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier="audit",
+        live_tier_path=archive_root / "audit.db",
+        file_evidence=file_evidence,
+    )
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("audit adoption backup receipt does not match the closed artifact inventory")
+    for tier in required_tiers:
+        live_path = archive_root / f"{tier}.db"
+        artifact = artifacts[tier]
+        fingerprint = artifact.get("source_fingerprint")
+        if not isinstance(fingerprint, dict):
+            raise MigrationError(f"audit adoption backup lacks a live source fingerprint for {tier}.db")
+        if Path(str(fingerprint.get("path") or "")).resolve(strict=False) != live_path.resolve(strict=False):
+            raise MigrationError(f"audit adoption backup belongs to a different archive tier: {tier}.db")
+        if not live_path.is_file():
+            raise MigrationError(f"audit adoption live tier is missing: {live_path}")
+        if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
+            raise MigrationError(f"audit adoption backup is stale for {tier}.db")
+        if str(fingerprint.get("sha256")) != _sha256_file(live_path):
+            raise MigrationError(f"audit adoption backup is stale for {tier}.db")
+        if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+            raise MigrationError(f"audit adoption backup is stale for {tier}.db")
+    return manifest_path, receipt_path
+
+
 def validate_backup_manifest_covers_derived_tier(
     path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection
 ) -> Path:
@@ -3452,6 +3532,7 @@ __all__ = [
     "validate_durable_change_train_manifest",
     "validate_backup_manifest_covers_derived_tier",
     "validate_migration_backup_live_fingerprint",
+    "validate_full_evidence_backup_for_audit_adoption",
     "validate_migration_backup_manifest",
     "write_durable_change_train_manifest",
 ]

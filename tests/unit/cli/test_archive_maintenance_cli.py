@@ -21,6 +21,7 @@ from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_reb
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
+from polylogue.daemon.backup import backup_archive
 from polylogue.maintenance.raw_authority_recovery import (
     RecoveryOperation,
     inspect_raw_authority_recovery,
@@ -444,6 +445,18 @@ def _stage_uninitialized_archive(cli_workspace: dict[str, Path]) -> None:
         archive_root / ".maintenance-state" / "durable-change-trains",
         ignore_errors=True,
     )
+
+
+def _full_evidence_backup_without_audit(root: Path) -> Path:
+    """Create the real verified backup an established-audit adoption consumes."""
+    result = backup_archive(
+        output_dir=root.parent / "backups",
+        profile="full_evidence",
+        verify=True,
+    )
+    assert result.ok, result.error
+    assert result.output_path is not None
+    return Path(result.output_path) / "manifest.json"
 
 
 def _write_gc_candidate(cli_workspace: dict[str, Path], blob_hash: str) -> Path:
@@ -3287,6 +3300,177 @@ def test_migrate_tier_cli_missing_initialization_refuses_malformed_train_marker(
     assert "established archive" in error
     assert str(marker) in error
     assert not (root / "audit.db").exists()
+
+
+def test_migrate_tier_cli_adopts_established_audit_from_verified_full_evidence_backup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """The production CLI publishes v1 only after the real backup verifier succeeds."""
+    root = cli_workspace["archive_root"]
+    (root / "audit.db").unlink()
+    manifest = _full_evidence_backup_without_audit(root)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--adopt-established-audit",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    receipt = Path(str(payload["adoption_receipt"]))
+    assert payload["initialized"] is True
+    assert payload["to_version"] == 1
+    assert receipt.is_file()
+    with sqlite3.connect(root / "audit.db") as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+@pytest.mark.parametrize("backup_case", ["missing", "stale", "wrong_archive"])
+def test_migrate_tier_cli_adoption_refuses_unbound_backup(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, backup_case: str
+) -> None:
+    root = cli_workspace["archive_root"]
+    (root / "audit.db").unlink()
+    manifest = _full_evidence_backup_without_audit(root)
+    backup_arguments = ["--backup-manifest", str(manifest)]
+    if backup_case == "missing":
+        backup_arguments = []
+    elif backup_case == "stale":
+        source = root / "source.db"
+        source.write_bytes(source.read_bytes() + b"stale-after-backup")
+    else:
+        foreign_root = root.parent / "foreign-archive"
+        shutil.copytree(root, foreign_root)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(foreign_root))
+        root = foreign_root
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--adopt-established-audit",
+            *backup_arguments,
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert not (root / "audit.db").exists()
+    error = json.loads(result.stdout)["error"]
+    if backup_case == "missing":
+        assert "adopt-established-audit" in error
+    else:
+        assert "audit adoption" in error
+
+
+def test_migrate_tier_cli_adoption_refuses_live_writer_before_receipt_or_sql(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = cli_workspace["archive_root"]
+    (root / "audit.db").unlink()
+    manifest = _full_evidence_backup_without_audit(root)
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._migrate_tier._daemon_pidfile_is_live",
+        lambda _pidfile: True,
+    )
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--adopt-established-audit",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "daemon to be stopped" in json.loads(result.stdout)["error"]
+    assert not (root / "audit.db").exists()
+    assert not (root / ".maintenance-state" / "durable-change-trains" / "audit-adoption.json").exists()
+
+
+@pytest.mark.parametrize("publication_failure", ["race", "interrupted"])
+def test_migrate_tier_cli_adoption_fails_closed_during_publication(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, publication_failure: str
+) -> None:
+    root = cli_workspace["archive_root"]
+    audit = root / "audit.db"
+    audit.unlink()
+    manifest = _full_evidence_backup_without_audit(root)
+    real_link = os.link
+
+    def fail_or_race(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if publication_failure == "race":
+            assert dst_dir_fd is not None
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dst_dir_fd)
+            try:
+                os.write(fd, b"foreign audit target")
+            finally:
+                os.close(fd)
+            real_link(
+                source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, follow_symlinks=follow_symlinks
+            )
+            return
+        raise OSError("simulated interrupted audit publication")
+
+    monkeypatch.setattr("polylogue.operations.durable_change_train.os.link", fail_or_race)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--adopt-established-audit",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    if publication_failure == "race":
+        assert audit.read_bytes() == b"foreign audit target"
+    else:
+        assert not audit.exists()
+    assert (root / ".maintenance-state" / "durable-change-trains" / "audit-adoption.json").is_file()
 
 
 def test_rebuild_index_empty_source_still_runs_the_schema_currency_guard(

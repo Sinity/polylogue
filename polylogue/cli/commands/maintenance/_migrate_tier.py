@@ -26,6 +26,7 @@ from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
     DurablePublicationError,
     acquire_durable_archive_ownership,
+    adopt_missing_audit_tier,
     execute_durable_change_train,
     initialize_missing_durable_tier,
 )
@@ -65,11 +66,20 @@ def _require_stopped_daemon(root: Path) -> str:
     is_flag=True,
     help="Initialize this durable tier only when its database file is absent; never replaces an existing file.",
 )
+@click.option(
+    "--adopt-established-audit",
+    is_flag=True,
+    help=(
+        "Create missing audit.db for an established archive only with a freshly verified full_evidence backup; "
+        "writes an immutable adoption receipt."
+    ),
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def migrate_tier_command(
     tier: str,
     backup_manifest: Path | None,
     initialize_missing: bool,
+    adopt_established_audit: bool,
     output_format: str,
 ) -> None:
     """Apply additive migrations for one durable archive tier.
@@ -85,10 +95,26 @@ def migrate_tier_command(
     stopped_daemon_evidence_ref: str | None = None
     initialized = False
     initialized_version: int | None = None
+    adoption_receipt: Path | None = None
     try:
         with acquire_durable_archive_ownership(path.parent, owner_id=f"migrate-tier:{os.getpid()}") as archive_owner:
             stopped_daemon_evidence_ref = _require_stopped_daemon(path.parent)
-            if initialize_missing:
+            if initialize_missing and adopt_established_audit:
+                raise MigrationError("choose either --initialize-missing or --adopt-established-audit")
+            if adopt_established_audit:
+                if archive_tier is not ArchiveTier.AUDIT:
+                    raise MigrationError("--adopt-established-audit is only valid for the audit tier")
+                if backup_manifest is None:
+                    raise MigrationError("--adopt-established-audit requires --backup-manifest")
+                initialized_version, adoption_receipt = adopt_missing_audit_tier(
+                    path,
+                    backup_manifest=backup_manifest,
+                    directory_fd=archive_owner.directory_fd,
+                    stopped_daemon_check=lambda: _require_stopped_daemon(path.parent),
+                )
+                initialized = True
+                execution = None
+            elif initialize_missing:
                 initialized_version = initialize_missing_durable_tier(
                     path,
                     archive_tier,
@@ -142,6 +168,7 @@ def migrate_tier_command(
         "tier": tier,
         "path": str(path),
         "initialized": initialized,
+        "adoption_receipt": str(adoption_receipt) if adoption_receipt is not None else None,
         "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
         "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
         "train_manifest": (
@@ -172,6 +199,9 @@ def migrate_tier_command(
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
+    if adoption_receipt is not None:
+        click.echo(f"Adopted missing audit tier at schema version {initialized_version}; receipt: {adoption_receipt}.")
+        return
     if initialized:
         click.echo(f"Initialized missing {tier} tier at schema version {initialized_version}.")
         return
