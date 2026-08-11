@@ -317,7 +317,10 @@ def ingest_convergence_pathology(
         session_id = payload_model.session_id
         source_paths.append(source_path)
         session_ids.append(session_id)
-        make_messages_fts_stale(root / "index.db", session_id=session_id)
+        # Some valid provider fixtures contain no text-bearing blocks and
+        # therefore have no FTS rows to corrupt. The corpus builder may skip
+        # that inapplicable mutation; direct corruption tests remain strict.
+        make_messages_fts_stale(root / "index.db", session_id=session_id, require_rows=False)
         archive = ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
         if converge_after_each:
             converge_convergence_archive(archive)
@@ -338,6 +341,12 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
+    # Insights can materialize work-event rows after the FTS stage has run.
+    # Refresh the shared freshness ledger only once both real stages complete.
+    from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
+
+    with sqlite3.connect(archive.root / "index.db") as conn:
+        record_fts_freshness_snapshot_sync(conn)
     _analyze_registry_tables(archive.root / "index.db")
     return states
 
@@ -702,7 +711,7 @@ def set_debt_retry_at(
         raise AssertionError(f"expected one convergence debt row, updated {cursor.rowcount}")
 
 
-def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
+def make_messages_fts_stale(index_db: Path, *, session_id: str, require_rows: bool = True) -> int:
     """Delete only this session's real FTS rows to create unrelated stage debt."""
     with open_connection(index_db) as conn:
         block_ids = tuple(
@@ -723,7 +732,7 @@ def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
         conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.executemany("DELETE FROM messages_fts_identity WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.commit()
-    if not row_ids:
+    if require_rows and not row_ids:
         raise AssertionError(f"session {session_id!r} has no indexed blocks")
     return len(row_ids)
 
