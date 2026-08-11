@@ -61,11 +61,18 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                 cursor=cursor,
                 write_coordinator=coordinator,
             )
+            # This proof targets the writer bridge's process-exit semantics.
+            # Disable the independent prefetch lane so an executor worker
+            # cannot determine the subprocess lifetime instead.
+            watcher._parse_stage.shutdown()
+            watcher._parse_stage = None
+            watcher._batch_processor._parse_stage = None
             started = threading.Event()
+            release = threading.Event()
 
             def stuck(*args, **kwargs):
                 started.set()
-                threading.Event().wait()
+                release.wait()
 
             if {route!r} == "append":
                 stat = path.stat()
@@ -94,7 +101,17 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             caller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await caller
-            assert await coordinator.shutdown(timeout=0.01) is False
+            try:
+                assert await coordinator.shutdown(timeout=0.01) is False
+            finally:
+                # The injected thread is intentionally unlike production
+                # parsing: it has no natural completion condition. Releasing
+                # it after the coordinator's fail-safe result proves the
+                # process-exit assertion without making asyncio's executor
+                # shutdown permanently unreleasable.
+                release.set()
+                assert await coordinator.shutdown(timeout=1.0) is True
+                watcher.stop()
 
         asyncio.run(main())
         """

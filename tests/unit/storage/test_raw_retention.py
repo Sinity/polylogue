@@ -556,6 +556,96 @@ def test_active_raw_protection_rejects_empty_index_over_retained_source(tmp_path
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
 
 
+def test_current_terminal_artifact_authorizes_historical_raws_but_not_later_session_raw(tmp_path: Path) -> None:
+    """Terminal artifact authority follows the current coordinate receipt, not every old raw.
+
+    ``raw_artifacts`` intentionally keeps one current carrier per ordinary
+    source coordinate while ``raw_sessions`` keeps every acquisition. A
+    current workflow/fact artifact may therefore retain historical raw rows
+    without a duplicate artifact receipt. Conversely, a later unclassified
+    raw must remove that exemption rather than allowing the old terminal
+    receipt to mask a cursor-authority gap.
+    """
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "journal.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-journal-old",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="unknown",
+            source_revision="old",
+            generation=0,
+            blob_size=10,
+            authority="quarantined",
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-journal-current",
+            source_path=source_path,
+            acquired_at_ms=2,
+            kind="unknown",
+            source_revision="current",
+            generation=0,
+            blob_size=20,
+            authority="quarantined",
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index,
+                artifact_kind, support_status, classification_reason,
+                parse_as_session, schema_eligible, malformed_jsonl_lines,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, 'claude-code-session', ?, 0, 'workflow_journal',
+                      'unknown', 'typed terminal artifact', 0, 0, 0, 1, 2)
+            """,
+            ("artifact-journal", "raw-journal-current", str(source_path)),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=20)
+
+    with sqlite3.connect(source_db) as conn:
+        authority = active_raw_retention_authority(conn, index_db_path=index_db)
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({"raw-journal-old", "raw-journal-current"}),
+        eligible_raw_ids=frozenset(),
+    )
+    assert snapshot.cursor_ahead_status == "healthy"
+    assert snapshot.cursor_authority_gap_count == 0
+
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-conversational-later",
+            source_path=source_path,
+            acquired_at_ms=3,
+            kind="full",
+            source_revision="later",
+            generation=0,
+            blob_size=30,
+            authority="asserted",
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=30)
+
+    with sqlite3.connect(source_db) as conn:
+        with pytest.raises(RawRetentionSafetyError, match="index has no raw authority"):
+            active_raw_retention_authority(conn, index_db_path=index_db)
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
 def test_active_raw_protection_rejects_incomplete_predecessor_chain(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"

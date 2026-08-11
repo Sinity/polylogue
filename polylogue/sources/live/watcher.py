@@ -354,7 +354,11 @@ class LiveWatcher:
             for change, raw_path in changes:
                 if change is Change.deleted:
                     continue
-                path = self._canonical_watch_path(Path(raw_path))
+                observed_path = Path(raw_path)
+                if change is Change.added and observed_path.is_dir():
+                    self._enqueue_added_directory(observed_path)
+                    continue
+                path = self._canonical_watch_path(observed_path)
                 if path is None:
                     continue
                 if not self._source_accepts(path):
@@ -1522,7 +1526,7 @@ class LiveWatcher:
             try:
                 if resolved.is_relative_to(source.root.resolve()):
                     return source.name
-            except OSError:
+            except (OSError, ValueError):
                 continue
         return path.parent.name
 
@@ -1574,6 +1578,33 @@ class LiveWatcher:
             return database
         return None
 
+    def _source_for_directory(self, path: Path) -> WatchSource | None:
+        """Return the watched source owning a non-ignored directory."""
+
+        resolved = path.resolve()
+        for source in self._sources:
+            try:
+                relative = resolved.relative_to(source.root.resolve())
+            except (OSError, ValueError):
+                continue
+            if any(source.ignores_directory(Path(part)) for part in relative.parts):
+                return None
+            return source
+        return None
+
+    def _enqueue_added_directory(self, directory: Path) -> None:
+        """Cover files created before a recursive watcher installs its new sub-watch."""
+
+        source = self._source_for_directory(directory)
+        if source is None:
+            return
+        for parent, dir_names, file_names in os.walk(directory):
+            dir_names[:] = [name for name in dir_names if not source.ignores_directory(Path(name))]
+            for name in file_names:
+                candidate = Path(parent) / name
+                if source.accepts(candidate):
+                    self._enqueue(candidate)
+
     def _watch_filter(self, _change: object, path: str) -> bool:
         """Accept configured source files under hidden canonical roots.
 
@@ -1583,7 +1614,11 @@ class LiveWatcher:
         writes. This filter keeps the project's own source/suffix predicate as
         the gate instead.
         """
-        return self._canonical_watch_path(Path(path)) is not None
+        observed_path = Path(path)
+        return (
+            self._canonical_watch_path(observed_path) is not None
+            or self._source_for_directory(observed_path) is not None
+        )
 
 
 def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[CandidateSourceFile]:

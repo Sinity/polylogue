@@ -390,16 +390,33 @@ def active_raw_retention_authority(
         session_raw_ids, heads, eligible_receipts = _active_index_raw_authority(index_db_path)
         seeds = set(session_raw_ids)
         seeds.update(head.accepted_raw_id for head in heads)
+        all_raw_ids = frozenset(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions").fetchall())
+        terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn)
         if not seeds:
-            if conn.execute("SELECT 1 FROM raw_sessions LIMIT 1").fetchone() is not None:
+            if all_raw_ids and all_raw_ids.issubset(terminal_artifact_raw_ids):
+                return RawRetentionAuthority(protected_raw_ids=all_raw_ids, eligible_raw_ids=frozenset())
+            if all_raw_ids:
                 raise RawRetentionSafetyError("source tier contains raw evidence but index has no raw authority")
             return RawRetentionAuthority(protected_raw_ids=frozenset(), eligible_raw_ids=frozenset())
         authority_raw_ids = seeds.union(receipt.raw_id for receipt in eligible_receipts)
         rows_by_id = _raw_revision_rows(conn, authority_raw_ids)
         protected: set[str] = set()
+        byte_head_raw_ids = {head.accepted_raw_id for head in heads if head.accepted_frontier_kind == "byte"}
+        semantic_only_raw_ids = {
+            head.accepted_raw_id for head in heads if head.accepted_frontier_kind != "byte"
+        }.difference(byte_head_raw_ids)
+        # A semantic membership head is accepted authority for retention, but
+        # it is deliberately not a byte-predecessor proof. Keep it protected
+        # without reinterpreting it as one.
+        protected.update(semantic_only_raw_ids)
+        protected.update(terminal_artifact_raw_ids)
         for seed_raw_id in sorted(session_raw_ids):
+            if seed_raw_id in semantic_only_raw_ids:
+                continue
             protected.update(_validate_active_revision_chain(rows_by_id, seed_raw_id))
         for head in heads:
+            if head.accepted_raw_id in semantic_only_raw_ids:
+                continue
             row = rows_by_id[head.accepted_raw_id]
             if head.accepted_frontier_kind == "byte":
                 _validate_byte_head(row, head)
@@ -1369,6 +1386,15 @@ def _check_broken_active_chains(
     for head in heads:
         heads_by_raw_id.setdefault(head.accepted_raw_id, []).append(head)
     seed_raw_ids = set(session_raw_ids).union(heads_by_raw_id)
+    # Membership-governed snapshots carry a semantic head, not a byte
+    # predecessor chain. They remain active source authority and must be
+    # retained, but applying byte-chain validation to them turns a normal
+    # membership snapshot into a false broken-head violation. A raw selected
+    # by both regimes remains byte-validated.
+    byte_head_raw_ids = {head.accepted_raw_id for head in heads if head.accepted_frontier_kind == "byte"}
+    semantic_only_raw_ids = {
+        head.accepted_raw_id for head in heads if head.accepted_frontier_kind != "byte"
+    }.difference(byte_head_raw_ids)
     try:
         rows_by_id = _raw_revision_rows(conn, seed_raw_ids, allow_missing=True)
     except _RawRevisionAuthorityUnavailableError as exc:
@@ -1379,6 +1405,8 @@ def _check_broken_active_chains(
     for seed_raw_id in sorted(seed_raw_ids):
         seed_heads = heads_by_raw_id.get(seed_raw_id, [])
         row = rows_by_id.get(seed_raw_id)
+        if seed_raw_id in semantic_only_raw_ids:
+            continue
         if row is None and not seed_heads:
             # Directly missing sessions.raw_id rows are counted once by the
             # canonical lost-source-evidence projection. There is no chain to
@@ -1479,6 +1507,11 @@ def _check_cursor_ahead_of_accepted(
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: cursor source path lookup failed: %s", exc)
         return "unknown", 0, 0, 0, 0, (), 0, (), f"cursor source path lookup failed: {exc}"
+    try:
+        terminal_artifact_paths = _terminal_artifact_paths(conn, set(cursor_map))
+    except sqlite3.Error as exc:
+        logger.warning("raw frontier integrity: terminal artifact authority lookup failed: %s", exc)
+        return "unknown", 0, 0, 0, 0, (), 0, (), f"terminal artifact authority is unreadable: {exc}"
     for path, cursor in cursor_map.items():
         cursor_offset = cursor.byte_offset
         if cursor.is_deferred:
@@ -1501,7 +1534,7 @@ def _check_cursor_ahead_of_accepted(
         if not comparable_heads:
             # A path governed exclusively by membership authority has no
             # comparable byte frontier and is intentionally out of scope.
-            if path in all_head_paths:
+            if path in all_head_paths or path in terminal_artifact_paths:
                 continue
             gap_count += 1
             if len(gaps) < sample_limit:
@@ -1591,6 +1624,63 @@ def _source_paths_for_paths(conn: sqlite3.Connection, source_paths: set[str]) ->
         ).fetchall()
         result.update(str(row[0]) for row in rows if row[0] is not None)
     return result
+
+
+def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -> set[str]:
+    """Return paths whose current raw observation is typed non-session evidence.
+
+    A full-route cursor can legitimately advance over a workflow/fact artifact
+    that has no session head. ``raw_artifacts.parse_as_session = 0`` is the
+    source-tier terminal authority for that case. Ordinary artifact upserts
+    retain the source coordinate's latest receipt while ``raw_sessions``
+    retains its historical acquisition evidence, so authority attaches to the
+    newest raw observation rather than requiring a duplicate receipt on every
+    historical raw. A later conversational raw cannot inherit the exemption:
+    it becomes the newest observation and leaves the path without terminal
+    authority until it gains a comparable accepted head.
+    """
+
+    result: set[str] = set()
+    pending = set(source_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT artifact.source_path
+            FROM raw_artifacts AS artifact
+            JOIN raw_sessions AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
+            WHERE artifact.parse_as_session = 0
+              AND artifact.source_path IN ({placeholders})
+              AND terminal_raw.raw_id = (
+                  SELECT newest.raw_id
+                  FROM raw_sessions AS newest
+                  WHERE newest.source_path = artifact.source_path
+                  ORDER BY newest.acquired_at_ms DESC, newest.rowid DESC
+                  LIMIT 1
+              )
+            """,
+            batch,
+        ).fetchall()
+        result.update(str(row[0]) for row in rows)
+    return result
+
+
+def _terminal_artifact_raw_ids(conn: sqlite3.Connection) -> frozenset[str]:
+    """Return all retained raw evidence for paths with terminal current observations."""
+
+    source_paths = {str(row[0]) for row in conn.execute("SELECT DISTINCT source_path FROM raw_sessions").fetchall()}
+    terminal_paths = _terminal_artifact_paths(conn, source_paths)
+    if not terminal_paths:
+        return frozenset()
+    ordered_paths = tuple(sorted(terminal_paths))
+    placeholders = ", ".join("?" for _ in ordered_paths)
+    rows = conn.execute(
+        f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({placeholders})",
+        ordered_paths,
+    ).fetchall()
+    return frozenset(str(row[0]) for row in rows)
 
 
 def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority]:
