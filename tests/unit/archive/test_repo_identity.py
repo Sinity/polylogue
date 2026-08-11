@@ -293,6 +293,9 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
 
 def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path: Path) -> None:
     work_repo = _make_repo(tmp_path, "sinnix")
+    repo_tool_result = work_repo / "tool-results" / "parser.py"
+    repo_tool_result.parent.mkdir()
+    repo_tool_result.touch()
     system_file = Path("/etc/systemd/system/sinex-gateway.service")
     action = Action(
         action_id="action-noise-filter",
@@ -305,6 +308,7 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
         origin=Origin.CLAUDE_CODE_SESSION,
         affected_paths=(
             str(work_repo / "README.md"),
+            str(repo_tool_result),
             str(work_repo / ".claude" / "settings.json"),
             ".snapshot/",
             ".snapshots/root",
@@ -332,6 +336,7 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
         [
             str(system_file),
             str(work_repo / "README.md"),
+            str(repo_tool_result),
         ]
     )
     assert sorted(attribution.repo_paths) == sorted([str(work_repo)])

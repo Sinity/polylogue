@@ -126,10 +126,15 @@ def _clean_attributed_path(path: str) -> str | None:
             return None
         return candidate
     expanded = _lexical_expanduser(candidate)
-    if _is_ignored_absolute_path(PurePosixPath(expanded)):
-        return None
+    pure_path = PurePosixPath(expanded)
+    ignored_absolute = _is_ignored_absolute_path(pure_path)
     repo_root = _repo_root_from_path(expanded)
-    if repo_root is not None:
+    # A real file inside a checkout outranks global transcript-noise path
+    # names (for example a repository-owned ``tool-results/parser.py``).
+    # Missing historical paths keep the global filter: otherwise an unrelated
+    # broad ancestor checkout such as a stray ``/tmp/.git`` would authorize
+    # every vanished Claude spool path below it.
+    if repo_root is not None and (not ignored_absolute or Path(expanded).exists()):
         try:
             repo_relative = PurePosixPath(PurePosixPath(expanded).relative_to(PurePosixPath(repo_root)).as_posix())
         except ValueError:
@@ -138,7 +143,8 @@ def _clean_attributed_path(path: str) -> str | None:
             return None
         return expanded
 
-    pure_path = PurePosixPath(expanded)
+    if ignored_absolute:
+        return None
 
     parts = [part for part in pure_path.parts if part != "/"]
     if len(parts) < 2:
