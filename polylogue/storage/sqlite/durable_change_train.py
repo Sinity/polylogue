@@ -330,7 +330,9 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or any(path.name != "audit-adoption.json" for path in marker_root.glob("*.json")):
+    if marker_path.exists() or any(
+        path.name not in {"audit-adoption.json", "audit-continuity.json"} for path in marker_root.glob("*.json")
+    ):
         raise DurableChangeTrainError(f"cannot record fresh durable bootstrap over existing train state: {marker_root}")
     if pending_path.is_file():
         _validate_fresh_durable_bootstrap_intent(archive_root)
@@ -363,7 +365,9 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or any(path.name != "audit-adoption.json" for path in marker_root.glob("*.json")):
+    if marker_path.exists() or any(
+        path.name not in {"audit-adoption.json", "audit-continuity.json"} for path in marker_root.glob("*.json")
+    ):
         raise DurableChangeTrainError(
             f"cannot record fresh durable bootstrap intent over existing train state: {marker_root}"
         )
@@ -507,7 +511,7 @@ def _adopt_pre_marker_durable_bootstrap(archive_root: Path) -> None:
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     if (manifest_root / _FRESH_DURABLE_BOOTSTRAP_MARKER).is_file():
         return
-    if any(path.name != "audit-adoption.json" for path in manifest_root.glob("*.json")):
+    if any(path.name not in {"audit-adoption.json", "audit-continuity.json"} for path in manifest_root.glob("*.json")):
         return
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
         tier_path = archive_root / f"{tier.value}.db"
@@ -2294,7 +2298,11 @@ def _reconcile_durable_change_train_startup_locked(
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
-    manifest_paths = tuple(path for path in sorted(manifest_root.glob("*.json")) if path.name != "audit-adoption.json")
+    manifest_paths = tuple(
+        path
+        for path in sorted(manifest_root.glob("*.json"))
+        if path.name not in {"audit-adoption.json", "audit-continuity.json"}
+    )
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:

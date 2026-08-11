@@ -311,7 +311,7 @@ def initialize_archive_database(
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
-    from polylogue.operations.durable_change_train import audit_adoption_receipt_path, validate_audit_adoption_receipt
+    from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
     from polylogue.storage.archive_identity import (
         ArchiveLocation,
         OwnedArchiveLocation,
@@ -347,7 +347,9 @@ def initialize_active_archive_root(root: Path) -> None:
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
         pending_audit_adoption = audit_adoption_receipt_path(root).exists()
-        has_durable_train_state = any(path.name != "audit-adoption.json" for path in manifest_root.glob("*.json"))
+        has_durable_train_state = any(
+            path.name not in {"audit-adoption.json", "audit-continuity.json"} for path in manifest_root.glob("*.json")
+        )
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
@@ -380,7 +382,21 @@ def initialize_active_archive_root(root: Path) -> None:
             _record_fresh_durable_bootstrap_intent(root)
         if pending_audit_adoption:
             assert_owned_root()
-            validate_audit_adoption_receipt(root)
+            recover_pending_audit_adoption(root)
+            # Receipt-backed recovery can add audit.db to a legacy archive.
+            # Recompute the path-sensitive classification before deciding
+            # whether startup must create the missing bootstrap marker.
+            durable_tier_exists = any(
+                (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
+            )
+            pre_marker_adoption = (
+                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
+                and manifest_root.is_dir()
+                and not has_durable_train_state
+                and not has_bootstrap_marker
+                and not has_pending_bootstrap
+            )
         if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)

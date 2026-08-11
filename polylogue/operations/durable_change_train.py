@@ -36,6 +36,8 @@ from polylogue.storage.sqlite.migration_runner import (
 
 _AUDIT_ADOPTION_RECEIPT_FORMAT = "polylogue.audit-tier-adoption.v1"
 _AUDIT_ADOPTION_RECEIPT_NAME = "audit-adoption.json"
+_AUDIT_ADOPTION_CONTINUITY_FORMAT = "polylogue.audit-tier-continuity.v1"
+_AUDIT_ADOPTION_CONTINUITY_NAME = "audit-continuity.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,6 +448,19 @@ def audit_adoption_receipt_path(archive_root: Path) -> Path:
     return archive_root / ".maintenance-state" / "durable-change-trains" / _AUDIT_ADOPTION_RECEIPT_NAME
 
 
+def _audit_adoption_continuity_path(archive_root: Path) -> Path:
+    """Return the immutable identity binding for the published audit file."""
+    return archive_root / ".maintenance-state" / "durable-change-trains" / _AUDIT_ADOPTION_CONTINUITY_NAME
+
+
+def _audit_adoption_authority_digest(archive_root: Path) -> str:
+    """Bind adoption to the two irreplaceable archive authority tiers only."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    durable_id = ArchiveIdentity.resolve(archive_root).durable_id
+    return hashlib.sha256(f"source-user-authority:{durable_id}".encode()).hexdigest()
+
+
 def _audit_schema_inventory_sha256() -> str:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
@@ -463,8 +478,11 @@ def _open_audit_adoption_receipt_directory(
 ) -> int:
     """Open the receipt parent without following any archive path component."""
     archive_root = archive_root.resolve()
-    expected_path = audit_adoption_receipt_path(archive_root)
-    if path != expected_path:
+    expected_paths = {
+        audit_adoption_receipt_path(archive_root),
+        _audit_adoption_continuity_path(archive_root),
+    }
+    if path not in expected_paths:
         raise MigrationError(f"audit adoption receipt path is outside its fixed archive location: {path}")
     try:
         current_fd = (
@@ -536,11 +554,12 @@ def _write_immutable_audit_adoption_receipt(
     *,
     archive_root: Path,
     archive_directory_fd: int | None = None,
+    checksum_key: str = "receipt_sha256",
 ) -> None:
     """Publish one pre-publication receipt without replacement and fsync it."""
     unsigned = dict(payload)
-    unsigned.pop("receipt_sha256", None)
-    payload = {**unsigned, "receipt_sha256": _canonical_json_sha256(unsigned)}
+    unsigned.pop(checksum_key, None)
+    payload = {**unsigned, checksum_key: _canonical_json_sha256(unsigned)}
     encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     descriptor: int | None = None
     receipt_directory_fd: int | None = None
@@ -654,14 +673,112 @@ def _load_audit_adoption_receipt(archive_root: Path) -> tuple[Path, dict[str, ob
     unsigned.pop("receipt_sha256", None)
     if not isinstance(digest, str) or digest != _canonical_json_sha256(unsigned):
         raise MigrationError(f"audit adoption receipt checksum mismatch: {receipt_path}")
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    if payload.get("archive_identity_digest") != ArchiveIdentity.resolve(archive_root).authority_identity_digest:
-        raise MigrationError("audit adoption receipt archive identity mismatch")
-    if payload.get("audit_schema_inventory_sha256") != _audit_schema_inventory_sha256():
-        raise MigrationError("audit adoption receipt canonical audit DDL mismatch")
+    if payload.get("source_user_authority_digest") != _audit_adoption_authority_digest(archive_root):
+        raise MigrationError("audit adoption receipt source/user authority mismatch")
     _audit_adoption_image_binding(payload)
     return receipt_path, payload
+
+
+def _audit_file_identity(path: Path) -> tuple[int, int]:
+    """Read the audit leaf identity without following a replacement symlink."""
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MigrationError(f"cannot inspect adopted audit tier: {path}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise MigrationError(f"adopted audit tier is not a regular file: {path}")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _load_audit_adoption_continuity(archive_root: Path) -> dict[str, object] | None:
+    """Load the immutable audit-file identity record, if publication reached it."""
+    continuity_path = _audit_adoption_continuity_path(archive_root)
+    try:
+        continuity_directory_fd = _open_audit_adoption_receipt_directory(
+            continuity_path,
+            archive_root=archive_root,
+            create=False,
+        )
+    except FileNotFoundError:
+        return None
+    continuity_fd: int | None = None
+    try:
+        continuity_fd = os.open(
+            continuity_path.name,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=continuity_directory_fd,
+        )
+        metadata = os.fstat(continuity_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise MigrationError(f"invalid audit adoption continuity ownership or mode: {continuity_path}")
+        with os.fdopen(continuity_fd, "r", encoding="utf-8") as stream:
+            continuity_fd = None
+            payload = json.load(stream)
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MigrationError(f"invalid audit adoption continuity record: {continuity_path}") from exc
+    finally:
+        if continuity_fd is not None:
+            os.close(continuity_fd)
+        os.close(continuity_directory_fd)
+    if not isinstance(payload, dict) or payload.get("format") != _AUDIT_ADOPTION_CONTINUITY_FORMAT:
+        raise MigrationError(f"audit adoption continuity format mismatch: {continuity_path}")
+    digest = payload.get("continuity_sha256")
+    unsigned = dict(payload)
+    unsigned.pop("continuity_sha256", None)
+    if not isinstance(digest, str) or digest != _canonical_json_sha256(unsigned):
+        raise MigrationError(f"audit adoption continuity checksum mismatch: {continuity_path}")
+    return payload
+
+
+def _write_audit_adoption_continuity(
+    archive_root: Path,
+    *,
+    receipt_payload: dict[str, object],
+) -> None:
+    """Publish the post-link audit identity that later detects stale replacement."""
+    audit_path = archive_root / "audit.db"
+    device, inode = _audit_file_identity(audit_path)
+    continuity_path = _audit_adoption_continuity_path(archive_root)
+    payload: dict[str, object] = {
+        "format": _AUDIT_ADOPTION_CONTINUITY_FORMAT,
+        "receipt_sha256": receipt_payload["receipt_sha256"],
+        "source_user_authority_digest": receipt_payload["source_user_authority_digest"],
+        "audit_device": device,
+        "audit_inode": inode,
+    }
+    unsigned = dict(payload)
+    payload["continuity_sha256"] = _canonical_json_sha256(unsigned)
+    _write_immutable_audit_adoption_receipt(
+        continuity_path,
+        payload,
+        archive_root=archive_root,
+        checksum_key="continuity_sha256",
+    )
+    if _audit_file_identity(audit_path) != (device, inode):
+        raise MigrationError("audit tier changed while recording adoption continuity")
+
+
+def _validate_audit_adoption_continuity(archive_root: Path, *, receipt_payload: dict[str, object]) -> None:
+    """Require the published audit path to retain its adopted live identity."""
+    continuity = _load_audit_adoption_continuity(archive_root)
+    if continuity is None:
+        _write_audit_adoption_continuity(archive_root, receipt_payload=receipt_payload)
+        continuity = _load_audit_adoption_continuity(archive_root)
+    assert continuity is not None
+    expected = (continuity.get("audit_device"), continuity.get("audit_inode"))
+    if (
+        continuity.get("receipt_sha256") != receipt_payload.get("receipt_sha256")
+        or continuity.get("source_user_authority_digest") != receipt_payload.get("source_user_authority_digest")
+        or not all(isinstance(value, int) for value in expected)
+        or _audit_file_identity(archive_root / "audit.db") != expected
+    ):
+        raise MigrationError("audit adoption continuity does not match the live audit tier")
 
 
 def _validate_audit_adoption_recovery_evidence(payload: dict[str, object], *, archive_root: Path) -> None:
@@ -718,6 +835,17 @@ def _recover_pending_audit_adoption(
     )
 
 
+def recover_pending_audit_adoption(archive_root: Path) -> bool:
+    """Publish a receipt-backed missing audit file before startup classification."""
+    archive_root = archive_root.resolve()
+    receipt = _load_audit_adoption_receipt(archive_root)
+    if receipt is None or (archive_root / "audit.db").is_file():
+        return False
+    receipt_path, payload = receipt
+    _recover_pending_audit_adoption(archive_root, receipt_path, payload)
+    return True
+
+
 def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image: bool = False) -> Path | None:
     """Validate a present adoption receipt before startup consumes its audit tier."""
     archive_root = archive_root.resolve()
@@ -726,6 +854,9 @@ def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image
         return None
     receipt_path, payload = receipt
     expected_image_sha256, expected_image_size, expected_application_id = _audit_adoption_image_binding(payload)
+    expected_initial_version = payload.get("audit_user_version")
+    if not isinstance(expected_initial_version, int):
+        raise MigrationError("audit adoption receipt lacks its initial audit schema version")
     audit_path = archive_root / "audit.db"
     if not audit_path.is_file():
         _recover_pending_audit_adoption(archive_root, receipt_path, payload)
@@ -741,14 +872,9 @@ def validate_audit_adoption_receipt(archive_root: Path, *, require_initial_image
         version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0] or 0)
         quick_check = tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check"))
-        schema_digest = capture_durable_schema_inventory(connection).sha256
-    if (
-        version != 1
-        or application_id != expected_application_id
-        or quick_check != ("ok",)
-        or schema_digest != _audit_schema_inventory_sha256()
-    ):
-        raise MigrationError("audit adoption receipt does not match a canonical audit v1 tier")
+    if version < expected_initial_version or application_id != expected_application_id or quick_check != ("ok",):
+        raise MigrationError("audit adoption receipt does not match the live audit tier")
+    _validate_audit_adoption_continuity(archive_root, receipt_payload=payload)
     return receipt_path
 
 
@@ -780,15 +906,11 @@ def adopt_missing_audit_tier(
         backup_manifest,
         archive_root=archive_root,
     )
-    from polylogue.storage.archive_identity import ArchiveIdentity
-
-    initial_archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
+    initial_authority_digest = _audit_adoption_authority_digest(archive_root)
     manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     verification_receipt_sha256 = hashlib.sha256(verification_receipt.read_bytes()).hexdigest()
     application_id = (
-        int.from_bytes(
-            hashlib.sha256(f"{initial_archive_identity_digest}:{manifest_sha256}".encode()).digest()[:4], "big"
-        )
+        int.from_bytes(hashlib.sha256(f"{initial_authority_digest}:{manifest_sha256}".encode()).digest()[:4], "big")
         & 0x7FFFFFFF
     )
     if application_id == 0:
@@ -804,13 +926,12 @@ def adopt_missing_audit_tier(
         if stopped_daemon_check() != stopped_evidence:
             raise MigrationError("daemon stopped proof changed during audit adoption")
         validate_full_evidence_backup_for_audit_adoption(backup_manifest, archive_root=archive_root)
-        archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
-        if archive_identity_digest != initial_archive_identity_digest:
-            raise MigrationError("archive identity changed during audit adoption")
+        if _audit_adoption_authority_digest(archive_root) != initial_authority_digest:
+            raise MigrationError("source/user authority changed during audit adoption")
         payload.update(
             {
                 "format": _AUDIT_ADOPTION_RECEIPT_FORMAT,
-                "archive_identity_digest": initial_archive_identity_digest,
+                "source_user_authority_digest": initial_authority_digest,
                 "backup_manifest": str(manifest_path.resolve()),
                 "backup_manifest_sha256": manifest_sha256,
                 "backup_verification_receipt": str(verification_receipt.resolve()),
@@ -878,5 +999,6 @@ __all__ = [
     "execute_durable_change_train",
     "initialize_missing_durable_tier",
     "reconcile_durable_change_trains_on_startup",
+    "recover_pending_audit_adoption",
     "validate_audit_adoption_receipt",
 ]

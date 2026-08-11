@@ -1751,6 +1751,133 @@ def test_audit_adoption_receipt_allows_a_mutated_audit_journal(workspace_env: di
     assert reconcile_durable_change_train_startup(archive_root) == ()
 
 
+def test_audit_adoption_binds_only_the_source_user_authority(workspace_env: dict[str, Path]) -> None:
+    """Routine replacement of rebuildable or disposable tiers leaves adoption valid."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-stable-authority") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    (archive_root / "index.db").unlink()
+    (archive_root / "ops.db").unlink()
+    initialize_active_archive_root(archive_root)
+
+    assert (archive_root / "index.db").is_file()
+    assert (archive_root / "ops.db").is_file()
+
+
+def test_audit_adoption_receipt_keeps_initial_schema_evidence_after_upgrade(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Receipt validation permits later audit schema versions for normal train handling."""
+    from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-schema-evidence") as owner:
+        _version, receipt = adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    initial_schema_digest = json.loads(receipt.read_text(encoding="utf-8"))["audit_schema_inventory_sha256"]
+
+    with sqlite3.connect(audit_path) as connection:
+        connection.execute("CREATE TABLE future_audit_schema (value TEXT)")
+        connection.execute("PRAGMA user_version = 2")
+        connection.commit()
+
+    assert validate_audit_adoption_receipt(archive_root) == receipt
+    assert json.loads(receipt.read_text(encoding="utf-8"))["audit_schema_inventory_sha256"] == initial_schema_digest
+
+
+def test_audit_adoption_rejects_a_stale_audit_file_clone(workspace_env: dict[str, Path]) -> None:
+    """The continuity record distinguishes in-place writes from a stale file replacement."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-stale-clone") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    stale_clone = archive_root / "stale-audit.db"
+    shutil.copy2(audit_path, stale_clone)
+    with sqlite3.connect(audit_path) as connection:
+        connection.execute(
+            "INSERT INTO archive_authority (archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, ?)",
+            ("live-audit-after-clone", 2, 1),
+        )
+        connection.commit()
+    os.replace(stale_clone, audit_path)
+
+    with pytest.raises(MigrationError, match="continuity"):
+        reconcile_durable_change_train_startup(archive_root)
+
+
+def test_adopted_audit_startup_runs_one_receipt_integrity_check(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bootstrap delegates adopted-tier validation to startup reconciliation once."""
+    from polylogue.operations import durable_change_train as operations_durable_change_train
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-single-quick-check") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    calls = 0
+    real_validate = operations_durable_change_train.validate_audit_adoption_receipt
+
+    def count_validate(root: Path, *, require_initial_image: bool = False) -> Path | None:
+        nonlocal calls
+        calls += 1
+        return real_validate(root, require_initial_image=require_initial_image)
+
+    monkeypatch.setattr(operations_durable_change_train, "validate_audit_adoption_receipt", count_validate)
+    initialize_active_archive_root(archive_root)
+
+    assert calls == 1
+
+
 def test_audit_adoption_receipt_recovers_interrupted_publication_during_bootstrap(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1765,6 +1892,16 @@ def test_audit_adoption_receipt_recovers_interrupted_publication_during_bootstra
     backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
     assert backup.ok, backup.error
     assert backup.output_path is not None
+    monkeypatch.setitem(
+        durable_change_train_module.DURABLE_MIGRATION_ADOPTION_FLOORS,
+        ArchiveTier.SOURCE,
+        ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1,
+    )
+    monkeypatch.setitem(
+        durable_change_train_module.DURABLE_MIGRATION_ADOPTION_FLOORS,
+        ArchiveTier.USER,
+        ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1,
+    )
     real_link = os.link
 
     def fail_audit_link(
