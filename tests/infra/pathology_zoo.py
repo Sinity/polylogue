@@ -121,22 +121,22 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
     "claude-vintage-live-proof": PathologyZooMutation(
         "source",
         """
-        DELETE FROM raw_sessions
+        UPDATE raw_session_memberships
+        SET decision = 'superseded_prefix'
         WHERE raw_id = (
             SELECT r.raw_id
             FROM raw_sessions AS r
             JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
             WHERE r.origin = ?
               AND m.logical_source_key = ?
-              AND r.source_path LIKE ?
-            ORDER BY r.source_path DESC
+              AND m.decision = 'superseded_equivalent'
+            ORDER BY r.source_path
             LIMIT 1
         )
         """,
         (
             Origin.CLAUDE_AI_EXPORT.value,
             f"claude-ai:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
-            "%claude-live-proof-new.json",
         ),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(
