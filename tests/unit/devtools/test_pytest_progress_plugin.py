@@ -11,7 +11,16 @@ from devtools import pytest_progress_plugin
 
 
 @pytest.fixture(autouse=True)
-def _restore_plugin_state() -> Iterator[None]:
+def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # Unit tests own their event destinations; do not let a surrounding
+    # managed verify invocation redirect them into its step artifacts.
+    for name in (
+        "POLYLOGUE_PYTEST_EVENTS_DIR",
+        "POLYLOGUE_PYTEST_EVENTS_PATH",
+        "POLYLOGUE_PYTEST_SELECTION_PATH",
+        "POLYLOGUE_PYTEST_SUMMARY_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
     selected_count = pytest_progress_plugin._SELECTED_COUNT
     deselected_count = pytest_progress_plugin._DESELECTED_COUNT
     deselected_nodeids = list(pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE)
@@ -212,6 +221,9 @@ def test_progress_plugin_records_collection_duration_and_summary(
     assert summary["deselected_count"] == 1
     assert [report["nodeid"] for report in summary["slowest_reports"]] == ["test_slow", "test_fast"]
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
-    assert events[0]["event"] == "collection_started"
-    assert events[1]["event"] == "collection_finished"
-    assert events[1]["duration_s"] == 2.5
+    assert [event["event"] for event in events[:3]] == [
+        "session_started",
+        "collection_started",
+        "collection_finished",
+    ]
+    assert events[2]["duration_s"] == 2.5

@@ -317,15 +317,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         shutil.rmtree(basetemp_path, ignore_errors=True)
 
 
-@pytest.hookimpl(wrapper=True)
+@pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(
     item: pytest.Item,
     call: pytest.CallInfo[None],
-) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+) -> Generator[None, Any, None]:
     """Retain the call outcome so passing test temp trees can be reclaimed."""
-    report = yield
+    outcome = yield
+    report = outcome.get_result()
     setattr(item, f"rep_{report.when}", report)
-    return report
 
 
 @pytest.fixture(autouse=True)
@@ -395,6 +395,24 @@ _CONNECTION_MACHINERY = (
     "contextlib.py",
 )
 _TESTS_ROOT = str(Path(__file__).resolve().parent)
+
+# These variables are emitted by the managed verification supervisor and must
+# survive the host-configuration scrub below.  They are test-run evidence
+# plumbing, not operator configuration; removing them after collection makes
+# setup/call reports disappear from the event ledger while teardown still gets
+# recorded, which makes interrupted seed shards look falsely successful.
+_MANAGED_VERIFY_ENV = frozenset(
+    {
+        "POLYLOGUE_VERIFY_RUN_ID",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_EVENTS_DIR",
+        "POLYLOGUE_PYTEST_EVENTS_PATH",
+        "POLYLOGUE_PYTEST_SELECTION_PATH",
+        "POLYLOGUE_PYTEST_SUMMARY_PATH",
+        "POLYLOGUE_PYTEST_CONTAINMENT_PATH",
+        "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -629,7 +647,7 @@ def _clear_polylogue_env(
         # config) for lanes that intentionally run without packaged provider
         # schema data; it must survive this sweep or it could never take
         # effect inside the test suite that is its only consumer.
-        if key.startswith("POLYLOGUE_") and key != ALLOW_MISSING_SCHEMAS_ENV:
+        if key.startswith("POLYLOGUE_") and key not in {ALLOW_MISSING_SCHEMAS_ENV, *_MANAGED_VERIFY_ENV}:
             monkeypatch.delenv(key, raising=False)
 
     for key in (
