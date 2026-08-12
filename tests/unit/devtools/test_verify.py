@@ -345,6 +345,8 @@ def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, mon
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "--dist=worksteal" in command
+    assert command.count("-n") == 1
+    assert command[command.index("-n") + 1] == str(min(10, adaptive_pytest_worker_count(os.environ)))
     assert command[-1] == f"@{nodeids_file}"
     assert nodeids_file.read_text().splitlines() == expected[:TESTMON_SEED_SHARD_SIZE]
 
