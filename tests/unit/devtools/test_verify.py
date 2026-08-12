@@ -3162,22 +3162,31 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
 
 @pytest.mark.parametrize(
-    ("shard_results", "expected_exit", "expected_statuses"),
+    ("shard_results", "expected_exit", "expected_diagnosis", "expected_statuses"),
     [
         (
             [(124, "pytest_timeout"), (0, "pytest_passed")],
             124,
+            "pytest_timeout",
             ["incomplete", "pending"],
         ),
         (
             [(1, "pytest_failed"), (0, "pytest_passed")],
             1,
+            "pytest_failed",
             ["complete", "complete"],
         ),
         (
             [(1, "pytest_failed"), (124, "pytest_timeout")],
             124,
+            "pytest_timeout",
             ["complete", "incomplete"],
+        ),
+        (
+            [(1, "pytest_failed"), (0, "pytest_passed")],
+            1,
+            "pytest_failed",
+            ["incomplete", "pending"],
         ),
     ],
 )
@@ -3187,6 +3196,7 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
     capsys: pytest.CaptureFixture[str],
     shard_results: list[tuple[int, str]],
     expected_exit: int,
+    expected_diagnosis: str,
     expected_statuses: list[str],
 ) -> None:
     nodeids = ["tests/test_seed.py::test_one", "tests/test_seed.py::test_two"]
@@ -3223,12 +3233,7 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
         assert isinstance(raw_shards, list)
         assert all(isinstance(shard, dict) for shard in raw_shards)
         shards = [dict(shard) for shard in raw_shards]
-        shard_exit, diagnosis = shard_results[shard_index - 1]
-        shards[shard_index - 1]["status"] = (
-            "incomplete"
-            if verify._seed_shard_failure_requires_stop({"exit": shard_exit, "diagnosis": diagnosis})
-            else "complete"
-        )
+        shards[shard_index - 1]["status"] = expected_statuses[shard_index - 1]
         return {**prepared, "shards": shards}
 
     def fake_finalize(
@@ -3282,7 +3287,9 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
     ]
     assert checkpointed == list(range(1, executed_shards + 1))
     assert finalized_shard_statuses == expected_statuses
-    assert json.loads(capsys.readouterr().out)["exit_code"] == expected_exit
+    output = json.loads(capsys.readouterr().out)
+    assert output["exit_code"] == expected_exit
+    assert output["diagnosis"] == expected_diagnosis
 
 
 @pytest.mark.parametrize(
