@@ -92,6 +92,37 @@ def test_progress_plugin_skips_xdist_controller_forwarding_copy(
     assert [(event["nodeid"], event["when"], event["worker_id"]) for event in events] == [("test_one", "call", "gw0")]
 
 
+def test_progress_plugin_keeps_xdist_worker_timings_in_controller_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    summary_path = tmp_path / "summary.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(summary_path))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_slow", "call", "passed", duration=1.5, worker_id="gw0")
+    )
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_slow", "call", "passed", duration=1.5, worker_id="gw0")
+    )
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    events = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event") == "test_report"
+    ]
+    summary = json.loads(summary_path.read_text())
+    assert [(event["nodeid"], event["worker_id"]) for event in events] == [("test_slow", "gw0")]
+    assert [report["nodeid"] for report in summary["slowest_reports"]] == ["test_slow"]
+
+
 def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:
     events_dir = tmp_path / "events"
     checkout_root = Path(__file__).resolve().parents[3]

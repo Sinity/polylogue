@@ -812,6 +812,28 @@ def _await_interrupted_pytest_containment(
                 "pytest containment did not quiesce after forced termination; leaving its basetemp intact"
             ) from exc
     reap_exited_children()
+    receipt = read_receipt(launch.receipt_path)
+    remaining_descendants = tuple(
+        identity
+        for identity in descendant_process_identities(os.getpid())
+        if identity not in preserved_runner_descendants
+    )
+    if (
+        receipt is None
+        or receipt.get("status") not in {"finished", "terminated"}
+        or receipt.get("controller_group_alive") is not False
+        or remaining_descendants
+    ):
+        raise PytestContainmentError(
+            "pytest containment did not quiesce its owned process tree; leaving its basetemp intact"
+        )
+
+
+def _supervised_tmpfs_cleanup_path(*, root: Path, run_id: str, env: dict[str, str]) -> Path | None:
+    """Return only a supervisor-owned tmpfs path eligible for cleanup."""
+    if env.get(PYTEST_EXPLICIT_BASETEMP_ENV) or pytest_tmpfs_budget_kb(env) is None:
+        return None
+    return pytest_basetemp_path(root=root, run_id=run_id, env=env)
 
 
 def _force_kill_owned_run(
@@ -971,14 +993,10 @@ def _run_pytest_with_heartbeat(
         else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
     pytest_run_id = run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(os.getpid()))
-    tmpfs_cleanup_path = (
-        pytest_basetemp_path(
-            root=Path(cwd) if cwd is not None else Path.cwd(),
-            run_id=pytest_run_id,
-            env=env,
-        )
-        if tmpfs_budget_kb is not None
-        else None
+    tmpfs_cleanup_path = _supervised_tmpfs_cleanup_path(
+        root=Path(cwd) if cwd is not None else Path.cwd(),
+        run_id=pytest_run_id,
+        env=env,
     )
     launch = build_supervisor_launch(
         cmd,
@@ -1590,10 +1608,14 @@ def _run(
                 "release_baseline_allowed": False,
             }
             if run is not None and artifacts is not None:
-                run.finish_step(
+                finalized_step = run.finish_step(
                     step_id=artifacts.step_id,
                     result={"duration_s": round(elapsed, 2), "exit": 125, **refusal_metadata},
                 )
+                if isinstance(finalized_step, dict):
+                    for key in ("statistics", "statistics_path"):
+                        if key in finalized_step:
+                            refusal_metadata[key] = finalized_step[key]
             return 125, elapsed, refusal_metadata
         pytest_tmpfs = env.get("POLYLOGUE_PYTEST_TMPFS") == "1"
         budget_kb = pytest_tmpfs_budget_kb(env)
@@ -2189,22 +2211,23 @@ def _compare_against_last(step_results: list[dict[str, Any]]) -> list[str]:
     entries = _load_history()
     if len(entries) < 1:
         return []
-    current_names = {str(step.get("name")) for step in step_results if isinstance(step.get("name"), str)}
-    last = next(
-        (
-            entry
-            for entry in reversed(entries)
-            if entry.get("tier") != "focused-test"
-            and any(isinstance(step, dict) and step.get("name") in current_names for step in entry.get("steps", []))
-        ),
-        None,
-    )
-    if last is None:
-        return []
-    last_steps = {s["name"]: s["duration_s"] for s in last.get("steps", [])}
     flags: list[str] = []
     for s in step_results:
-        prev = last_steps.get(s["name"])
+        name = s.get("name")
+        if not isinstance(name, str):
+            continue
+        prev = next(
+            (
+                prior.get("duration_s")
+                for entry in reversed(entries)
+                if entry.get("tier") != "focused-test"
+                for prior in entry.get("steps", [])
+                if isinstance(prior, dict)
+                and prior.get("name") == name
+                and isinstance(prior.get("duration_s"), (int, float))
+            ),
+            None,
+        )
         if prev is not None and prev > 0:
             delta = s["duration_s"] - prev
             pct = (delta / prev) * 100

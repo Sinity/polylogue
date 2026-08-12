@@ -1066,6 +1066,30 @@ def test_aggregate_pytest_statistics_deduplicates_xdist_reports_and_terminal_fai
     assert result["outcomes"] == {"error": 2}
 
 
+def test_aggregate_pytest_statistics_accounts_for_started_node_without_a_phase(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    rows = [
+        {"event": "test_started", "nodeid": "tests/a.py::test_completed", "worker_id": "gw0"},
+        {
+            "event": "test_report",
+            "nodeid": "tests/a.py::test_completed",
+            "when": "call",
+            "outcome": "passed",
+            "duration_s": 0.1,
+            "worker_id": "gw0",
+        },
+        {"event": "test_started", "nodeid": "tests/a.py::test_interrupted", "worker_id": "gw1"},
+    ]
+    (step / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["node_count"] == 2
+    assert result["outcomes"] == {"passed": 1, "interrupted": 1}
+    assert sum(result["outcomes"].values()) == result["node_count"]
+
+
 def test_verify_run_statistics_only_cover_pytest_steps(tmp_path: Path) -> None:
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
     artifacts = run.start_step(label="ruff check", cmd=["ruff", "check"])
@@ -1181,6 +1205,11 @@ def test_interrupted_pytest_waits_for_forced_containment_quiescence() -> None:
         patch("devtools.verify._request_supervisor_termination") as request_termination,
         patch("devtools.verify._force_kill_owned_run") as force_kill,
         patch("devtools.verify.reap_exited_children") as reap,
+        patch(
+            "devtools.verify.read_receipt",
+            return_value={"status": "terminated", "controller_group_alive": False},
+        ),
+        patch("devtools.verify.descendant_process_identities", return_value=()),
     ):
         verify._await_interrupted_pytest_containment(
             process,
@@ -1219,6 +1248,30 @@ def test_interrupted_pytest_refuses_cleanup_without_containment_quiescence() -> 
 
     force_kill.assert_called_once_with(process, launch, preserved_runner_descendants=())
     reap.assert_not_called()
+
+
+def test_interrupted_pytest_refuses_cleanup_when_controller_group_survives() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.return_value = None
+    launch = MagicMock()
+
+    with (
+        patch("devtools.verify._request_supervisor_termination"),
+        patch("devtools.verify.reap_exited_children"),
+        patch(
+            "devtools.verify.read_receipt",
+            return_value={"status": "terminated", "controller_group_alive": True},
+        ),
+        patch("devtools.verify.descendant_process_identities", return_value=()),
+        pytest.raises(verify.PytestContainmentError, match="owned process tree"),
+    ):
+        verify._await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=1.0,
+            preserved_runner_descendants=(),
+        )
 
 
 def test_run_cleans_and_finalizes_only_after_contained_interrupt(tmp_path: Path) -> None:
@@ -1311,6 +1364,20 @@ def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path
     assert sorted(row["sequence"] for row in rows) == list(range(64))
 
 
+def test_verify_history_repairs_or_frames_an_incomplete_trailing_record(tmp_path: Path) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text('{"sequence": 0}', encoding="utf-8")
+
+    append_verify_history({"sequence": 1}, path=history)
+
+    history.write_text(history.read_text(encoding="utf-8") + '{"interrupted":', encoding="utf-8")
+    append_verify_history({"sequence": 2}, path=history)
+
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert rows == [{"sequence": 0}, {"sequence": 1}, {"sequence": 2}]
+
+
 def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         verify,
@@ -1324,6 +1391,33 @@ def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pyt
     flags = verify._compare_against_last([{"name": "ruff check", "duration_s": 7.0}])
 
     assert flags and "ruff check" in flags[0]
+
+
+def test_compare_against_last_selects_prior_run_independently_per_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_load_history",
+        lambda: [
+            {
+                "tier": "default",
+                "steps": [
+                    {"name": "ruff check", "duration_s": 1.0},
+                    {"name": "pytest testmon", "duration_s": 2.0},
+                ],
+            },
+            {"tier": "quick", "steps": [{"name": "ruff check", "duration_s": 1.0}]},
+        ],
+    )
+
+    flags = verify._compare_against_last(
+        [
+            {"name": "ruff check", "duration_s": 1.1},
+            {"name": "pytest testmon", "duration_s": 8.0},
+        ]
+    )
+
+    assert len(flags) == 1
+    assert "pytest testmon" in flags[0]
 
 
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2990,6 +3084,15 @@ def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> Non
     assert not basetemp.exists()
 
 
+def test_cleanup_managed_pytest_basetemp_recognizes_child_cleanup(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-cleaned-by-child", env=env)
+
+    cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-cleaned-by-child", env=env)
+
+    assert cleaned == basetemp
+
+
 def test_cleanup_managed_pytest_basetemp_does_not_receipt_residual_tree(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3143,6 +3246,48 @@ def test_explicit_basetemp_policy_uses_actual_path_for_admission(
     assert policy is not None
     assert policy.basetemp_root == str(explicit)
     assert policy.basetemp_label == "explicit"
+
+
+def test_explicit_tmpfs_basetemp_requires_declared_demand_and_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    explicit = shm / "pytest-polylogue-diagnostic"
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 2500 * 1024)
+
+    with pytest.raises(PytestResourceError, match="need >= 3072 MiB"):
+        apply_managed_pytest_runtime_policy(
+            {verify_runs.PYTEST_EXPLICIT_BASETEMP_ENV: str(explicit)}, worker_count=4, full_suite=True
+        )
+
+
+def test_supervisor_never_cleans_an_explicit_tmpfs_basetemp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", tmp_path / "dev-shm")
+    explicit = verify_runs.PYTEST_TMPFS_ROOT / "pytest-polylogue-diagnostic"
+
+    cleanup_path = verify._supervised_tmpfs_cleanup_path(
+        root=tmp_path,
+        run_id="run-1",
+        env={verify_runs.PYTEST_EXPLICIT_BASETEMP_ENV: str(explicit), "POLYLOGUE_PYTEST_TMPFS": "1"},
+    )
+
+    assert cleanup_path is None
+
+
+def test_run_resource_refusal_returns_finalized_compact_statistics(tmp_path: Path) -> None:
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+
+    with patch(
+        "devtools.verify.apply_managed_pytest_runtime_policy",
+        side_effect=PytestResourceError("starved basetemp"),
+    ):
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "-n", "0"], run=run)
+
+    assert rc == 125
+    assert metadata["statistics"]["node_count"] == 0
+    assert metadata["statistics_path"].endswith("statistics.json")
 
 
 def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:

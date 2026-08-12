@@ -83,9 +83,28 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
+        end = os.lseek(descriptor, 0, os.SEEK_END)
+        if end:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            existing = bytearray()
+            while chunk := os.read(descriptor, 64 * 1024):
+                existing.extend(chunk)
+            if not existing.endswith(b"\n"):
+                last_newline = existing.rfind(b"\n")
+                trailing = bytes(existing[last_newline + 1 :])
+                try:
+                    json.loads(trailing)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    os.ftruncate(descriptor, last_newline + 1)
+                else:
+                    # A complete JSON record can lose only its framing newline
+                    # during an interrupted append. Preserve it before adding
+                    # the next durable record.
+                    os.lseek(descriptor, 0, os.SEEK_END)
+                    os.write(descriptor, b"\n")
         remaining = memoryview(payload)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -253,7 +272,8 @@ def aggregate_pytest_statistics(
             bucket = phase_outcomes[when]
             bucket[outcome] = bucket.get(outcome, 0) + 1
 
-    for node_reports in reports_by_node.values():
+    for nodeid in nodes:
+        node_reports = reports_by_node.get(nodeid, {})
         setup = node_reports.get("setup", {}).get("outcome")
         call = node_reports.get("call", {}).get("outcome")
         teardown = node_reports.get("teardown", {}).get("outcome")
@@ -264,7 +284,10 @@ def aggregate_pytest_statistics(
         elif setup == "skipped" or teardown == "skipped":
             terminal = "skipped"
         else:
-            continue
+            # A test may have emitted its start event just before an interrupt
+            # or forced containment cleanup. Keep that missing terminal phase
+            # visible so outcome totals still account for every started node.
+            terminal = "interrupted"
         outcomes[terminal] = outcomes.get(terminal, 0) + 1
 
     resources: list[dict[str, Any]] = []
@@ -1069,11 +1092,18 @@ def apply_managed_pytest_runtime_policy(
         selected_root = Path(explicit_basetemp)
         selected_label = "explicit"
         free_kb = _headroom_kb(selected_root)
-        min_free_kb = pytest_basetemp_min_free_kb(normalized)
-        if free_kb is None or free_kb < min_free_kb:
+        required_kb = pytest_basetemp_required_kb(normalized)
+        min_free_kb = max(pytest_basetemp_min_free_kb(normalized), required_kb or 0)
+        explicit_required_kb = min_free_kb
+        if _is_beneath(selected_root, PYTEST_TMPFS_ROOT) and normalized.get("POLYLOGUE_PYTEST_TMPFS") == "1":
+            explicit_required_kb = pytest_basetemp_min_free_kb(normalized) + max(
+                required_kb or 0,
+                pytest_tmpfs_budget_kb(normalized) or 0,
+            )
+        if free_kb is None or free_kb < explicit_required_kb:
             raise PytestResourceError(
                 "explicit pytest basetemp does not have enough free space "
-                f"({selected_root}: {free_kb / 1024:.0f} MiB free, need >= {min_free_kb / 1024:.0f} MiB)"
+                f"({selected_root}: {free_kb / 1024:.0f} MiB free, need >= {explicit_required_kb / 1024:.0f} MiB)"
                 if free_kb is not None
                 else f"explicit pytest basetemp is unreachable: {selected_root}"
             )
@@ -1321,6 +1351,11 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
     basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
     if not basetemp.name.startswith("pytest-polylogue-") or "-seeded-" in basetemp.name:
         return None
+    # A serial pytest child may already have reclaimed this exact run-owned
+    # directory in sessionfinish. That is a completed cleanup, not an absent
+    # receipt for the durable summary to misclassify.
+    if not basetemp.exists():
+        return basetemp
     with contextlib.suppress(OSError):
         if basetemp.exists():
             shutil.rmtree(basetemp)

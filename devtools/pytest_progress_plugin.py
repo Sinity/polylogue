@@ -215,7 +215,7 @@ def pytest_runtest_logfinish(nodeid: str, location: tuple[str, int | None, str])
 
 
 @pytest.hookimpl
-def _record_phase_report(report: Any) -> None:
+def _record_phase_report(report: Any, *, write_event: bool = True) -> None:
     """Append one phase report so slow setup/call/teardown remains visible."""
     when = str(getattr(report, "when", ""))
     nodeid = str(getattr(report, "nodeid", ""))
@@ -237,7 +237,8 @@ def _record_phase_report(report: Any) -> None:
     if payload["outcome"] == "failed":
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
     _remember_report(payload)
-    _write_event(payload)
+    if write_event:
+        _write_event(payload)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -252,9 +253,10 @@ def pytest_runtest_makereport(item: Any, call: Any) -> Any:
 def pytest_runtest_logreport(report: Any) -> None:
     """Retain the direct/log-hook fallback used by older pytest plugins/tests."""
     # xdist forwards each worker's report to the controller. The worker has
-    # already written the authoritative shard event through makereport; avoid
-    # recording that deserialized controller copy a second time.
+    # already written the authoritative shard event through makereport. Keep
+    # its timing in the controller's summary, but do not duplicate the ledger.
     if not os.environ.get("PYTEST_XDIST_WORKER") and getattr(report, "worker_id", None):
+        _record_phase_report(report, write_event=False)
         return
     _record_phase_report(report)
 
@@ -263,6 +265,11 @@ def pytest_runtest_logreport(report: Any) -> None:
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
+    # Worker processes have their own in-memory slowest lists. The controller
+    # receives the forwarded timings and is the only writer for the shared
+    # summary path, so an empty worker summary cannot overwrite it.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
     payload: dict[str, Any] = {
         "exitstatus": int(exitstatus),
         "selected_count": _SELECTED_COUNT,
