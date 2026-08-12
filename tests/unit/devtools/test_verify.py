@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -91,8 +92,52 @@ from devtools.verify_runs import (
 
 @pytest.fixture(autouse=True)
 def _isolate_verify_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep supervisor receipts private when this module runs under xdist."""
+    """Keep supervisor and testmon receipts private to each test.
+
+    These tests exercise the real checkout guard, so leaving a synthetic
+    ``.cache/testmon`` behind makes a later guard test observe a fixture
+    artifact as if it were a developer's checkout state.
+    """
     monkeypatch.chdir(tmp_path)
+    checkout_cache = ROOT / ".cache" / "testmon"
+    if checkout_cache.exists():
+        shutil.move(str(checkout_cache), str(tmp_path / "checkout-testmon-generated"))
+    for name in (
+        "TESTMON_DATA",
+        "TESTMON_SEED_STAMP",
+        "TESTMON_SEED_ATTEMPT",
+        "TESTMON_AFFECTED_STAMP",
+    ):
+        isolated = tmp_path / ".cache" / "testmon" / getattr(verify, name).name
+        monkeypatch.setattr(verify, name, isolated)
+        monkeypatch.setattr(sys.modules[__name__], name, isolated)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _quarantine_checkout_testmon(tmp_path_factory: pytest.TempPathFactory) -> object:
+    """Prevent subprocess-backed verify tests from contaminating the checkout.
+
+    A few tests intentionally re-anchor verification to ``ROOT``.  Their child
+    pytest process therefore uses the real checkout's relative testmon path,
+    even though the parent test has a private working directory.  Keep any
+    pre-existing state safe for restoration and quarantine only state created
+    during this test module.
+    """
+    checkout_cache = ROOT / ".cache" / "testmon"
+    quarantine = tmp_path_factory.mktemp("checkout-testmon")
+    original: Path | None = None
+    if checkout_cache.exists():
+        original = quarantine / "original"
+        original.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(checkout_cache), str(original))
+    try:
+        yield
+    finally:
+        if checkout_cache.exists():
+            shutil.move(str(checkout_cache), str(quarantine / "generated"))
+        if original is not None and not checkout_cache.exists():
+            checkout_cache.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(original), str(checkout_cache))
 
 
 def _pytest_marker_expr(command: list[str]) -> str:

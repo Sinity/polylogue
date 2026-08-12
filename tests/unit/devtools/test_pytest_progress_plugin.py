@@ -73,6 +73,12 @@ def test_progress_plugin_records_call_and_setup_failures(
 
 def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:
     events_dir = tmp_path / "events"
+    checkout_root = Path(__file__).resolve().parents[3]
+    # The real testmon plugin receives no TESTMON_DATAFILE here by design:
+    # this regression test models a child process after the host scrub.  Give
+    # its default relative path a parent directory without permitting the
+    # resulting cache to leak into later tests.
+    (checkout_root / ".cache" / "testmon").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(
         {
@@ -93,7 +99,7 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "--testmon-noselect",
             "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id",
         ],
-        cwd=Path(__file__).resolve().parents[3],
+        cwd=checkout_root,
         env=env,
         capture_output=True,
         text=True,
