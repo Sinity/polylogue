@@ -3221,7 +3221,10 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
     def fake_checkpoint(*, prepared: dict[str, object], shard_index: int, step: dict[str, object]) -> dict[str, object]:
         del step
         checkpointed.append(shard_index)
-        shards = [dict(shard) for shard in prepared["shards"]]  # type: ignore[union-attr]
+        raw_shards = prepared["shards"]
+        assert isinstance(raw_shards, list)
+        assert all(isinstance(shard, dict) for shard in raw_shards)
+        shards = [dict(shard) for shard in raw_shards]
         shards[shard_index - 1]["status"] = "incomplete" if shard_index == 1 and first_exit == 124 else "complete"
         return {**prepared, "shards": shards}
 
@@ -3230,7 +3233,10 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
     ) -> dict[str, object]:
         del step_results
         assert exit_code == first_exit
-        finalized_shard_statuses.extend(str(shard["status"]) for shard in prepared["shards"])  # type: ignore[union-attr]
+        raw_shards = prepared["shards"]
+        assert isinstance(raw_shards, list)
+        assert all(isinstance(shard, dict) for shard in raw_shards)
+        finalized_shard_statuses.extend(str(shard["status"]) for shard in raw_shards)
         return {
             "status": "incomplete" if first_exit == 124 else "complete",
             "outcome": "resource_timeout" if first_exit == 124 else "red-baseline",
