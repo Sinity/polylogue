@@ -53,6 +53,15 @@ class SeedAttemptOutcome(StrEnum):
     RESOURCE_TIMEOUT = "resource-timeout"
 
 
+class SeedShardStatus(StrEnum):
+    """Durable state of one sequential pytest-testmon seed shard."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
+
+
 class BindingMode(StrEnum):
     EXACT = "exact"
     RELATIVE_FILE_FINGERPRINTS = "relative-file-fingerprints"
@@ -67,6 +76,110 @@ class VerificationScope(StrEnum):
 
 class TerminalAuthorization(StrEnum):
     NARROW_TERMINAL = "narrow-terminal"
+
+
+_TERMINAL_NODE_OUTCOMES = frozenset({"passed", "failed", "error", "skipped"})
+
+
+def seed_shard_plan(nodeids: Sequence[str], *, shard_size: int) -> list[dict[str, Any]]:
+    """Partition a complete node set into stable, contiguous, serial shards."""
+    if shard_size <= 0:
+        raise ValueError("testmon seed shard_size must be positive")
+    if not nodeids or any(not nodeid for nodeid in nodeids):
+        raise ValueError("testmon seed nodeids must be non-empty strings")
+    if len(set(nodeids)) != len(nodeids):
+        raise ValueError("testmon seed nodeids must be unique")
+    ordered = tuple(sorted(nodeids))
+    return [
+        {
+            "index": index,
+            "nodeids": list(ordered[offset : offset + shard_size]),
+            "nodeid_count": len(ordered[offset : offset + shard_size]),
+            "nodeid_digest": hashlib.sha256("\n".join(ordered[offset : offset + shard_size]).encode()).hexdigest(),
+            "status": SeedShardStatus.PENDING.value,
+            "node_outcomes": [],
+        }
+        for index, offset in enumerate(range(0, len(ordered), shard_size), start=1)
+    ]
+
+
+def validate_seed_shard_ledger(
+    shards: object,
+    *,
+    expected_nodeids: Sequence[str],
+) -> list[dict[str, Any]] | None:
+    """Validate the full shard ledger without granting release authority.
+
+    Every shard owns a disjoint contiguous part of the sorted expected node
+    set. A completed shard carries an explicit terminal result for every node;
+    interrupted shards remain visible and are eligible for resume.
+    """
+    if not isinstance(shards, list) or not shards:
+        return None
+    expected = tuple(sorted(expected_nodeids))
+    if not expected or len(set(expected)) != len(expected):
+        return None
+    normalized: list[dict[str, Any]] = []
+    observed: list[str] = []
+    for index, raw in enumerate(shards, start=1):
+        if not isinstance(raw, Mapping) or raw.get("index") != index:
+            return None
+        nodeids = raw.get("nodeids")
+        if (
+            not isinstance(nodeids, list)
+            or not nodeids
+            or any(not isinstance(nodeid, str) or not nodeid for nodeid in nodeids)
+            or nodeids != sorted(nodeids)
+        ):
+            return None
+        if raw.get("nodeid_count") != len(nodeids):
+            return None
+        if raw.get("nodeid_digest") != hashlib.sha256("\n".join(nodeids).encode()).hexdigest():
+            return None
+        raw_status = raw.get("status")
+        if not isinstance(raw_status, str):
+            return None
+        try:
+            status = SeedShardStatus(raw_status)
+        except (TypeError, ValueError):
+            return None
+        outcomes = raw.get("node_outcomes")
+        if not isinstance(outcomes, list):
+            return None
+        outcome_by_node: dict[str, dict[str, Any]] = {}
+        for outcome in outcomes:
+            if not isinstance(outcome, Mapping):
+                return None
+            nodeid = outcome.get("nodeid")
+            state = outcome.get("outcome")
+            if not isinstance(nodeid, str) or nodeid not in nodeids or not isinstance(state, str):
+                return None
+            if nodeid in outcome_by_node:
+                return None
+            outcome_by_node[nodeid] = dict(outcome)
+        if status is SeedShardStatus.PENDING and outcomes:
+            return None
+        if status is SeedShardStatus.COMPLETE and (
+            set(outcome_by_node) != set(nodeids)
+            or any(item.get("outcome") not in _TERMINAL_NODE_OUTCOMES for item in outcome_by_node.values())
+        ):
+            return None
+        if (
+            status in {SeedShardStatus.RUNNING, SeedShardStatus.INCOMPLETE}
+            and outcomes
+            and set(outcome_by_node) != set(nodeids)
+        ):
+            return None
+        normalized.append(dict(raw))
+        observed.extend(nodeids)
+    if tuple(observed) != expected:
+        return None
+    return normalized
+
+
+def seed_shard_ledger_is_terminal(shards: Sequence[Mapping[str, Any]]) -> bool:
+    """Return whether every planned shard completed with explicit node results."""
+    return all(shard.get("status") == SeedShardStatus.COMPLETE.value for shard in shards)
 
 
 @dataclass(frozen=True, slots=True)
@@ -870,6 +983,10 @@ def stamp_from_attempt(
     expected_count = attempt.get("expected_count")
     if not isinstance(expected_count, int) or isinstance(expected_count, bool) or expected_count != len(expected):
         return None
+    if protocol_version >= 7:
+        shards = validate_seed_shard_ledger(attempt.get("shards"), expected_nodeids=expected)
+        if shards is None or not seed_shard_ledger_is_terminal(shards):
+            return None
     expected_digest = attempt.get("expected_digest")
     if (
         not isinstance(expected_digest, str)

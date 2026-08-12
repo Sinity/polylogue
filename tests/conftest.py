@@ -82,7 +82,6 @@ if TYPE_CHECKING:
 
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and choose the managed test temp root."""
-    _scrub_nested_verify_ledgers()
     if _CHECKOUT_GUARD_ERROR is not None:
         # Refuse before collection: every test in this run would otherwise
         # exercise a `polylogue` package from a different checkout than the
@@ -414,20 +413,6 @@ _MANAGED_VERIFY_ENV = frozenset(
 )
 
 
-def _scrub_nested_verify_ledgers() -> None:
-    """Keep a pytest child from writing the parent verify ledgers."""
-    nested = (
-        os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("POLYLOGUE_PYTEST_NESTED_PRIVATE")
-    ) and os.environ.get("POLYLOGUE_VERIFY_RUN_ID")
-    if not nested:
-        return
-    for key in ("POLYLOGUE_PYTEST_SELECTION_PATH", "POLYLOGUE_PYTEST_SUMMARY_PATH"):
-        os.environ.pop(key, None)
-    if not os.environ.get("POLYLOGUE_PYTEST_NESTED_PRIVATE"):
-        for key in ("POLYLOGUE_VERIFY_RUN_ID", "POLYLOGUE_PYTEST_EVENTS_DIR", "POLYLOGUE_PYTEST_EVENTS_PATH"):
-            os.environ.pop(key, None)
-
-
 @pytest.fixture(autouse=True)
 def _close_test_opened_sqlite_connections(
     monkeypatch: pytest.MonkeyPatch,
@@ -654,26 +639,6 @@ def _clear_polylogue_env(
     # fixture archive. Iterate ``os.environ`` so future POLYLOGUE_* additions
     # are stripped automatically.
     from tests.infra.schema_access import ALLOW_MISSING_SCHEMAS_ENV
-
-    # A pytest process launched by a test inherits the outer supervisor's
-    # ledger destinations and run identity. Letting the nested process write
-    # them corrupts the outer shard ledger: its reports are not evidence that
-    # the parent shard executed those nodes. ``PYTEST_CURRENT_TEST`` is
-    # present for the parent test and absent at normal top-level pytest
-    # startup, so nested pytest gets an entirely private progress namespace.
-    nested_pytest = (
-        os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("POLYLOGUE_PYTEST_NESTED_PRIVATE")
-    ) and os.environ.get("POLYLOGUE_VERIFY_RUN_ID")
-    if nested_pytest:
-        # Selection and summary are process-global destinations owned by the
-        # parent verify run and must never be replaced by a child. A test that
-        # explicitly supplies a private event namespace may retain only its
-        # event stream for a direct subprocess regression check.
-        for key in ("POLYLOGUE_PYTEST_SELECTION_PATH", "POLYLOGUE_PYTEST_SUMMARY_PATH"):
-            monkeypatch.delenv(key, raising=False)
-        if not os.environ.get("POLYLOGUE_PYTEST_NESTED_PRIVATE"):
-            for key in ("POLYLOGUE_VERIFY_RUN_ID", "POLYLOGUE_PYTEST_EVENTS_DIR", "POLYLOGUE_PYTEST_EVENTS_PATH"):
-                monkeypatch.delenv(key, raising=False)
 
     for key in list(os.environ):
         # ALLOW_MISSING_SCHEMAS_ENV is a test-only escape hatch (not operator
