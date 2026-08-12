@@ -1994,7 +1994,10 @@ def build_verify_steps(
             else:
                 pytest_cmd.append("--testmon-noselect")
                 label = "pytest seed-testmon"
-            pytest_cmd.extend(_pytest_worker_args(maximum=4))
+            # The runtime policy is memory-aware (currently eight workers on
+            # this host). The old four-worker cap made the 20k-node seed
+            # effectively crawl even though the controller remained healthy.
+            pytest_cmd.extend(_pytest_worker_args(maximum=8))
             steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps

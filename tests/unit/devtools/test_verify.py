@@ -260,7 +260,7 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "8"
 
 
 def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,7 +271,7 @@ def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> 
 
     label, command = steps[-1]
     assert label == "pytest seed-testmon"
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "8"
 
 
 def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
