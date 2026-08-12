@@ -156,10 +156,20 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
     _SELECTED_COUNT = len(items)
     limit = _selection_nodeid_limit()
     selected_nodeids = [str(getattr(item, "nodeid", item)) for item in items[:limit]]
+    # Marker metadata is a compact routing index, not a node-id sample. Keep
+    # it complete so seed sharding can isolate load-sensitive/TUI nodes even
+    # when the human-readable node-id sample is capped at 500 entries.
+    selected_node_markers = {
+        str(getattr(item, "nodeid", item)): sorted(
+            {str(mark.name) for mark in getattr(item, "iter_markers", lambda: ())()}
+        )
+        for item in items
+    }
     payload: dict[str, Any] = {
         "selected_count": _SELECTED_COUNT,
         "deselected_count": _DESELECTED_COUNT,
         "selected_nodeids": selected_nodeids,
+        "selected_node_markers": selected_node_markers,
         "selected_nodeids_omitted": max(0, _SELECTED_COUNT - len(selected_nodeids)),
         "deselected_nodeids": list(_DESELECTED_NODEIDS_SAMPLE),
         "deselected_nodeids_omitted": max(0, _DESELECTED_COUNT - len(_DESELECTED_NODEIDS_SAMPLE)),

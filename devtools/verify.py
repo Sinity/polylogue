@@ -62,14 +62,18 @@ from devtools.testmon_state import (
     BindingMode,
     GraphStatus,
     SeedAttemptOutcome,
+    SeedShardStatus,
     TerminalAuthorization,
     TestmonBinding,
     TestmonSeedStamp,
     VerificationScope,
     inspect_testmon_database,
     refresh_stamp,
+    seed_shard_ledger_is_terminal,
+    seed_shard_plan,
     stamp_from_attempt,
     testmon_runtime_identity,
+    validate_seed_shard_ledger,
     validate_stamp,
 )
 from devtools.verify_runs import (
@@ -216,7 +220,12 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 6
+TESTMON_SEED_PROTOCOL_VERSION = 7
+# Keep resumable checkpoints coarse enough that controller startup and
+# per-shard testmon initialization do not dominate the seed.  The seed still
+# records every node outcome, so a failed shard remains retryable at node
+# resolution; this size yields six shards for the current correctness corpus.
+TESTMON_SEED_SHARD_SIZE = 4096
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -1825,6 +1834,21 @@ def _stop_after_failed_step(label: str) -> bool:
     return label.startswith("pytest") or label in {"lab smoke", "bench slo"}
 
 
+def _seed_shard_failure_requires_stop(step: Mapping[str, Any], *, shard_complete: bool) -> bool:
+    """Stop shard admission after harness failure while retaining red-test evidence.
+
+    A normal pytest exit 1 with a structured ``pytest_failed`` diagnosis is
+    useful seed evidence: later shards can still populate the resumable
+    dependency graph. Timeouts, resource refusals, worker/internal errors,
+    usage errors, and unclassified failures mean the harness is no longer
+    healthy enough to admit another expensive shard.
+    """
+    exit_code = step.get("exit")
+    if exit_code == 0:
+        return False
+    return not (exit_code == 1 and step.get("diagnosis") == "pytest_failed" and shard_complete)
+
+
 # ── step builder ────────────────────────────────────────────────────
 
 
@@ -1972,6 +1996,11 @@ def build_verify_steps(
             "-q",
             "--tb=short",
             "--ignore=tests/integration",
+            # Benchmark files are an explicit campaign surface.  A number of
+            # them are correctness-shaped and lack the benchmark marker, so a
+            # marker expression alone cannot keep performance probes out of
+            # the correctness/testmon corpus.
+            "--ignore=tests/benchmarks",
             "--durations=10",
             f"--junitxml={_report_dir}/verify-latest.xml",
             "--json-report",
@@ -1980,16 +2009,20 @@ def build_verify_steps(
             "-p",
             "devtools.pytest_progress_plugin",
         ]
-        base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
+        # Benchmark cases are an explicit campaign surface, not part of the
+        # correctness/testmon seed.  Keeping them out here is important: a
+        # benchmark marker is not necessarily paired with ``slow`` or a scale
+        # marker, and a serial shard would otherwise spend minutes executing a
+        # performance probe before it can checkpoint any correctness nodes.
+        base_marker = f"not benchmark and {scale_marker_expr}"
+        if skip_slow:
+            base_marker = f"not slow and {base_marker}"
         if seed_testmon:
-            pytest_cmd.extend(["-m", base_marker, "--testmon"])
-            if resume_testmon_seed:
-                pytest_cmd.append("--testmon-forceselect")
-                label = "pytest seed-testmon (resume)"
-            else:
-                pytest_cmd.append("--testmon-noselect")
-                label = "pytest seed-testmon"
-            pytest_cmd.extend(_pytest_worker_args(maximum=4))
+            # Collection produces the exact corpus contract before any testmon
+            # write. Shards below are generated from this ledger and run one
+            # at a time, so pytest-testmon has exactly one SQLite writer.
+            pytest_cmd.extend(["-m", base_marker, "--collect-only", "-n", "0"])
+            label = "pytest seed-testmon collect (resume)" if resume_testmon_seed else "pytest seed-testmon collect"
             steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
@@ -2556,7 +2589,7 @@ def _prepare_testmon_seed_attempt(
     resume: bool,
 ) -> dict[str, Any]:
     prior = _read_testmon_seed_attempt() if resume else None
-    expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
+    expected = sorted(_testmon_seed_expected_nodeids(prior)) if prior is not None else []
     prior_outcomes = _flatten_seed_outcomes(prior)
     payload = {
         "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
@@ -2567,6 +2600,7 @@ def _prepare_testmon_seed_attempt(
         "expected_count": len(expected),
         "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
         "prior_node_outcomes": prior_outcomes,
+        "shards": list(prior.get("shards", [])) if prior is not None and isinstance(prior.get("shards"), list) else [],
         "started_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run.run_id,
         "artifact_dir": str(run.relative_run_dir),
@@ -2574,6 +2608,200 @@ def _prepare_testmon_seed_attempt(
         "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
     }
     TESTMON_SEED_STAMP.unlink(missing_ok=True)
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    return payload
+
+
+def _seed_selection_nodeids(selection: Mapping[str, Any]) -> list[str] | None:
+    """Accept only a complete, untruncated collection ledger."""
+    nodeids = selection.get("selected_nodeids")
+    selected_count = selection.get("selected_count")
+    omitted = selection.get("selected_nodeids_omitted")
+    if (
+        not isinstance(nodeids, list)
+        or not nodeids
+        or any(not isinstance(nodeid, str) or not nodeid for nodeid in nodeids)
+        or len(set(nodeids)) != len(nodeids)
+        or not isinstance(selected_count, int)
+        or isinstance(selected_count, bool)
+        or selected_count != len(nodeids)
+        or not isinstance(omitted, int)
+        or isinstance(omitted, bool)
+        or omitted != 0
+    ):
+        return None
+    return sorted(nodeids)
+
+
+def _prepare_testmon_seed_shards(
+    prepared: Mapping[str, Any],
+    *,
+    selection: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Persist the full planned corpus before the first testmon DB mutation."""
+    expected = sorted(_testmon_seed_expected_nodeids(prepared)) if prepared.get("resume") else []
+    if not expected:
+        expected = _seed_selection_nodeids(selection or {}) or []
+    prior_shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
+    shards = (
+        prior_shards
+        if prior_shards is not None
+        else (
+            seed_shard_plan(
+                expected,
+                shard_size=TESTMON_SEED_SHARD_SIZE,
+                serial_nodeids=[
+                    nodeid
+                    for nodeid, markers in (selection or {}).get("selected_node_markers", {}).items()
+                    if "load_sensitive" in markers or "tui" in markers
+                ],
+            )
+            if expected
+            else []
+        )
+    )
+    payload = {
+        **dict(prepared),
+        "expected_nodeids": expected,
+        "expected_count": len(expected),
+        "expected_digest": hashlib.sha256("\n".join(expected).encode()).hexdigest() if expected else None,
+        "selection": dict(selection or {}),
+        "shard_size": TESTMON_SEED_SHARD_SIZE,
+        "shards": shards,
+    }
+    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    return payload
+
+
+def _seed_shard_command(
+    collection_command: Sequence[str],
+    shard: Mapping[str, Any],
+    *,
+    nodeids_file: Path,
+) -> list[str]:
+    """Build a bounded-argv, dynamically balanced pytest-testmon invocation.
+
+    A full shard's node IDs can exceed the host's ``execve`` argument budget
+    once ``systemd-run`` and the managed environment are included.  Pytest's
+    response-file syntax keeps the authoritative node list in the run
+    artifact while making the child command size independent of shard size.
+    """
+    nodeids = shard.get("nodeids")
+    if not isinstance(nodeids, list) or not nodeids:
+        raise ValueError("testmon seed shard is missing nodeids")
+    nodeids_file.parent.mkdir(parents=True, exist_ok=True)
+    nodeids_file.write_text("\n".join(nodeids) + "\n", encoding="utf-8")
+    command: list[str] = []
+    skip_next = False
+    for argument in collection_command:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "--collect-only":
+            continue
+        if argument in {"-n", "--numprocesses"}:
+            skip_next = True
+            continue
+        if argument.startswith("--numprocesses=") or (argument.startswith("-n") and len(argument) > 2):
+            continue
+        command.append(argument)
+    # Collection is deliberately serial, but execution is not. pytest-testmon
+    # has an xdist-aware controller database; retaining the managed worker pool
+    # here avoids turning a 20k-node seed into hours of serial fixture setup.
+    if shard.get("execution_mode") == "serial":
+        command.extend(["-n", "0", "--testmon", "--testmon-noselect", f"@{nodeids_file}"])
+    else:
+        command.extend(
+            [
+                "--dist=loadgroup",
+                *_pytest_worker_args(maximum=10),
+                "--testmon",
+                "--testmon-noselect",
+                f"@{nodeids_file}",
+            ]
+        )
+    return command
+
+
+def _canonical_seed_nodeid(nodeid: str, expected_nodeids: Sequence[str]) -> str:
+    """Map xdist's ``nodeid@group`` reports back to the collected node ID."""
+    if nodeid in expected_nodeids:
+        return nodeid
+    candidates = [expected for expected in expected_nodeids if nodeid.startswith(expected + "@")]
+    return max(candidates, key=len, default=nodeid)
+
+
+def _seed_shard_outcomes(shards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten the shard ledger in canonical node order for legacy readers."""
+    outcomes: dict[str, dict[str, Any]] = {}
+    for shard in shards:
+        raw_outcomes = shard.get("node_outcomes")
+        if not isinstance(raw_outcomes, list):
+            continue
+        for item in raw_outcomes:
+            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str):
+                outcomes[str(item["nodeid"])] = dict(item)
+    return [outcomes[nodeid] for nodeid in sorted(outcomes)]
+
+
+def _checkpoint_testmon_seed_shard(
+    *,
+    prepared: Mapping[str, Any],
+    shard_index: int,
+    step: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Record one shard's result atomically before another shard may start."""
+    expected = sorted(_testmon_seed_expected_nodeids(prepared))
+    shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
+    if shards is None or shard_index < 1 or shard_index > len(shards):
+        raise ValueError("testmon seed shard ledger is malformed")
+    shard = dict(shards[shard_index - 1])
+    nodeids = shard["nodeids"]
+    artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
+    selection = _read_json_artifact(artifact_dir / "selection.json") if artifact_dir is not None else None
+    selected_raw = _seed_selection_nodeids(selection) if isinstance(selection, Mapping) else None
+    selected = (
+        sorted(_canonical_seed_nodeid(nodeid, nodeids) for nodeid in selected_raw) if selected_raw is not None else None
+    )
+    database = _testmon_database_state(nodeids)
+    prior = {
+        str(item["nodeid"]): item
+        for item in shard.get("node_outcomes", [])
+        if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
+    }
+    outcomes = _seed_node_outcomes_from_events(
+        artifact_dir / "events.jsonl" if artifact_dir is not None else Path(".missing-testmon-events"),
+        expected_nodeids=nodeids,
+        database=database,
+        pytest_step=step,
+        prior_node_outcomes=prior,
+        use_database_fallback=False,
+    )
+    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in outcomes)
+    selection_matches = selected == nodeids
+    shard.update(
+        {
+            "status": SeedShardStatus.COMPLETE.value
+            if selection_matches and terminal
+            else SeedShardStatus.INCOMPLETE.value,
+            "started_at": shard.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "exit_code": step.get("exit"),
+            "artifact_dir": step.get("artifact_dir"),
+            "selection": dict(selection) if isinstance(selection, Mapping) else None,
+            "database": database,
+            "node_outcomes": outcomes,
+            "pytest_step": dict(step),
+        }
+    )
+    shards[shard_index - 1] = shard
+    payload = {
+        **dict(prepared),
+        "status": "running",
+        "shards": shards,
+        "node_outcomes": _seed_shard_outcomes(shards),
+        "testmon_data": _file_fingerprint(TESTMON_DATA),
+    }
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
     return payload
 
@@ -2631,6 +2859,7 @@ def _seed_node_outcomes_from_events(
                     nodeid = event.get("nodeid")
                     if not isinstance(nodeid, str) or not nodeid:
                         continue
+                    nodeid = _canonical_seed_nodeid(nodeid, expected_nodeids)
                     if event.get("event") == "test_started":
                         started.add(nodeid)
                     elif event.get("event") == "test_finished":
@@ -2663,6 +2892,19 @@ def _seed_node_outcomes_from_events(
             outcome, reason = "skipped", "test call skipped"
         elif any(report.get("outcome") == "skipped" for report in node_reports):
             outcome, reason = "skipped", "test setup or teardown skipped"
+        elif nodeid in finished and any(
+            report.get("when") == "teardown" and report.get("outcome") == "passed" for report in node_reports
+        ):
+            # Teardown describes fixture cleanup, not the test body.  It may
+            # corroborate a terminal testmon row, but it cannot replace a
+            # missing call report: a failed call can still end with a passing
+            # teardown, and an unrecorded call must remain resumable.
+            if recorded.get(nodeid) == "passed":
+                outcome, reason = "passed", "passing teardown corroborated by testmon success"
+            elif recorded.get(nodeid) == "failed":
+                outcome, reason = "failed", "passing teardown contradicted by testmon failure"
+            else:
+                outcome, reason = "missing", "passing teardown without call report or testmon result"
         elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
             outcome, reason = "timeout", "supervisor timed out while node was active"
         elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
@@ -2761,22 +3003,59 @@ def _finalize_testmon_seed_attempt(
         and len(set(selected_nodeids)) == len(selected_nodeids)
         and raw_selected_count == len(selected_nodeids)
     )
-    expected_raw = prepared.get("expected_nodeids") if prepared.get("resume") else selected_nodeids
+    prepared_expected = prepared.get("expected_nodeids")
+    expected_raw = prepared_expected if isinstance(prepared_expected, list) and prepared_expected else selected_nodeids
     expected = list(expected_raw) if isinstance(expected_raw, list) else []
-    omitted = raw_omitted if selection_valid else 1
-    database = _testmon_database_state(expected)
-    node_outcomes = _seed_node_outcomes_from_events(
-        events_path or Path(".missing-testmon-events"),
-        expected_nodeids=expected,
-        database=database,
-        pytest_step=pytest_step,
-        use_database_fallback=False,
-        prior_node_outcomes={
-            str(item["nodeid"]): item
-            for item in prepared.get("prior_node_outcomes", [])
-            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
-        },
-    )
+    shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
+    sharded = shards is not None
+    if sharded:
+        assert shards is not None
+        selection_valid = seed_shard_ledger_is_terminal(shards)
+        omitted = 0
+        database = _testmon_database_state(expected)
+        outcome_by_node = {item["nodeid"]: item for item in _seed_shard_outcomes(shards)}
+        node_outcomes = [
+            outcome_by_node.get(nodeid, {"nodeid": nodeid, "outcome": "missing", "reason": "shard not completed"})
+            for nodeid in expected
+        ]
+        shard_steps: list[Mapping[str, Any]] = []
+        for shard in shards:
+            raw_step = shard.get("pytest_step")
+            if isinstance(raw_step, Mapping):
+                shard_steps.append(raw_step)
+        if shard_steps:
+            pytest_step = dict(shard_steps[-1])
+            timed_out = next(
+                (
+                    step
+                    for step in shard_steps
+                    if str(step.get("diagnosis")) in {"pytest_timeout", "pytest_stall_timeout"}
+                ),
+                None,
+            )
+            if timed_out is not None:
+                pytest_step = dict(timed_out)
+        selection = {
+            "selected_count": len(expected),
+            "selected_nodeids_omitted": 0,
+            "shard_count": len(shards),
+            "completed_shard_count": sum(shard.get("status") == SeedShardStatus.COMPLETE.value for shard in shards),
+        }
+    else:
+        omitted = raw_omitted if selection_valid and isinstance(raw_omitted, int) else 1
+        database = _testmon_database_state(expected)
+        node_outcomes = _seed_node_outcomes_from_events(
+            events_path or Path(".missing-testmon-events"),
+            expected_nodeids=expected,
+            database=database,
+            pytest_step=pytest_step,
+            use_database_fallback=False,
+            prior_node_outcomes={
+                str(item["nodeid"]): item
+                for item in prepared.get("prior_node_outcomes", [])
+                if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
+            },
+        )
     unsuccessful_nodeids = [
         str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
     ]
@@ -2811,6 +3090,20 @@ def _finalize_testmon_seed_attempt(
         exit_code=exit_code,
         pytest_step=pytest_step,
     )
+    shard_ledger = (
+        shards if sharded else seed_shard_plan(expected, shard_size=max(1, len(expected))) if expected else []
+    )
+    if not sharded and shard_ledger:
+        shard_ledger[0].update(
+            {
+                "status": (
+                    SeedShardStatus.COMPLETE.value
+                    if all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+                    else SeedShardStatus.INCOMPLETE.value
+                ),
+                "node_outcomes": node_outcomes,
+            }
+        )
     seed_scope = (
         VerificationScope.NARROW_TERMINAL.value if narrow_terminal else VerificationScope.RELEASE_BASELINE.value
     )
@@ -2832,6 +3125,7 @@ def _finalize_testmon_seed_attempt(
             else selection.get("selected_count"),
             "selected_nodeids_omitted": 0 if prepared.get("resume") and selection_valid else omitted,
         },
+        "shards": shard_ledger,
         "node_outcomes": node_outcomes,
         "identity": prepared.get("identity"),
         "run_id": prepared.get("run_id"),
@@ -2880,6 +3174,7 @@ def _finalize_testmon_seed_attempt(
                 "collection_duration_s",
             )
         },
+        "shards": shard_ledger,
         "database": database,
         "node_outcomes": node_outcomes,
         "node_outcome_counts": dict(
@@ -3182,6 +3477,94 @@ def main(argv: list[str] | None = None) -> int:
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
+        if args.seed_testmon and label.startswith("pytest seed-testmon collect"):
+            if rc != 0:
+                exit_code = rc
+                break
+            artifact_dir = _safe_testmon_artifact_dir(metadata.get("artifact_dir"))
+            selection = _read_json_artifact(artifact_dir / "selection.json") if artifact_dir is not None else None
+            assert prepared_seed_attempt is not None
+            prepared_seed_attempt = _prepare_testmon_seed_shards(
+                prepared_seed_attempt,
+                selection=selection if isinstance(selection, Mapping) else None,
+            )
+            expected = _testmon_seed_expected_nodeids(prepared_seed_attempt)
+            shards = validate_seed_shard_ledger(prepared_seed_attempt.get("shards"), expected_nodeids=expected)
+            if shards is None:
+                exit_code = 5
+                step_result["exit"] = 5
+                step_result["diagnosis"] = "testmon_seed_collection_incomplete"
+                sys.stderr.write("verify: pytest-testmon collection did not produce a complete shard plan.\n")
+                break
+            for shard in shards:
+                if shard.get("status") == SeedShardStatus.COMPLETE.value:
+                    continue
+                shard_index = int(shard["index"])
+                shard_label = f"pytest seed-testmon shard {shard_index}/{len(shards)}"
+                shard_args_path = verify_run.run_dir / "seed-shards" / f"{shard_index:04d}.args"
+                try:
+                    shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
+                except (OSError, PytestResourceError) as exc:
+                    resource_failure_result = {
+                        "name": shard_label,
+                        "duration_s": 0.0,
+                        "exit": 125,
+                        "diagnosis": (
+                            "pytest_resource_refusal"
+                            if isinstance(exc, PytestResourceError)
+                            else "testmon_seed_args_file_write_failed"
+                        ),
+                        "error": str(exc),
+                        "shard_index": shard_index,
+                        "shard_count": len(shards),
+                        "shard_nodeid_count": len(shard["nodeids"]),
+                    }
+                    step_results.append(resource_failure_result)
+                    prepared_seed_attempt = _checkpoint_testmon_seed_shard(
+                        prepared=prepared_seed_attempt,
+                        shard_index=shard_index,
+                        step=resource_failure_result,
+                    )
+                    exit_code = 125
+                    break
+                _warn_low_memory()
+                shard_rc, shard_elapsed, shard_metadata = _run(shard_label, shard_cmd, run=verify_run)
+                shard_result: dict[str, Any] = {
+                    "name": shard_label,
+                    "duration_s": round(shard_elapsed, 2),
+                    "exit": shard_rc,
+                    "shard_index": shard_index,
+                    "shard_count": len(shards),
+                    "shard_nodeid_count": len(shard["nodeids"]),
+                }
+                shard_result.update(shard_metadata)
+                step_results.append(shard_result)
+                prepared_seed_attempt = _checkpoint_testmon_seed_shard(
+                    prepared=prepared_seed_attempt,
+                    shard_index=shard_index,
+                    step=shard_result,
+                )
+                checkpointed_shards = prepared_seed_attempt.get("shards")
+                if (
+                    not isinstance(checkpointed_shards, list)
+                    or shard_index > len(checkpointed_shards)
+                    or not isinstance(checkpointed_shards[shard_index - 1], Mapping)
+                ):
+                    raise RuntimeError("testmon seed shard checkpoint is malformed")
+                shard_complete = checkpointed_shards[shard_index - 1].get("status") == SeedShardStatus.COMPLETE.value
+                if shard_rc != 0:
+                    stop_seed = _seed_shard_failure_requires_stop(
+                        shard_result,
+                        shard_complete=shard_complete,
+                    )
+                    if exit_code == 0 or stop_seed:
+                        # A later infrastructure failure is the terminal
+                        # condition even when an earlier shard recorded
+                        # ordinary red-test evidence.
+                        exit_code = shard_rc
+                    if stop_seed:
+                        break
+            continue
         if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
             _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
         if rc != 0:
@@ -3216,13 +3599,21 @@ def main(argv: list[str] | None = None) -> int:
         "total_duration_s": total_duration,
         "exit_code": exit_code,
     }
-    pytest_diagnosis = next(
+    fallback_pytest_diagnosis = next(
         (
             str(step["diagnosis"])
-            for step in step_results
+            for step in reversed(step_results)
             if str(step.get("name", "")).startswith("pytest") and "diagnosis" in step
         ),
         None,
+    )
+    pytest_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in reversed(step_results)
+            if str(step.get("name", "")).startswith("pytest") and step.get("exit") == exit_code and "diagnosis" in step
+        ),
+        fallback_pytest_diagnosis,
     )
     if pytest_diagnosis is not None:
         history_entry["diagnosis"] = pytest_diagnosis
