@@ -28,7 +28,7 @@ from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisio
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger, SessionState
-from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_fts_freshness_stage, make_fts_stage, make_insights_stage
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -45,7 +45,6 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -280,7 +279,7 @@ def ingest_convergence_pathology(
                     revision=RawRevisionEnvelope(
                         logical_source_key=str(make_session_id(session.source_name, session.provider_session_id)),
                         kind=RawRevisionKind.FULL,
-                        source_revision=content_hash,
+                        source_revision=raw_blob_hash,
                         acquisition_generation=index,
                     ),
                     blob_publication_receipt_id=raw_blob_publisher.receipt_id(raw_blob_hash),
@@ -294,8 +293,6 @@ def ingest_convergence_pathology(
                 )
                 for attachment_receipt, attachment_hash_bytes in attachment_receipts:
                     consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
-                if source_conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() is not None:
-                    record_current_parser_source_census(source_conn, raw_id, parser_sessions=[session])
         if raw_blob_size != len(payload):
             raise AssertionError(f"published raw payload size drifted for {source_path}")
         payload_model = SessionWritePayload(
@@ -345,18 +342,16 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
             str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
     converger = DaemonConverger(
-        (make_fts_stage(archive.root / "index.db"), make_insights_stage(archive.root / "index.db"))
+        (
+            make_fts_stage(archive.root / "index.db"),
+            make_insights_stage(archive.root / "index.db"),
+            make_fts_freshness_stage(archive.root / "index.db"),
+        )
     )
     states, _timings = converger.converge_sessions(persisted_session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
-    # Insights can materialize work-event rows after the FTS stage has run.
-    # Refresh the shared freshness ledger only once both real stages complete.
-    from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
-
-    with sqlite3.connect(archive.root / "index.db") as conn:
-        record_fts_freshness_snapshot_sync(conn)
     _analyze_registry_tables(archive.root / "index.db")
     return states
 
@@ -427,15 +422,17 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
                 f"primary insight readiness is incomplete for {root}: "
                 f"missing={sorted(missing_models)}, unready={unready_models}"
             )
-        # The status projection also reports secondary work-event FTS and
-        # retrieval surfaces. They remain in the equality snapshot, as does
-        # the production messages_fts status. The two-stage route owns
-        # messages-FTS repair for changed sessions, while the neutral parser
-        # fixture can expose archive-wide excess rows from provider-derived
-        # blocks. Keep that production readiness signal in the equality law
-        # instead of asserting a global repair this route does not promise.
+        # This harness starts at ParsedSession, not provider-wire bytes. Raw
+        # parser-census readiness is therefore intentionally outside this
+        # derived-materialization law; provider replay/census tests own it.
         readiness = archive_readiness_status(root)
-        if readiness.get("checked") is not True or readiness.get("blocked_surface_count") != 0:
+        surfaces = readiness.get("surfaces", {})
+        blocked_non_source = [
+            name
+            for name, surface in surfaces.items()
+            if name != "raw_artifacts" and isinstance(surface, dict) and surface.get("ready") is not True
+        ]
+        if readiness.get("checked") is not True or blocked_non_source:
             raise AssertionError(f"archive readiness is incomplete for {root}: {readiness!r}")
     if left_snapshot != right_snapshot:
         raise AssertionError(

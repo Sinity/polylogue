@@ -640,6 +640,15 @@ def _clear_polylogue_env(
     # are stripped automatically.
     from tests.infra.schema_access import ALLOW_MISSING_SCHEMAS_ENV
 
+    # A pytest process launched by a test inherits the outer supervisor's
+    # selection/summary destinations. Letting the nested process write them
+    # corrupts the outer shard ledger; its event reports are still useful and
+    # remain on the shared event stream. ``PYTEST_CURRENT_TEST`` is present
+    # for the parent test and absent at normal top-level pytest startup.
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("POLYLOGUE_VERIFY_RUN_ID"):
+        for key in ("POLYLOGUE_PYTEST_SELECTION_PATH", "POLYLOGUE_PYTEST_SUMMARY_PATH"):
+            monkeypatch.delenv(key, raising=False)
+
     for key in list(os.environ):
         # ALLOW_MISSING_SCHEMAS_ENV is a test-only escape hatch (not operator
         # config) for lanes that intentionally run without packaged provider

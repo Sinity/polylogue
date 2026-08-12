@@ -216,7 +216,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 6
+TESTMON_SEED_PROTOCOL_VERSION = 7
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -1972,11 +1972,6 @@ def build_verify_steps(
             "-q",
             "--tb=short",
             "--ignore=tests/integration",
-            # Benchmark files are an explicit campaign surface.  A number of
-            # them are correctness-shaped and lack the benchmark marker, so a
-            # marker expression alone cannot keep performance probes out of
-            # the correctness/testmon corpus.
-            "--ignore=tests/benchmarks",
             "--durations=10",
             f"--junitxml={_report_dir}/verify-latest.xml",
             "--json-report",
@@ -1985,11 +1980,9 @@ def build_verify_steps(
             "-p",
             "devtools.pytest_progress_plugin",
         ]
-        # Benchmark cases are an explicit campaign surface, not part of the
-        # correctness/testmon seed.  Keeping them out here is important: a
-        # benchmark marker is not necessarily paired with ``slow`` or a scale
-        # marker, and a serial shard would otherwise spend minutes executing a
-        # performance probe before it can checkpoint any correctness nodes.
+        # Benchmark cases opt out through their marker. The benchmarks tree
+        # also contains correctness-shaped scale-tier tests which must remain
+        # in the default/testmon collection.
         base_marker = f"not benchmark and {scale_marker_expr}"
         if skip_slow:
             base_marker = f"not slow and {base_marker}"

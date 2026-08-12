@@ -390,6 +390,17 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
 _CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT = 20
 
 
+def _record_convergence_fts_freshness_sync(conn: sqlite3.Connection) -> None:
+    """Publish freshness after insights materialization.
+
+    Insights writes ``session_work_events`` after the FTS stage has run, so
+    the daemon must record the combined post-convergence snapshot here.
+    """
+    from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
+
+    record_fts_freshness_snapshot_sync(conn)
+
+
 def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> None:
     """Persist the materialization summary so a readiness surface can read it.
 
@@ -730,6 +741,46 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
         false_means_pending=True,
+    )
+
+
+def make_fts_freshness_stage(db_path: Path) -> ConvergenceStage:
+    """Record one archive-wide FTS snapshot after all materializers run."""
+
+    def record() -> bool:
+        archive_db = _active_archive_index_path(db_path) or db_path
+        if not archive_db.exists():
+            return True
+        from polylogue.storage.sqlite.connection_profile import open_connection
+
+        with open_connection(archive_db) as conn:
+            _record_convergence_fts_freshness_sync(conn)
+        return True
+
+    def check(_path: Path) -> bool:
+        return db_path.exists() or _active_archive_index_path(db_path) is not None
+
+    def execute(_path: Path) -> StageExecuteReturn:
+        return record()
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        return set(paths) if paths and check(paths[0]) else set()
+
+    def execute_many(_paths: Sequence[Path]) -> StageExecuteReturn:
+        return record()
+
+    def execute_sessions(_session_ids: Sequence[str]) -> StageExecuteReturn:
+        return record()
+
+    return ConvergenceStage(
+        name="fts_freshness",
+        description="Record archive-wide FTS freshness after FTS and insight convergence",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        check_sessions=lambda session_ids: set(session_ids),
+        execute_sessions=execute_sessions,
     )
 
 
@@ -1126,6 +1177,7 @@ def make_default_convergence_stages(
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_insights_stage(db_path),
+            make_fts_freshness_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
     )
@@ -2371,6 +2423,7 @@ __all__ = [
     "make_default_convergence_stages",
     "make_embed_stage",
     "make_fts_stage",
+    "make_fts_freshness_stage",
     "make_insights_stage",
     "make_raw_authority_verdict_cache_stage",
     "make_raw_parse_recovery_stage",

@@ -14,16 +14,17 @@ from devtools import pytest_progress_plugin
 
 
 @pytest.fixture(autouse=True)
-def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    # Unit tests own their event destinations; do not let a surrounding
-    # managed verify invocation redirect them into its step artifacts.
-    for name in (
-        "POLYLOGUE_PYTEST_EVENTS_DIR",
-        "POLYLOGUE_PYTEST_EVENTS_PATH",
-        "POLYLOGUE_PYTEST_SELECTION_PATH",
-        "POLYLOGUE_PYTEST_SUMMARY_PATH",
-    ):
-        monkeypatch.delenv(name, raising=False)
+def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Iterator[None]:
+    # Direct helper tests own their destinations. The subprocess regression is
+    # the one test that must preserve a managed outer event stream.
+    if request.node.name != "test_managed_event_ledger_survives_test_host_environment_scrub":
+        for name in (
+            "POLYLOGUE_PYTEST_EVENTS_DIR",
+            "POLYLOGUE_PYTEST_EVENTS_PATH",
+            "POLYLOGUE_PYTEST_SELECTION_PATH",
+            "POLYLOGUE_PYTEST_SUMMARY_PATH",
+        ):
+            monkeypatch.delenv(name, raising=False)
     selected_count = pytest_progress_plugin._SELECTED_COUNT
     deselected_count = pytest_progress_plugin._DESELECTED_COUNT
     deselected_nodeids = list(pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE)
@@ -102,7 +103,16 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
     assert result.returncode == 0, result.stdout + result.stderr
     events = [json.loads(line) for path in events_dir.glob("*.jsonl") for line in path.read_text().splitlines()]
     reports = [event for event in events if event.get("event") == "test_report"]
-    assert {event["when"] for event in reports} == {"setup", "call", "teardown"}
+    assert len(reports) == 3
+    assert {(event["nodeid"], event["when"], event["outcome"], event["run_id"]) for event in reports} == {
+        (
+            "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id",
+            phase,
+            "passed",
+            "subprocess-regression",
+        )
+        for phase in ("setup", "call", "teardown")
+    }
 
 
 def test_progress_plugin_records_node_start_and_finish(
