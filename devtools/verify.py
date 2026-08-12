@@ -1834,6 +1834,21 @@ def _stop_after_failed_step(label: str) -> bool:
     return label.startswith("pytest") or label in {"lab smoke", "bench slo"}
 
 
+def _seed_shard_failure_requires_stop(step: Mapping[str, Any]) -> bool:
+    """Stop shard admission after harness failure while retaining red-test evidence.
+
+    A normal pytest exit 1 with a structured ``pytest_failed`` diagnosis is
+    useful seed evidence: later shards can still populate the resumable
+    dependency graph. Timeouts, resource refusals, worker/internal errors,
+    usage errors, and unclassified failures mean the harness is no longer
+    healthy enough to admit another expensive shard.
+    """
+    exit_code = step.get("exit")
+    if exit_code == 0:
+        return False
+    return not (exit_code == 1 and step.get("diagnosis") == "pytest_failed")
+
+
 # ── step builder ────────────────────────────────────────────────────
 
 
@@ -3440,8 +3455,11 @@ def main(argv: list[str] | None = None) -> int:
                     shard_index=shard_index,
                     step=shard_result,
                 )
-                if shard_rc != 0 and exit_code == 0:
-                    exit_code = shard_rc
+                if shard_rc != 0:
+                    if exit_code == 0:
+                        exit_code = shard_rc
+                    if _seed_shard_failure_requires_stop(shard_result):
+                        break
             continue
         if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
             _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)

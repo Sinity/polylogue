@@ -3162,6 +3162,117 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
 
 @pytest.mark.parametrize(
+    ("first_exit", "first_diagnosis", "expected_calls", "expected_statuses"),
+    [
+        (
+            124,
+            "pytest_timeout",
+            ["pytest seed-testmon collect", "pytest seed-testmon shard 1/2"],
+            ["incomplete", "pending"],
+        ),
+        (
+            1,
+            "pytest_failed",
+            [
+                "pytest seed-testmon collect",
+                "pytest seed-testmon shard 1/2",
+                "pytest seed-testmon shard 2/2",
+            ],
+            ["complete", "complete"],
+        ),
+    ],
+)
+def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    first_exit: int,
+    first_diagnosis: str,
+    expected_calls: list[str],
+    expected_statuses: list[str],
+) -> None:
+    nodeids = ["tests/test_seed.py::test_one", "tests/test_seed.py::test_two"]
+    collection_dir = tmp_path / "collection"
+    collection_dir.mkdir()
+    (collection_dir / "selection.json").write_text(
+        json.dumps(
+            {
+                "selected_count": len(nodeids),
+                "selected_nodeids": nodeids,
+                "selected_nodeids_omitted": 0,
+            }
+        )
+    )
+    calls: list[str] = []
+    checkpointed: list[int] = []
+    finalized_shard_statuses: list[str] = []
+
+    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
+        del command, kwargs
+        calls.append(label)
+        if label == "pytest seed-testmon collect":
+            return 0, 0.01, {"artifact_dir": str(collection_dir)}
+        if label == "pytest seed-testmon shard 1/2":
+            return first_exit, 0.01, {"diagnosis": first_diagnosis}
+        if label == "pytest seed-testmon shard 2/2":
+            return 0, 0.01, {"diagnosis": "pytest_passed"}
+        pytest.fail(f"unexpected seed step: {label}")
+
+    def fake_checkpoint(*, prepared: dict[str, object], shard_index: int, step: dict[str, object]) -> dict[str, object]:
+        del step
+        checkpointed.append(shard_index)
+        shards = [dict(shard) for shard in prepared["shards"]]  # type: ignore[union-attr]
+        shards[shard_index - 1]["status"] = "incomplete" if shard_index == 1 and first_exit == 124 else "complete"
+        return {**prepared, "shards": shards}
+
+    def fake_finalize(
+        *, prepared: dict[str, object], step_results: list[dict[str, object]], exit_code: int
+    ) -> dict[str, object]:
+        del step_results
+        assert exit_code == first_exit
+        finalized_shard_statuses.extend(str(shard["status"]) for shard in prepared["shards"])  # type: ignore[union-attr]
+        return {
+            "status": "incomplete" if first_exit == 124 else "complete",
+            "outcome": "resource_timeout" if first_exit == 124 else "red-baseline",
+            "resume": False,
+            "expected_count": len(nodeids),
+            "release_baseline_allowed": False,
+        }
+
+    monkeypatch.setattr(verify, "TESTMON_SEED_SHARD_SIZE", 1)
+    with (
+        patch("devtools.verify._anchor_verification_paths"),
+        patch("devtools.verify.maybe_bootstrap_testmon_seed", return_value=None),
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch(
+            "devtools.verify.build_verify_steps",
+            return_value=[("pytest seed-testmon collect", ["pytest", "--collect-only"])],
+        ),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_committed_tree", return_value="tree"),
+        patch(
+            "devtools.verify._testmon_seed_identity",
+            return_value={"git_head": "head", "git_tree": "tree", "skip_slow": False, "lab": False},
+        ),
+        patch("devtools.verify._testmon_seed_can_resume", return_value=False),
+        patch("devtools.verify._checkpoint_testmon_seed_shard", side_effect=fake_checkpoint),
+        patch("devtools.verify._finalize_testmon_seed_attempt", side_effect=fake_finalize),
+        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
+        patch("devtools.verify._warn_low_memory"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        rc = main(["--seed-testmon", "--json"])
+
+    assert rc == first_exit
+    assert calls == expected_calls
+    assert checkpointed == list(range(1, len(expected_calls)))
+    assert finalized_shard_statuses == expected_statuses
+    assert json.loads(capsys.readouterr().out)["exit_code"] == first_exit
+
+
+@pytest.mark.parametrize(
     ("argv", "expected_scope", "expected_permission"),
     [
         (["--all", "--skip-slow"], "narrow-terminal", False),
