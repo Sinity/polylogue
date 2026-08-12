@@ -10,7 +10,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from functools import wraps
 from pathlib import Path
@@ -43,9 +43,14 @@ _F = TypeVar("_F", bound=Callable[..., object])
 def token_sha256(token: str) -> str:
     """Return the only representation of a bearer token accepted for storage."""
 
-    if token.startswith("sha256:") and len(token) == len("sha256:") + 64:
-        return token.removeprefix("sha256:")
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredAuthorizationDigest:
+    """A persisted digest available only while replaying a continuity command."""
+
+    value: str
 
 
 def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
@@ -157,7 +162,6 @@ def _authorization_payload(authorization: MutationAuthorization) -> dict[str, ob
 
 def _authorization_from_payload(raw: object) -> MutationAuthorization:
     value = cast(dict[str, object], raw)
-    token_digest = cast(str | None, value.get("token_sha256"))
     return MutationAuthorization(
         plan_hash=cast(str, value["plan_hash"]),
         actor=cast(str, value["actor"]),
@@ -167,11 +171,19 @@ def _authorization_from_payload(raw: object) -> MutationAuthorization:
         authorized_at=cast(str, value["authorized_at"]),
         preview_ref=cast(str | None, value.get("preview_ref")),
         authorization_id=cast(str | None, value.get("authorization_id")),
-        token=None if token_digest is None else f"sha256:{token_digest}",
+        token=None,
         expires_at_ms=cast(int | None, value.get("expires_at_ms")),
         capabilities=tuple(cast(list[str], value["capabilities"])),
         surface=cast(Any, value.get("surface")),
     )
+
+
+def _stored_authorization_digest(raw: object) -> _StoredAuthorizationDigest:
+    value = cast(dict[str, object], raw)
+    digest = value.get("token_sha256")
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise ValueError("replayed bound authorization lacks a token digest")
+    return _StoredAuthorizationDigest(digest)
 
 
 def _json_primitive(value: object) -> object:
@@ -354,15 +366,15 @@ class AuditRepository:
                     self, _plan_from_payload(payload["plan"]), _principal_from_payload(payload["principal"])
                 )
             if mutation.kind == "issue_authorization":
-                return cast(Any, self.issue_authorization).__wrapped__(
-                    self,
+                return self._persist_authorization(
+                    _stored_authorization_digest(payload["authorization"]),
                     _preview_from_payload(payload["preview"]),
                     _principal_from_payload(payload["principal"]),
                     _authorization_from_payload(payload["authorization"]),
                 )
             if mutation.kind == "consume_authorization_and_start":
-                return cast(Any, self.consume_authorization_and_start).__wrapped__(
-                    self,
+                return self._consume_authorization(
+                    _stored_authorization_digest(payload["authorization"]),
                     _preview_from_payload(payload["preview"]),
                     _authorization_from_payload(payload["authorization"]),
                 )
@@ -515,6 +527,20 @@ class AuditRepository:
 
         if authorization.token is None:
             raise ValueError("bound authorization requires a token")
+        return self._persist_authorization(
+            _StoredAuthorizationDigest(token_sha256(authorization.token)),
+            preview,
+            principal,
+            authorization,
+        )
+
+    def _persist_authorization(
+        self,
+        token_digest: _StoredAuthorizationDigest,
+        preview: MutationPreview,
+        principal: MutationPrincipal,
+        authorization: MutationAuthorization,
+    ) -> str:
         authorization_id = cast(
             str, self._command_value("authorization_id", f"authorization:{secrets.token_urlsafe(18)}")
         )
@@ -548,7 +574,7 @@ class AuditRepository:
                     principal.surface,
                     principal.role_label,
                     authorization.confirmation_strength,
-                    token_sha256(authorization.token),
+                    token_digest.value,
                     issued_at_ms,
                     authorization.expires_at_ms or issued_at_ms,
                 ),
@@ -566,6 +592,18 @@ class AuditRepository:
 
         if authorization.token is None:
             raise ValueError("authorization token is missing")
+        return self._consume_authorization(
+            _StoredAuthorizationDigest(token_sha256(authorization.token)),
+            preview,
+            authorization,
+        )
+
+    def _consume_authorization(
+        self,
+        token_digest: _StoredAuthorizationDigest,
+        preview: MutationPreview,
+        authorization: MutationAuthorization,
+    ) -> str:
         operation_id = cast(str, self._command_value("operation_id", f"operation:{secrets.token_urlsafe(18)}"))
         attempt_id = cast(str, self._command_value("attempt_id", f"attempt:{secrets.token_urlsafe(18)}"))
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
@@ -579,7 +617,7 @@ class AuditRepository:
                 JOIN operation_previews AS p ON p.preview_id = a.preview_id
                 WHERE a.token_sha256 = ?
                 """,
-                (token_sha256(authorization.token),),
+                (token_digest.value,),
             ).fetchone()
             if row is None or str(row[1]) != preview.preview_ref:
                 raise ValueError("authorization token does not match preview")

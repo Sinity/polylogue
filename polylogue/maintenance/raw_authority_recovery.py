@@ -1493,19 +1493,6 @@ def apply_raw_authority_recovery(
         or str(backup_manifest.resolve(strict=False)) != selected.backup_authority.get("manifest_path")
     ):
         raise RawAuthorityRecoveryError("apply backup manifest does not match the plan authority")
-    existing = _receipt_for_plan(selected)
-    if existing is not None:
-        _require_apply_preconditions(Path(selected.archive_root))
-        _validate_existing_receipt(selected, existing)
-        _refresh_source_train_continuity(selected)
-        return RawAuthorityRecoveryReport(
-            plan=selected,
-            applied=False,
-            status="already_satisfied",
-            receipt_path=Path(selected.receipt_path),
-            after_counts=cast(dict[str, int], existing.get("after_counts")),
-            postflight=cast(dict[str, object], existing.get("postflight")),
-        )
     if selected.backup_authority is None:
         raise RawAuthorityRecoveryError("apply requires a dry-run plan with verified backup authority")
     operation = RecoveryOperation(selected.operation)
@@ -1525,39 +1512,45 @@ def apply_raw_authority_recovery(
     )
     from polylogue.operations.bindings import runtime_operation_binding
 
-    executor = OperationExecutor.for_archive_root(root)
     try:
         location = ArchiveLocation.resolve(root)
-        # A final receipt may be missing after a process crash or I/O failure.
-        # Only exact committed postflight evidence can skip a fresh executor
-        # authorization. An uncommitted intent is evidence of interruption,
-        # not authority to perform the destructive mutation.
-        if _intent_for_plan(selected) is not None:
-            with OwnedArchiveLocation.acquire(
-                location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
-            ) as owned:
-                current_location = ArchiveLocation.resolve(root)
-                assert_owns_archive_location(owned, current_location)
-                with RebuildLease(root):
-                    if _committed_postflight(selected) is not None:
-                        return _apply_plan(selected)
-        binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(
-            "cli:maintenance",
-            frozenset({"archive.raw_authority_recovery", "archive.legacy_runtime"}),
-            "maintenance",
-            "maintenance",
-        )
-        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-        if preview.plan.context.get("recovery_plan_digest") != selected.plan_digest:
-            raise PlanStaleError("recovery plan is stale before lease acquisition")
-        authorization = executor.authorize_bound(binding, preview, principal)
         with OwnedArchiveLocation.acquire(
             location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
         ) as owned:
             current_location = ArchiveLocation.resolve(root)
             assert_owns_archive_location(owned, current_location)
+            _require_apply_preconditions(root)
             with RebuildLease(root):
+                existing = _receipt_for_plan(selected)
+                if existing is not None:
+                    _validate_existing_receipt(selected, existing)
+                    _refresh_source_train_continuity(selected)
+                    return RawAuthorityRecoveryReport(
+                        plan=selected,
+                        applied=False,
+                        status="already_satisfied",
+                        receipt_path=Path(selected.receipt_path),
+                        after_counts=cast(dict[str, int], existing.get("after_counts")),
+                        postflight=cast(dict[str, object], existing.get("postflight")),
+                    )
+                # A final receipt may be missing after a process crash or I/O failure.
+                # Only exact committed postflight evidence can skip a fresh executor
+                # authorization. An uncommitted intent is evidence of interruption,
+                # not authority to perform the destructive mutation.
+                if _intent_for_plan(selected) is not None and _committed_postflight(selected) is not None:
+                    return _apply_plan(selected)
+                executor = OperationExecutor.for_archive_root(root)
+                binding = runtime_operation_binding(actuator)
+                principal = MutationPrincipal(
+                    "cli:maintenance",
+                    frozenset({"archive.raw_authority_recovery", "archive.legacy_runtime"}),
+                    "maintenance",
+                    "maintenance",
+                )
+                preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+                if preview.plan.context.get("recovery_plan_digest") != selected.plan_digest:
+                    raise PlanStaleError("recovery plan is stale after ownership acquisition")
+                authorization = executor.authorize_bound(binding, preview, principal)
                 result = executor.execute_bound(binding, preview, authorization, args)
     except (
         ArchiveLocationError,

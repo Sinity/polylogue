@@ -49,6 +49,7 @@ from polylogue.core.refs import (
     delegation_edge_object_id,
     delegation_subtree_object_id,
 )
+from polylogue.operations.bindings import OperationBinding
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.block_anchor import format_block_anchor
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -356,7 +357,7 @@ async def test_facade_capture_candidate_dispatches_executor_and_persists_user_ro
     """The real facade route cannot bypass the executor and still pass.
 
     Production dependency: ``PolylogueArchiveMixin.capture_assertion_candidate``
-    calls ``OperationExecutor.execute`` and the actuator writes ``user.db``.
+    calls ``OperationExecutor.execute_bound`` and the actuator writes ``user.db``.
     Removing that dispatch, or restoring the former direct helper call, makes
     the captured actuator list empty or leaves no candidate row.
     """
@@ -365,13 +366,19 @@ async def test_facade_capture_candidate_dispatches_executor_and_persists_user_ro
 
     archive = _archive(tmp_path)
     captured: list[str] = []
-    original_execute = OperationExecutor.execute
+    original_execute_bound = OperationExecutor.execute_bound
 
-    def spy(self: OperationExecutor, actuator: object, plan: object, authorization: object, args: object) -> object:
-        captured.append(type(actuator).__name__)
-        return original_execute(self, actuator, plan, authorization, args)  # type: ignore[arg-type]
+    def spy(
+        self: OperationExecutor,
+        binding: OperationBinding[object, object],
+        preview: object,
+        authorization: object,
+        args: object,
+    ) -> object:
+        captured.append(type(binding.actuator).__name__)
+        return original_execute_bound(self, binding, preview, authorization, args)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(OperationExecutor, "execute", spy)
+    monkeypatch.setattr(OperationExecutor, "execute_bound", spy)
     try:
         result = await archive.capture_assertion_candidate(
             body_text="facade candidate",

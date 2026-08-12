@@ -20,7 +20,7 @@ from typing import Literal, cast
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
+from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditContinuityError
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainExecution,
 )
@@ -1510,6 +1510,7 @@ __all__ = [
     "acquire_durable_archive_ownership",
     "adopt_missing_audit_tier",
     "audit_adoption_receipt_path",
+    "AuditContinuityError",
     "ArchiveOwnershipError",
     "execute_durable_change_train",
     "initialize_missing_durable_tier",

@@ -24,6 +24,7 @@ import click
 
 from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
+    AuditContinuityError,
     DurablePublicationError,
     acquire_durable_archive_ownership,
     adopt_missing_audit_tier,
@@ -153,7 +154,7 @@ def migrate_tier_command(
                     single_writer_evidence_ref="proof:archive-ownership-lock",
                     release_archive_ownership=archive_owner.release,
                 )
-    except (sqlite3.Error, MigrationError, ArchiveOwnershipError) as exc:
+    except (sqlite3.Error, MigrationError, ArchiveOwnershipError, AuditContinuityError) as exc:
         if output_format == "json":
             click.echo(
                 json.dumps(

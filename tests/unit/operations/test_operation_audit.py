@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from polylogue.operations.audit import AuditRepository
+from polylogue.operations.audit import AuditRepository, token_sha256
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
@@ -139,6 +139,9 @@ def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: P
     )
     authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
     assert "raw-secret-token" not in (tmp_path / "audit.db").read_bytes().decode("utf-8", errors="ignore")
+    digest_as_bearer = replace(authorization, token=f"sha256:{token_sha256('raw-secret-token')}")
+    with pytest.raises(ValueError, match="does not match preview"):
+        audit.consume_authorization_and_start(preview, digest_as_bearer)
     receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
     assert receipt.operation_id is not None
     operation = audit.get_operation(receipt.operation_id)

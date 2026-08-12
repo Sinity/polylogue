@@ -3537,6 +3537,46 @@ def test_migrate_tier_cli_restores_adopted_audit_from_verified_full_evidence(
         assert connection.execute("SELECT generation FROM audit_continuity_head").fetchone() == (2,)
 
 
+@pytest.mark.parametrize("output_format", ["json", "plain"])
+def test_migrate_tier_cli_reports_adopted_audit_continuity_failures(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, output_format: str
+) -> None:
+    """Continuity refusal stays within the command's declared error contract."""
+
+    from polylogue.cli.commands.maintenance import _migrate_tier
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityError
+
+    manifest = cli_workspace["archive_root"] / "backup-manifest.json"
+    manifest.write_text("manifest", encoding="utf-8")
+
+    def refuse_restore(*_args: object, **_kwargs: object) -> Path:
+        raise AuditContinuityError("inconsistent audit continuity head")
+
+    monkeypatch.setattr(_migrate_tier, "restore_adopted_audit_tier", refuse_restore)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--restore-adopted-audit",
+            "--backup-manifest",
+            str(manifest),
+            "--output-format",
+            output_format,
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    if output_format == "json":
+        assert json.loads(result.stdout)["error"] == "inconsistent audit continuity head"
+    else:
+        assert "Migration blocked for audit: inconsistent audit continuity head" in result.stderr
+
+
 @pytest.mark.parametrize("publication_failure", ["race", "interrupted"])
 def test_migrate_tier_cli_adoption_fails_closed_during_publication(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, publication_failure: str

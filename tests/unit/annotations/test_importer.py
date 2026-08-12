@@ -20,6 +20,7 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import AssertionKind, BlockType, BranchType, Provider
+from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -119,19 +120,25 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     """The registered import route writes real user-tier provenance and candidates.
 
     Anti-vacuity: ``import_annotation_batch`` must dispatch the real
-    ``AnnotationBatchImportActuator`` through ``OperationExecutor`` before the
+    ``AnnotationBatchImportActuator`` through ``OperationExecutor.execute_bound`` before the
     transaction reaches ``user.db``. Removing that executor dispatch or
     restoring a direct persistence call leaves ``executed`` empty even though
     a toy persistence stub could still appear green.
     """
     executed: list[str] = []
-    original_execute = OperationExecutor.execute
+    original_execute_bound = OperationExecutor.execute_bound
 
-    def spy(self: OperationExecutor, actuator: object, plan: object, authorization: object, args: object) -> object:
-        executed.append(type(actuator).__name__)
-        return original_execute(self, actuator, plan, authorization, args)  # type: ignore[arg-type]
+    def spy(
+        self: OperationExecutor,
+        binding: OperationBinding[object, object],
+        preview: object,
+        authorization: object,
+        args: object,
+    ) -> object:
+        executed.append(type(binding.actuator).__name__)
+        return original_execute_bound(self, binding, preview, authorization, args)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(OperationExecutor, "execute", spy)
+    monkeypatch.setattr(OperationExecutor, "execute_bound", spy)
 
     archive_root = workspace_env["archive_root"]
     with ArchiveStore(archive_root) as archive:
