@@ -12,7 +12,11 @@ from typing import Protocol
 
 import ijson
 
-from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import (
+    classify_artifact,
+    classify_artifact_path,
+    strong_path_classification,
+)
 from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
@@ -596,14 +600,14 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
             return True
         path_classification = classify_artifact_path(path, provider=provider)
         return path_classification.parse_as_session if path_classification is not None else False
+    path_classification = strong_path_classification(path, provider=provider)
+    if path_classification is not None:
+        return path_classification.parse_as_session
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
         browser_capture, _browser_provider = _browser_capture_prefix_probe(path)
         if browser_capture:
             return True
         return _large_non_jsonl_path_can_stream(path, provider=provider)
-    path_classification = classify_artifact_path(path, provider=provider)
-    if path_classification is not None:
-        return path_classification.parse_as_session
     try:
         document = json_loads(path.read_bytes())
     except JSONDecodeError:
@@ -643,7 +647,7 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
             return True
         path_classification = classify_artifact_path(path, provider=provider)
         return path_classification.parse_as_session if path_classification is not None else False
-    path_classification = classify_artifact_path(path, provider=provider)
+    path_classification = strong_path_classification(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
     try:
