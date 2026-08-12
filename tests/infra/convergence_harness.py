@@ -236,6 +236,7 @@ def ingest_convergence_pathology(
         source_path.write_bytes(payload)
         raw_blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
         raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
+        raw_blob_receipt = raw_blob_publisher.receipt_id(raw_blob_hash)
         preacquired_attachments: list[ParsedAttachment] = []
         attachment_blob_refs: list[ArchiveSourceBlobRef] = []
         attachment_receipts: list[tuple[str, bytes]] = []
@@ -275,13 +276,13 @@ def ingest_convergence_pathology(
                     payload=payload,
                     acquired_at_ms=_acquired_at_ms(index),
                     native_id=session.provider_session_id,
-                    blob_publication_receipt_id=raw_blob_publisher.receipt_id(raw_blob_hash),
+                    blob_publication_receipt_id=raw_blob_receipt,
                     additional_blob_refs=tuple(attachment_blob_refs),
                     manage_transaction=False,
                 )
                 consume_blob_publication_receipt(
                     source_conn,
-                    raw_blob_publisher.receipt_id(raw_blob_hash),
+                    raw_blob_receipt,
                     bytes.fromhex(raw_blob_hash),
                 )
                 for attachment_receipt, attachment_hash_bytes in attachment_receipts:
