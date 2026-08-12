@@ -75,13 +75,24 @@ def token_sha256(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _linux_process_start_ticks(pid: int) -> str | None:
+    """Return Linux /proc start ticks without misparsing a spaced process name."""
+
+    try:
+        _prefix, delimiter, suffix = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")
+        if not delimiter:
+            return None
+        return suffix.split()[19]
+    except (IndexError, OSError):
+        return None
+
+
 def _current_process_attempt_owner() -> str:
     """Return a local process identity that rejects PID reuse when available."""
 
     pid = os.getpid()
-    try:
-        start_ticks = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
-    except (IndexError, OSError):
+    start_ticks = _linux_process_start_ticks(pid)
+    if start_ticks is None:
         return f"pid:{pid}"
     return f"pid:{pid}:{start_ticks}"
 
@@ -101,10 +112,7 @@ def _attempt_owner_is_live(owner_id: str | None) -> bool:
         return False
     if len(parts) == 2:
         return True
-    try:
-        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21] == parts[2]
-    except (IndexError, OSError):
-        return False
+    return _linux_process_start_ticks(pid) == parts[2]
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from polylogue.operations.audit import AuditRepository, token_sha256
+from polylogue.operations.audit import (
+    AuditRepository,
+    _attempt_owner_is_live,
+    _current_process_attempt_owner,
+    token_sha256,
+)
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
@@ -246,6 +251,27 @@ def test_recovery_marks_a_dead_process_owned_attempt_unknown(tmp_path: Path) -> 
         assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
             "interrupted",
         )
+
+
+def test_process_owner_uses_proc_start_ticks_after_a_spaced_process_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PID reuse remains detectable when /proc's parenthesized comm has spaces."""
+
+    state = {"stat": "321 (worker process) S " + " ".join(["0"] * 17 + ["stable", "old", "0"])}
+
+    def read_text(self: Path, *, encoding: str) -> str:
+        assert self == Path("/proc/321/stat")
+        assert encoding == "utf-8"
+        return state["stat"]
+
+    monkeypatch.setattr("polylogue.operations.audit.os.getpid", lambda: 321)
+    monkeypatch.setattr("polylogue.operations.audit.os.kill", lambda _pid, _signal: None)
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    owner = _current_process_attempt_owner()
+    assert owner == "pid:321:old"
+
+    state["stat"] = "321 (worker process) S " + " ".join(["0"] * 17 + ["stable", "new", "0"])
+    assert not _attempt_owner_is_live(owner)
 
 
 def test_audit_repository_cannot_bypass_the_continuity_coordinator(
