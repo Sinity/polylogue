@@ -375,6 +375,35 @@ def test_attribution_does_not_let_broad_repo_ancestor_claim_agent_spool(
     assert attribution.languages_detected == ()
 
 
+def test_attribution_preserves_repo_directory_with_agent_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(attribution_module, "_repo_root_from_path", lambda _path: "/tmp/project")
+    deleted_path = "/tmp/project/codex-client/deleted.py"
+    action = Action(
+        action_id="action-agent-prefix-repo-directory",
+        message_id="msg-agent-prefix-repo-directory",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_WRITE,
+        tool_name="Write",
+        tool_id=None,
+        origin=Origin.CODEX_SESSION,
+        affected_paths=(deleted_path,),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="deleted repository path",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_actions([action])
+
+    assert attribution.file_paths_touched == (deleted_path,)
+    assert attribution.languages_detected == ("python",)
+
+
 def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
     session = Session(
         id=SessionId("conv-dialogue-r-noise"),

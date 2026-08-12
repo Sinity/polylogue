@@ -59,6 +59,10 @@ _IGNORED_RELATIVE_PATH_PREFIXES = (
     ".snapshot",
     ".snapshots",
 )
+_AGENT_TMP_SPOOL_RE = re.compile(
+    r"^(?:claude|codex)-(?:[0-9]+|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
 
 
 def _lexical_expanduser(value: str) -> str:
@@ -77,7 +81,7 @@ def _is_ignored_absolute_path(path: PurePosixPath) -> bool:
         return True
     if parts[:2] == ("nix", "store"):
         return True
-    if parts[0] == "tmp" and any(part.startswith("claude-") or part.startswith("codex-") for part in parts[1:]):
+    if parts[0] == "tmp" and any(_AGENT_TMP_SPOOL_RE.fullmatch(part) for part in parts[1:]):
         return True
     if parts[:2] == ("home", Path.home().name):
         if parts[2:3] in ((".claude",), (".codex",)):
@@ -104,7 +108,7 @@ def _ambient_noise_root(path: PurePosixPath) -> PurePosixPath | None:
     parts = tuple(part for part in path.parts if part != "/")
     if len(parts) >= 2 and parts[0] == "tmp":
         for index, part in enumerate(parts[1:], start=1):
-            if part.startswith(("claude-", "codex-")):
+            if _AGENT_TMP_SPOOL_RE.fullmatch(part):
                 return PurePosixPath("/", *parts[: index + 1])
     if parts[:2] == ("nix", "store"):
         return PurePosixPath("/nix/store")
