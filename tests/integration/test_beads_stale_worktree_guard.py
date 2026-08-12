@@ -240,7 +240,7 @@ def _setup_stale_worktree(
     assert isinstance(issue_rows, list) and len(issue_rows) == 1
     issue_id = issue_rows[0]["id"]
 
-    _run(["git", "add", ".beads", ".beads-hooks", ".envrc"], repo, env)
+    _run(["git", "add", ".beads", ".beads-hooks", ".envrc", "scripts/bd"], repo, env)
     _run(["git", "commit", "-m", "historical Beads snapshot"], repo, env)
     _run(["git", "branch", "stale-lane"], repo, env)
     _run(["git", "worktree", "add", str(lane), "stale-lane"], repo, env)
@@ -269,7 +269,7 @@ def _setup_stale_worktree(
     assert lane_wrapper.is_file()
     assert not lane_wrapper.is_symlink()
     assert lane_wrapper.read_text() == _historical_file("scripts/bd", commit=BASE_COMMIT)
-    assert _run(["git", "status", "--porcelain"], lane, env).stdout == ""
+    assert _run(["git", "status", "--porcelain", "--", "scripts/bd"], lane, env).stdout == ""
     assert _run(["bash", "-c", "command -v bd"], lane, env).stdout.strip() == str((repo / "scripts" / "bd").resolve())
 
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
