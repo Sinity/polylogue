@@ -9,7 +9,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -361,6 +361,63 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     assert list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-2",)
+
+
+@pytest.mark.asyncio
+async def test_hook_shard_retry_replacement_remains_tracked_until_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old done callback cannot untrack its replacement retry task."""
+
+    class ControlledTask:
+        def __init__(self) -> None:
+            self._done = False
+            self.cancelled = False
+            self.callbacks: list[Callable[[ControlledTask], None]] = []
+
+        def done(self) -> bool:
+            return self._done
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def add_done_callback(self, callback: Callable[[ControlledTask], None]) -> None:
+            self.callbacks.append(callback)
+
+        def finish(self) -> None:
+            self._done = True
+            for callback in self.callbacks:
+                callback(self)
+
+    created: list[ControlledTask] = []
+
+    def create_task(coro: Coroutine[Any, Any, None]) -> ControlledTask:
+        coro.close()
+        task = ControlledTask()
+        created.append(task)
+        return task
+
+    spool_root = tmp_path / "hooks"
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path / "archive", backend=None)),
+        (WatchSource(name="hooks", root=pending_hook_spool_dir(spool_root), suffixes=(".json",)),),
+        cursor=CursorStore(tmp_path / "archive" / "ops.db"),
+    )
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+    directory = pending_hook_spool_dir(spool_root) / "2026-08-13"
+
+    watcher._schedule_hook_spool_directory_retry(directory)
+    first = created[0]
+    first._done = True
+    watcher._schedule_hook_spool_directory_retry(directory)
+    replacement = created[1]
+    first.finish()
+
+    tracked_replacement = cast(object, watcher._hook_spool_directory_retry_tasks[directory.resolve()])
+    assert tracked_replacement is replacement
+    watcher.stop()
+    assert replacement.cancelled is True
 
 
 @pytest.mark.uses_real_clock("exercises retry polling while a pending hook envelope remains unacknowledged")

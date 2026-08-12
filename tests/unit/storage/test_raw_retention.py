@@ -688,6 +688,52 @@ def test_terminal_cursor_exemption_requires_every_source_coordinate(tmp_path: Pa
     assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
 
 
+def test_resolution_carrier_cannot_authorize_cursor_without_accepted_head(tmp_path: Path) -> None:
+    """A superseded deferred-CAS receipt is resolution evidence, not terminal authority."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "replaced-attempt.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-resolution", "claude-code-session", "resolution", str(source_path), 0, bytes(32), 1, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 'unknown', 'deferred attempt replaced', 0, 0, 0, 1, 1)
+            """,
+            (
+                "artifact-resolution",
+                "raw-resolution",
+                "claude-code-session",
+                str(source_path),
+                0,
+                "terminal_superseded_deferred_cas_frontier",
+            ),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=1)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
 def test_terminal_artifact_retention_batches_source_paths_below_sqlite_limit(tmp_path: Path) -> None:
     """Terminal evidence remains protectable when more than one SQL batch is needed."""
 
