@@ -22,7 +22,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from devtools import repo_root as _get_root
 from devtools.verify_runs import CURRENT_RUN_PATH
@@ -422,7 +422,9 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             "peak_rss_mb_max": max(peaks),
             "peak_rss_mb_p95": _percentile(peaks, 95),
         }
-    pytest_statistics = [task["pytest_statistics"] for task in tasks if isinstance(task.get("pytest_statistics"), dict)]
+    pytest_statistics = [
+        cast(dict[str, Any], value) for task in tasks if isinstance((value := task.get("pytest_statistics")), dict)
+    ]
     if args.resources and pytest_statistics:
         pss = [
             float(item["resources"]["peak_tree_pss_kb"])

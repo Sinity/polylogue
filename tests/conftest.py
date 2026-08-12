@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from functools import lru_cache
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -788,6 +789,12 @@ def _tree_bytes(path: Path, *, allocated: bool) -> int:
     return total
 
 
+@lru_cache(maxsize=8)
+def _archive_template_apparent_bytes(source: Path) -> int:
+    """Cache the immutable template size instead of rescanning it per test."""
+    return _tree_bytes(source, allocated=False)
+
+
 def _clone_archive_template(source: Path, destination: Path) -> None:
     """Clone one immutable empty archive into a test-private workspace."""
     started = time.perf_counter()
@@ -816,9 +823,8 @@ def _clone_archive_template(source: Path, destination: Path) -> None:
             method=method,
             source=str(source),
             destination=str(destination),
-            source_apparent_bytes=_tree_bytes(source, allocated=False),
-            destination_apparent_bytes=_tree_bytes(destination, allocated=False),
-            destination_allocated_bytes=_tree_bytes(destination, allocated=True),
+            source_apparent_bytes=_archive_template_apparent_bytes(source),
+            destination_apparent_bytes=_archive_template_apparent_bytes(source),
         )
     except (ImportError, OSError):
         pass

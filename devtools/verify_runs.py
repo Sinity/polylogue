@@ -265,10 +265,14 @@ def aggregate_pytest_statistics(
             with contextlib.suppress(ValueError):
                 explicit_worker_count = int(command_values[index + 1])
             break
-    basetemp_sizes = [row.get("basetemp_size_kb") for row in resources]
-    basetemp_sizes = [int(value) * 1024 for value in basetemp_sizes if isinstance(value, int)]
-    basetemp_allocated = [row.get("basetemp_allocated_kb") for row in resources]
-    basetemp_allocated = [int(value) * 1024 for value in basetemp_allocated if isinstance(value, int)]
+    basetemp_sizes = [
+        int(size_value) * 1024 for row in resources if isinstance((size_value := row.get("basetemp_size_kb")), int)
+    ]
+    basetemp_allocated = [
+        int(allocated_value) * 1024
+        for row in resources
+        if isinstance((allocated_value := row.get("basetemp_allocated_kb")), int)
+    ]
     containment: dict[str, Any] = {}
     containment_path = step_dir / "containment.json"
     if containment_path.exists():
