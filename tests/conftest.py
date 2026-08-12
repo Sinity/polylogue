@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -37,7 +38,13 @@ from devtools.checkout_guard import (
     resolved_polylogue_path,
 )
 from devtools.pytest_supervisor import _process_start_ticks
-from devtools.verify_runs import PytestResourceError, normalize_pytest_basetemp_env, resolve_pytest_basetemp_root
+from devtools.verify_runs import (
+    PytestResourceError,
+    clear_managed_pytest_basetemp_claim,
+    normalize_pytest_basetemp_env,
+    resolve_pytest_basetemp_root,
+)
+from devtools.verify_runs import pytest_basetemp_claim_path as _basetemp_claim_path
 
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
 # before the first `from polylogue...` import below: a shared/editable venv's
@@ -110,9 +117,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
     if config.option.basetemp is None:
         normalized_basetemp_env = normalize_pytest_basetemp_env(os.environ)
-        if (
-            "POLYLOGUE_VERIFY_RUN_ID" not in os.environ
-            and "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in normalized_basetemp_env
+        configured_root = normalized_basetemp_env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        unmanaged_tmpfs_root = configured_root is not None and verify_runs._is_beneath(
+            Path(configured_root), verify_runs.PYTEST_TMPFS_ROOT
+        )
+        if "POLYLOGUE_VERIFY_RUN_ID" not in os.environ and (
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in normalized_basetemp_env or unmanaged_tmpfs_root
         ):
             # Bare pytest has no devtools supervisor to enforce a tmpfs cap.
             # Keep its basetemp on scratch; managed devtools runs carry the
@@ -151,9 +161,8 @@ def pytest_configure(config: pytest.Config) -> None:
 # ``devtools.verify_runs.resolve_pytest_basetemp_root`` — this module only
 # adds the mkdir/no-CoW-marking side effects and the stale-directory sweep.
 _STALE_BASETEMP_MAX_AGE_S = 30 * 60
-_STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S = 6 * 60 * 60
-_OWNER_PID_MARKER = ".owner-pid"
-_CALLER_OWNED_BASETEMP_MARKER = ".polylogue-caller-owned-basetemp"
+_BASE_TEMP_CLAIM_LOCKS: dict[Path, TextIO] = {}
+_BASE_TEMP_CLAIM_THREAD_LOCKS: dict[Path, threading.Lock] = {}
 
 
 def _managed_pytest_temp_root() -> tuple[Path, str]:
@@ -172,25 +181,66 @@ def _managed_pytest_temp_root() -> tuple[Path, str]:
 
 
 def _mark_basetemp_owner(basetemp: Path) -> None:
-    """Record the owning process identity so a sweep never races a live run."""
+    """Claim a managed tree outside pytest's replaceable basetemp directory."""
+    handle = _acquire_basetemp_claim_lock(basetemp, blocking=False)
+    if handle is None:
+        # A nested raw pytest can inherit the controller's run id and its
+        # exact basetemp. That controller still owns the durable claim; do
+        # not block the nested process on a lock it cannot usefully replace.
+        return
+    pid = os.getpid()
+    start_ticks = _process_start_ticks(pid)
+    identity = f"{pid}:{start_ticks}" if start_ticks is not None else str(pid)
     with contextlib.suppress(OSError):
-        basetemp.mkdir(parents=True, exist_ok=True)
-        pid = os.getpid()
-        start_ticks = _process_start_ticks(pid)
-        identity = f"{pid}:{start_ticks}" if start_ticks is not None else str(pid)
-        (basetemp / _OWNER_PID_MARKER).write_text(identity, encoding="utf-8")
+        _basetemp_claim_path(basetemp, kind="managed").write_text(identity, encoding="utf-8")
 
 
 def _mark_caller_owned_basetemp(basetemp: Path) -> None:
-    """Record that an explicit ``--basetemp`` remains owned by its caller."""
+    """Claim an explicit ``--basetemp`` before pytest may replace its tree."""
+    handle = _acquire_basetemp_claim_lock(basetemp, blocking=True)
+    assert handle is not None
     with contextlib.suppress(OSError):
         basetemp.mkdir(parents=True, exist_ok=True)
-        (basetemp / _CALLER_OWNED_BASETEMP_MARKER).write_text("explicit\n", encoding="utf-8")
+        clear_managed_pytest_basetemp_claim(basetemp)
+        _basetemp_claim_path(basetemp, kind="caller-owned").write_text("explicit\n", encoding="utf-8")
+
+
+def _acquire_basetemp_claim_lock(basetemp: Path, *, blocking: bool) -> TextIO | None:
+    """Serialize a claim against a stale sweep for the same basetemp path."""
+    lock_path = _basetemp_claim_path(basetemp, kind="lock")
+    thread_lock = _BASE_TEMP_CLAIM_THREAD_LOCKS.setdefault(lock_path, threading.Lock())
+    if not thread_lock.acquire(blocking=blocking):
+        return None
+    with contextlib.suppress(OSError):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            handle.close()
+            thread_lock.release()
+            return None
+        _BASE_TEMP_CLAIM_LOCKS[lock_path] = handle
+        return handle
+    thread_lock.release()
+    return None
+
+
+def _release_basetemp_claim_lock(basetemp: Path) -> None:
+    """Release this pytest process's claim lock after its session ends."""
+    lock_path = _basetemp_claim_path(basetemp, kind="lock")
+    handle = _BASE_TEMP_CLAIM_LOCKS.pop(lock_path, None)
+    if handle is not None:
+        with contextlib.suppress(OSError):
+            handle.close()
+    thread_lock = _BASE_TEMP_CLAIM_THREAD_LOCKS.get(lock_path)
+    if thread_lock is not None and thread_lock.locked():
+        thread_lock.release()
 
 
 def _basetemp_owner_alive(entry: Path) -> bool | None:
     """True/False when the owner marker resolves a live/dead process, else None."""
-    marker = entry / _OWNER_PID_MARKER
+    marker = _basetemp_claim_path(entry, kind="managed")
     try:
         raw_identity = marker.read_text(encoding="utf-8").strip()
         raw_pid, separator, raw_start_ticks = raw_identity.partition(":")
@@ -271,22 +321,18 @@ def _sweep_stale_polylogue_basetemps(
 ) -> None:
     """Best-effort reclaim of per-run basetemps left by crashed runs.
 
-    Safety invariant: never delete a basetemp whose owning process is still
-    alive, regardless of age. Age alone is not a liveness proxy — a
-    long-running scale/lab test can legitimately outlive the stale-age
-    threshold. Each managed basetemp carries a ``.owner-pid`` marker
-    (written in ``pytest_configure``); a confirmed-dead owner uses the normal
-    threshold, an unconfirmable owner (no marker — e.g. a directory from
-    before this mechanism existed, or a startup race) uses a much longer
-    threshold before being reclaimed at all. Explicit caller-owned paths
-    carry a separate marker and are excluded regardless of name or age.
+    Safety invariant: reclamation requires a durable, positive managed claim
+    plus a confirmed-dead owner. Unknown paths are never deleted: they may be
+    an explicit caller path racing a startup sweep. The claim lock makes the
+    decision and a caller's claim mutually exclusive, while the claim itself
+    survives pytest's lazy replacement of the basetemp directory. Explicit
+    caller-owned paths carry their own durable claim and are excluded.
     Seeded corpora
     (``pytest-polylogue-*-seeded-*``) are never touched here — they are
     shared, reusable, and built once behind their own ``.build.done`` guard.
     """
 
     cutoff = time.time() - max_age_s
-    unknown_owner_cutoff = time.time() - _STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S
     for root in roots or _polylogue_basetemp_roots():
         for entry in root.glob("pytest-polylogue-*"):
             if "-seeded-" in entry.name:
@@ -294,17 +340,26 @@ def _sweep_stale_polylogue_basetemps(
             try:
                 if not entry.is_dir():
                     continue
-                if (entry / _CALLER_OWNED_BASETEMP_MARKER).is_file():
+                if _basetemp_claim_path(entry, kind="caller-owned").is_file():
                     continue
-                owner_alive = _basetemp_owner_alive(entry)
-                if owner_alive:
+                if not _basetemp_claim_path(entry, kind="managed").is_file():
                     continue
-                mtime = entry.stat().st_mtime
-                if owner_alive is False:
-                    if mtime < cutoff:
+                handle = _acquire_basetemp_claim_lock(entry, blocking=False)
+                if handle is None:
+                    continue
+                try:
+                    if _basetemp_claim_path(entry, kind="caller-owned").is_file():
+                        continue
+                    if not _basetemp_claim_path(entry, kind="managed").is_file():
+                        continue
+                    owner_alive = _basetemp_owner_alive(entry)
+                    if owner_alive is not False:
+                        continue
+                    if entry.stat().st_mtime < cutoff:
                         _remove_stale_basetemp(entry)
-                elif mtime < unknown_owner_cutoff:
-                    _remove_stale_basetemp(entry)
+                        clear_managed_pytest_basetemp_claim(entry)
+                finally:
+                    _release_basetemp_claim_lock(entry)
             except OSError:
                 pass
 
@@ -331,8 +386,12 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if not basetemp:
         return
     basetemp_path = Path(str(basetemp))
-    if str(basetemp_path) == os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"):
-        shutil.rmtree(basetemp_path, ignore_errors=True)
+    try:
+        if str(basetemp_path) == os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"):
+            shutil.rmtree(basetemp_path, ignore_errors=True)
+            clear_managed_pytest_basetemp_claim(basetemp_path)
+    finally:
+        _release_basetemp_claim_lock(basetemp_path)
 
 
 @pytest.fixture(autouse=True)

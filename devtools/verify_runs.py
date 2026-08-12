@@ -847,6 +847,7 @@ def checkout_hash(root: Path) -> str:
 DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
 _CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
+_PYTEST_BASETEMP_CLAIM_PREFIX = ".polylogue-pytest-claim-"
 
 
 def _is_beneath(path: Path, root: Path) -> bool:
@@ -856,6 +857,26 @@ def _is_beneath(path: Path, root: Path) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def pytest_basetemp_claim_path(basetemp: Path, *, kind: str) -> Path:
+    """Return the durable, adjacent claim path for one pytest basetemp.
+
+    Pytest lazily clears an explicit ``--basetemp`` before first use, so an
+    ownership record inside that tree cannot survive normal initialization.
+    Claims live beside the tree and are keyed by its absolute path, not by a
+    reusable basename.
+    """
+    digest = hashlib.sha256(str(basetemp.absolute()).encode("utf-8")).hexdigest()[:20]
+    return basetemp.parent / f"{_PYTEST_BASETEMP_CLAIM_PREFIX}{kind}-{digest}"
+
+
+def clear_managed_pytest_basetemp_claim(basetemp: Path) -> None:
+    """Remove the durable claim after a managed run's tree is reclaimed."""
+    with contextlib.suppress(OSError):
+        pytest_basetemp_claim_path(basetemp, kind="managed").unlink()
+    with contextlib.suppress(OSError):
+        pytest_basetemp_claim_path(basetemp, kind="lock").unlink()
 
 
 def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -1385,11 +1406,13 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
     # directory in sessionfinish. That is a completed cleanup, not an absent
     # receipt for the durable summary to misclassify.
     if not basetemp.exists():
+        clear_managed_pytest_basetemp_claim(basetemp)
         return basetemp
     with contextlib.suppress(OSError):
         if basetemp.exists():
             shutil.rmtree(basetemp)
             if not basetemp.exists():
+                clear_managed_pytest_basetemp_claim(basetemp)
                 return basetemp
     return None
 

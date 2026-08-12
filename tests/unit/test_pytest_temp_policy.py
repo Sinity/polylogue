@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import threading
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
@@ -257,7 +260,31 @@ def test_bare_pytest_ignores_leaked_cloud_basetemp_on_workstation(
     assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
 
 
-def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
+def test_bare_pytest_routes_an_environment_configured_tmpfs_root_to_scratch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(shm / "configured"))
+    monkeypatch.delenv("POLYLOGUE_VERIFY_RUN_ID", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_RUN_ID", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_CHECKOUT", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", raising=False)
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    conftest.pytest_configure(cast("pytest.Config", config))
+
+    assert Path(str(config.option.basetemp)).parent == scratch
+    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
+    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+
+
+def test_sweep_stale_polylogue_basetemps_preserves_unknown_seeded_and_recent(
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
@@ -268,13 +295,13 @@ def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     for path in (stale, seeded, recent, unrelated):
         path.mkdir()
 
-    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    old = frozen_clock.time() - 24 * 60 * 60
     os.utime(stale, (old, old))
     os.utime(seeded, (old, old))
 
     conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
 
-    assert not stale.exists()
+    assert stale.exists()
     assert seeded.exists()
     assert recent.exists()
     assert unrelated.exists()
@@ -292,13 +319,93 @@ def test_explicit_basetemp_remains_outside_a_later_startup_stale_sweep(
     )
 
     conftest.pytest_configure(cast("pytest.Config", config))
-    assert (explicit / conftest._CALLER_OWNED_BASETEMP_MARKER).is_file()
-    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    assert verify_runs.pytest_basetemp_claim_path(explicit, kind="caller-owned").is_file()
+    old = frozen_clock.time() - 24 * 60 * 60
     os.utime(explicit, (old, old))
 
     conftest._sweep_stale_polylogue_basetemps(roots=(tmp_path,))
 
     assert explicit.exists()
+
+
+def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_path: Path) -> None:
+    """Exercise pytest's lazy TempPathFactory clearing against our real conftest."""
+    explicit = tmp_path / "pytest-polylogue-diagnostic"
+    explicit.mkdir()
+    cleared_by_pytest = explicit / "cleared-by-temp-path-factory"
+    cleared_by_pytest.write_text("old", encoding="utf-8")
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {key: value for key, value in os.environ.items() if not key.startswith("POLYLOGUE_PYTEST_")}
+    env.pop("POLYLOGUE_VERIFY_RUN_ID", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--basetemp",
+            str(explicit),
+            "tests/unit/test_pytest_temp_policy.py::test_archive_template_clone_is_private",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not cleared_by_pytest.exists()
+    assert verify_runs.pytest_basetemp_claim_path(explicit, kind="caller-owned").is_file()
+
+
+def test_stale_sweep_and_explicit_claim_are_atomic_for_one_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    basetemp = tmp_path / "pytest-polylogue-race-123"
+    basetemp.mkdir()
+    conftest._mark_basetemp_owner(basetemp)
+    verify_runs.pytest_basetemp_claim_path(basetemp, kind="managed").write_text("999999999", encoding="utf-8")
+    conftest._release_basetemp_claim_lock(basetemp)
+    old = frozen_clock.time() - 120
+    os.utime(basetemp, (old, old))
+    sweep_checked = threading.Event()
+    allow_sweep = threading.Event()
+    caller_claimed = threading.Event()
+    original_owner_alive = conftest._basetemp_owner_alive
+
+    def pause_after_admission(entry: Path) -> bool | None:
+        sweep_checked.set()
+        assert allow_sweep.wait(timeout=2)
+        return original_owner_alive(entry)
+
+    monkeypatch.setattr(conftest, "_basetemp_owner_alive", pause_after_admission)
+    sweeper = threading.Thread(
+        target=conftest._sweep_stale_polylogue_basetemps,
+        kwargs={"max_age_s": 60, "roots": (tmp_path,)},
+    )
+    sweeper.start()
+    assert sweep_checked.wait(timeout=2)
+
+    def claim_and_use() -> None:
+        conftest._mark_caller_owned_basetemp(basetemp)
+        basetemp.mkdir(exist_ok=True)
+        caller_claimed.set()
+
+    caller = threading.Thread(target=claim_and_use)
+    caller.start()
+    assert not caller_claimed.wait(timeout=0.1)
+    allow_sweep.set()
+    sweeper.join(timeout=2)
+    caller.join(timeout=2)
+
+    assert not sweeper.is_alive()
+    assert not caller.is_alive()
+    assert caller_claimed.is_set()
+    assert basetemp.exists()
+    assert verify_runs.pytest_basetemp_claim_path(basetemp, kind="caller-owned").is_file()
 
 
 def test_sweep_stale_polylogue_basetemps_never_deletes_a_live_owner(
@@ -328,7 +435,7 @@ def test_sweep_stale_polylogue_basetemps_reclaims_a_confirmed_dead_owner(
     dead.mkdir()
     # A pid that is guaranteed not to be alive right now (max pid + 1 territory
     # would flake on hosts near pid rollover; /proc simply never has this one).
-    (dead / conftest._OWNER_PID_MARKER).write_text("999999999", encoding="utf-8")
+    verify_runs.pytest_basetemp_claim_path(dead, kind="managed").write_text("999999999", encoding="utf-8")
     old = frozen_clock.time() - 120
     os.utime(dead, (old, old))
 
@@ -344,7 +451,7 @@ def test_sweep_stale_polylogue_basetemps_reclaims_reused_pid_identity(
 ) -> None:
     stale = tmp_path / "pytest-polylogue-reused-pid-123"
     stale.mkdir()
-    (stale / conftest._OWNER_PID_MARKER).write_text(f"{os.getpid()}:100", encoding="utf-8")
+    verify_runs.pytest_basetemp_claim_path(stale, kind="managed").write_text(f"{os.getpid()}:100", encoding="utf-8")
     monkeypatch.setattr(conftest, "_process_start_ticks", lambda _pid: 200)
     old = frozen_clock.time() - 120
     os.utime(stale, (old, old))
@@ -366,7 +473,8 @@ def test_sweep_stale_polylogue_basetemps_reclaims_read_only_fixture_tree(
     payload.chmod(0o400)
     nested.chmod(0o500)
     (stale / "published").chmod(0o500)
-    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    verify_runs.pytest_basetemp_claim_path(stale, kind="managed").write_text("999999999", encoding="utf-8")
+    old = frozen_clock.time() - 120
     os.utime(stale, (old, old))
 
     conftest._sweep_stale_polylogue_basetemps(max_age_s=60, roots=(tmp_path,))
@@ -386,7 +494,7 @@ def test_sweep_stale_polylogue_basetemps_does_not_follow_top_level_symlink(
     payload.chmod(0o400)
     nested.chmod(0o500)
     target.chmod(0o500)
-    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    old = frozen_clock.time() - 24 * 60 * 60
     os.utime(target, (old, old))
 
     link = tmp_path / "pytest-polylogue-stale-symlink-123"
@@ -401,18 +509,15 @@ def test_sweep_stale_polylogue_basetemps_does_not_follow_top_level_symlink(
     assert (target.stat().st_mode, nested.stat().st_mode, payload.stat().st_mode) == before_modes
 
 
-def test_sweep_stale_polylogue_basetemps_gives_unknown_owner_a_long_grace_period(
+def test_sweep_stale_polylogue_basetemps_never_deletes_an_unknown_owner(
     tmp_path: Path,
 ) -> None:
-    """A directory with no owner marker (pre-fix leftover, or a startup
-    race) cannot be confirmed dead, so it gets a much longer grace period
-    rather than the normal stale-age cutoff."""
+    """Unknown paths may be an explicit caller racing a sweep, so retain them."""
     unmarked = tmp_path / "pytest-polylogue-unmarked-123"
     unmarked.mkdir()
-    # Past the normal (60s, for this test) stale-age cutoff, but nowhere near
-    # the multi-hour unknown-owner grace period. Derive "now" from the
-    # directory's own just-created mtime (filesystem metadata) rather than a
-    # direct host-clock read, which test code may not perform (clock_guard).
+    # Derive "now" from the directory's own just-created mtime (filesystem
+    # metadata) rather than a direct host-clock read, which test code may not
+    # perform (clock_guard).
     now = unmarked.stat().st_mtime
     past_normal_cutoff = now - 120
     os.utime(unmarked, (past_normal_cutoff, past_normal_cutoff))

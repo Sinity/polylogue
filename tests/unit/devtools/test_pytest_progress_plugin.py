@@ -322,3 +322,40 @@ def test_progress_plugin_records_collection_duration_and_summary(
         "collection_finished",
     ]
     assert events[2]["duration_s"] == 2.5
+
+
+def test_progress_plugin_merges_xdist_collection_facts_without_double_counting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_dir = tmp_path / "events"
+    selection_path = tmp_path / "selection.json"
+    summary_path = tmp_path / "summary.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_DIR", str(events_dir))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(selection_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(summary_path))
+
+    for worker_id, duration in (("gw1", 1.5), ("gw0", 2.5)):
+        ticks = iter([10.0, 10.0 + duration])
+        monkeypatch.setattr("devtools.pytest_progress_plugin.time.monotonic", lambda ticks=ticks: next(ticks))
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", worker_id)
+        pytest_progress_plugin.pytest_sessionstart(object())
+        pytest_progress_plugin.pytest_collection(object())
+        pytest_progress_plugin.pytest_deselected([_Item("tests/a.py::test_skip")])
+        pytest_progress_plugin.pytest_collection_modifyitems(
+            _Session(["tests/a.py::test_keep"]), object(), [_Item("tests/a.py::test_keep")]
+        )
+        pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    selection = json.loads(selection_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    assert selection["selected_count"] == 1
+    assert selection["deselected_count"] == 1
+    assert selection["selected_nodeids"] == ["tests/a.py::test_keep"]
+    assert summary["selected_count"] == 1
+    assert summary["deselected_count"] == 1
+    assert summary["collection_duration_s"] == 2.5

@@ -32,6 +32,7 @@ _COLLECTION_STARTED_AT: float | None = None
 _COLLECTION_DURATION_S: float | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
+_COLLECTION_FACT_SUFFIX = ".collection.json"
 
 
 def _selection_nodeid_limit() -> int:
@@ -83,6 +84,68 @@ def _write_selection(payload: dict[str, Any]) -> None:
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         tmp.replace(path)
+
+
+def _write_worker_collection_fact(payload: dict[str, Any]) -> None:
+    """Publish one worker-local collection fact for controller aggregation."""
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+    if not worker_id or not raw_dir:
+        return
+    path = Path(raw_dir) / f"{worker_id.replace('/', '-')}-{os.getpid()}{_COLLECTION_FACT_SUFFIX}"
+    payload = {"worker_id": worker_id, "pid": os.getpid(), **payload}
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+
+def _worker_collection_payloads() -> list[dict[str, Any]]:
+    """Read worker collection facts in a stable order for the controller."""
+    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+    if not raw_dir:
+        return []
+    payloads: list[tuple[str, int, str, dict[str, Any]]] = []
+    for path in Path(raw_dir).glob(f"*{_COLLECTION_FACT_SUFFIX}"):
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            worker_id = payload.get("worker_id")
+            pid = payload.get("pid")
+            if isinstance(worker_id, str) and isinstance(pid, int):
+                payloads.append((worker_id, pid, path.name, payload))
+    return [payload for _worker_id, _pid, _name, payload in sorted(payloads)]
+
+
+def _collection_payload() -> dict[str, Any]:
+    """Return this process's complete collection fact."""
+    limit = _selection_nodeid_limit()
+    payload: dict[str, Any] = {
+        "selected_count": _SELECTED_COUNT,
+        "deselected_count": _DESELECTED_COUNT,
+        "selected_nodeids": [],
+        "selected_node_markers": {},
+        "selected_nodeids_omitted": _SELECTED_COUNT,
+        "deselected_nodeids": list(_DESELECTED_NODEIDS_SAMPLE),
+        "deselected_nodeids_omitted": max(0, _DESELECTED_COUNT - len(_DESELECTED_NODEIDS_SAMPLE)),
+        "nodeid_sample_limit": limit,
+    }
+    if _COLLECTION_DURATION_S is not None:
+        payload["collection_duration_s"] = _COLLECTION_DURATION_S
+    return payload
+
+
+def _merge_worker_collection_payloads() -> dict[str, Any] | None:
+    """Choose one canonical xdist collection set and the slowest wall time."""
+    payloads = _worker_collection_payloads()
+    if not payloads:
+        return None
+    merged = dict(payloads[0])
+    durations = [payload.get("collection_duration_s") for payload in payloads]
+    numeric_durations = [duration for duration in durations if isinstance(duration, (int, float))]
+    if numeric_durations:
+        merged["collection_duration_s"] = max(numeric_durations)
+    return merged
 
 
 def _write_summary(payload: dict[str, Any]) -> None:
@@ -167,19 +230,18 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
         )
         for item in items
     }
-    payload: dict[str, Any] = {
-        "selected_count": _SELECTED_COUNT,
-        "deselected_count": _DESELECTED_COUNT,
-        "selected_nodeids": selected_nodeids,
-        "selected_node_markers": selected_node_markers,
-        "selected_nodeids_omitted": max(0, _SELECTED_COUNT - len(selected_nodeids)),
-        "deselected_nodeids": list(_DESELECTED_NODEIDS_SAMPLE),
-        "deselected_nodeids_omitted": max(0, _DESELECTED_COUNT - len(_DESELECTED_NODEIDS_SAMPLE)),
-        "nodeid_sample_limit": limit,
-    }
-    if _COLLECTION_DURATION_S is not None:
-        payload["collection_duration_s"] = _COLLECTION_DURATION_S
-    _write_selection(payload)
+    payload = _collection_payload()
+    payload.update(
+        {
+            "selected_nodeids": selected_nodeids,
+            "selected_node_markers": selected_node_markers,
+            "selected_nodeids_omitted": max(0, _SELECTED_COUNT - len(selected_nodeids)),
+        }
+    )
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        _write_worker_collection_fact(payload)
+    else:
+        _write_selection(payload)
     _write_event(
         {
             "event": "collection_finished",
@@ -270,12 +332,14 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     # summary path, so an empty worker summary cannot overwrite it.
     if os.environ.get("PYTEST_XDIST_WORKER"):
         return
+    collection_payload = _merge_worker_collection_payloads() or _collection_payload()
+    _write_selection(collection_payload)
     payload: dict[str, Any] = {
         "exitstatus": int(exitstatus),
-        "selected_count": _SELECTED_COUNT,
-        "deselected_count": _DESELECTED_COUNT,
+        "selected_count": collection_payload["selected_count"],
+        "deselected_count": collection_payload["deselected_count"],
         "slowest_reports": list(_SLOWEST_REPORTS),
     }
-    if _COLLECTION_DURATION_S is not None:
-        payload["collection_duration_s"] = _COLLECTION_DURATION_S
+    if "collection_duration_s" in collection_payload:
+        payload["collection_duration_s"] = collection_payload["collection_duration_s"]
     _write_summary(payload)
