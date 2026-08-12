@@ -50,6 +50,7 @@ class _Report:
     outcome: str
     duration: float = 0.0
     longrepr: str = ""
+    worker_id: str | None = None
 
 
 def test_progress_plugin_records_call_and_setup_failures(
@@ -73,6 +74,22 @@ def test_progress_plugin_records_call_and_setup_failures(
     ]
     assert events[1]["duration_s"] == 0.25
     assert events[2]["longrepr"] == "fixture exploded"
+
+
+def test_progress_plugin_skips_xdist_controller_forwarding_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test_one", "call", "passed", worker_id="gw0"))
+
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test_one", "call", "passed", worker_id="gw0"))
+
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [(event["nodeid"], event["when"], event["worker_id"]) for event in events] == [("test_one", "call", "gw0")]
 
 
 def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:

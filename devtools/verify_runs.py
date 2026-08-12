@@ -49,6 +49,7 @@ MAX_ADAPTIVE_PYTEST_WORKERS = 12
 PYTEST_BASETEMP_MIN_FREE_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB"
 DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB = 1024
 PYTEST_BASETEMP_REQUIRED_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"
+PYTEST_EXPLICIT_BASETEMP_ENV = "POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"
 PYTEST_MEMORY_ENVELOPE_WORKERS = 4
 PYTEST_MEMORY_ENVELOPE_PSS_KB = 4_353_168
 PYTEST_MEMORY_ENVELOPE_TMPFS_KB = 1_472_636
@@ -219,6 +220,7 @@ def aggregate_pytest_statistics(
     phase_outcomes: dict[str, dict[str, int]] = {"setup": {}, "call": {}, "teardown": {}}
     nodes: set[str] = set()
     workers: set[str] = set()
+    reports: dict[tuple[str, str], dict[str, Any]] = {}
     for row in events:
         worker = row.get("worker_id")
         if isinstance(worker, str):
@@ -227,17 +229,43 @@ def aggregate_pytest_statistics(
         if isinstance(nodeid, str) and nodeid:
             nodes.add(nodeid)
         event = row.get("event")
-        if event == "test_report":
-            when = row.get("when")
-            duration = row.get("duration_s")
-            if when in phases and isinstance(duration, (int, float)):
-                phases[when].append(float(duration))
-            outcome = row.get("outcome")
-            if isinstance(outcome, str) and when in phase_outcomes:
-                bucket = phase_outcomes[when]
-                bucket[outcome] = bucket.get(outcome, 0) + 1
-                if when == "call":
-                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        if event != "test_report" or not isinstance(nodeid, str) or not nodeid:
+            continue
+        when = row.get("when")
+        if when not in phases:
+            continue
+        key = (nodeid, when)
+        prior = reports.get(key)
+        # xdist sends the worker's original report to the controller. Prefer
+        # the worker event when both arrive, while accepting old/controller-only
+        # artifacts produced before that forwarding copy was suppressed.
+        if prior is None or (prior.get("worker_id") == "controller" and row.get("worker_id") != "controller"):
+            reports[key] = row
+
+    reports_by_node: dict[str, dict[str, dict[str, Any]]] = {}
+    for (nodeid, when), row in reports.items():
+        reports_by_node.setdefault(nodeid, {})[when] = row
+        duration = row.get("duration_s")
+        if isinstance(duration, (int, float)):
+            phases[when].append(float(duration))
+        outcome = row.get("outcome")
+        if isinstance(outcome, str):
+            bucket = phase_outcomes[when]
+            bucket[outcome] = bucket.get(outcome, 0) + 1
+
+    for node_reports in reports_by_node.values():
+        setup = node_reports.get("setup", {}).get("outcome")
+        call = node_reports.get("call", {}).get("outcome")
+        teardown = node_reports.get("teardown", {}).get("outcome")
+        if setup == "failed" or teardown == "failed":
+            terminal = "error"
+        elif isinstance(call, str):
+            terminal = call
+        elif setup == "skipped" or teardown == "skipped":
+            terminal = "skipped"
+        else:
+            continue
+        outcomes[terminal] = outcomes.get(terminal, 0) + 1
 
     resources: list[dict[str, Any]] = []
     resources_path = step_dir / "resources.jsonl"
@@ -270,6 +298,7 @@ def aggregate_pytest_statistics(
             if isinstance(raw, dict):
                 containment = raw
 
+    parent_cleanup = (step_result or {}).get("basetemp_cleanup")
     return {
         "schema_version": 1,
         "command": [str(value) for value in command],
@@ -312,7 +341,9 @@ def aggregate_pytest_statistics(
             ),
         },
         "cleanup": {
-            "complete": containment.get("tmpfs_cleanup_complete"),
+            "complete": True
+            if isinstance(parent_cleanup, str) and parent_cleanup
+            else containment.get("tmpfs_cleanup_complete"),
             "termination_reason": containment.get("termination_reason"),
             "escalated_to_sigkill": containment.get("escalated_to_sigkill"),
             "exit_code": containment.get("exit_code", (step_result or {}).get("exit")),
@@ -461,10 +492,17 @@ class VerifyRun:
                 step.update(result)
                 step["finished_at"] = utc_now()
                 step["status"] = "success" if result.get("exit") == 0 else "failed"
-                statistics_path = self.run_dir / "steps" / step_id / "statistics.json"
+                step_dir = self.run_dir / "steps" / step_id
+                if not str(step.get("name", "")).startswith("pytest"):
+                    break
+                # An interrupted runner never returns through the normal
+                # post-subprocess merge. Fold shards here, before every
+                # aggregation path, so completed worker evidence survives.
+                merge_worker_events(step_dir / "events", step_dir / "events.jsonl")
+                statistics_path = step_dir / "statistics.json"
                 with contextlib.suppress(OSError, ValueError):
                     statistics = aggregate_pytest_statistics(
-                        self.run_dir / "steps" / step_id,
+                        step_dir,
                         command=step.get("cmd", []),
                         step_result=result,
                     )
@@ -759,40 +797,22 @@ def _fs_usage(path: Path) -> dict[str, int] | None:
     return None
 
 
-def _dir_size_kb(path: Path) -> int | None:
+def _dir_usage_kb(path: Path) -> tuple[int | None, int | None]:
+    """Measure apparent and allocated file bytes in one filesystem walk."""
     if not path.exists():
-        return None
-    total = 0
+        return None, None
+    logical_total = 0
+    allocated_total = 0
     try:
         for item in path.rglob("*"):
             with contextlib.suppress(OSError):
                 if item.is_file():
-                    total += item.stat().st_size
+                    item_stat = item.stat()
+                    logical_total += item_stat.st_size
+                    allocated_total += item_stat.st_blocks * 512
     except OSError:
-        return None
-    return int(total / 1024)
-
-
-def _dir_allocated_kb(path: Path) -> int | None:
-    """Return filesystem blocks charged to files beneath *path*.
-
-    This is deliberately reported alongside apparent bytes.  On btrfs it is
-    the filesystem's per-file block charge (and may differ from compressed or
-    shared physical allocation); on tmpfs it is the RAM-backed block charge.
-    It is still the useful apples-to-apples signal available without requiring
-    filesystem-specific ioctl tooling in the test harness.
-    """
-    if not path.exists():
-        return None
-    total = 0
-    try:
-        for item in path.rglob("*"):
-            with contextlib.suppress(OSError):
-                if item.is_file():
-                    total += item.stat().st_blocks * 512
-    except OSError:
-        return None
-    return int(total / 1024)
+        return None, None
+    return int(logical_total / 1024), int(allocated_total / 1024)
 
 
 def checkout_hash(root: Path) -> str:
@@ -995,14 +1015,21 @@ def apply_managed_pytest_runtime_policy(
     unrelated command minutes or hours later.
     """
     normalized = normalize_pytest_basetemp_env(env)
+    explicit_basetemp = normalized.get(PYTEST_EXPLICIT_BASETEMP_ENV)
     default_full_suite_scratch = (
         full_suite
+        and explicit_basetemp is None
         and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
         and "POLYLOGUE_PYTEST_TMPFS" not in normalized
     )
     configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
-    manages_tmpfs = configured_tmpfs or (configured_root is None and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0")
+    explicit_tmpfs = explicit_basetemp is not None and _is_beneath(Path(explicit_basetemp), PYTEST_TMPFS_ROOT)
+    manages_tmpfs = (
+        explicit_tmpfs
+        or configured_tmpfs
+        or (explicit_basetemp is None and configured_root is None and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0")
+    )
     policy = adaptive_pytest_runtime_policy(
         worker_count=worker_count,
         shm_free_kb=None if manages_tmpfs else 0,
@@ -1036,11 +1063,28 @@ def apply_managed_pytest_runtime_policy(
         # Keep that ceiling for explicit tmpfs runs; use NVMe for the default
         # broad route instead of guessing the next aggregate peak.
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
-    selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
-    if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:
+    if explicit_basetemp is not None:
+        selected_root = Path(explicit_basetemp)
+        selected_label = "explicit"
+        free_kb = _headroom_kb(selected_root)
+        min_free_kb = pytest_basetemp_min_free_kb(normalized)
+        if free_kb is None or free_kb < min_free_kb:
+            raise PytestResourceError(
+                "explicit pytest basetemp does not have enough free space "
+                f"({selected_root}: {free_kb / 1024:.0f} MiB free, need >= {min_free_kb / 1024:.0f} MiB)"
+                if free_kb is not None
+                else f"explicit pytest basetemp is unreachable: {selected_root}"
+            )
+    else:
+        selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
+        free_kb = _headroom_kb(selected_root)
+    if (
+        explicit_basetemp is None
+        and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        and selected_root != PYTEST_TMPFS_ROOT
+    ):
         normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(selected_root)
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
-    free_kb = _headroom_kb(selected_root)
     required_kb = pytest_basetemp_required_kb(normalized)
     policy = replace(
         policy,
@@ -1228,6 +1272,9 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
     refusal here would just be noise for a monitoring/cleanup path. Fall back
     to the top placement candidate, ignoring headroom, rather than raising.
     """
+    explicit = env.get(PYTEST_EXPLICIT_BASETEMP_ENV)
+    if explicit:
+        return Path(explicit)
     try:
         scratch_root, _label = resolve_pytest_basetemp_root(env)
     except PytestResourceError:
@@ -1245,7 +1292,8 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
 
 def pytest_tmpfs_budget_kb(env: Mapping[str, str]) -> int | None:
     """Return the bounded per-run tmpfs budget shared by all pytest workers."""
-    configured_root = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    explicit = env.get(PYTEST_EXPLICIT_BASETEMP_ENV)
+    configured_root = explicit or env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
     if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or (configured_root is not None and not configured_tmpfs):
         return None
@@ -1266,6 +1314,8 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
     basetemps immediately instead of waiting for the next pytest startup sweep.
     """
 
+    if env.get(PYTEST_EXPLICIT_BASETEMP_ENV):
+        return None
     basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
     if not basetemp.name.startswith("pytest-polylogue-") or "-seeded-" in basetemp.name:
         return None
@@ -1338,8 +1388,7 @@ class ResourceSampler:
             or now - self._last_basetemp_size_sample_at >= self._basetemp_size_interval_s
         )
         if should_sample:
-            self._last_basetemp_size_kb = _dir_size_kb(self._basetemp)
-            self._last_basetemp_allocated_kb = _dir_allocated_kb(self._basetemp)
+            self._last_basetemp_size_kb, self._last_basetemp_allocated_kb = _dir_usage_kb(self._basetemp)
             self._last_basetemp_size_sample_at = now
         return self._last_basetemp_size_kb, self._last_basetemp_allocated_kb
 

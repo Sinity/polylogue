@@ -58,13 +58,33 @@ def test_test_tmp_path_reclamation_runs_after_failure_or_interrupt(
     tree = tmp_path / "test-private"
     tree.mkdir()
     fixture_generator = cast(Any, conftest._reclaim_test_tmp_path).__wrapped__
-    cleanup = cast("Generator[None, BaseException, None]", fixture_generator(tree))
+    request = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=None)))
+    cleanup = cast("Generator[None, BaseException, None]", fixture_generator(tree, request))
 
     assert next(cleanup) is None
     with pytest.raises(type(exception)):
         cleanup.throw(exception)
 
     assert not tree.exists()
+
+
+def test_test_tmp_path_reclamation_keeps_explicit_diagnostic_basetemp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    explicit = tmp_path / "diagnostic"
+    tree = explicit / "test-private"
+    tree.mkdir(parents=True)
+    fixture_generator = cast(Any, conftest._reclaim_test_tmp_path).__wrapped__
+    request = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(explicit))))
+    monkeypatch.delenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", raising=False)
+    cleanup = cast("Generator[None, BaseException, None]", fixture_generator(tree, request))
+
+    assert next(cleanup) is None
+    with pytest.raises(RuntimeError):
+        cleanup.throw(RuntimeError("failed diagnostic rerun"))
+
+    assert tree.exists()
 
 
 def test_managed_pytest_temp_root_defaults_to_scratch(

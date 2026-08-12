@@ -1003,9 +1003,13 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
         )
         + "\n"
     )
-    (step / "containment.json").write_text(json.dumps({"tmpfs_cleanup_complete": True, "exit_code": 0}))
+    (step / "containment.json").write_text(json.dumps({"tmpfs_cleanup_complete": False, "exit_code": 0}))
 
-    result = aggregate_pytest_statistics(step, command=["pytest"], step_result={"exit": 0})
+    result = aggregate_pytest_statistics(
+        step,
+        command=["pytest"],
+        step_result={"exit": 0, "basetemp_cleanup": "/realm/tmp/polylogue-pytest/pytest-polylogue-run"},
+    )
 
     assert result["node_count"] == 1
     assert result["phases"]["call"]["p50_s"] == 2.0
@@ -1013,6 +1017,63 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
     assert result["storage"]["basetemp_logical_bytes_max"] == 12 * 1024
     assert result["resources"]["peak_tree_pss_kb"] == 80
     assert result["cleanup"]["complete"] is True
+
+
+def test_aggregate_pytest_statistics_deduplicates_xdist_reports_and_terminal_failures(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    rows = [
+        {
+            "event": "test_report",
+            "nodeid": "test_setup",
+            "when": "setup",
+            "outcome": "failed",
+            "duration_s": 1.0,
+            "worker_id": "gw0",
+        },
+        {
+            "event": "test_report",
+            "nodeid": "test_setup",
+            "when": "setup",
+            "outcome": "failed",
+            "duration_s": 1.0,
+            "worker_id": "controller",
+        },
+        {
+            "event": "test_report",
+            "nodeid": "test_teardown",
+            "when": "call",
+            "outcome": "passed",
+            "duration_s": 0.2,
+            "worker_id": "gw1",
+        },
+        {
+            "event": "test_report",
+            "nodeid": "test_teardown",
+            "when": "teardown",
+            "outcome": "failed",
+            "duration_s": 0.3,
+            "worker_id": "gw1",
+        },
+    ]
+    (step / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    result = aggregate_pytest_statistics(step, command=["pytest", "-n", "2"])
+
+    assert result["phases"]["setup"]["count"] == 1
+    assert result["xdist"]["worker_count"] == 2
+    assert result["outcomes"] == {"error": 2}
+
+
+def test_verify_run_statistics_only_cover_pytest_steps(tmp_path: Path) -> None:
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="ruff check", cmd=["ruff", "check"])
+
+    run.finish_step(step_id=artifacts.step_id, result={"exit": 0, "duration_s": 0.1})
+
+    step = run._payload["steps"][0]
+    assert "statistics" not in step
+    assert not artifacts.statistics_path.exists()
 
 
 def test_verify_run_embeds_compact_statistics_before_worktree_cleanup(tmp_path: Path) -> None:
@@ -1034,10 +1095,35 @@ def test_verify_run_embeds_compact_statistics_before_worktree_cleanup(tmp_path: 
 
     run.finish_step(step_id=artifacts.step_id, result={"exit": 0, "duration_s": 0.25})
     payload = run.finish(exit_code=0, duration_s=0.25)
+    shutil.rmtree(run.run_dir)
 
     statistics = payload["steps"][0]["statistics"]
     assert statistics["node_count"] == 1
     assert statistics["phases"]["call"]["p50_s"] == 0.25
+
+
+def test_interrupted_run_merges_worker_events_before_statistics(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
+    artifacts.events_dir.mkdir()
+    (artifacts.events_dir / "gw0-1.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/unit/example.py::test_one",
+                "when": "call",
+                "outcome": "passed",
+                "duration_s": 0.2,
+                "worker_id": "gw0",
+            }
+        )
+        + "\n"
+    )
+
+    run.finish_interrupted_steps(exit_code=130, diagnosis="pytest_interrupted")
+
+    assert artifacts.events_merged_path.exists()
+    assert run._payload["steps"][0]["statistics"]["node_count"] == 1
 
 
 def test_print_history_accepts_verify_and_focused_run_records(
@@ -1083,6 +1169,21 @@ def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path
 
     rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
     assert sorted(row["sequence"] for row in rows) == list(range(64))
+
+
+def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_load_history",
+        lambda: [
+            {"tier": "quick", "steps": [{"name": "ruff check", "duration_s": 1.0}]},
+            {"tier": "focused-test", "steps": [{"name": "pytest focused", "duration_s": 999.0}]},
+        ],
+    )
+
+    flags = verify._compare_against_last([{"name": "ruff check", "duration_s": 7.0}])
+
+    assert flags and "ruff check" in flags[0]
 
 
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2020,12 +2121,12 @@ def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypat
     (basetemp / "artifact.txt").write_text("payload")
     calls = 0
 
-    def counted_size(_path: Path) -> int:
+    def counted_usage(_path: Path) -> tuple[int, int]:
         nonlocal calls
         calls += 1
-        return calls
+        return calls, calls + 1
 
-    monkeypatch.setattr("devtools.verify_runs._dir_size_kb", counted_size)
+    monkeypatch.setattr("devtools.verify_runs._dir_usage_kb", counted_usage)
     sampler = ResourceSampler(
         root_pid=os.getpid(),
         run_id="test-run",
@@ -2038,6 +2139,7 @@ def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypat
     second = sampler.sample(event="sample")
 
     assert first["basetemp_size_kb"] == 1
+    assert first["basetemp_allocated_kb"] == 2
     assert second["basetemp_size_kb"] == 1
     assert calls == 1
 
@@ -2864,6 +2966,45 @@ def test_explicit_basetemp_root_retains_managed_resource_monitoring(
     assert metadata["resource_sample_count"] >= 1
 
 
+def test_run_propagates_explicit_basetemp_to_resource_policy(tmp_path: Path) -> None:
+    explicit = tmp_path / "diagnostic-basetemp"
+    captured: dict[str, str] = {}
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+
+    def apply_policy(env: dict[str, str], **_kwargs: object) -> tuple[dict[str, str], None]:
+        captured.update(env)
+        return env, None
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", side_effect=apply_policy),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest", "--basetemp", str(explicit)])
+
+    assert rc == 0
+    assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
+
+
+def test_explicit_basetemp_policy_uses_actual_path_for_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    explicit = tmp_path / "diagnostic-basetemp"
+    explicit.mkdir()
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 32 * 1024 * 1024)
+
+    _env, policy = apply_managed_pytest_runtime_policy(
+        {"POLYLOGUE_PYTEST_EXPLICIT_BASETEMP": str(explicit)}, worker_count=0, full_suite=False
+    )
+
+    assert policy is not None
+    assert policy.basetemp_root == str(explicit)
+    assert policy.basetemp_label == "explicit"
+
+
 def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
 
@@ -3536,7 +3677,7 @@ def test_verify_main_types_skip_slow_terminal_authority(
         patch("devtools.verify._run", side_effect=fake_run),
         patch("devtools.verify.build_verify_steps", return_value=[("pytest full", ["pytest"])]),
         patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._save_history"),
+        patch("devtools.verify._save_history") as save_history,
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
     ):
@@ -3546,6 +3687,7 @@ def test_verify_main_types_skip_slow_terminal_authority(
     assert payload["verification_scope"] == expected_scope
     assert payload["release_baseline_allowed"] is expected_permission
     assert payload["terminal_authorization"] == ("narrow-terminal" if expected_permission else None)
+    assert save_history.call_args.args[0]["checkout_root"] == str(ROOT.resolve())
 
 
 def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:
@@ -3554,11 +3696,13 @@ def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.Ca
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._testmon_preflight", return_value=None),
         patch("devtools.verify._run") as run,
+        patch("devtools.verify._save_history") as save_history,
     ):
         rc = main(["--json"])
 
     assert rc == 125
     run.assert_not_called()
+    assert save_history.call_args.args[0]["diagnosis"] == "pytest_resource_preflight_failed"
     assert "only 0.50 GiB available" in capsys.readouterr().err
 
 

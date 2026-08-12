@@ -321,6 +321,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 @pytest.fixture(autouse=True)
 def _reclaim_test_tmp_path(
     tmp_path: Path,
+    request: pytest.FixtureRequest,
 ) -> Iterator[None]:
     """Release each test's private tree as soon as its teardown finishes.
 
@@ -328,8 +329,14 @@ def _reclaim_test_tmp_path(
     not in an unbounded filesystem witness. Retaining every failed tree made
     full-suite tmpfs usage proportional to the number of failures and caused
     a calm 8-worker run to exceed 2 GiB before completing. A failing node can
-    still be rerun with an explicit basetemp when its files matter.
+    still be rerun with an explicit basetemp when its files matter. That
+    explicit diagnostic path retains its per-test trees for inspection.
     """
+    configured = getattr(request.config.option, "basetemp", None)
+    managed = os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP")
+    if configured and str(configured) != managed:
+        yield
+        return
     try:
         yield
     finally:

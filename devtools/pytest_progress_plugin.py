@@ -251,6 +251,11 @@ def pytest_runtest_makereport(item: Any, call: Any) -> Any:
 @pytest.hookimpl
 def pytest_runtest_logreport(report: Any) -> None:
     """Retain the direct/log-hook fallback used by older pytest plugins/tests."""
+    # xdist forwards each worker's report to the controller. The worker has
+    # already written the authoritative shard event through makereport; avoid
+    # recording that deserialized controller copy a second time.
+    if not os.environ.get("PYTEST_XDIST_WORKER") and getattr(report, "worker_id", None):
+        return
     _record_phase_report(report)
 
 

@@ -81,6 +81,7 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
+    PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
     PytestResourceError,
     PytestStepArtifacts,
@@ -95,7 +96,6 @@ from devtools.verify_runs import (
     env_for_pytest_step,
     force_managed_pytest_scratch,
     latest_event_from_paths,
-    merge_worker_events,
     normalize_pytest_basetemp_env,
     pytest_basetemp_path,
     pytest_tmpfs_budget_kb,
@@ -1520,6 +1520,9 @@ def _run(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
+    explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd)
+    if explicit_basetemp is not None:
+        env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
     pytest_tmpfs = False
     pytest_tmpfs_budget_mb: float | None = None
     runtime_policy = None
@@ -1567,21 +1570,26 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    interrupted = False
     if is_pytest:
         try:
-            result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+            try:
+                result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+            except KeyboardInterrupt:
+                interrupted = True
+                result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
         finally:
             basetemp_cleanup = cleanup_managed_pytest_basetemp(
                 root=ROOT,
                 run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
                 env=env,
             )
-        if artifacts is not None:
-            merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
-            with contextlib.suppress(FileNotFoundError):
-                shutil.copyfile(PYTEST_PROGRESS_PATH, artifacts.progress_path)
     else:
-        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+        try:
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+        except KeyboardInterrupt:
+            interrupted = True
+            result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
     if artifacts is not None:
@@ -1761,6 +1769,9 @@ def _run(
             summary=summary if isinstance(summary, dict) else None,
             progress_event=metadata.get("progress_event") if isinstance(metadata.get("progress_event"), str) else None,
         )
+        if interrupted:
+            diagnosis = "pytest_interrupted"
+            metadata["termination_reason"] = "operator_interrupt"
         metadata["diagnosis"] = diagnosis
         termination_reason = (
             metadata.get("termination_reason") if isinstance(metadata.get("termination_reason"), str) else None
@@ -1797,17 +1808,8 @@ def _run(
                 **resource_summary,
             }
             artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")
-            copy_current_pytest_artifacts(
-                Path.cwd(),
-                artifacts,
-                legacy_paths={
-                    "progress_path": PYTEST_PROGRESS_PATH,
-                    "events_merged_path": PYTEST_EVENTS_PATH,
-                    "selection_path": PYTEST_SELECTION_PATH,
-                    "summary_path": PYTEST_SUMMARY_PATH,
-                    "output_path": PYTEST_OUTPUT_PATH,
-                },
-            )
+    elif interrupted:
+        metadata = {"diagnosis": "verification_interrupted", "termination_reason": "operator_interrupt"}
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -1820,7 +1822,35 @@ def _run(
         run.finish_step(
             step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": result.returncode, **metadata}
         )
+    if is_pytest and artifacts is not None:
+        copy_current_pytest_artifacts(
+            Path.cwd(),
+            artifacts,
+            legacy_paths={
+                "progress_path": PYTEST_PROGRESS_PATH,
+                "events_merged_path": PYTEST_EVENTS_PATH,
+                "selection_path": PYTEST_SELECTION_PATH,
+                "summary_path": PYTEST_SUMMARY_PATH,
+                "output_path": PYTEST_OUTPUT_PATH,
+            },
+        )
     return result.returncode, elapsed, metadata
+
+
+def _pytest_command_basetemp(cmd: Sequence[str], *, cwd: str | None) -> Path | None:
+    """Return the effective explicit pytest basetemp, if the command has one."""
+    raw_path: str | None = None
+    for index, argument in enumerate(cmd):
+        if argument.startswith("--basetemp="):
+            raw_path = argument.partition("=")[2]
+        elif argument == "--basetemp" and index + 1 < len(cmd):
+            raw_path = cmd[index + 1]
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (Path(cwd) if cwd is not None else Path.cwd()) / path
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -2115,7 +2145,18 @@ def _compare_against_last(step_results: list[dict[str, Any]]) -> list[str]:
     entries = _load_history()
     if len(entries) < 1:
         return []
-    last = entries[-1]
+    current_names = {str(step.get("name")) for step in step_results if isinstance(step.get("name"), str)}
+    last = next(
+        (
+            entry
+            for entry in reversed(entries)
+            if entry.get("tier") != "focused-test"
+            and any(isinstance(step, dict) and step.get("name") in current_names for step in entry.get("steps", []))
+        ),
+        None,
+    )
+    if last is None:
+        return []
     last_steps = {s["name"]: s["duration_s"] for s in last.get("steps", [])}
     flags: list[str] = []
     for s in step_results:
@@ -3405,11 +3446,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         except RuntimeError as exc:
             sys.stderr.write(f"verify: {exc}\n")
-            verify_run.finish(
+            early_payload = verify_run.finish(
                 exit_code=125,
                 duration_s=time.monotonic() - t0,
                 diagnosis="testmon_environment_identity_unavailable",
             )
+            _save_history(early_payload)
             return 125
         resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
         prepared_seed_attempt = _prepare_testmon_seed_attempt(
@@ -3441,7 +3483,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     except PytestResourceError as exc:
         sys.stderr.write(f"verify: {exc}\n")
-        verify_run.finish(exit_code=125, duration_s=time.monotonic() - t0, diagnosis="pytest_resource_preflight_failed")
+        early_payload = verify_run.finish(
+            exit_code=125,
+            duration_s=time.monotonic() - t0,
+            diagnosis="pytest_resource_preflight_failed",
+        )
+        _save_history(early_payload)
         return 125
 
     step_results: list[dict[str, Any]] = []
@@ -3580,7 +3627,7 @@ def main(argv: list[str] | None = None) -> int:
             _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
         if rc != 0:
             exit_code = rc
-            if _stop_after_failed_step(label):
+            if rc == 130 or _stop_after_failed_step(label):
                 break
 
     seed_receipt: dict[str, Any] | None = None
@@ -3605,6 +3652,7 @@ def main(argv: list[str] | None = None) -> int:
         "git_head": head,
         "tier": tier,
         "run_id": verify_run.run_id,
+        "checkout_root": str(ROOT.resolve()),
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,

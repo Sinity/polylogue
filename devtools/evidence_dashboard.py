@@ -9,7 +9,7 @@ PRs #1083/#1086/#1087/#1088:
 - pytest health from ``.cache/verify/last-pytest.json``;
 - coverage from ``.coverage`` / ``coverage.xml`` when present;
 - benchmark/SLO catalog rows and their required-artifact coverage;
-- static gate status from ``.cache/verify-history.jsonl``;
+- static gate status from the shared XDG verify history;
 - witness lifecycle counts;
 - mutation/benchmark campaign freshness.
 
@@ -28,12 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
+from devtools.verify_runs import VERIFY_HISTORY_PATH
 
 ROOT = _get_root()
 
 # Artifact paths (relative to repo root).
 PYTEST_REPORT_REL = Path(".cache/verify/last-pytest.json")
-VERIFY_HISTORY_REL = Path(".cache/verify-history.jsonl")
 LAST_VERIFY_RESULT_REL = Path(".cache/last-verify-result.json")
 COVERAGE_DATA_REL = Path(".coverage")
 COVERAGE_XML_REL = Path("coverage.xml")
@@ -225,7 +225,7 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
 
 
 def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
-    history_path = root / VERIFY_HISTORY_REL
+    history_path = VERIFY_HISTORY_PATH
     last_result_path = root / LAST_VERIFY_RESULT_REL
 
     # Prefer last-verify-result.json (the most recent run) then walk back through
@@ -291,7 +291,7 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     failing = [g for g in gates if g.get("status") == "fail"]
     return {
         "available": last_result_path.exists() or history_path.exists(),
-        "history_path": str(VERIFY_HISTORY_REL),
+        "history_path": str(history_path),
         "last_result_path": str(LAST_VERIFY_RESULT_REL),
         "total_gates_tracked": len(_STATIC_GATE_NAMES),
         "gates_with_status": sum(1 for g in gates if g.get("available")),
