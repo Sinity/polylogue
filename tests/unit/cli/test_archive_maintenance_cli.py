@@ -1862,9 +1862,18 @@ def test_cursor_authority_reconcile_cli_accepts_verified_backup_directory(
     backup.mkdir()
     (backup / "manifest.json").write_text("{}", encoding="utf-8")
     observed: dict[str, Path] = {}
+    configured_root = tmp_path / "configured-archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured_root))
 
-    def fake_apply(*, plan_path: Path, backup_manifest: Path, receipt: Path) -> dict[str, object]:
+    def fake_apply(
+        *,
+        plan_path: Path,
+        backup_manifest: Path,
+        receipt: Path,
+        archive_root: Path,
+    ) -> dict[str, object]:
         observed["backup"] = backup_manifest
+        observed["archive_root"] = archive_root
         return {"verdict": "failed"}
 
     monkeypatch.setattr(cursor_authority_reconcile, "apply_reconciliation", fake_apply)
@@ -1888,6 +1897,49 @@ def test_cursor_authority_reconcile_cli_accepts_verified_backup_directory(
 
     assert result.exit_code == 0
     assert observed["backup"] == backup
+    assert observed["archive_root"] == configured_root
+
+
+def test_cursor_authority_reconcile_cli_passes_configured_root_to_plan(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.maintenance import cursor_authority_reconcile
+
+    configured_root = tmp_path / "configured-archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured_root))
+    observed: dict[str, Path] = {}
+
+    def fake_build(*, source_path_file: Path, output_plan: Path, archive_root: Path) -> dict[str, object]:
+        observed["source_path_file"] = source_path_file
+        observed["output_plan"] = output_plan
+        observed["archive_root"] = archive_root
+        return {"status": "planned"}
+
+    monkeypatch.setattr(cursor_authority_reconcile, "build_reconciliation_plan", fake_build)
+    source_path_file = tmp_path / "selected-path"
+    output_plan = tmp_path / "plan.json"
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "cursor-authority-reconcile",
+            "--source-path-file",
+            str(source_path_file),
+            "--output-plan",
+            str(output_plan),
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert observed == {
+        "source_path_file": source_path_file,
+        "output_plan": output_plan,
+        "archive_root": configured_root,
+    }
 
 
 @pytest.mark.parametrize(

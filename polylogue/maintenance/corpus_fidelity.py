@@ -14,17 +14,10 @@ pass for a genuinely missing message.
 
 from __future__ import annotations
 
-import argparse
 import collections
-import json
 import sqlite3
-from pathlib import Path
 from typing import Any
 
-from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-DEFAULT_ROOT = Path("/realm/db/polylogue")
 DEFAULT_SAMPLE_LIMIT = 10
 
 
@@ -228,89 +221,9 @@ def audit_revision_fidelity(
     }
 
 
-def audit_corpus_fidelity(archive_root: Path, *, sample_limit: int = DEFAULT_SAMPLE_LIMIT) -> dict[str, Any]:
-    """Run all corpus measurements against the active production tiers."""
-    source_path = archive_root / "source.db"
-    index_path = resolve_active_index_path(archive_root)
-    with open_readonly_connection(source_path) as source, open_readonly_connection(index_path) as index:
-        return {
-            "archive_root": str(archive_root),
-            "absences": audit_absences(source, index, sample_limit=sample_limit),
-            "attachment_fidelity": audit_attachment_fidelity(index),
-            "revision_fidelity": audit_revision_fidelity(source, index, sample_limit=sample_limit),
-        }
-
-
-def _failing_measures(report: dict[str, Any]) -> dict[str, int]:
-    absence = report["absences"]
-    attachment = report["attachment_fidelity"]
-    revision = report["revision_fidelity"]
-    failures = {
-        "absent_documents": int(absence["absent_total"]),
-        "raws_without_attributable_identity": int(absence["raws_without_attributable_identity"]),
-        "unfetched_attachment_refs": int(attachment["refs_unfetched"]),
-        "unprovenanced_unavailable_attachment_refs": int(attachment["refs_unavailable_without_provenance"]),
-        "unexplained_revision_shortfall": int(revision["unexplained_shortfall"]),
-    }
-    return {key: value for key, value in failures.items() if value}
-
-
-def format_report(report: dict[str, Any]) -> str:
-    """Render the operator-facing report used by the compatibility script."""
-    absence = report["absences"]
-    attachment = report["attachment_fidelity"]
-    revision = report["revision_fidelity"]
-    lines = [
-        f"archive: {report['archive_root']}",
-        f"\nABSENCES  {absence['absent_total']} of {absence['documents_known']} known documents",
-    ]
-    lines.extend(f"    {count:6d}  {key}" for key, count in absence["absent_by_origin_cause"].items())
-    if absence["raws_without_attributable_identity"]:
-        lines.append(f"    {absence['raws_without_attributable_identity']:6d}  raws-without-attributable-identity")
-    lines.append(
-        f"\nATTACHMENT FIDELITY  acquired={attachment['refs_acquired']} not-acquired={attachment['refs_not_acquired']}"
-    )
-    lines.extend(
-        f"    {count:6d}  {key}"
-        for key, count in sorted(attachment["breakdown"].items(), key=lambda item: -item[1])[:8]
-    )
-    lines.append(
-        f"\nREVISION FIDELITY  {revision['unexplained_shortfall']} unexplained, "
-        f"{revision['explained_by_event_reclassification']} explained by event reclassification"
-    )
-    lines.extend(
-        f"    {count:6d}  {origin}  (unexplained)" for origin, count in revision["unexplained_by_origin"].items()
-    )
-    failing = _failing_measures(report)
-    if failing:
-        lines.append("\nFAILING MEASURES")
-        lines.extend(f"    {value:8d}  {key}" for key, value in failing.items())
-    lines.append(f"\nVERDICT: {'PASS' if not failing else 'FAIL'}")
-    return "\n".join(lines)
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive-root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--json", type=Path, default=None)
-    args = parser.parse_args(argv)
-    report = audit_corpus_fidelity(args.archive_root)
-    failing = _failing_measures(report)
-    report["failing_measures"] = failing
-    report["verdict"] = "PASS" if not failing else "FAIL"
-    if args.json:
-        args.json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(format_report(report))
-    return 0 if not failing else 1
-
-
 __all__ = [
-    "DEFAULT_ROOT",
     "DEFAULT_SAMPLE_LIMIT",
     "audit_absences",
     "audit_attachment_fidelity",
-    "audit_corpus_fidelity",
     "audit_revision_fidelity",
-    "format_report",
-    "main",
 ]

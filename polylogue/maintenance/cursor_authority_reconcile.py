@@ -25,6 +25,7 @@ from polylogue.api import Polylogue
 from polylogue.config import Config
 from polylogue.core.enums import IngestOutcome
 from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+from polylogue.paths import archive_root as configured_archive_root
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.batch import (
     LiveBatchProcessor,
@@ -41,7 +42,6 @@ from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_
 
 PLAN_FORMAT = "polylogue.cursor-authority-reconciliation-plan.v1"
 RECEIPT_FORMAT = "polylogue.cursor-authority-reconciliation-receipt.v1"
-ARCHIVE_ROOT = Path("/realm/db/polylogue")
 _REQUIRED_TIERS = ("source", "index", "ops", "audit")
 
 
@@ -95,14 +95,10 @@ def _stat_observation(path: Path) -> tuple[int, int, int, int, int]:
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
-def _archive_root() -> Path:
-    """Return the fixed archive root for this command.
+def _archive_root(explicit: Path | None = None) -> Path:
+    """Resolve one archive authority for the complete operation."""
 
-    This deliberately does not call ``polylogue.paths.archive_root`` or read
-    any ambient archive-root environment variable.
-    """
-
-    return ARCHIVE_ROOT
+    return explicit if explicit is not None else configured_archive_root()
 
 
 def _read_private_source_path(path_file: Path) -> Path:
@@ -549,7 +545,12 @@ def _validated_blob_inventory(
     }
 
 
-def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[str, object]:
+def _validate_backup(
+    manifest_path: Path,
+    plan: Mapping[str, object],
+    *,
+    archive_root: Path | None = None,
+) -> dict[str, object]:
     root = _backup_root(manifest_path)
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -569,10 +570,10 @@ def _validate_backup(manifest_path: Path, plan: Mapping[str, object]) -> dict[st
         raise CursorAuthorityReconciliationError("backup lacks complete blob rollback evidence")
     if not (root / "blob").is_dir() or not (root / "blob-inventory.json").is_file():
         raise CursorAuthorityReconciliationError("backup lacks blob rollback evidence")
-    archive_root = _archive_root()
-    location = ArchiveLocation.resolve(archive_root)
+    resolved_archive_root = _archive_root(archive_root)
+    location = ArchiveLocation.resolve(resolved_archive_root)
     expected_active_index = plan.get("active_index")
-    if expected_active_index is not None and expected_active_index != _active_index_binding(archive_root):
+    if expected_active_index is not None and expected_active_index != _active_index_binding(resolved_archive_root):
         raise CursorAuthorityReconciliationError("active index generation changed since planning")
     try:
         verify_verification_receipt(
@@ -681,8 +682,13 @@ def _require_daemon_stopped(root: Path) -> None:
         raise CursorAuthorityReconciliationError("daemon must be stopped for cursor-authority reconciliation")
 
 
-def build_reconciliation_plan(*, source_path_file: Path, output_plan: Path) -> dict[str, object]:
-    root = _archive_root()
+def build_reconciliation_plan(
+    *,
+    source_path_file: Path,
+    output_plan: Path,
+    archive_root: Path | None = None,
+) -> dict[str, object]:
+    root = _archive_root(archive_root)
     _require_daemon_stopped(root)
     source_path = _read_private_source_path(source_path_file)
     plan = _build_plan(root, source_path)
@@ -913,18 +919,24 @@ def _receipt_payload(
     }
 
 
-def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Path) -> dict[str, object]:
+def apply_reconciliation(
+    *,
+    plan_path: Path,
+    backup_manifest: Path,
+    receipt: Path,
+    archive_root: Path | None = None,
+) -> dict[str, object]:
     plan = _load_plan(plan_path)
     if plan.get("status") != "planned":
         raise CursorAuthorityReconciliationError("only a planned one-path reconciliation can be applied")
-    root = _archive_root()
+    root = _archive_root(archive_root)
     _require_daemon_stopped(root)
     if receipt.exists():
         raise CursorAuthorityReconciliationError(f"output path already exists: {receipt}")
     before_projection = _before_projection(plan)
     owner = acquire_durable_archive_ownership(root, owner_id=f"cursor-authority-reconcile:{os.getpid()}")
     with owner:
-        backup_evidence = _validate_backup(backup_manifest, plan)
+        backup_evidence = _validate_backup(backup_manifest, plan, archive_root=root)
         current_path = _find_path_by_digest(root, str(plan["selected_path_digest"]))
         _require_selected_path_in_before_projection(plan, current_path)
         try:
@@ -1063,7 +1075,6 @@ def apply_reconciliation(*, plan_path: Path, backup_manifest: Path, receipt: Pat
 
 
 __all__ = [
-    "ARCHIVE_ROOT",
     "PLAN_FORMAT",
     "RECEIPT_FORMAT",
     "CursorAuthorityReconciliationError",

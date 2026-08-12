@@ -7,6 +7,8 @@ from pathlib import Path
 
 import click
 
+from polylogue.paths import archive_root
+
 
 @click.command("cursor-authority-reconcile")
 @click.option("--source-path-file", type=click.Path(path_type=Path, dir_okay=False), default=None)
@@ -37,13 +39,24 @@ def cursor_authority_reconcile_command(
                 raise click.UsageError("--apply requires --plan, --backup-manifest, and --receipt")
             if source_path_file is not None or output_plan is not None:
                 raise click.UsageError("--apply does not accept --source-path-file or --output-plan")
-            result = apply_reconciliation(plan_path=plan_path, backup_manifest=backup_manifest, receipt=receipt)
+            root = archive_root()
+            result = apply_reconciliation(
+                plan_path=plan_path,
+                backup_manifest=backup_manifest,
+                receipt=receipt,
+                archive_root=root,
+            )
         else:
             if source_path_file is None or output_plan is None:
                 raise click.UsageError("dry-run requires --source-path-file and --output-plan")
             if plan_path is not None or backup_manifest is not None or receipt is not None:
                 raise click.UsageError("dry-run accepts only --source-path-file and --output-plan")
-            result = build_reconciliation_plan(source_path_file=source_path_file, output_plan=output_plan)
+            root = archive_root()
+            result = build_reconciliation_plan(
+                source_path_file=source_path_file,
+                output_plan=output_plan,
+                archive_root=root,
+            )
     except CursorAuthorityReconciliationError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(result, indent=2, sort_keys=True))
