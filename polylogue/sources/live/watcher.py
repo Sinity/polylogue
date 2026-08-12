@@ -444,7 +444,12 @@ class LiveWatcher:
             return
         task = asyncio.create_task(self._retry_hook_spool_directory_until_populated(directory))
         self._hook_spool_directory_retry_tasks[directory] = task
-        task.add_done_callback(lambda _task: self._hook_spool_directory_retry_tasks.pop(directory, None))
+
+        def discard_completed_task(completed: asyncio.Task[None]) -> None:
+            if self._hook_spool_directory_retry_tasks.get(directory) is completed:
+                self._hook_spool_directory_retry_tasks.pop(directory, None)
+
+        task.add_done_callback(discard_completed_task)
 
     async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
         """Wait for an added shard's first envelope until it is acknowledged."""

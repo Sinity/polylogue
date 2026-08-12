@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
@@ -17,6 +18,10 @@ from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
+
+_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS = frozenset(
+    kind.value for kind in RawFailureEvidenceKind if kind.lifecycle == "terminal"
+)
 
 _V1_RAW_CANDIDATE_SQL = """
 WITH ranked AS (
@@ -1641,18 +1646,31 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
     """
 
     result: set[str] = set()
+    raw_failure_kinds = tuple(sorted(RAW_FAILURE_EVIDENCE_KINDS))
+    terminal_raw_failure_kinds = tuple(sorted(_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS))
+    raw_failure_placeholders = ", ".join("?" for _ in raw_failure_kinds)
+    terminal_raw_failure_placeholders = ", ".join("?" for _ in terminal_raw_failure_kinds)
+    path_batch_size = 500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds)
     pending = set(source_paths)
     while pending:
-        batch = tuple(sorted(pending)[:500])
+        batch = tuple(sorted(pending)[:path_batch_size])
         pending.difference_update(batch)
         placeholders = ", ".join("?" for _ in batch)
         rows = conn.execute(
             f"""
+            WITH terminal_artifacts AS (
+                SELECT raw_id
+                FROM raw_artifacts
+                WHERE parse_as_session = 0
+                  AND (
+                      artifact_kind NOT IN ({raw_failure_placeholders})
+                      OR artifact_kind IN ({terminal_raw_failure_placeholders})
+                  )
+            )
             SELECT DISTINCT terminal_raw.source_path
-            FROM raw_artifacts AS artifact
+            FROM terminal_artifacts AS artifact
             JOIN raw_sessions AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
-            WHERE artifact.parse_as_session = 0
-              AND terminal_raw.source_path IN ({placeholders})
+            WHERE terminal_raw.source_path IN ({placeholders})
               AND terminal_raw.raw_id = (
                   SELECT newest.raw_id
                   FROM raw_sessions AS newest
@@ -1677,13 +1695,12 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                     )
                     AND NOT EXISTS (
                         SELECT 1
-                        FROM raw_artifacts AS current_artifact
+                        FROM terminal_artifacts AS current_artifact
                         WHERE current_artifact.raw_id = coordinate.raw_id
-                          AND current_artifact.parse_as_session = 0
                     )
               )
             """,
-            batch,
+            (*raw_failure_kinds, *terminal_raw_failure_kinds, *batch),
         ).fetchall()
         result.update(str(row[0]) for row in rows)
     return result

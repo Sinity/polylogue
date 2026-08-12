@@ -36,6 +36,7 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
     script = textwrap.dedent(
         f"""
         import asyncio
+        import contextlib
         import tempfile
         import threading
         from pathlib import Path
@@ -97,18 +98,15 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             while not started.is_set():
                 await asyncio.sleep(0.001)
             caller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await caller
             assert await coordinator.shutdown(timeout=0.01) is False
             # The injected writer remains blocked through interpreter
             # termination. A non-daemon bridge thread would pin this
             # subprocess after the loop closes.
             watcher.stop()
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(main())
-        finally:
-            loop.close()
+        asyncio.run(main())
         """
     )
 

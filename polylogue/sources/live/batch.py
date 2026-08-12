@@ -20,7 +20,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -2004,11 +2004,16 @@ class LiveBatchProcessor:
                 and path_artifact is not None
                 and not path_artifact.parse_as_session
                 and stat.st_size < _STREAMING_FULL_INGEST_BYTES
-                # An unknown ordinary JSON payload must reach the generic
-                # JSON route.  That route retains raw bytes and records a
-                # typed terminal outcome for malformed or empty input.
-                # Other weak-path artifacts remain excluded before acquisition.
-                and not (fallback_provider is Provider.UNKNOWN and path.suffix.lower() == ".json")
+                # An unknown JSON payload under the weak ``analysis/`` path
+                # heuristic must reach the generic JSON route. That route
+                # retains raw bytes and records a typed terminal outcome for
+                # malformed or empty input. Strong named sidecars such as
+                # ``sessions-index.json`` remain excluded before acquisition.
+                and not (
+                    fallback_provider is Provider.UNKNOWN
+                    and path.suffix.lower() == ".json"
+                    and path_artifact.kind is ArtifactKind.METADATA_DOCUMENT
+                )
                 and not has_decoded_session_evidence(path, provider=fallback_provider)
             ):
                 # Keep path-only metadata out of the generic JSON fallback,
