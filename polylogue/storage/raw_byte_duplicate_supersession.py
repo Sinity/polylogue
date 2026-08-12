@@ -114,7 +114,7 @@ def plan_byte_duplicate_supersession(
         if raw_ids is not None and limit is not None:
             raise ValueError("raw_ids cannot be combined with limit")
         query = """
-            SELECT raw_id, blob_hash, blob_size
+            SELECT raw_id, blob_hash, blob_size, origin, source_path, source_index
             FROM raw_sessions
             WHERE revision_authority = 'quarantined'
               AND logical_source_key IS NULL
@@ -150,21 +150,22 @@ def plan_byte_duplicate_supersession(
         # not here, since a raw_id can legitimately be the "other" raw for
         # every other candidate sharing its hash while still being a
         # candidate in its own right.
-        hash_to_raw_ids: dict[bytes, list[str]] = {}
+        hash_to_raws: dict[bytes, dict[str, sqlite3.Row]] = {}
         for chunk_start in range(0, len(candidate_hashes), 500):
             chunk = candidate_hashes[chunk_start : chunk_start + 500]
             placeholders = ", ".join("?" for _ in chunk)
             rows = source_conn.execute(
-                f"SELECT raw_id, blob_hash FROM raw_sessions WHERE blob_hash IN ({placeholders})",
+                f"SELECT raw_id, blob_hash, origin, source_path, source_index "
+                f"FROM raw_sessions WHERE blob_hash IN ({placeholders})",
                 chunk,
             ).fetchall()
             for row in rows:
-                hash_to_raw_ids.setdefault(bytes(row["blob_hash"]), []).append(str(row["raw_id"]))
+                hash_to_raws.setdefault(bytes(row["blob_hash"]), {})[str(row["raw_id"])] = row
 
         # Which of those raw_ids are actually materialized in index.db --
         # the one live-tier fact this classifier is allowed to read (never
         # write).
-        all_raw_ids = sorted({raw_id for raw_ids in hash_to_raw_ids.values() for raw_id in raw_ids})
+        all_raw_ids = sorted({raw_id for raws in hash_to_raws.values() for raw_id in raws})
         indexed_session_by_raw_id: dict[str, str] = {}
         for chunk_start in range(0, len(all_raw_ids), 500):
             raw_id_chunk = all_raw_ids[chunk_start : chunk_start + 500]
@@ -184,9 +185,18 @@ def plan_byte_duplicate_supersession(
         for row in candidate_rows:
             raw_id = str(row["raw_id"])
             blob_hash = bytes(row["blob_hash"])
-            other_raw_ids_for_hash = [rid for rid in hash_to_raw_ids.get(blob_hash, []) if rid != raw_id]
+            other_raws_for_hash = [
+                other
+                for other_id, other in hash_to_raws.get(blob_hash, {}).items()
+                if other_id != raw_id
+                and other["origin"] == row["origin"]
+                and other["source_path"] == row["source_path"]
+                and other["source_index"] == row["source_index"]
+            ]
             indexed_matches = sorted(
-                other_raw_id for other_raw_id in other_raw_ids_for_hash if other_raw_id in indexed_session_by_raw_id
+                str(other["raw_id"])
+                for other in other_raws_for_hash
+                if str(other["raw_id"]) in indexed_session_by_raw_id
             )
             if not indexed_matches:
                 novel_count += 1

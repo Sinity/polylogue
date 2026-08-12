@@ -545,7 +545,9 @@ def test_source_index_coverage_groups_reacquisitions_by_logical_source_key(tmp_p
     _seed_coherent_archive(tmp_path)
     source_conn = _connect(tmp_path / "source.db")
     try:
-        source_conn.execute("UPDATE raw_sessions SET logical_source_key = 'codex:session' WHERE raw_id = 'raw-1'")
+        source_conn.execute(
+            "UPDATE raw_sessions SET logical_source_key = 'codex-session:session' WHERE raw_id = 'raw-1'"
+        )
         source_conn.execute(
             """
             INSERT INTO raw_sessions(
@@ -573,7 +575,9 @@ def test_coverage_groups_retired_membership_identity_with_bound_revision(tmp_pat
     _seed_coherent_archive(tmp_path)
     source_conn = _connect(tmp_path / "source.db")
     try:
-        source_conn.execute("UPDATE raw_sessions SET logical_source_key = 'codex:session' WHERE raw_id = 'raw-1'")
+        source_conn.execute(
+            "UPDATE raw_sessions SET logical_source_key = 'codex-session:session' WHERE raw_id = 'raw-1'"
+        )
         source_conn.execute(
             """
             INSERT INTO raw_sessions(
@@ -718,10 +722,10 @@ def test_valid_byte_supersession_receipt_covers_unindexed_head(tmp_path: Path) -
         source_conn.execute(
             """
             INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
                 acquired_at_ms, revision_authority
             )
-            SELECT 'raw-superseded', origin, 'duplicate', '/duplicate',
+            SELECT 'raw-superseded', origin, 'duplicate', source_path, source_index,
                    blob_hash, blob_size, 200, 'byte_proven'
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
@@ -748,6 +752,41 @@ def test_valid_byte_supersession_receipt_covers_unindexed_head(tmp_path: Path) -
     assert check.status is OutcomeStatus.OK
     assert check.evidence["superseded_byte_duplicate_count"] == 1
     assert check.evidence["untyped_count"] == 0
+
+
+def test_byte_supersession_receipt_requires_matching_source_semantics(tmp_path: Path) -> None:
+    """Byte equality cannot collapse a raw whose path-specific replay semantics differ."""
+
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-cross-path-supersession', origin, 'duplicate', '/different-path', source_index,
+                   blob_hash, blob_size, 200, 'byte_proven'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id, duplicate_of_session_id,
+                previous_revision_authority, promoted_at_ms, tool_version, backup_manifest_path, detail
+            )
+            SELECT 'raw-cross-path-supersession', blob_hash, blob_size, 'raw-1',
+                   'codex-session:session', 'quarantined', 200, 'test', '/verified/manifest.json', ''
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["superseded_byte_duplicate_count"] == 0
+    assert check.evidence["untyped_count"] == 1
 
 
 def test_invalid_byte_supersession_receipt_does_not_cover_unindexed_head(tmp_path: Path) -> None:
@@ -1554,10 +1593,10 @@ def test_convergence_freshness_excludes_a_receipt_backed_duplicate(tmp_path: Pat
         conn.execute(
             """
             INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
                 acquired_at_ms, revision_authority
             )
-            SELECT 'raw-superseded-backlog', origin, 'duplicate-backlog', '/duplicate-backlog',
+            SELECT 'raw-superseded-backlog', origin, 'duplicate-backlog', source_path, source_index,
                    blob_hash, blob_size, 200, 'byte_proven'
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
@@ -332,6 +333,41 @@ class TestLogicalHeadsOnly:
         )
 
         assert seen_raw_ids == ["raw-new"]  # the later of the two revisions is the logical head
+
+    def test_logical_heads_only_canonicalizes_retained_membership_aliases(self, tmp_path: Path) -> None:
+        from polylogue.core.enums import Provider
+        from polylogue.schemas.observation_identity import resolve_provider_config
+        from polylogue.schemas.sampling_db import _iter_schema_units_from_db
+
+        self._seed_two_revisions(tmp_path / "source.db")
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("UPDATE raw_sessions SET logical_source_key = 'chatgpt:conv-1' WHERE raw_id = 'raw-new'")
+            conn.execute(
+                """
+                INSERT INTO raw_session_memberships(
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES ('raw-old', 'chatgpt-export:conv-1', 'conv-1', 'old', ?, 1)
+                """,
+                (b"m" * 32,),
+            )
+
+        seen_raw_ids: list[str] = []
+
+        def _record(*, raw_id: str, status: object, artifact_kind: object, source_path: object, reason: object) -> None:
+            seen_raw_ids.append(raw_id)
+
+        list(
+            _iter_schema_units_from_db(
+                Provider.CHATGPT,
+                db_path=tmp_path / "index.db",
+                config=resolve_provider_config(Provider.CHATGPT),
+                terminal_recorder=_record,
+                logical_heads_only=True,
+            )
+        )
+
+        assert seen_raw_ids == ["raw-new"]
 
 
 class TestGenerateSchemaFromSamples:

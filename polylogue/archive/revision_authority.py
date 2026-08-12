@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -58,6 +59,41 @@ def canonical_authority_logical_key(logical_key: str) -> str:
         except ValueError as exc:
             raise ValueError(f"unknown logical source key prefix: {prefix!r}") from exc
     return f"{origin.value}:{native_id}"
+
+
+def logical_head_cohort_sql(conn: sqlite3.Connection, *, raw_alias: str, has_memberships: bool) -> str:
+    """Return the canonical, membership-aware SQL partition key for raw heads."""
+
+    def _canonical_or_original(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value)
+        try:
+            return canonical_authority_logical_key(text)
+        except ValueError:
+            # A malformed legacy key must remain observable as its own cohort,
+            # never make a read-only verifier fail while grouping heads.
+            return text
+
+    conn.create_function("canonical_authority_logical_key", 1, _canonical_or_original, deterministic=True)
+    membership_key = "NULL"
+    if has_memberships:
+        membership_key = f"""
+            canonical_authority_logical_key(
+                (
+                    SELECT CASE
+                        WHEN COUNT(DISTINCT canonical_authority_logical_key(m.logical_source_key)) = 1
+                        THEN MIN(canonical_authority_logical_key(m.logical_source_key))
+                    END
+                    FROM raw_session_memberships AS m
+                    WHERE m.raw_id = {raw_alias}.raw_id
+                )
+            )
+        """
+    return (
+        f"COALESCE(canonical_authority_logical_key({raw_alias}.logical_source_key), "
+        f"{membership_key}, {raw_alias}.native_id, {raw_alias}.source_path)"
+    )
 
 
 def durable_authority_logical_keys(

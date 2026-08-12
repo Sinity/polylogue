@@ -15,6 +15,7 @@ from ijson.common import ObjectBuilder
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.raw_payload import extract_record_samples_from_raw_content
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
+from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONDocument, JSONValue, require_json_value
 from polylogue.core.provider_identity import (
@@ -36,6 +37,7 @@ from polylogue.schemas.observation_models import (
     ObservationTerminalStatus,
 )
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import connection_context
 
 logger = get_logger(__name__)
@@ -289,31 +291,36 @@ def _iter_schema_units_from_db(
     query_provider = config.db_source_name or source_name
     origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
     placeholders = ",".join("?" for _ in origins)
-    if logical_heads_only:
-        query = f"""
-            WITH heads AS (
-                SELECT
-                    source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
-                    validation_status,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY origin, COALESCE(logical_source_key, native_id, source_path)
-                        ORDER BY acquired_at_ms DESC, raw_id DESC
-                    ) AS rn
-                FROM raw_sessions
-                WHERE origin IN ({placeholders})
-            )
-            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, validation_status
-            FROM heads WHERE rn = 1
-        """
-    else:
-        query = f"""
-            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
-                   validation_status
-            FROM raw_sessions
-            WHERE origin IN ({placeholders})
-        """
     with connection_context(source_db_path) as conn:
         conn.row_factory = sqlite3.Row
+        if logical_heads_only:
+            logical_cohort_expr = logical_head_cohort_sql(
+                conn,
+                raw_alias="raw_sessions",
+                has_memberships=table_exists(conn, "raw_session_memberships"),
+            )
+            query = f"""
+                WITH heads AS (
+                    SELECT
+                        source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                        validation_status,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY origin, {logical_cohort_expr}
+                            ORDER BY acquired_at_ms DESC, raw_id DESC
+                        ) AS rn
+                    FROM raw_sessions
+                    WHERE origin IN ({placeholders})
+                )
+                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, validation_status
+                FROM heads WHERE rn = 1
+            """
+        else:
+            query = f"""
+                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                       validation_status
+                FROM raw_sessions
+                WHERE origin IN ({placeholders})
+            """
         cursor = conn.execute(query, origins)
         batch_size = 1 if config.sample_granularity == "record" else 100
         # Content-hash dedup: distinct ``raw_id``s legitimately collapse onto the

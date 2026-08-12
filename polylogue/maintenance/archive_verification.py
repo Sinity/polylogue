@@ -41,6 +41,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.logging import get_logger
@@ -501,6 +502,9 @@ def _valid_byte_duplicate_supersession_expr(conn: sqlite3.Connection, *, raw_ali
               AND receipt.blob_size = {raw_alias}.blob_size
               AND twin.blob_hash = {raw_alias}.blob_hash
               AND twin.blob_size = {raw_alias}.blob_size
+              AND twin.origin IS {raw_alias}.origin
+              AND twin.source_path IS {raw_alias}.source_path
+              AND twin.source_index IS {raw_alias}.source_index
         )
     """
 
@@ -515,16 +519,11 @@ def _logical_head_cohort_expr(conn: sqlite3.Connection, *, raw_alias: str) -> st
     they have no one raw-level cohort and must keep that fallback instead of
     being arbitrarily assigned to one member.
     """
-    membership_key = "NULL"
-    if table_exists(conn, "raw_session_memberships"):
-        membership_key = f"""
-            (
-                SELECT CASE WHEN COUNT(*) = 1 THEN MIN(m.logical_source_key) END
-                FROM raw_session_memberships AS m
-                WHERE m.raw_id = {raw_alias}.raw_id
-            )
-        """
-    return f"COALESCE({raw_alias}.logical_source_key, {membership_key}, {raw_alias}.native_id, {raw_alias}.source_path)"
+    return logical_head_cohort_sql(
+        conn,
+        raw_alias=raw_alias,
+        has_memberships=table_exists(conn, "raw_session_memberships"),
+    )
 
 
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
