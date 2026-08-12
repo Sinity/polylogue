@@ -2646,6 +2646,10 @@ def test_managed_pytest_policy_preserves_headroom_for_explicit_tmpfs_root(
 def test_full_suite_explicit_root_requires_measured_basetemp_space(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # The managed test harness itself uses /dev/shm, so keep this custom-root
+    # regression on a distinct disk route rather than accidentally admitting
+    # it as a configured tmpfs path.
+    monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", tmp_path / "other-shm")
     monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
     monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
     monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
@@ -3263,22 +3267,45 @@ def test_explicit_tmpfs_basetemp_requires_declared_demand_and_headroom(
         )
 
 
-def test_explicit_tmpfs_basetemp_refuses_declared_demand_above_adaptive_memory_cap(
+def test_explicit_tmpfs_basetemp_reports_adaptive_and_filesystem_refusals_together(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
     _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=3072)
     explicit = shm / "pytest-polylogue-diagnostic"
-    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 4 * 1024 * 1024)
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 2 * 1024 * 1024)
 
-    with pytest.raises(
-        PytestResourceError,
-        match=r"declared demand=1522 MiB, safe tmpfs budget=1082 MiB",
-    ):
+    with pytest.raises(PytestResourceError) as excinfo:
         apply_managed_pytest_runtime_policy(
             {verify_runs.PYTEST_EXPLICIT_BASETEMP_ENV: str(explicit)}, worker_count=0, full_suite=True
         )
+    message = str(excinfo.value)
+
+    assert "declared demand=1522 MiB" in message
+    assert "safe tmpfs budget=1082 MiB" in message
+    assert "available filesystem space=2048 MiB" in message
+    assert "required filesystem headroom=2546 MiB" in message
+
+
+def test_configured_tmpfs_basetemp_refuses_declared_demand_above_adaptive_memory_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=3072)
+    configured = shm / "pytest-polylogue-configured"
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 4 * 1024 * 1024)
+
+    with pytest.raises(PytestResourceError) as excinfo:
+        apply_managed_pytest_runtime_policy(
+            {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(configured)}, worker_count=0, full_suite=True
+        )
+
+    message = str(excinfo.value)
+    assert "configured pytest basetemp" in message
+    assert "declared demand=1522 MiB" in message
+    assert "safe tmpfs budget=1082 MiB" in message
 
 
 def test_supervisor_never_cleans_an_explicit_tmpfs_basetemp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

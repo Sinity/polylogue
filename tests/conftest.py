@@ -103,6 +103,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "scale_large: large-tier scale fixture (~10k convs / ~100k msgs); nightly CI / campaigns only (#1183)",
     )
 
+    if config.option.basetemp is not None:
+        if not hasattr(config, "workerinput"):
+            _mark_caller_owned_basetemp(Path(str(config.option.basetemp)))
+        return
+
     if config.option.basetemp is None:
         normalized_basetemp_env = normalize_pytest_basetemp_env(os.environ)
         if (
@@ -148,6 +153,7 @@ def pytest_configure(config: pytest.Config) -> None:
 _STALE_BASETEMP_MAX_AGE_S = 30 * 60
 _STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S = 6 * 60 * 60
 _OWNER_PID_MARKER = ".owner-pid"
+_CALLER_OWNED_BASETEMP_MARKER = ".polylogue-caller-owned-basetemp"
 
 
 def _managed_pytest_temp_root() -> tuple[Path, str]:
@@ -173,6 +179,13 @@ def _mark_basetemp_owner(basetemp: Path) -> None:
         start_ticks = _process_start_ticks(pid)
         identity = f"{pid}:{start_ticks}" if start_ticks is not None else str(pid)
         (basetemp / _OWNER_PID_MARKER).write_text(identity, encoding="utf-8")
+
+
+def _mark_caller_owned_basetemp(basetemp: Path) -> None:
+    """Record that an explicit ``--basetemp`` remains owned by its caller."""
+    with contextlib.suppress(OSError):
+        basetemp.mkdir(parents=True, exist_ok=True)
+        (basetemp / _CALLER_OWNED_BASETEMP_MARKER).write_text("explicit\n", encoding="utf-8")
 
 
 def _basetemp_owner_alive(entry: Path) -> bool | None:
@@ -265,7 +278,9 @@ def _sweep_stale_polylogue_basetemps(
     (written in ``pytest_configure``); a confirmed-dead owner uses the normal
     threshold, an unconfirmable owner (no marker — e.g. a directory from
     before this mechanism existed, or a startup race) uses a much longer
-    threshold before being reclaimed at all. Seeded corpora
+    threshold before being reclaimed at all. Explicit caller-owned paths
+    carry a separate marker and are excluded regardless of name or age.
+    Seeded corpora
     (``pytest-polylogue-*-seeded-*``) are never touched here — they are
     shared, reusable, and built once behind their own ``.build.done`` guard.
     """
@@ -278,6 +293,8 @@ def _sweep_stale_polylogue_basetemps(
                 continue
             try:
                 if not entry.is_dir():
+                    continue
+                if (entry / _CALLER_OWNED_BASETEMP_MARKER).is_file():
                     continue
                 owner_alive = _basetemp_owner_alive(entry)
                 if owner_alive:

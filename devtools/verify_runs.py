@@ -1028,6 +1028,27 @@ def adaptive_pytest_runtime_policy(
     )
 
 
+def _tmpfs_admission_refusal(
+    *,
+    kind: str,
+    path: Path,
+    declared_demand_kb: int,
+    safe_budget_kb: int,
+    headroom_kb: int,
+) -> PytestResourceError:
+    """Describe all failed tmpfs admission constraints in one refusal."""
+    free_kb = _headroom_kb(path)
+    required_headroom_kb = headroom_kb + max(declared_demand_kb, safe_budget_kb)
+    available = f"{free_kb / 1024:.0f} MiB" if free_kb is not None else "unknown"
+    return PytestResourceError(
+        f"{kind} pytest basetemp declared demand exceeds its safe adaptive tmpfs budget "
+        f"({path}: declared demand={declared_demand_kb / 1024:.0f} MiB, "
+        f"safe tmpfs budget={safe_budget_kb / 1024:.0f} MiB, "
+        f"available filesystem space={available}, "
+        f"required filesystem headroom={required_headroom_kb / 1024:.0f} MiB)"
+    )
+
+
 def apply_managed_pytest_runtime_policy(
     env: Mapping[str, str], *, worker_count: int | None = None, full_suite: bool = True
 ) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
@@ -1076,11 +1097,14 @@ def apply_managed_pytest_runtime_policy(
             and effective_tmpfs_budget_kb is not None
             and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
-            if explicit_tmpfs:
-                raise PytestResourceError(
-                    "explicit pytest basetemp declared demand exceeds its safe adaptive tmpfs budget "
-                    f"({explicit_basetemp}: declared demand={required_basetemp_kb / 1024:.0f} MiB, "
-                    f"safe tmpfs budget={effective_tmpfs_budget_kb / 1024:.0f} MiB)"
+            if explicit_tmpfs or configured_tmpfs:
+                path = Path(explicit_basetemp or configured_root or PYTEST_TMPFS_ROOT)
+                raise _tmpfs_admission_refusal(
+                    kind="explicit" if explicit_tmpfs else "configured",
+                    path=path,
+                    declared_demand_kb=required_basetemp_kb,
+                    safe_budget_kb=effective_tmpfs_budget_kb,
+                    headroom_kb=pytest_basetemp_min_free_kb(normalized),
                 )
             normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
             if configured_tmpfs:

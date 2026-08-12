@@ -280,6 +280,27 @@ def test_sweep_stale_polylogue_basetemps_preserves_seeded_and_recent(
     assert unrelated.exists()
 
 
+def test_explicit_basetemp_remains_outside_a_later_startup_stale_sweep(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    explicit = tmp_path / "pytest-polylogue-debug"
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(explicit)),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    conftest.pytest_configure(cast("pytest.Config", config))
+    assert (explicit / conftest._CALLER_OWNED_BASETEMP_MARKER).is_file()
+    old = frozen_clock.time() - conftest._STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S - 1
+    os.utime(explicit, (old, old))
+
+    conftest._sweep_stale_polylogue_basetemps(roots=(tmp_path,))
+
+    assert explicit.exists()
+
+
 def test_sweep_stale_polylogue_basetemps_never_deletes_a_live_owner(
     tmp_path: Path,
     frozen_clock: FrozenClock,
