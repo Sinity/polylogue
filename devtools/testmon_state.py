@@ -834,6 +834,9 @@ def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> Gra
                     )
                 execution_ids.add(execution_id)
                 name = test_name
+                if name not in expected:
+                    grouped = [nodeid for nodeid in expected if name.startswith(nodeid + "@")]
+                    name = max(grouped, key=len, default=name)
                 prior = latest.get(name)
                 if prior is None or execution_id > prior[0]:
                     latest[name] = (execution_id, failed == 1)

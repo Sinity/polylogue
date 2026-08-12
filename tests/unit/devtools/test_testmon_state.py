@@ -122,6 +122,21 @@ def test_seed_shard_ledger_rejects_duplicate_nodes_across_shards() -> None:
     assert testmon_state.validate_seed_shard_ledger([shard, duplicate], expected_nodeids=[NODEIDS[0]]) is None
 
 
+def test_testmon_database_canonicalizes_xdist_group_names(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    with sqlite3.connect(data) as connection:
+        connection.execute(
+            "UPDATE test_execution SET test_name = ? WHERE test_name = ?",
+            (f"{NODEIDS[0]}@web-reader", NODEIDS[0]),
+        )
+
+    graph = inspect_testmon_database(data, NODEIDS)
+
+    assert graph.missing_nodeids == ()
+    assert graph.recorded_count == len(NODEIDS)
+
+
 def test_omitted_interrupted_and_uncovered_nodes_fail_closed(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data)
