@@ -477,7 +477,13 @@ def test_raw_failures_ok_degraded_and_recovery(
     monkeypatch.setattr(
         status_module,
         "_raw_failure_info",
-        lambda: {"parse_failures": 30, "validation_failures": 40, "quarantined": 5},
+        lambda: {
+            "parse_failures": 30,
+            "validation_failures": 40,
+            "quarantined": 5,
+            "raw_failure_lifecycle_available": True,
+            "raw_failure_lifecycle_state": "degraded",
+        },
     )
     bad = _check_raw_failures_medium()
     assert bad.severity == HealthSeverity.CRITICAL
@@ -488,7 +494,13 @@ def test_raw_failures_ok_degraded_and_recovery(
     monkeypatch.setattr(
         status_module,
         "_raw_failure_info",
-        lambda: {"parse_failures": 0, "validation_failures": 0, "quarantined": 0},
+        lambda: {
+            "parse_failures": 0,
+            "validation_failures": 0,
+            "quarantined": 0,
+            "raw_failure_lifecycle_available": True,
+            "raw_failure_lifecycle_state": "healthy",
+        },
     )
     good = _check_raw_failures_medium()
     assert good.severity == HealthSeverity.OK
@@ -513,6 +525,8 @@ def test_raw_failures_marks_deferred_work_retryable_not_unexplained(
             "deferred_failures": 4,
             "terminal_rejections": 0,
             "unexplained_failures": 0,
+            "raw_failure_lifecycle_available": True,
+            "raw_failure_lifecycle_state": "degraded",
         },
     )
 
@@ -539,6 +553,8 @@ def test_raw_failures_warning_names_deferred_and_terminal_states(
             "deferred_failures": 3,
             "terminal_rejections": 2,
             "unexplained_failures": 0,
+            "raw_failure_lifecycle_available": True,
+            "raw_failure_lifecycle_state": "degraded",
         },
     )
 
@@ -547,6 +563,27 @@ def test_raw_failures_warning_names_deferred_and_terminal_states(
     assert alert.severity == HealthSeverity.WARNING
     assert "3 deferred" in alert.message
     assert "2 terminal" in alert.message
+
+
+def test_raw_failures_fail_closed_when_lifecycle_authority_is_unavailable(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import polylogue.daemon.status as status_module
+
+    monkeypatch.setattr(
+        status_module,
+        "_raw_failure_info",
+        lambda: {
+            "raw_failure_lifecycle_available": False,
+            "raw_failure_lifecycle_reason": "source.db evidence is unavailable",
+        },
+    )
+
+    alert = _check_raw_failures_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert alert.message == "raw failure lifecycle unavailable: source.db evidence is unavailable"
 
 
 # ---------------------------------------------------------------------------

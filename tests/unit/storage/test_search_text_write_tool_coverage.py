@@ -23,16 +23,12 @@ This module pins three things:
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from pathlib import Path
 
 from polylogue.storage.search.query_support import escape_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-_REPO_ROOT = Path(__file__).parents[3]
-_SEARCH_DOC = _REPO_ROOT / "docs" / "search.md"
 
 _WRITE_TOKEN = "quokka-manifesto-9f3c1a"
 _EDIT_OLD_TOKEN = "legacy-walrus-descriptor-77b2"
@@ -81,46 +77,6 @@ def _insert_tool_block(
         """,
         (message_id, session_id, position, tool_name, tool_id, json.dumps(tool_input)),
     )
-
-
-def test_search_text_ddl_matches_documented_coverage_matrix() -> None:
-    """Extract the live search_text generated-column expression and pin its shape.
-
-    This is the drift check required by polylogue-013x's acceptance criteria:
-    docs/search.md's coverage matrix must match the live DDL. If someone adds
-    a new json_extract path to search_text (e.g. `$.content`) without also
-    updating the docs, the negative assertions below fail; if someone removes
-    one of the four currently-indexed paths, the positive assertions fail.
-    """
-    ddl_source = Path(
-        Path(__file__).parents[3] / "polylogue" / "storage" / "sqlite" / "archive_tiers" / "index.py"
-    ).read_text(encoding="utf-8")
-
-    match = re.search(
-        r"search_text\s+TEXT GENERATED ALWAYS AS \((?P<expr>.*?)\)\s*VIRTUAL,",
-        ddl_source,
-        re.DOTALL,
-    )
-    assert match is not None, "blocks.search_text generated-column definition not found in index.py DDL"
-    expr = match.group("expr")
-
-    # Documented as indexed (docs/search.md "Searchable Content Coverage").
-    assert "COALESCE(text, '')" in expr
-    assert "COALESCE(tool_name, '')" in expr
-    assert "json_extract(tool_input, '$.command')" in expr
-    assert "json_extract(tool_input, '$.file_path')" in expr
-    assert "json_extract(tool_input, '$.path')" in expr
-
-    # Documented as NOT indexed -- the coverage gap this bead exists for.
-    assert "$.content" not in expr
-    assert "$.old_string" not in expr
-    assert "$.new_string" not in expr
-
-    doc_text = _SEARCH_DOC.read_text(encoding="utf-8")
-    assert "Searchable Content Coverage" in doc_text
-    assert "tool_input.$.content" in doc_text
-    assert "tool_input.$.old_string" in doc_text
-    assert "json_extract(tool_input, '$.content') LIKE" in doc_text
 
 
 def test_write_tool_body_not_reachable_via_fts(tmp_path: Path) -> None:

@@ -149,7 +149,10 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     status_with_fts_debt = convergence_debt_summary_info(recovered.index_db)
     assert status_with_fts_debt.failed_count == 1
     assert status_with_fts_debt.retry_due_count == 0
-    assert [(item.stage, item.failed_count) for item in status_with_fts_debt.stage_summaries] == [("fts", 1)]
+    assert [(item.stage, item.failed_count, item.deferred_count) for item in status_with_fts_debt.stage_summaries] == [
+        ("fts", 1, 0),
+        ("insights", 0, 1),
+    ]
 
     # First restart: the source is still hot. Retrying must update the same
     # insights row in place and leave both FTS materialization and FTS debt

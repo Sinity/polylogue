@@ -11,6 +11,7 @@ from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session
+from polylogue.archive.session import attribution as attribution_module
 from polylogue.archive.session.attribution import extract_attribution, extract_attribution_from_actions
 from polylogue.archive.session.repo_identity import (
     normalize_repo_name,
@@ -293,6 +294,10 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
 
 def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path: Path) -> None:
     work_repo = _make_repo(tmp_path, "sinnix")
+    repo_tool_result = work_repo / "tool-results" / "parser.py"
+    repo_tool_result.parent.mkdir()
+    repo_tool_result.touch()
+    repo_tool_result.unlink()
     system_file = Path("/etc/systemd/system/sinex-gateway.service")
     action = Action(
         action_id="action-noise-filter",
@@ -305,6 +310,7 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
         origin=Origin.CLAUDE_CODE_SESSION,
         affected_paths=(
             str(work_repo / "README.md"),
+            str(repo_tool_result),
             str(work_repo / ".claude" / "settings.json"),
             ".snapshot/",
             ".snapshots/root",
@@ -332,10 +338,100 @@ def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path
         [
             str(system_file),
             str(work_repo / "README.md"),
+            str(repo_tool_result),
         ]
     )
     assert sorted(attribution.repo_paths) == sorted([str(work_repo)])
     assert sorted(attribution.repo_names) == sorted(["sinnix"])
+
+
+def test_attribution_does_not_let_broad_repo_ancestor_claim_agent_spool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(attribution_module, "_repo_root_from_path", lambda _path: "/tmp")
+    action = Action(
+        action_id="action-broad-temp-repo",
+        message_id="msg-broad-temp-repo",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_READ,
+        tool_name="Read",
+        tool_id=None,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        affected_paths=("/tmp/claude-1000/foo/tasks/bar.py",),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="noise filter",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_actions([action])
+
+    assert attribution.file_paths_touched == ()
+    assert attribution.languages_detected == ()
+
+
+def test_attribution_preserves_repo_directory_with_agent_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(attribution_module, "_repo_root_from_path", lambda _path: "/tmp/project")
+    deleted_path = "/tmp/project/codex-client/deleted.py"
+    action = Action(
+        action_id="action-agent-prefix-repo-directory",
+        message_id="msg-agent-prefix-repo-directory",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_WRITE,
+        tool_name="Write",
+        tool_id=None,
+        origin=Origin.CODEX_SESSION,
+        affected_paths=(deleted_path,),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="deleted repository path",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_actions([action])
+
+    assert attribution.file_paths_touched == (deleted_path,)
+    assert attribution.languages_detected == ("python",)
+
+
+def test_attribution_preserves_nested_numeric_agent_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agent-like names are noise only when they are direct temporary roots."""
+    monkeypatch.setattr(attribution_module, "_repo_root_from_path", lambda _path: "/tmp/project")
+    deleted_path = "/tmp/project/claude-3/parser.py"
+    action = Action(
+        action_id="action-nested-agent-prefix-repo-directory",
+        message_id="msg-nested-agent-prefix-repo-directory",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_WRITE,
+        tool_name="Write",
+        tool_id=None,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        affected_paths=(deleted_path,),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="deleted repository path",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_actions([action])
+
+    assert attribution.file_paths_touched == (deleted_path,)
+    assert attribution.languages_detected == ("python",)
 
 
 def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:

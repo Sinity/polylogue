@@ -799,6 +799,7 @@ def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path
         ("fallback", json.dumps({"prompt": "", "description": "review fallback"})),
         ("numeric", json.dumps({"prompt": 7, "description": "review numeric fallback"})),
     )
+    message_ids: dict[str, str] = {}
     for position, (native_id, payload) in enumerate(payloads):
         message_id = _insert_message(
             conn,
@@ -806,6 +807,7 @@ def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path
             native_id=native_id,
             position=position,
         )
+        message_ids[native_id] = message_id
         _insert_dispatch_action(
             conn,
             message_id=message_id,
@@ -834,7 +836,7 @@ def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path
         empty_payload = next(
             item.model_dump(mode="json")
             for item in empty.items
-            if item.model_dump(mode="json").get("instruction_tool_use_block_id") == f"{parent_id}:empty:0"
+            if item.model_dump(mode="json").get("instruction_tool_use_block_id") == f"{message_ids['empty']}:0"
         )
         assert empty_payload["instruction_preview"] is None
 

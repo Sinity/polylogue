@@ -342,6 +342,7 @@ class TestRuntimeHealthReadOnlyPaths:
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir(parents=True, exist_ok=True)
+        db_path = archive_root / "index.db"
 
         # Make read-only
         archive_root.chmod(0o444)
@@ -351,6 +352,7 @@ class TestRuntimeHealthReadOnlyPaths:
                 archive_root=archive_root,
                 render_root=tmp_path / "render",
                 sources=[Source(name="test", path=tmp_path / "inbox")],
+                db_path=db_path,
             )
             (tmp_path / "render").mkdir(parents=True, exist_ok=True)
 

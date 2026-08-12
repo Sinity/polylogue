@@ -524,6 +524,8 @@ def test_batch_opaque_refs_preserve_decomposed_bytes_across_retry_and_cold_read(
         assert cold.prompt_ref == f"block:{decomposed}:0"
         assert cold.assertion_refs == (f"assertion:{decomposed}",)
         assert cold.canonical_provenance_bytes() == original.canonical_provenance_bytes()
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as reopened:
         replay = reopened.save_annotation_batch(exact_retry)
         assert replay.canonical_provenance_bytes() == original.canonical_provenance_bytes()
         with pytest.raises(AnnotationBatchError, match="incompatible provenance"):

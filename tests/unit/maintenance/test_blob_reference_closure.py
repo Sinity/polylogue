@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import aiosqlite
@@ -11,6 +12,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import ArchiveVerificationCheck
 from polylogue.maintenance.blob_reference_closure import (
@@ -486,17 +488,33 @@ def test_closure_fails_closed_for_whitespace_duplicate_native_id(
     root, session_id, attachment_id, parser = _mapping_fixture(
         tmp_path,
         messages=[
-            ParsedMessage(provider_message_id="duplicate", role=Role.USER, text="first", position=0),
-            ParsedMessage(provider_message_id=" duplicate ", role=Role.ASSISTANT, text="second", position=1),
+            ParsedMessage(provider_message_id="first", role=Role.USER, text="first", position=0),
+            ParsedMessage(provider_message_id="second", role=Role.ASSISTANT, text="second", position=1),
         ],
         attachment=attachment,
     )
 
-    plan = plan_blob_reference_closure(root, raw_session_parser=parser)
-    assert not plan.attachment_candidates
-    assert any(blocker.object_id == attachment_id for blocker in plan.blockers)
+    def ambiguous_parser(raw_record: RawSessionRecord) -> IngestRecordResult:
+        result = parser(raw_record)
+        payload = result.sessions[0]
+        ambiguous_session = payload.parsed_session.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(provider_message_id="duplicate", role=Role.USER, text="first", position=0),
+                    ParsedMessage(provider_message_id=" duplicate ", role=Role.ASSISTANT, text="second", position=1),
+                ]
+            }
+        )
+        return IngestRecordResult(
+            raw_id=result.raw_id,
+            sessions=[replace(payload, parsed_session=ambiguous_session)],
+        )
 
-    _apply_mapping_fixture(monkeypatch, root, parser)
+    with pytest.raises(MessageOwnerAmbiguityError, match="attachment provider message id is duplicated"):
+        plan_blob_reference_closure(root, raw_session_parser=ambiguous_parser)
+
+    with pytest.raises(MessageOwnerAmbiguityError, match="attachment provider message id is duplicated"):
+        _apply_mapping_fixture(monkeypatch, root, ambiguous_parser)
     with sqlite3.connect(root / "index.db") as conn:
         ref = conn.execute(
             "SELECT message_id FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)

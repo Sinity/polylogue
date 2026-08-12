@@ -72,6 +72,27 @@ def test_convergence_property_raw_replay_mutation_red_twin(tmp_path: Path, monke
         assert_archives_equivalent(canonical, mutated)
 
 
+def test_convergence_harness_binds_raw_receipt_before_equal_attachment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Equal raw/attachment bytes cannot strand the earlier publication receipt."""
+    pathology = rich_convergence_pathology()
+    session = pathology.sessions[0]
+    shared_payload = f"fixture attachment bytes {session.id}".encode()
+    monkeypatch.setattr(convergence_harness, "_raw_payload", lambda _session: shared_payload)
+    initialize_active_archive(tmp_path)
+
+    ingest_convergence_pathology(
+        tmp_path,
+        pathology,
+        session_indexes=(0,),
+        converge_after_each=False,
+    )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+
+
 def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: Path) -> None:
     """Changing a materialized insight row cannot pass the semantic comparator."""
     pathology = rich_convergence_pathology()

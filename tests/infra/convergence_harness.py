@@ -44,7 +44,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -229,24 +229,69 @@ def ingest_convergence_pathology(
     session_ids: list[str] = []
     for index in selected:
         session = _parsed_session(pathology.sessions[index], corpus_index=index)
+        content_hash = str(session_content_hash(session))
         payload = _raw_payload(session)
         source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_bytes(payload)
-        with sqlite3.connect(root / "source.db") as source_conn:
-            raw_id = write_source_raw_session(
-                source_conn,
-                origin="codex-session",
-                capture_mode=Provider.CODEX,
-                source_path=str(source_path),
-                source_index=-1 if append_only else index,
-                payload=payload,
-                acquired_at_ms=_acquired_at_ms(index),
-                native_id=session.provider_session_id,
+        raw_blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+        raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
+        raw_blob_receipt = raw_blob_publisher.receipt_id(raw_blob_hash)
+        preacquired_attachments: list[ParsedAttachment] = []
+        attachment_blob_refs: list[ArchiveSourceBlobRef] = []
+        attachment_receipts: list[tuple[str, bytes]] = []
+        for attachment in session.attachments:
+            if attachment.inline_bytes is None:
+                preacquired_attachments.append(attachment)
+                continue
+            attachment_hash, attachment_size = raw_blob_publisher.write_from_bytes(attachment.inline_bytes)
+            attachment_receipt = raw_blob_publisher.receipt_id(attachment_hash)
+            preacquired_attachments.append(
+                attachment.model_copy(
+                    update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
+                )
             )
+            attachment_blob_refs.append(
+                ArchiveSourceBlobRef(
+                    blob_hash=bytes.fromhex(attachment_hash),
+                    ref_type="attachment",
+                    source_path=str(source_path),
+                    size_bytes=attachment_size,
+                    acquired_at_ms=_acquired_at_ms(index),
+                    publication_receipt_id=attachment_receipt,
+                )
+            )
+            if attachment_receipt is not None:
+                attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
+        session = session.model_copy(update={"attachments": preacquired_attachments})
+        raw_blob_publisher.flush()
+        with sqlite3.connect(root / "source.db") as source_conn:
+            with source_conn:
+                raw_id = write_source_raw_session(
+                    source_conn,
+                    origin="codex-session",
+                    capture_mode=Provider.CODEX,
+                    source_path=str(source_path),
+                    source_index=-1 if append_only else index,
+                    payload=payload,
+                    acquired_at_ms=_acquired_at_ms(index),
+                    native_id=session.provider_session_id,
+                    blob_publication_receipt_id=raw_blob_receipt,
+                    additional_blob_refs=tuple(attachment_blob_refs),
+                    manage_transaction=False,
+                )
+                consume_blob_publication_receipt(
+                    source_conn,
+                    raw_blob_receipt,
+                    bytes.fromhex(raw_blob_hash),
+                )
+                for attachment_receipt, attachment_hash_bytes in attachment_receipts:
+                    consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
+        if raw_blob_size != len(payload):
+            raise AssertionError(f"published raw payload size drifted for {source_path}")
         payload_model = SessionWritePayload(
             session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-            content_hash=str(session_content_hash(session)),
+            content_hash=content_hash,
             parsed_session=session,
             message_count=len(session.messages),
             attachment_count=len(session.attachments),
@@ -273,7 +318,10 @@ def ingest_convergence_pathology(
         session_id = payload_model.session_id
         source_paths.append(source_path)
         session_ids.append(session_id)
-        make_messages_fts_stale(root / "index.db", session_id=session_id)
+        # Some valid provider fixtures contain no text-bearing blocks and
+        # therefore have no FTS rows to corrupt. The corpus builder may skip
+        # that inapplicable mutation; direct corruption tests remain strict.
+        make_messages_fts_stale(root / "index.db", session_id=session_id, require_rows=False)
         archive = ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
         if converge_after_each:
             converge_convergence_archive(archive)
@@ -352,6 +400,22 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
             "session_tag_rollups",
         }
     )
+    # This law owns derived convergence. ``raw_artifacts`` remains in the
+    # compared snapshot, but source-authority acceptance has its own receipt
+    # and verification laws; making it a green precondition here couples an
+    # FTS/insights oracle to unrelated parser-census remediation.
+    required_readiness_surfaces = frozenset(
+        {
+            "archive_sessions",
+            "search",
+            "session_profiles",
+            "timeline_work_events",
+            "timeline_phases",
+            "threads",
+            "tool_usage",
+            "latency_profiles",
+        }
+    )
     for root in (left, right):
         with sqlite3.connect(root / "index.db") as conn:
             derived_models = collect_derived_model_statuses_sync(conn)
@@ -372,7 +436,15 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
         # blocks. Keep that production readiness signal in the equality law
         # instead of asserting a global repair this route does not promise.
         readiness = archive_readiness_status(root)
-        if readiness.get("checked") is not True or readiness.get("blocked_surface_count") != 0:
+        surface_payload = readiness.get("surfaces")
+        unready_readiness_surfaces = sorted(
+            surface
+            for surface in required_readiness_surfaces
+            if not isinstance(surface_payload, dict)
+            or not isinstance(surface_payload.get(surface), dict)
+            or surface_payload[surface].get("ready") is not True
+        )
+        if readiness.get("checked") is not True or unready_readiness_surfaces:
             raise AssertionError(f"archive readiness is incomplete for {root}: {readiness!r}")
     if left_snapshot != right_snapshot:
         raise AssertionError(
@@ -658,7 +730,7 @@ def set_debt_retry_at(
         raise AssertionError(f"expected one convergence debt row, updated {cursor.rowcount}")
 
 
-def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
+def make_messages_fts_stale(index_db: Path, *, session_id: str, require_rows: bool = True) -> int:
     """Delete only this session's real FTS rows to create unrelated stage debt."""
     with open_connection(index_db) as conn:
         block_ids = tuple(
@@ -679,7 +751,7 @@ def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
         conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.executemany("DELETE FROM messages_fts_identity WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.commit()
-    if not row_ids:
+    if require_rows and not row_ids:
         raise AssertionError(f"session {session_id!r} has no indexed blocks")
     return len(row_ids)
 
