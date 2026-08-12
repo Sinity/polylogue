@@ -783,8 +783,20 @@ def cli_workspace(
     }
 
 
+def _tree_bytes(path: Path, *, allocated: bool) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        with contextlib.suppress(OSError):
+            if item.is_file():
+                stat_result = item.stat()
+                total += stat_result.st_blocks * 512 if allocated else stat_result.st_size
+    return total
+
+
 def _clone_archive_template(source: Path, destination: Path) -> None:
     """Clone one immutable empty archive into a test-private workspace."""
+    started = time.perf_counter()
+    method = "reflink-auto"
     destination.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(
@@ -795,7 +807,26 @@ def _clone_archive_template(source: Path, destination: Path) -> None:
             timeout=10,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        method = "copytree"
         shutil.copytree(source, destination, dirs_exist_ok=True)
+
+    # The managed pytest plugin turns this into a durable fixture-cost record;
+    # ordinary pytest runs remain unaffected because the event sink is absent.
+    try:
+        from devtools.pytest_progress_plugin import record_fixture_timing
+
+        record_fixture_timing(
+            "archive_clone",
+            time.perf_counter() - started,
+            method=method,
+            source=str(source),
+            destination=str(destination),
+            source_apparent_bytes=_tree_bytes(source, allocated=False),
+            destination_apparent_bytes=_tree_bytes(destination, allocated=False),
+            destination_allocated_bytes=_tree_bytes(destination, allocated=True),
+        )
+    except (ImportError, OSError):
+        pass
 
     bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
     if bootstrap_marker.is_file():

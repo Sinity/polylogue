@@ -31,6 +31,7 @@ CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
+CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S = 15.0
 DEFAULT_TMPFS_SIZE_SAMPLE_INTERVAL_S = 2.0
@@ -142,6 +143,191 @@ def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-").lower() or "step"
 
 
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 4)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 4)
+
+
+def _distribution(values: list[float]) -> dict[str, float | int | None]:
+    return {
+        "count": len(values),
+        "p50_s": _percentile(values, 0.50),
+        "p95_s": _percentile(values, 0.95),
+        "p99_s": _percentile(values, 0.99),
+        "max_s": round(max(values), 4) if values else None,
+        "sum_s": round(sum(values), 4) if values else 0.0,
+    }
+
+
+def aggregate_pytest_statistics(
+    step_dir: Path,
+    *,
+    command: list[Any] | tuple[Any, ...] = (),
+    step_result: Mapping[str, Any] | None = None,
+    report_path: Path | None = None,
+) -> dict[str, Any]:
+    """Reduce the append-only pytest evidence into one durable step summary.
+
+    The raw event stream remains authoritative for forensics.  This summary is
+    deliberately derived and replaceable: it makes repeated performance work
+    cheap without introducing a second source of truth for test outcomes.
+    """
+    events: list[dict[str, Any]] = []
+    events_path = step_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    events.append(row)
+
+    phases: dict[str, list[float]] = {"setup": [], "call": [], "teardown": []}
+    outcomes: dict[str, int] = {}
+    phase_outcomes: dict[str, dict[str, int]] = {"setup": {}, "call": {}, "teardown": {}}
+    nodes: set[str] = set()
+    fixture_timings: dict[str, list[float]] = {}
+    workers: set[str] = set()
+    for row in events:
+        worker = row.get("worker_id")
+        if isinstance(worker, str):
+            workers.add(worker)
+        nodeid = row.get("nodeid")
+        if isinstance(nodeid, str) and nodeid:
+            nodes.add(nodeid)
+        event = row.get("event")
+        if event == "test_report":
+            when = row.get("when")
+            duration = row.get("duration_s")
+            if when in phases and isinstance(duration, (int, float)):
+                phases[when].append(float(duration))
+            outcome = row.get("outcome")
+            if isinstance(outcome, str) and when in phase_outcomes:
+                bucket = phase_outcomes[when]
+                bucket[outcome] = bucket.get(outcome, 0) + 1
+                if when == "call":
+                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        elif event == "fixture_timing":
+            name = row.get("name")
+            duration = row.get("duration_s")
+            if isinstance(name, str) and isinstance(duration, (int, float)):
+                fixture_timings.setdefault(name, []).append(float(duration))
+
+    # Some pytest/plugin combinations expose only the final teardown report to
+    # pytest_runtest_logreport.  The structured report has complete per-phase
+    # data when the run reaches a normal pytest exit, so use it to complete the
+    # aggregate instead of publishing a deceptively partial distribution.
+    if report_path is not None and report_path.exists():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report_tests = report.get("tests", []) if isinstance(report, dict) else []
+            if isinstance(report_tests, list):
+                for test in report_tests:
+                    if not isinstance(test, Mapping):
+                        continue
+                    nodeid = test.get("nodeid")
+                    if isinstance(nodeid, str) and nodeid:
+                        nodes.add(nodeid)
+                    outcome = test.get("outcome")
+                    if isinstance(outcome, str):
+                        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                    for when in phases:
+                        phase = test.get(when)
+                        if not isinstance(phase, Mapping):
+                            continue
+                        duration = phase.get("duration")
+                        phase_outcome = phase.get("outcome")
+                        if isinstance(duration, (int, float)):
+                            phases[when].append(float(duration))
+                        if isinstance(phase_outcome, str):
+                            bucket = phase_outcomes[when]
+                            bucket[phase_outcome] = bucket.get(phase_outcome, 0) + 1
+
+    resources: list[dict[str, Any]] = []
+    resources_path = step_dir / "resources.jsonl"
+    if resources_path.exists():
+        for line in resources_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    resources.append(row)
+    explicit_worker_count: int | None = None
+    command_values = [str(value) for value in command]
+    for index, value in enumerate(command_values[:-1]):
+        if value in {"-n", "--numprocesses"}:
+            with contextlib.suppress(ValueError):
+                explicit_worker_count = int(command_values[index + 1])
+            break
+    basetemp_sizes = [row.get("basetemp_size_kb") for row in resources]
+    basetemp_sizes = [int(value) * 1024 for value in basetemp_sizes if isinstance(value, int)]
+    basetemp_allocated = [row.get("basetemp_allocated_kb") for row in resources]
+    basetemp_allocated = [int(value) * 1024 for value in basetemp_allocated if isinstance(value, int)]
+    containment: dict[str, Any] = {}
+    containment_path = step_dir / "containment.json"
+    if containment_path.exists():
+        with contextlib.suppress(json.JSONDecodeError):
+            raw = json.loads(containment_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                containment = raw
+
+    return {
+        "schema_version": 1,
+        "command": [str(value) for value in command],
+        "node_count": len(nodes),
+        "outcomes": outcomes,
+        "phase_outcomes": phase_outcomes,
+        "phases": {name: _distribution(values) for name, values in phases.items()},
+        "fixtures": {name: _distribution(values) for name, values in fixture_timings.items()},
+        "xdist": {
+            "worker_ids": sorted(workers),
+            "worker_count": max(
+                0,
+                len(workers) - (1 if "controller" in workers else 0),
+                explicit_worker_count or 0,
+            ),
+        },
+        "storage": {
+            "basetemp_logical_bytes_max": max(basetemp_sizes, default=None),
+            "basetemp_allocated_bytes_max": max(basetemp_allocated, default=None),
+            "basetemp_root": next(
+                (row.get("basetemp") for row in reversed(resources) if isinstance(row.get("basetemp"), str)),
+                None,
+            ),
+        },
+        "resources": {
+            "peak_tree_rss_kb": max(
+                (int(row["tree_rss_kb"]) for row in resources if isinstance(row.get("tree_rss_kb"), int)),
+                default=None,
+            ),
+            "peak_tree_pss_kb": max(
+                (int(row["tree_pss_kb"]) for row in resources if isinstance(row.get("tree_pss_kb"), int)),
+                default=None,
+            ),
+            "peak_cgroup_memory_bytes": max(
+                (
+                    int(row["cgroup_memory_peak_bytes"])
+                    for row in resources
+                    if isinstance(row.get("cgroup_memory_peak_bytes"), int)
+                ),
+                default=None,
+            ),
+        },
+        "cleanup": {
+            "complete": containment.get("tmpfs_cleanup_complete"),
+            "termination_reason": containment.get("termination_reason"),
+            "escalated_to_sigkill": containment.get("escalated_to_sigkill"),
+            "exit_code": containment.get("exit_code", (step_result or {}).get("exit")),
+        },
+    }
+
+
 def git_dirty() -> bool:
     try:
         result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5)
@@ -188,6 +374,7 @@ class PytestStepArtifacts:
     resources_path: Path
     postmortem_path: Path
     containment_path: Path
+    statistics_path: Path
 
 
 class VerifyRun:
@@ -260,6 +447,7 @@ class VerifyRun:
             resources_path=step_dir / "resources.jsonl",
             postmortem_path=step_dir / "postmortem.json",
             containment_path=step_dir / "containment.json",
+            statistics_path=step_dir / "statistics.json",
         )
         step_dir.mkdir(parents=True, exist_ok=True)
         self._payload["steps"].append(
@@ -281,8 +469,38 @@ class VerifyRun:
                 step.update(result)
                 step["finished_at"] = utc_now()
                 step["status"] = "success" if result.get("exit") == 0 else "failed"
+                statistics_path = self.run_dir / "steps" / step_id / "statistics.json"
+                with contextlib.suppress(OSError, ValueError):
+                    statistics = aggregate_pytest_statistics(
+                        self.run_dir / "steps" / step_id,
+                        command=step.get("cmd", []),
+                        step_result=result,
+                        report_path=(
+                            self.root / str(result["report_path"])
+                            if isinstance(result.get("report_path"), str)
+                            else None
+                        ),
+                    )
+                    _write_json(statistics_path, statistics)
+                    with contextlib.suppress(OSError):
+                        shutil.copyfile(statistics_path, self.root / CURRENT_STATISTICS_PATH)
+                    step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
                 break
         self.write()
+
+    def finish_interrupted_steps(self, *, exit_code: int, diagnosis: str) -> None:
+        """Close any open step when the outer runner receives Ctrl-C."""
+        for step in self._payload["steps"]:
+            if step.get("status") == "running":
+                self.finish_step(
+                    step_id=str(step["step_id"]),
+                    result={
+                        "duration_s": None,
+                        "exit": exit_code,
+                        "diagnosis": diagnosis,
+                        "termination_reason": "operator_interrupt",
+                    },
+                )
 
     def finish(
         self,
@@ -338,6 +556,8 @@ def copy_current_pytest_artifacts(root: Path, artifacts: PytestStepArtifacts, *,
         shutil.copyfile(artifacts.postmortem_path, root / CURRENT_POSTMORTEM_PATH)
     with contextlib.suppress(FileNotFoundError):
         shutil.copyfile(artifacts.containment_path, root / CURRENT_CONTAINMENT_PATH)
+    with contextlib.suppress(FileNotFoundError):
+        shutil.copyfile(artifacts.statistics_path, root / CURRENT_STATISTICS_PATH)
 
 
 def merge_worker_events(events_dir: Path, merged_path: Path) -> int:
@@ -557,6 +777,28 @@ def _dir_size_kb(path: Path) -> int | None:
             with contextlib.suppress(OSError):
                 if item.is_file():
                     total += item.stat().st_size
+    except OSError:
+        return None
+    return int(total / 1024)
+
+
+def _dir_allocated_kb(path: Path) -> int | None:
+    """Return filesystem blocks charged to files beneath *path*.
+
+    This is deliberately reported alongside apparent bytes.  On btrfs it is
+    the filesystem's per-file block charge (and may differ from compressed or
+    shared physical allocation); on tmpfs it is the RAM-backed block charge.
+    It is still the useful apples-to-apples signal available without requiring
+    filesystem-specific ioctl tooling in the test harness.
+    """
+    if not path.exists():
+        return None
+    total = 0
+    try:
+        for item in path.rglob("*"):
+            with contextlib.suppress(OSError):
+                if item.is_file():
+                    total += item.stat().st_blocks * 512
     except OSError:
         return None
     return int(total / 1024)
@@ -1091,11 +1333,12 @@ class ResourceSampler:
         self._basetemp_size_interval_s = _basetemp_size_sample_interval_s(env)
         self._last_basetemp_size_sample_at: float | None = None
         self._last_basetemp_size_kb: int | None = None
+        self._last_basetemp_allocated_kb: int | None = None
 
-    def _sample_basetemp_size_kb(self, *, event: str) -> int | None:
+    def _sample_basetemp_sizes(self, *, event: str) -> tuple[int | None, int | None]:
         """Return basetemp size without recursively walking it every sample."""
         if self._basetemp_size_interval_s <= 0:
-            return None
+            return None, None
         now = time.monotonic()
         should_sample = (
             self._last_basetemp_size_sample_at is None
@@ -1105,8 +1348,9 @@ class ResourceSampler:
         )
         if should_sample:
             self._last_basetemp_size_kb = _dir_size_kb(self._basetemp)
+            self._last_basetemp_allocated_kb = _dir_allocated_kb(self._basetemp)
             self._last_basetemp_size_sample_at = now
-        return self._last_basetemp_size_kb
+        return self._last_basetemp_size_kb, self._last_basetemp_allocated_kb
 
     def sample(self, *, event: str) -> dict[str, Any]:
         pids = process_tree(self.root_pid)
@@ -1180,6 +1424,7 @@ class ResourceSampler:
         meminfo = _meminfo()
         cgroup_path = _cgroup_path(self.root_pid)
         cgroup_io = _cgroup_io_bytes(cgroup_path)
+        basetemp_logical_kb, basetemp_allocated_kb = self._sample_basetemp_sizes(event=event)
         sample: dict[str, Any] = {
             "updated_at": utc_now(),
             "event": event,
@@ -1214,7 +1459,8 @@ class ResourceSampler:
             "pressure_memory": _pressure("memory"),
             "shm": _fs_usage(Path("/dev/shm")),
             "basetemp": str(self._basetemp),
-            "basetemp_size_kb": self._sample_basetemp_size_kb(event=event),
+            "basetemp_size_kb": basetemp_logical_kb,
+            "basetemp_allocated_kb": basetemp_allocated_kb,
             "top_processes": sorted(processes, key=lambda row: int(row.get("rss_kb") or 0), reverse=True)[:8],
         }
         self.sample_count += 1

@@ -163,6 +163,9 @@ and a postmortem diagnosis. The latest run is mirrored to
 - `.cache/verify/current-pytest-resources.jsonl`
 - `.cache/verify/current-pytest-postmortem.json`
 - `.cache/verify/current-pytest-containment.json`
+- `.cache/verify/current-pytest-statistics.json` — derived phase/fixture
+  distributions, worker count, storage, resource peaks, and cleanup outcome;
+  the same file is retained under each run's `steps/*/statistics.json`.
 - `.cache/verify/current-pytest-output.log`
 
 The devtools process drains pytest output, prints periodic heartbeat lines, and

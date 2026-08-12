@@ -113,6 +113,16 @@ def _latest_verify_run_metadata(command: str) -> dict[str, Any]:
         ):
             if key in latest_pytest:
                 metadata[f"pytest_{key}"] = latest_pytest[key]
+    statistics_path = _get_root() / ".cache" / "verify" / "current-pytest-statistics.json"
+    try:
+        statistics = json.loads(statistics_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        statistics = None
+    if isinstance(statistics, dict):
+        # Keep the derived aggregate in the append-only invocation record so
+        # Lynchpin can consume one stable row without crawling disposable
+        # .cache/verify directories. Raw events remain in the run artifact.
+        metadata["pytest_statistics"] = statistics
     return {key: value for key, value in metadata.items() if value is not None}
 
 
@@ -411,6 +421,31 @@ def _cmd_stats(args: argparse.Namespace) -> int:
             "count": len(peaks),
             "peak_rss_mb_max": max(peaks),
             "peak_rss_mb_p95": _percentile(peaks, 95),
+        }
+    pytest_statistics = [task["pytest_statistics"] for task in tasks if isinstance(task.get("pytest_statistics"), dict)]
+    if args.resources and pytest_statistics:
+        pss = [
+            float(item["resources"]["peak_tree_pss_kb"])
+            for item in pytest_statistics
+            if isinstance(item.get("resources"), dict)
+            and isinstance(item["resources"].get("peak_tree_pss_kb"), (int, float))
+        ]
+        temp = [
+            int(item["storage"]["basetemp_logical_bytes_max"])
+            for item in pytest_statistics
+            if isinstance(item.get("storage"), dict)
+            and isinstance(item["storage"].get("basetemp_logical_bytes_max"), int)
+        ]
+        workers = [
+            int(item["xdist"]["worker_count"])
+            for item in pytest_statistics
+            if isinstance(item.get("xdist"), dict) and isinstance(item["xdist"].get("worker_count"), int)
+        ]
+        stats["pytest_runs"] = {
+            "count": len(pytest_statistics),
+            "peak_pss_kb_max": max(pss, default=None),
+            "basetemp_logical_bytes_max": max(temp, default=None),
+            "xdist_worker_counts": sorted(set(workers)),
         }
     slow_tests = _latest_pytest_slow_tests(args.slow_tests)
     if slow_tests:

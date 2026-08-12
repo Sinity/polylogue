@@ -149,7 +149,12 @@ def main(argv: list[str] | None = None) -> int:
             environment_fingerprint=environment_fingerprint,
         )
         started = time.monotonic()
-        rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
+        try:
+            rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
+        except KeyboardInterrupt:
+            rc = 130
+            metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
+            run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
         payload = run.finish(
             exit_code=rc,
             duration_s=time.monotonic() - started,

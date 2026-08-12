@@ -27,10 +27,30 @@ _DESELECTED_NODEIDS_SAMPLE: list[str] = []
 _DESELECTED_COUNT = 0
 _SELECTED_COUNT = 0
 _SLOWEST_REPORTS: list[dict[str, Any]] = []
+_RECORDED_REPORT_KEYS: set[tuple[int, str, str, str, float]] = set()
 _COLLECTION_STARTED_AT: float | None = None
 _COLLECTION_DURATION_S: float | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
+
+
+def record_fixture_timing(name: str, duration_s: float, **metadata: Any) -> None:
+    """Record an explicitly instrumented fixture operation in the run stream.
+
+    Pytest reports setup as one number per node, which cannot distinguish a
+    shared archive clone from ordinary fixture construction.  Small, named
+    instrumentation points use this public helper so the run aggregator can
+    retain that distinction without making fixture code depend on the
+    aggregator's implementation.
+    """
+    _write_event(
+        {
+            "event": "fixture_timing",
+            "name": name,
+            "duration_s": round(float(duration_s), 4),
+            **metadata,
+        }
+    )
 
 
 def _selection_nodeid_limit() -> int:
@@ -118,6 +138,7 @@ def pytest_sessionstart(session: Any) -> None:
     _DESELECTED_COUNT = 0
     _SELECTED_COUNT = 0
     _SLOWEST_REPORTS.clear()
+    _RECORDED_REPORT_KEYS.clear()
     _COLLECTION_STARTED_AT = None
     _COLLECTION_DURATION_S = None
     # The worker environment is assigned after process exec, so it is not
@@ -213,10 +234,16 @@ def pytest_runtest_logfinish(nodeid: str, location: tuple[str, int | None, str])
 
 
 @pytest.hookimpl
-def pytest_runtest_logreport(report: Any) -> None:
+def _record_phase_report(report: Any) -> None:
     """Append one phase report so slow setup/call/teardown remains visible."""
     when = str(getattr(report, "when", ""))
+    nodeid = str(getattr(report, "nodeid", ""))
     outcome = str(getattr(report, "outcome", ""))
+    duration = float(getattr(report, "duration", 0.0) or 0.0)
+    report_key = (id(report), when, nodeid, outcome, duration)
+    if report_key in _RECORDED_REPORT_KEYS:
+        return
+    _RECORDED_REPORT_KEYS.add(report_key)
     if when not in {"setup", "call", "teardown"}:
         return
     payload = {
@@ -224,12 +251,26 @@ def pytest_runtest_logreport(report: Any) -> None:
         "nodeid": str(getattr(report, "nodeid", "")),
         "when": when,
         "outcome": outcome,
-        "duration_s": round(float(getattr(report, "duration", 0.0) or 0.0), 4),
+        "duration_s": round(duration, 4),
     }
     if payload["outcome"] == "failed":
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
     _remember_report(payload)
     _write_event(payload)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: Any, call: Any) -> Any:
+    """Capture the phase report before other reporting plugins transform it."""
+    del item, call
+    outcome = yield
+    _record_phase_report(outcome.get_result())
+
+
+@pytest.hookimpl
+def pytest_runtest_logreport(report: Any) -> None:
+    """Retain the direct/log-hook fallback used by older pytest plugins/tests."""
+    _record_phase_report(report)
 
 
 @pytest.hookimpl

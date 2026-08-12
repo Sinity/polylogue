@@ -79,6 +79,7 @@ from devtools.verify_runs import (
     VerifyRun,
     adaptive_pytest_runtime_policy,
     adaptive_pytest_worker_count,
+    aggregate_pytest_statistics,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
@@ -950,6 +951,67 @@ def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
     assert payload["verification_scope"] == "affected"
     assert payload["release_baseline_allowed"] is False
     assert json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text()) == payload
+
+
+def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "events.jsonl").write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "event": "test_report",
+                    "nodeid": "a",
+                    "when": "setup",
+                    "duration_s": 1.0,
+                    "outcome": "passed",
+                    "worker_id": "controller",
+                },
+                {
+                    "event": "test_report",
+                    "nodeid": "a",
+                    "when": "call",
+                    "duration_s": 2.0,
+                    "outcome": "passed",
+                    "worker_id": "gw0",
+                },
+                {
+                    "event": "test_report",
+                    "nodeid": "a",
+                    "when": "teardown",
+                    "duration_s": 0.5,
+                    "outcome": "passed",
+                    "worker_id": "gw0",
+                },
+                {"event": "fixture_timing", "name": "archive_clone", "duration_s": 0.25, "method": "reflink-auto"},
+            )
+        )
+        + "\n"
+    )
+    (step / "resources.jsonl").write_text(
+        json.dumps(
+            {
+                "basetemp": "/dev/shm/run",
+                "basetemp_size_kb": 12,
+                "tree_rss_kb": 100,
+                "tree_pss_kb": 80,
+                "cgroup_memory_peak_bytes": 200,
+                "xdist_worker_count": 1,
+            }
+        )
+        + "\n"
+    )
+    (step / "containment.json").write_text(json.dumps({"tmpfs_cleanup_complete": True, "exit_code": 0}))
+
+    result = aggregate_pytest_statistics(step, command=["pytest"], step_result={"exit": 0})
+
+    assert result["node_count"] == 1
+    assert result["phases"]["call"]["p50_s"] == 2.0
+    assert result["fixtures"]["archive_clone"]["sum_s"] == 0.25
+    assert result["storage"]["basetemp_logical_bytes_max"] == 12 * 1024
+    assert result["resources"]["peak_tree_pss_kb"] == 80
+    assert result["cleanup"]["complete"] is True
 
 
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
