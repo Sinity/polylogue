@@ -2570,7 +2570,7 @@ def _prepare_testmon_seed_attempt(
     resume: bool,
 ) -> dict[str, Any]:
     prior = _read_testmon_seed_attempt() if resume else None
-    expected = _testmon_seed_expected_nodeids(prior) if prior is not None else []
+    expected = sorted(_testmon_seed_expected_nodeids(prior)) if prior is not None else []
     prior_outcomes = _flatten_seed_outcomes(prior)
     payload = {
         "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
@@ -2620,7 +2620,7 @@ def _prepare_testmon_seed_shards(
     selection: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Persist the full planned corpus before the first testmon DB mutation."""
-    expected = _testmon_seed_expected_nodeids(prepared) if prepared.get("resume") else []
+    expected = sorted(_testmon_seed_expected_nodeids(prepared)) if prepared.get("resume") else []
     if not expected:
         expected = _seed_selection_nodeids(selection or {}) or []
     prior_shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
@@ -2672,7 +2672,7 @@ def _checkpoint_testmon_seed_shard(
     step: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Record one shard's result atomically before another shard may start."""
-    expected = _testmon_seed_expected_nodeids(prepared)
+    expected = sorted(_testmon_seed_expected_nodeids(prepared))
     shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
     if shards is None or shard_index < 1 or shard_index > len(shards):
         raise ValueError("testmon seed shard ledger is malformed")
@@ -2693,6 +2693,7 @@ def _checkpoint_testmon_seed_shard(
         database=database,
         pytest_step=step,
         prior_node_outcomes=prior,
+        use_database_fallback=False,
     )
     terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in outcomes)
     selection_matches = selected == nodeids

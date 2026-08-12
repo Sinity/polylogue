@@ -80,7 +80,6 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
             "POLYLOGUE_VERIFY_RUN_ID": "subprocess-regression",
-            "POLYLOGUE_PYTEST_RUN_ID": "subprocess-regression",
         }
     )
     result = subprocess.run(

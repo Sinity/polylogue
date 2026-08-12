@@ -307,7 +307,8 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    expected = ["tests/test_seed.py::test_a", "tests/test_seed.py::test_b"]
+    expected = ["tests/test_seed.py::test_b", "tests/test_seed.py::test_a"]
+    ordered = sorted(expected)
     prepared = _prepare_testmon_seed_shards(
         {"resume": False, "expected_nodeids": []},
         selection={"selected_count": 2, "selected_nodeids": expected, "selected_nodeids_omitted": 0},
@@ -315,33 +316,33 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
     prepared["shards"] = [
         {
             **prepared["shards"][0],
-            "nodeids": [expected[0]],
+            "nodeids": [ordered[0]],
             "nodeid_count": 1,
-            "nodeid_digest": hashlib.sha256(expected[0].encode()).hexdigest(),
+            "nodeid_digest": hashlib.sha256(ordered[0].encode()).hexdigest(),
         },
         {
             **prepared["shards"][0],
             "index": 2,
-            "nodeids": [expected[1]],
+            "nodeids": [ordered[1]],
             "nodeid_count": 1,
-            "nodeid_digest": hashlib.sha256(expected[1].encode()).hexdigest(),
+            "nodeid_digest": hashlib.sha256(ordered[1].encode()).hexdigest(),
             "status": "pending",
             "node_outcomes": [],
         },
     ]
     _atomic_payload = {
         **prepared,
-        "expected_nodeids": expected,
+        "expected_nodeids": ordered,
         "expected_count": 2,
-        "expected_digest": hashlib.sha256("\n".join(expected).encode()).hexdigest(),
+        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
     }
     artifact_dir = tmp_path / "shard-1"
     artifact_dir.mkdir()
     (artifact_dir / "selection.json").write_text(
-        json.dumps({"selected_count": 1, "selected_nodeids": [expected[0]], "selected_nodeids_omitted": 0})
+        json.dumps({"selected_count": 1, "selected_nodeids": [ordered[0]], "selected_nodeids_omitted": 0})
     )
     (artifact_dir / "events.jsonl").write_text(
-        json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"}) + "\n"
+        json.dumps({"event": "test_report", "nodeid": ordered[0], "when": "call", "outcome": "passed"}) + "\n"
     )
 
     checkpointed = _checkpoint_testmon_seed_shard(
@@ -368,6 +369,48 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
     )
     assert resumed["shards"][0]["status"] == "complete"
     assert resumed["shards"][1]["status"] == "pending"
+
+
+def test_seed_shard_checkpoint_does_not_trust_preexisting_testmon_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    expected = ["tests/test_seed.py::test_only_database_row"]
+    prepared = _prepare_testmon_seed_shards(
+        {"resume": False, "expected_nodeids": []},
+        selection={"selected_count": 1, "selected_nodeids": expected, "selected_nodeids_omitted": 0},
+    )
+    artifact_dir = tmp_path / "shard-1"
+    artifact_dir.mkdir()
+    (artifact_dir / "selection.json").write_text(
+        json.dumps({"selected_count": 1, "selected_nodeids": expected, "selected_nodeids_omitted": 0})
+    )
+    (artifact_dir / "events.jsonl").write_text("")
+    monkeypatch.setattr(
+        "devtools.verify._testmon_database_state",
+        lambda _nodeids: {
+            "recorded_count": 1,
+            "failed_count": 0,
+            "dependency_edge_count": 0,
+            "missing_nodeids": [],
+            "failed_nodeids": [],
+            "node_outcomes": {expected[0]: "passed"},
+            "error": None,
+            "graph_status": "complete",
+            "orphan_execution_edges": 0,
+            "orphan_fingerprint_edges": 0,
+        },
+    )
+
+    checkpointed = _checkpoint_testmon_seed_shard(
+        prepared=prepared,
+        shard_index=1,
+        step={"name": "pytest seed-testmon shard 1/1", "exit": 0, "artifact_dir": str(artifact_dir)},
+    )
+
+    shard = checkpointed["shards"][0]
+    assert shard["status"] == "incomplete"
+    assert shard["node_outcomes"][0]["outcome"] == "missing"
 
 
 def test_seed_shard_failure_remains_visible_and_blocks_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
