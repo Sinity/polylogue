@@ -2744,7 +2744,10 @@ def _checkpoint_testmon_seed_shard(
     nodeids = shard["nodeids"]
     artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
     selection = _read_json_artifact(artifact_dir / "selection.json") if artifact_dir is not None else None
-    selected = _seed_selection_nodeids(selection) if isinstance(selection, Mapping) else None
+    selected_raw = _seed_selection_nodeids(selection) if isinstance(selection, Mapping) else None
+    selected = (
+        sorted(_canonical_seed_nodeid(nodeid, nodeids) for nodeid in selected_raw) if selected_raw is not None else None
+    )
     database = _testmon_database_state(nodeids)
     prior = {
         str(item["nodeid"]): item

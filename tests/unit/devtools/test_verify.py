@@ -347,7 +347,7 @@ def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, mon
     assert "--testmon-noselect" in command
     assert "--dist=loadgroup" in command
     assert command.count("-n") == 1
-    assert command[command.index("-n") + 1] == str(min(10, adaptive_pytest_worker_count(os.environ)))
+    assert command[command.index("-n") + 1] == "10"
     assert command[-1] == f"@{nodeids_file}"
     assert nodeids_file.read_text().splitlines() == expected[:TESTMON_SEED_SHARD_SIZE]
 
@@ -422,10 +422,24 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
     artifact_dir = tmp_path / "shard-1"
     artifact_dir.mkdir()
     (artifact_dir / "selection.json").write_text(
-        json.dumps({"selected_count": 1, "selected_nodeids": [ordered[0]], "selected_nodeids_omitted": 0})
+        json.dumps(
+            {
+                "selected_count": 1,
+                "selected_nodeids": [f"{ordered[0]}@web-reader"],
+                "selected_nodeids_omitted": 0,
+            }
+        )
     )
     (artifact_dir / "events.jsonl").write_text(
-        json.dumps({"event": "test_report", "nodeid": ordered[0], "when": "call", "outcome": "passed"}) + "\n"
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": f"{ordered[0]}@web-reader",
+                "when": "call",
+                "outcome": "passed",
+            }
+        )
+        + "\n"
     )
 
     checkpointed = _checkpoint_testmon_seed_shard(
