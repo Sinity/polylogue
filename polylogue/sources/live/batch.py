@@ -71,6 +71,7 @@ from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
+    is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
@@ -453,7 +454,7 @@ def _blob_jsonl_has_session_evidence(
     provider: Provider,
     source_path: str,
 ) -> bool:
-    if Path(source_path).suffix.lower() != ".jsonl":
+    if not is_jsonl_source_path(source_path):
         return False
     try:
         return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
@@ -464,7 +465,7 @@ def _blob_jsonl_has_session_evidence(
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
     """Select and read eligible files for off-writer-hold pre-parse (polylogue-wf8a).
 
-    Deliberately narrow scope: only plain ``.jsonl`` provider-session files
+    Deliberately narrow scope: only JSONL/NDJSON provider-session files
     below ``_STREAMING_FULL_INGEST_BYTES`` are eligible -- exactly the branch
     at lines ~1377-1425 of ``_ingest_full_paths_sync`` that reads the whole
     payload into memory and later parses it via ``parse_payload``/
@@ -478,7 +479,7 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
     """
     candidates: list[LiveParseCandidate] = []
     for path in paths:
-        if path.suffix.lower() != ".jsonl":
+        if not is_jsonl_source_path(str(path)):
             continue
         try:
             stat = path.stat()
@@ -1999,9 +2000,10 @@ class LiveBatchProcessor:
                 continue
             elif (
                 origin_artifact_rule is None
-                and path.suffix.lower() != ".jsonl"
+                and not is_jsonl_source_path(str(path))
                 and path_artifact is not None
                 and not path_artifact.parse_as_session
+                and stat.st_size < _STREAMING_FULL_INGEST_BYTES
                 and not has_decoded_session_evidence(path, provider=fallback_provider)
             ):
                 # Keep path-only metadata out of the generic JSON fallback,
@@ -2049,7 +2051,7 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif path.suffix.lower() == ".jsonl":
+            elif is_jsonl_source_path(str(path)):
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
                 # An unknown JSONL cannot be safely excluded from acquire: the

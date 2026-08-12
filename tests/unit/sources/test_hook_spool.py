@@ -308,6 +308,7 @@ async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
 
+@pytest.mark.uses_real_clock("exercises production retry polling against a delayed atomic hook publish")
 @pytest.mark.asyncio
 async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     tmp_path: Path,
@@ -324,6 +325,8 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
         (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
         cursor=CursorStore(archive_root / "ops.db"),
     )
+    monkeypatch.setattr("polylogue.sources.hooks._day_shard", lambda: "2026-08-12")
+    shard = pending / "2026-08-12"
     publish_task: asyncio.Task[None] | None = None
 
     async def publish_after_fixed_grace() -> None:
@@ -343,7 +346,6 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     async def emit_empty_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
         nonlocal publish_task
         assert roots == (pending,)
-        shard = pending / "2026-08-11"
         shard.mkdir(parents=True)
         publish_task = asyncio.create_task(publish_after_fixed_grace())
         yield {(Change.added, str(shard))}
@@ -353,16 +355,45 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     await watcher._watch_changes([pending])
     assert publish_task is not None
     await publish_task
-
-    for _ in range(30):
-        if list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")):
-            break
-        await asyncio.sleep(0.01)
-    watcher.stop()
+    retry_task = watcher._hook_spool_directory_retry_tasks[shard.resolve()]
+    await asyncio.wait_for(retry_task, timeout=1.0)
 
     assert list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-2",)
+
+
+@pytest.mark.uses_real_clock("exercises retry polling while a pending hook envelope remains unacknowledged")
+@pytest.mark.asyncio
+async def test_hook_shard_retry_waits_for_durable_acknowledgement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed drain keeps the directory retry alive until the envelope moves."""
+
+    directory = tmp_path / "hooks" / "pending" / "2026-08-12"
+    directory.mkdir(parents=True)
+    envelope = directory / "retry.json"
+    envelope.write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path / "archive", backend=None)),
+        (WatchSource(name="hooks", root=directory.parent, suffixes=(".json",)),),
+        cursor=CursorStore(tmp_path / "ops.db"),
+    )
+    drains = 0
+
+    async def drain_until_acknowledged() -> None:
+        nonlocal drains
+        drains += 1
+        if drains == 2:
+            envelope.unlink()
+
+    monkeypatch.setattr(watcher, "_drain_hook_spool", drain_until_acknowledged)
+
+    await watcher._retry_hook_spool_directory_until_populated(directory)
+
+    assert drains == 2
+    assert not envelope.exists()
 
 
 def test_hook_spool_retains_sqlite_failures_for_retry(

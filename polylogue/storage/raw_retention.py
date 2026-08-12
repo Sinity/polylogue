@@ -1406,8 +1406,6 @@ def _check_broken_active_chains(
     for seed_raw_id in sorted(seed_raw_ids):
         seed_heads = heads_by_raw_id.get(seed_raw_id, [])
         row = rows_by_id.get(seed_raw_id)
-        if seed_raw_id in semantic_only_raw_ids:
-            continue
         if row is None and not seed_heads:
             # Directly missing sessions.raw_id rows are counted once by the
             # canonical lost-source-evidence projection. There is no chain to
@@ -1417,6 +1415,8 @@ def _check_broken_active_chains(
         try:
             if row is None:
                 raise RawRetentionSafetyError(f"active index raw is missing from source tier: {seed_raw_id}")
+            if seed_raw_id in semantic_only_raw_ids:
+                continue
             for head in seed_heads:
                 if head.accepted_frontier_kind == "byte":
                     _validate_byte_head(row, head)
@@ -1628,17 +1628,16 @@ def _source_paths_for_paths(conn: sqlite3.Connection, source_paths: set[str]) ->
 
 
 def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -> set[str]:
-    """Return paths whose current raw observation is typed non-session evidence.
+    """Return paths whose every current source coordinate is terminal evidence.
 
     A full-route cursor can legitimately advance over a workflow/fact artifact
     that has no session head. ``raw_artifacts.parse_as_session = 0`` is the
     source-tier terminal authority for that case. Ordinary artifact upserts
     retain the source coordinate's latest receipt while ``raw_sessions``
-    retains its historical acquisition evidence, so authority attaches to the
-    newest raw observation rather than requiring a duplicate receipt on every
-    historical raw. A later conversational raw cannot inherit the exemption:
-    it becomes the newest observation and leaves the path without terminal
-    authority until it gains a comparable accepted head.
+    retains its historical acquisition evidence, so authority attaches to each
+    coordinate's newest raw observation rather than requiring a duplicate
+    receipt on every historical raw. Every ``(origin, source_index)`` member
+    of a physical path must be terminal before the cursor path is exempt.
     """
 
     result: set[str] = set()
@@ -1649,17 +1648,39 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
         placeholders = ", ".join("?" for _ in batch)
         rows = conn.execute(
             f"""
-            SELECT DISTINCT artifact.source_path
+            SELECT DISTINCT terminal_raw.source_path
             FROM raw_artifacts AS artifact
             JOIN raw_sessions AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
             WHERE artifact.parse_as_session = 0
-              AND artifact.source_path IN ({placeholders})
+              AND terminal_raw.source_path IN ({placeholders})
               AND terminal_raw.raw_id = (
                   SELECT newest.raw_id
                   FROM raw_sessions AS newest
-                  WHERE newest.source_path = artifact.source_path
+                  WHERE newest.source_path = terminal_raw.source_path
+                    AND newest.origin = terminal_raw.origin
+                    AND newest.source_index = terminal_raw.source_index
                   ORDER BY newest.acquired_at_ms DESC, newest.rowid DESC
                   LIMIT 1
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM raw_sessions AS coordinate
+                  WHERE coordinate.source_path = terminal_raw.source_path
+                    AND coordinate.raw_id = (
+                        SELECT newest.raw_id
+                        FROM raw_sessions AS newest
+                        WHERE newest.source_path = coordinate.source_path
+                          AND newest.origin = coordinate.origin
+                          AND newest.source_index = coordinate.source_index
+                        ORDER BY newest.acquired_at_ms DESC, newest.rowid DESC
+                        LIMIT 1
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM raw_artifacts AS current_artifact
+                        WHERE current_artifact.raw_id = coordinate.raw_id
+                          AND current_artifact.parse_as_session = 0
+                    )
               )
             """,
             batch,
@@ -1675,13 +1696,18 @@ def _terminal_artifact_raw_ids(conn: sqlite3.Connection) -> frozenset[str]:
     terminal_paths = _terminal_artifact_paths(conn, source_paths)
     if not terminal_paths:
         return frozenset()
-    ordered_paths = tuple(sorted(terminal_paths))
-    placeholders = ", ".join("?" for _ in ordered_paths)
-    rows = conn.execute(
-        f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({placeholders})",
-        ordered_paths,
-    ).fetchall()
-    return frozenset(str(row[0]) for row in rows)
+    raw_ids: set[str] = set()
+    pending = set(terminal_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({placeholders})",
+            batch,
+        ).fetchall()
+        raw_ids.update(str(row[0]) for row in rows)
+    return frozenset(raw_ids)
 
 
 def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority]:

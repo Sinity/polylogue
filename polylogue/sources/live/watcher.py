@@ -447,7 +447,7 @@ class LiveWatcher:
         task.add_done_callback(lambda _task: self._hook_spool_directory_retry_tasks.pop(directory, None))
 
     async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
-        """Wait for an added shard's first JSON envelope, then drain once."""
+        """Wait for an added shard's first envelope until it is acknowledged."""
 
         deadline = asyncio.get_running_loop().time() + _HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS
         delay_s = _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S
@@ -457,7 +457,8 @@ class LiveWatcher:
                     return
                 if any(directory.glob("*.json")):
                     await self._drain_hook_spool()
-                    return
+                    if not any(directory.glob("*.json")):
+                        return
             except OSError:
                 return
             await asyncio.sleep(delay_s)
@@ -1695,9 +1696,8 @@ class LiveWatcher:
         the gate instead.
         """
         observed_path = Path(path)
-        return (
-            self._canonical_watch_path(observed_path) is not None
-            or self._source_for_directory(observed_path) is not None
+        return self._canonical_watch_path(observed_path) is not None or (
+            observed_path.is_dir() and self._source_for_directory(observed_path) is not None
         )
 
 
