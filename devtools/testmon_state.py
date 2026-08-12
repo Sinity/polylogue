@@ -81,7 +81,12 @@ class TerminalAuthorization(StrEnum):
 _TERMINAL_NODE_OUTCOMES = frozenset({"passed", "failed", "error", "skipped"})
 
 
-def seed_shard_plan(nodeids: Sequence[str], *, shard_size: int) -> list[dict[str, Any]]:
+def seed_shard_plan(
+    nodeids: Sequence[str],
+    *,
+    shard_size: int,
+    serial_nodeids: Sequence[str] = (),
+) -> list[dict[str, Any]]:
     """Partition a complete node set into stable, contiguous, serial shards."""
     if shard_size <= 0:
         raise ValueError("testmon seed shard_size must be positive")
@@ -90,16 +95,29 @@ def seed_shard_plan(nodeids: Sequence[str], *, shard_size: int) -> list[dict[str
     if len(set(nodeids)) != len(nodeids):
         raise ValueError("testmon seed nodeids must be unique")
     ordered = tuple(sorted(nodeids))
+    serial = set(serial_nodeids)
+    if not serial.issubset(ordered):
+        raise ValueError("testmon serial shard nodes must belong to the seed corpus")
+    chunks: list[tuple[str, list[str]]] = []
+    for offset in range(0, len(ordered), shard_size):
+        chunk = list(ordered[offset : offset + shard_size])
+        parallel = [nodeid for nodeid in chunk if nodeid not in serial]
+        isolated = [nodeid for nodeid in chunk if nodeid in serial]
+        if parallel:
+            chunks.append(("parallel", parallel))
+        if isolated:
+            chunks.append(("serial", isolated))
     return [
         {
             "index": index,
-            "nodeids": list(ordered[offset : offset + shard_size]),
-            "nodeid_count": len(ordered[offset : offset + shard_size]),
-            "nodeid_digest": hashlib.sha256("\n".join(ordered[offset : offset + shard_size]).encode()).hexdigest(),
+            "nodeids": chunk,
+            "nodeid_count": len(chunk),
+            "nodeid_digest": hashlib.sha256("\n".join(chunk).encode()).hexdigest(),
+            "execution_mode": mode,
             "status": SeedShardStatus.PENDING.value,
             "node_outcomes": [],
         }
-        for index, offset in enumerate(range(0, len(ordered), shard_size), start=1)
+        for index, (mode, chunk) in enumerate(chunks, start=1)
     ]
 
 
@@ -120,7 +138,7 @@ def validate_seed_shard_ledger(
     if not expected or len(set(expected)) != len(expected):
         return None
     normalized: list[dict[str, Any]] = []
-    observed: list[str] = []
+    observed: set[str] = set()
     for index, raw in enumerate(shards, start=1):
         if not isinstance(raw, Mapping) or raw.get("index") != index:
             return None
@@ -170,9 +188,11 @@ def validate_seed_shard_ledger(
             and set(outcome_by_node) != set(nodeids)
         ):
             return None
+        if observed.intersection(nodeids):
+            return None
         normalized.append(dict(raw))
-        observed.extend(nodeids)
-    if tuple(observed) != expected:
+        observed.update(nodeids)
+    if observed != set(expected):
         return None
     return normalized
 
@@ -814,6 +834,9 @@ def inspect_testmon_database(path: Path, expected_nodeids: Sequence[str]) -> Gra
                     )
                 execution_ids.add(execution_id)
                 name = test_name
+                if name not in expected:
+                    grouped = [nodeid for nodeid in expected if name.startswith(nodeid + "@")]
+                    name = max(grouped, key=len, default=name)
                 prior = latest.get(name)
                 if prior is None or execution_id > prior[0]:
                     latest[name] = (execution_id, failed == 1)

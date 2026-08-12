@@ -322,10 +322,9 @@ def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> 
     assert command[command.index("-n") + 1] == "0"
 
 
-def test_seed_shards_are_deterministic_and_use_one_testmon_writer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _environment: 64)
     expected = sorted(f"tests/test_seed.py::test_{index:03d}" for index in range(TESTMON_SEED_SHARD_SIZE + 2))
     prepared = _prepare_testmon_seed_shards(
         {"resume": False, "expected_nodeids": []},
@@ -340,13 +339,51 @@ def test_seed_shards_are_deterministic_and_use_one_testmon_writer(
     assert [shard["nodeid_count"] for shard in shards] == [TESTMON_SEED_SHARD_SIZE, 2]
     assert shards[0]["nodeids"] == expected[:TESTMON_SEED_SHARD_SIZE]
     assert shards[1]["nodeids"] == expected[TESTMON_SEED_SHARD_SIZE:]
-    command = _seed_shard_command(["pytest", "--collect-only", "-n", "0"], shards[0])
+    nodeids_file = tmp_path / "seed-shard.args"
+    command = _seed_shard_command(["pytest", "--collect-only", "-n", "0"], shards[0], nodeids_file=nodeids_file)
     assert "--collect-only" not in command
-    assert command[command.index("-n") + 1] == "0"
+    assert command[command.index("-n") + 1] == "10"
     assert "--testmon" in command
     assert "--testmon-noselect" in command
-    assert "--dist=worksteal" in command
-    assert command[-TESTMON_SEED_SHARD_SIZE:] == expected[:TESTMON_SEED_SHARD_SIZE]
+    assert "--dist=loadgroup" in command
+    assert command.count("-n") == 1
+    assert command[command.index("-n") + 1] == "10"
+    assert command[-1] == f"@{nodeids_file}"
+    assert nodeids_file.read_text().splitlines() == expected[:TESTMON_SEED_SHARD_SIZE]
+
+
+def test_seed_outcomes_normalize_xdist_group_suffix(tmp_path: Path) -> None:
+    expected = ["tests/test_seed.py::test_grouped"]
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": f"{expected[0]}@web-reader",
+                "when": "call",
+                "outcome": "passed",
+            }
+        )
+        + "\n"
+    )
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=expected,
+        database={"node_outcomes": {}},
+        pytest_step=None,
+    )
+
+    assert outcomes == [
+        {
+            "nodeid": expected[0],
+            "outcome": "passed",
+            "reason": "test call passed",
+            "started": False,
+            "finished": False,
+            "phases": [{"when": "call", "outcome": "passed", "duration_s": None}],
+        }
+    ]
 
 
 def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
@@ -385,10 +422,24 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
     artifact_dir = tmp_path / "shard-1"
     artifact_dir.mkdir()
     (artifact_dir / "selection.json").write_text(
-        json.dumps({"selected_count": 1, "selected_nodeids": [ordered[0]], "selected_nodeids_omitted": 0})
+        json.dumps(
+            {
+                "selected_count": 1,
+                "selected_nodeids": [f"{ordered[0]}@web-reader"],
+                "selected_nodeids_omitted": 0,
+            }
+        )
     )
     (artifact_dir / "events.jsonl").write_text(
-        json.dumps({"event": "test_report", "nodeid": ordered[0], "when": "call", "outcome": "passed"}) + "\n"
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": f"{ordered[0]}@web-reader",
+                "when": "call",
+                "outcome": "passed",
+            }
+        )
+        + "\n"
     )
 
     checkpointed = _checkpoint_testmon_seed_shard(

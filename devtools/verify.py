@@ -2631,7 +2631,19 @@ def _prepare_testmon_seed_shards(
     shards = (
         prior_shards
         if prior_shards is not None
-        else (seed_shard_plan(expected, shard_size=TESTMON_SEED_SHARD_SIZE) if expected else [])
+        else (
+            seed_shard_plan(
+                expected,
+                shard_size=TESTMON_SEED_SHARD_SIZE,
+                serial_nodeids=[
+                    nodeid
+                    for nodeid, markers in (selection or {}).get("selected_node_markers", {}).items()
+                    if "load_sensitive" in markers or "tui" in markers
+                ],
+            )
+            if expected
+            else []
+        )
     )
     payload = {
         **dict(prepared),
@@ -2646,14 +2658,62 @@ def _prepare_testmon_seed_shards(
     return payload
 
 
-def _seed_shard_command(collection_command: Sequence[str], shard: Mapping[str, Any]) -> list[str]:
-    """Build a dynamically balanced explicit-node pytest-testmon invocation."""
+def _seed_shard_command(
+    collection_command: Sequence[str],
+    shard: Mapping[str, Any],
+    *,
+    nodeids_file: Path,
+) -> list[str]:
+    """Build a bounded-argv, dynamically balanced pytest-testmon invocation.
+
+    A full shard's node IDs can exceed the host's ``execve`` argument budget
+    once ``systemd-run`` and the managed environment are included.  Pytest's
+    response-file syntax keeps the authoritative node list in the run
+    artifact while making the child command size independent of shard size.
+    """
     nodeids = shard.get("nodeids")
     if not isinstance(nodeids, list) or not nodeids:
         raise ValueError("testmon seed shard is missing nodeids")
-    command = [argument for argument in collection_command if argument != "--collect-only"]
-    command.extend(["--dist=worksteal", "--testmon", "--testmon-noselect", *nodeids])
+    nodeids_file.parent.mkdir(parents=True, exist_ok=True)
+    nodeids_file.write_text("\n".join(nodeids) + "\n", encoding="utf-8")
+    command: list[str] = []
+    skip_next = False
+    for argument in collection_command:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "--collect-only":
+            continue
+        if argument in {"-n", "--numprocesses"}:
+            skip_next = True
+            continue
+        if argument.startswith("--numprocesses=") or (argument.startswith("-n") and len(argument) > 2):
+            continue
+        command.append(argument)
+    # Collection is deliberately serial, but execution is not. pytest-testmon
+    # has an xdist-aware controller database; retaining the managed worker pool
+    # here avoids turning a 20k-node seed into hours of serial fixture setup.
+    if shard.get("execution_mode") == "serial":
+        command.extend(["-n", "0", "--testmon", "--testmon-noselect", f"@{nodeids_file}"])
+    else:
+        command.extend(
+            [
+                "--dist=loadgroup",
+                *_pytest_worker_args(maximum=10),
+                "--testmon",
+                "--testmon-noselect",
+                f"@{nodeids_file}",
+            ]
+        )
     return command
+
+
+def _canonical_seed_nodeid(nodeid: str, expected_nodeids: Sequence[str]) -> str:
+    """Map xdist's ``nodeid@group`` reports back to the collected node ID."""
+    if nodeid in expected_nodeids:
+        return nodeid
+    candidates = [expected for expected in expected_nodeids if nodeid.startswith(expected + "@")]
+    return max(candidates, key=len, default=nodeid)
 
 
 def _seed_shard_outcomes(shards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -2684,7 +2744,10 @@ def _checkpoint_testmon_seed_shard(
     nodeids = shard["nodeids"]
     artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
     selection = _read_json_artifact(artifact_dir / "selection.json") if artifact_dir is not None else None
-    selected = _seed_selection_nodeids(selection) if isinstance(selection, Mapping) else None
+    selected_raw = _seed_selection_nodeids(selection) if isinstance(selection, Mapping) else None
+    selected = (
+        sorted(_canonical_seed_nodeid(nodeid, nodeids) for nodeid in selected_raw) if selected_raw is not None else None
+    )
     database = _testmon_database_state(nodeids)
     prior = {
         str(item["nodeid"]): item
@@ -2781,6 +2844,7 @@ def _seed_node_outcomes_from_events(
                     nodeid = event.get("nodeid")
                     if not isinstance(nodeid, str) or not nodeid:
                         continue
+                    nodeid = _canonical_seed_nodeid(nodeid, expected_nodeids)
                     if event.get("event") == "test_started":
                         started.add(nodeid)
                     elif event.get("event") == "test_finished":
@@ -3422,7 +3486,32 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 shard_index = int(shard["index"])
                 shard_label = f"pytest seed-testmon shard {shard_index}/{len(shards)}"
-                shard_cmd = _seed_shard_command(cmd, shard)
+                shard_args_path = verify_run.run_dir / "seed-shards" / f"{shard_index:04d}.args"
+                try:
+                    shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
+                except (OSError, PytestResourceError) as exc:
+                    resource_failure_result = {
+                        "name": shard_label,
+                        "duration_s": 0.0,
+                        "exit": 125,
+                        "diagnosis": (
+                            "pytest_resource_refusal"
+                            if isinstance(exc, PytestResourceError)
+                            else "testmon_seed_args_file_write_failed"
+                        ),
+                        "error": str(exc),
+                        "shard_index": shard_index,
+                        "shard_count": len(shards),
+                        "shard_nodeid_count": len(shard["nodeids"]),
+                    }
+                    step_results.append(resource_failure_result)
+                    prepared_seed_attempt = _checkpoint_testmon_seed_shard(
+                        prepared=prepared_seed_attempt,
+                        shard_index=shard_index,
+                        step=resource_failure_result,
+                    )
+                    exit_code = 125
+                    break
                 _warn_low_memory()
                 shard_rc, shard_elapsed, shard_metadata = _run(shard_label, shard_cmd, run=verify_run)
                 shard_result: dict[str, Any] = {
