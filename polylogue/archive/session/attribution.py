@@ -93,6 +93,36 @@ def _is_ignored_absolute_path(path: PurePosixPath) -> bool:
     return False
 
 
+def _ambient_noise_root(path: PurePosixPath) -> PurePosixPath | None:
+    """Return the infrastructure root that makes an absolute path noisy.
+
+    This deliberately excludes names such as ``tool-results``: a checkout may
+    own a directory with that name.  The roots returned here identify ambient
+    agent/runtime trees where a stray Git marker in an ancestor must not make
+    every descendant look repository-owned.
+    """
+    parts = tuple(part for part in path.parts if part != "/")
+    if len(parts) >= 2 and parts[0] == "tmp":
+        for index, part in enumerate(parts[1:], start=1):
+            if part.startswith(("claude-", "codex-")):
+                return PurePosixPath("/", *parts[: index + 1])
+    if parts[:2] == ("nix", "store"):
+        return PurePosixPath("/nix/store")
+    if parts[:2] == ("home", Path.home().name):
+        if parts[2:3] in ((".claude",), (".codex",)):
+            return PurePosixPath("/", *parts[:3])
+        if parts[2:4] in ((".config", "claude"), (".config", "codex")):
+            return PurePosixPath("/", *parts[:4])
+    return None
+
+
+def _repo_root_is_broad_noise_ancestor(repo_root: str, path: PurePosixPath) -> bool:
+    noise_root = _ambient_noise_root(path)
+    if noise_root is None:
+        return False
+    return PurePosixPath(repo_root) in noise_root.parents
+
+
 def _repo_root_from_path(path: str) -> str | None:
     """Derive a likely repository root from a file path."""
     return normalize_repo_path(path)
@@ -129,12 +159,12 @@ def _clean_attributed_path(path: str) -> str | None:
     pure_path = PurePosixPath(expanded)
     ignored_absolute = _is_ignored_absolute_path(pure_path)
     repo_root = _repo_root_from_path(expanded)
-    # A real file inside a checkout outranks global transcript-noise path
-    # names (for example a repository-owned ``tool-results/parser.py``).
-    # Missing historical paths keep the global filter: otherwise an unrelated
-    # broad ancestor checkout such as a stray ``/tmp/.git`` would authorize
-    # every vanished Claude spool path below it.
-    if repo_root is not None and (not ignored_absolute or Path(expanded).exists()):
+    # Checkout ownership outranks global transcript-noise names even after a
+    # file has been deleted or renamed.  A Git marker *above* an ambient agent
+    # tree does not grant that ownership: for example, ``/tmp/.git`` must not
+    # authorize every ``/tmp/claude-*`` spool path, while a real checkout
+    # rooted inside that spool remains valid.
+    if repo_root is not None and not _repo_root_is_broad_noise_ancestor(repo_root, pure_path):
         try:
             repo_relative = PurePosixPath(PurePosixPath(expanded).relative_to(PurePosixPath(repo_root)).as_posix())
         except ValueError:
