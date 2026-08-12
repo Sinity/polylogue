@@ -326,7 +326,7 @@ def test_seed_shards_are_deterministic_and_use_one_testmon_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    expected = [f"tests/test_seed.py::test_{index:03d}" for index in range(TESTMON_SEED_SHARD_SIZE + 2)]
+    expected = sorted(f"tests/test_seed.py::test_{index:03d}" for index in range(TESTMON_SEED_SHARD_SIZE + 2))
     prepared = _prepare_testmon_seed_shards(
         {"resume": False, "expected_nodeids": []},
         selection={
@@ -345,6 +345,7 @@ def test_seed_shards_are_deterministic_and_use_one_testmon_writer(
     assert command[command.index("-n") + 1] == "0"
     assert "--testmon" in command
     assert "--testmon-noselect" in command
+    assert "--dist=worksteal" in command
     assert command[-TESTMON_SEED_SHARD_SIZE:] == expected[:TESTMON_SEED_SHARD_SIZE]
 
 

@@ -221,7 +221,11 @@ TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
 TESTMON_SEED_PROTOCOL_VERSION = 7
-TESTMON_SEED_SHARD_SIZE = 256
+# Keep resumable checkpoints coarse enough that controller startup and
+# per-shard testmon initialization do not dominate the seed.  The seed still
+# records every node outcome, so a failed shard remains retryable at node
+# resolution; this size yields six shards for the current correctness corpus.
+TESTMON_SEED_SHARD_SIZE = 4096
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -2643,12 +2647,12 @@ def _prepare_testmon_seed_shards(
 
 
 def _seed_shard_command(collection_command: Sequence[str], shard: Mapping[str, Any]) -> list[str]:
-    """Build a serial, explicit-node pytest-testmon invocation for one shard."""
+    """Build a dynamically balanced explicit-node pytest-testmon invocation."""
     nodeids = shard.get("nodeids")
     if not isinstance(nodeids, list) or not nodeids:
         raise ValueError("testmon seed shard is missing nodeids")
     command = [argument for argument in collection_command if argument != "--collect-only"]
-    command.extend(["--testmon", "--testmon-noselect", *nodeids])
+    command.extend(["--dist=worksteal", "--testmon", "--testmon-noselect", *nodeids])
     return command
 
 
