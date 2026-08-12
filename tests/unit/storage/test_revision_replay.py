@@ -276,6 +276,52 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
     assert require_current_parser_source_census(tmp_path)[raw_id] == ()
 
 
+def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> None:
+    """Terminal non-session evidence settles replay without dispatching its malformed bytes."""
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"not valid codex jsonl",
+            source_path="terminal-replay-corrupt.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path="terminal-replay-corrupt.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=ValueError("terminal corrupt input"),
+            preserve_existing_failure_evidence=True,
+        )
+        with archive._ensure_source_conn():
+            archive_revision_governance.record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
+
+        from polylogue.sources.revision_backfill import _load_frozen_revision_evidence, _ParsedSessionSpill
+
+        with _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1024 * 1024) as spill:
+            census = _load_frozen_revision_evidence(
+                archive,
+                spill,
+                selected_raw_ids=None,
+                max_payload_bytes=None,
+                ingest_workers=1,
+                prefetch_cache=None,
+            )
+
+    assert census.scanned == 1
+    assert census.censused == {raw_id}
+    assert census.classified == 0
+    assert census.quarantined == 0
+
+
 def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:
     """A parser-derived membership receipt cannot retain its provisional raw key."""
     initialize_active_archive_root(tmp_path)

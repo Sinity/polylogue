@@ -2681,7 +2681,7 @@ class ArchiveStore:
     ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
         return raw_revision_rebuild_selection(self, raw_ids)
 
-    def raw_membership_census_rows(self, raw_ids: Sequence[str] | None = None) -> tuple[tuple[str, int], ...]:
+    def raw_membership_census_rows(self, raw_ids: Sequence[str] | None = None) -> tuple[tuple[str, int, bool], ...]:
         return raw_membership_census_rows(self, raw_ids)
 
     def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
