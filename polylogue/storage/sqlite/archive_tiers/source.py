@@ -20,6 +20,7 @@ from polylogue.core.enums import (
 )
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
+from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 SOURCE_SCHEMA_VERSION = 32
 
@@ -879,7 +880,7 @@ CREATE TABLE IF NOT EXISTS audit_continuity_control (
 INSERT OR IGNORE INTO audit_continuity_control(
     singleton, committed_generation, committed_head_sha256,
     pending_mutation_id, pending_payload_json, pending_payload_sha256, prepared_at_ms
-) VALUES (1, 0, '3230fdd585a4fd2d71b7d720bcfe5d697ff120fdb32aecde394e89d407c7198f', NULL, NULL, NULL, NULL);
+) VALUES (1, 0, '{AUDIT_CONTINUITY_GENESIS_HEAD_SHA256}', NULL, NULL, NULL, NULL);
 
 """
 

@@ -106,17 +106,20 @@ def migrate_tier_command(
     adoption_receipt: Path | None = None
     restore_receipt: Path | None = None
     try:
+        if sum((initialize_missing, adopt_established_audit, restore_adopted_audit)) > 1:
+            raise MigrationError(
+                "choose only one of --initialize-missing, --adopt-established-audit, or --restore-adopted-audit"
+            )
+        if (adopt_established_audit or restore_adopted_audit) and archive_tier is not ArchiveTier.AUDIT:
+            option = "--adopt-established-audit" if adopt_established_audit else "--restore-adopted-audit"
+            raise MigrationError(f"{option} is only valid for the audit tier")
+        if (adopt_established_audit or restore_adopted_audit) and backup_manifest is None:
+            option = "--adopt-established-audit" if adopt_established_audit else "--restore-adopted-audit"
+            raise MigrationError(f"{option} requires --backup-manifest")
         with acquire_durable_archive_ownership(path.parent, owner_id=f"migrate-tier:{os.getpid()}") as archive_owner:
             stopped_daemon_evidence_ref = _require_stopped_daemon(path.parent)
-            if sum((initialize_missing, adopt_established_audit, restore_adopted_audit)) > 1:
-                raise MigrationError(
-                    "choose only one of --initialize-missing, --adopt-established-audit, or --restore-adopted-audit"
-                )
             if adopt_established_audit:
-                if archive_tier is not ArchiveTier.AUDIT:
-                    raise MigrationError("--adopt-established-audit is only valid for the audit tier")
-                if backup_manifest is None:
-                    raise MigrationError("--adopt-established-audit requires --backup-manifest")
+                assert backup_manifest is not None
                 initialized_version, adoption_receipt = adopt_missing_audit_tier(
                     path,
                     backup_manifest=backup_manifest,
@@ -126,10 +129,7 @@ def migrate_tier_command(
                 initialized = True
                 execution = None
             elif restore_adopted_audit:
-                if archive_tier is not ArchiveTier.AUDIT:
-                    raise MigrationError("--restore-adopted-audit is only valid for the audit tier")
-                if backup_manifest is None:
-                    raise MigrationError("--restore-adopted-audit requires --backup-manifest")
+                assert backup_manifest is not None
                 restore_receipt = restore_adopted_audit_tier(
                     path,
                     backup_manifest=backup_manifest,

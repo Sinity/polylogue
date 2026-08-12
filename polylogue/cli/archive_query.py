@@ -2149,15 +2149,6 @@ def _emit_delete(
     force = bool(params.get("force"))
     count = len(session_ids)
 
-    actuator = SessionDeleteActuator()
-    executor = OperationExecutor.for_archive_root(archive.archive_root)
-    prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal(
-        "user:cli", frozenset({"archive.delete_session", "archive.legacy_runtime"}), "cli", "write"
-    )
-    preview = executor.prepare_bound_for_archive(binding, prepare_args, principal, archive_root=archive.archive_root)
-
     if dry_run:
         # ``session_count`` = matched, ``affected_count`` = deleted (0 in a
         # preview); ``session_ids`` enumerates the sessions that would be deleted.
@@ -2209,7 +2200,13 @@ def _emit_delete(
                 ).to_json(exclude_none=True)
             )
             return
-    authorization = executor.authorize_bound(binding, preview, principal)
+    actuator = SessionDeleteActuator()
+    executor = OperationExecutor.for_archive_root(archive.archive_root)
+    prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal("user:cli", frozenset({"archive.delete_session"}), "cli", "write")
+    preview = executor.prepare_bound_for_archive(binding, prepare_args, principal, archive_root=archive.archive_root)
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
     receipt = executor.execute_bound(binding, preview, authorization, prepare_args)
     deleted = receipt.affected_count
     # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.

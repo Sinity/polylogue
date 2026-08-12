@@ -111,7 +111,7 @@ caller; it exists only as test infrastructure (`polylogue-enium`).
 `TopologyEdgeStatus` = unresolved/resolved/repaired/**quarantined**
 (cycle-break).
 
-### The five tiers (durability is the axis)
+### The six tiers (durability is the axis)
 
 | Tier | durability | holds |
 | --- | --- | --- |
@@ -119,6 +119,7 @@ caller; it exists only as test infrastructure (`polylogue-enium`).
 | `index.db` | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
 | `embeddings.db` | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
 | `user.db` | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
+| `audit.db` | **durable, append-only authority** | mutation previews, authorizations, attempts, receipts, and continuity heads |
 | `ops.db` | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs |
 
 `user.db` is a **single unified `assertions` table** keyed by a closed
@@ -186,8 +187,8 @@ snapshot reference check) to bridge the acquire-blob → commit-row window.
 
 Two evolution regimes, enforced by `devtools lab policy schema-versioning`:
 
-- **Durable tiers** (`source.db`, `user.db`): explicit **additive** numbered SQL
-  migrations under `storage/sqlite/migrations/{source,user}/NNN_*.sql`, one
+- **Durable tiers** (`source.db`, `user.db`, `audit.db`): explicit **additive** numbered SQL
+  migrations under `storage/sqlite/migrations/{source,user,audit}/NNN_*.sql`, one
   `PRAGMA user_version` step at a time, behind a **verified backup manifest**.
   Destructive durable changes need a copy-forward design + explicit consent.
 - **Derived tiers** (`index.db`, `embeddings.db`): no migration *chain*, but not

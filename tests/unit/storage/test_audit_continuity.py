@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,8 @@ def test_crash_before_source_prepare_leaves_no_command(tmp_path: Path) -> None:
         AuditContinuityCoordinator(tmp_path, phase_hook=interrupt).execute(_mutation(1), _apply)
 
     AuditContinuityCoordinator(tmp_path).reconcile(_apply)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
 
 
 def test_pending_command_replays_after_audit_rollback(tmp_path: Path) -> None:
@@ -120,10 +123,10 @@ def test_rejected_audit_transaction_aborts_its_prepared_command(tmp_path: Path) 
     with pytest.raises(ValueError, match="already consumed"):
         coordinator.execute(_mutation(1), reject)
 
-    with sqlite3.connect(tmp_path / "source.db") as source:
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
         assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
     assert coordinator.execute(_mutation(2), _apply) == "mutation:2"
-    with sqlite3.connect(tmp_path / "audit.db") as audit:
+    with closing(sqlite3.connect(tmp_path / "audit.db")) as audit:
         assert audit.execute("SELECT generation, mutation_id FROM audit_continuity_head").fetchone() == (
             1,
             "mutation:2",
@@ -177,7 +180,7 @@ def test_rebind_rejects_a_stale_in_place_image_before_blessing_it(tmp_path: Path
     audit_path = tmp_path / "audit.db"
     stale_bytes = audit_path.read_bytes()
     inode = audit_path.stat().st_ino
-    with sqlite3.connect(audit_path) as audit:
+    with closing(sqlite3.connect(audit_path)) as audit:
         audit.execute(
             "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES (?, ?, 1)",
             ("newer-audit-image", 1),

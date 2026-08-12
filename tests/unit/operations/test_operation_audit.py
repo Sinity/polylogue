@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -285,6 +286,15 @@ def test_typed_domain_receipt_replays_after_source_prepare_crash(
     AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
     with sqlite3.connect(tmp_path / "audit.db") as conn:
         assert conn.execute("SELECT status FROM operation_runs").fetchone() == ("completed",)
+        receipt_json = str(
+            conn.execute("SELECT detail_json FROM operation_events WHERE event_type = 'attempt_finalized'").fetchone()[
+                0
+            ]
+        )
+    assert "private-cache" not in receipt_json
+    assert json.loads(receipt_json)["domain_receipt"]["outcomes"] == [
+        {"row_ref": "assertion:typed", "status": "imported"}
+    ]
     with sqlite3.connect(tmp_path / "source.db") as source:
         command = source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0]
     assert command is None

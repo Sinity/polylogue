@@ -314,11 +314,9 @@ def excise_command(
     # tampered authorization refuses (``PlanStaleError``) rather than excising
     # the wrong target set.
     binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal(
-        actor, frozenset({"archive.excise_session", "archive.legacy_runtime"}), "cli", "write"
-    )
+    principal = MutationPrincipal(actor, frozenset({"archive.excise_session"}), "cli", "write")
     preview = executor.prepare_bound_for_archive(binding, excision_args, principal, archive_root=root)
-    authorization = executor.authorize_bound(binding, preview, principal)
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
     executor_receipt = executor.execute_bound(binding, preview, authorization, excision_args)
     if executor_receipt.status == "blocked":
         _emit(

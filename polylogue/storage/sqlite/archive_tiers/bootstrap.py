@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -314,14 +315,14 @@ def _source_has_audit_continuity_control(source_path: Path) -> bool:
     if not source_path.is_file():
         return False
     try:
-        with sqlite3.connect(f"{source_path.resolve(strict=True).as_uri()}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"{source_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
             return (
                 connection.execute(
                     "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'audit_continuity_control'"
                 ).fetchone()
                 is not None
             )
-    except sqlite3.DatabaseError:
+    except (OSError, sqlite3.DatabaseError):
         return False
 
 
@@ -371,6 +372,20 @@ def initialize_active_archive_root(root: Path) -> None:
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
+
+        def classify_paths() -> tuple[bool, bool]:
+            durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
+            adoption = (
+                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
+                and manifest_root.is_dir()
+                and not has_durable_train_state
+                and not has_bootstrap_marker
+                and not has_pending_bootstrap
+            )
+            return durable_exists, adoption
+
+        durable_tier_exists, pre_marker_adoption = classify_paths()
         if has_pending_bootstrap:
             _validate_fresh_durable_bootstrap_intent(root)
             if has_durable_train_state:
@@ -387,14 +402,6 @@ def initialize_active_archive_root(root: Path) -> None:
         recovering_fresh_durable_bootstrap = fresh_durable_bootstrap or (
             has_pending_bootstrap and not has_bootstrap_marker
         )
-        pre_marker_adoption = (
-            (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-            and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
-            and manifest_root.is_dir()
-            and not has_durable_train_state
-            and not has_bootstrap_marker
-            and not has_pending_bootstrap
-        )
         if fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
@@ -404,17 +411,7 @@ def initialize_active_archive_root(root: Path) -> None:
             # Receipt-backed recovery can add audit.db to a legacy archive.
             # Recompute the path-sensitive classification before deciding
             # whether startup must create the missing bootstrap marker.
-            durable_tier_exists = any(
-                (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
-            )
-            pre_marker_adoption = (
-                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
-                and manifest_root.is_dir()
-                and not has_durable_train_state
-                and not has_bootstrap_marker
-                and not has_pending_bootstrap
-            )
+            durable_tier_exists, pre_marker_adoption = classify_paths()
         if (
             durable_tier_exists
             and not recovering_fresh_durable_bootstrap

@@ -1404,16 +1404,18 @@ def restore_adopted_audit_tier(
         # A restore can stop after its audit-side rebind commit while the source
         # WAL still awaits promotion. Reconcile that exact operation before a
         # retry tries to prepare a second command.
-        rebind_already_committed = (
-            coordinator.reconcile_pending_rebind(rebind_mutation_id)
-            if coordinator.has_pending_rebind(rebind_mutation_id)
-            else coordinator.has_committed_mutation(rebind_mutation_id)
-        )
+        try:
+            rebind_already_committed = (
+                coordinator.reconcile_pending_rebind(rebind_mutation_id)
+                if coordinator.has_pending_rebind(rebind_mutation_id)
+                else coordinator.has_committed_mutation(rebind_mutation_id)
+            )
+        except AuditContinuityError as exc:
+            if "cannot read audit continuity commit state" not in str(exc):
+                raise
     published = False
     try:
-        if rebind_already_committed or _audit_file_matches_artifact(
-            archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size
-        ):
+        if _audit_file_matches_artifact(archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size):
             published = True
         else:
             _copy_restore_artifact(
@@ -1432,7 +1434,7 @@ def restore_adopted_audit_tier(
             os.replace(temporary_name, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
             os.fsync(directory_fd)
             published = True
-        if not rebind_already_committed and _audit_file_sha256(path) != artifact_sha256:
+        if _audit_file_sha256(path) != artifact_sha256:
             raise MigrationError("adopted-audit restore published image changed before continuity rebind")
         identity = _audit_file_identity(path)
         version, application_id, quick_check = _audit_live_metadata(path)

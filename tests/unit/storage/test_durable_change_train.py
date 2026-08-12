@@ -2171,10 +2171,10 @@ def test_adopted_audit_restore_rejects_backup_swap_after_validation(
     real_validate = validate_full_evidence_backup_for_adopted_audit_restore
     calls = 0
 
-    def swap_after_validation(path: Path, *, archive_root: Path) -> tuple[Path, Path]:
+    def swap_after_validation(path: Path, *, archive_root: Path, **kwargs: object) -> tuple[Path, Path]:
         nonlocal calls
         calls += 1
-        manifest, receipt = real_validate(path, archive_root=archive_root)
+        manifest, receipt = real_validate(path, archive_root=archive_root, **kwargs)  # type: ignore[arg-type]
         if calls == 2:
             receipt.write_bytes(receipt.read_bytes() + b"\n")
         return manifest, receipt

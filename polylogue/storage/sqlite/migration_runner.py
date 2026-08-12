@@ -1050,7 +1050,7 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path)
     """Allow a retrying restore to differ only in the source continuity table."""
 
     try:
-        with sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
             connection.execute(
                 "ATTACH DATABASE ? AS backup_source", (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro",)
             )
@@ -1072,9 +1072,15 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path)
                 backup_count = int(connection.execute(f"SELECT COUNT(*) FROM backup_source.{quoted}").fetchone()[0])
                 if live_count != backup_count:
                     raise MigrationError("adopted-audit restore backup is stale for source.db")
+                columns = [str(row[1]) for row in connection.execute(f"PRAGMA main.table_info({quoted})")]
+                if not columns:
+                    raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+                grouped_columns = ", ".join(_quote_sqlite_identifier(column) for column in columns)
                 for left, right in (("main", "backup_source"), ("backup_source", "main")):
                     differs = connection.execute(
-                        f"SELECT 1 FROM (SELECT * FROM {left}.{quoted} EXCEPT SELECT * FROM {right}.{quoted}) LIMIT 1"
+                        f"SELECT 1 FROM (SELECT {grouped_columns}, COUNT(*) AS multiplicity FROM {left}.{quoted} "
+                        f"GROUP BY {grouped_columns} EXCEPT SELECT {grouped_columns}, COUNT(*) AS multiplicity "
+                        f"FROM {right}.{quoted} GROUP BY {grouped_columns}) LIMIT 1"
                     ).fetchone()
                     if differs is not None:
                         raise MigrationError("adopted-audit restore backup is stale for source.db")

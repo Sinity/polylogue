@@ -686,8 +686,9 @@ Files that are not configured archive paths are not classified or handled by
 the archive runtime.
 
 For **durable tiers** (`source.db`, `user.db`, `audit.db`) the boundary is different, because
-`user.db` holds irreplaceable human assertions that cannot be rebuilt from
-source. These tiers use explicit *additive* numbered SQL migrations under
+`user.db` holds irreplaceable human assertions and `audit.db` holds immutable
+mutation authority and receipt evidence; neither can be rebuilt from source.
+These tiers use explicit *additive* numbered SQL migrations under
 `storage/sqlite/migrations/{source,user,audit}/NNN_*.sql`, applied one `PRAGMA
 user_version` step at a time by `migration_runner.py` behind a **verified backup
 manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/

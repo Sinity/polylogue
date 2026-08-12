@@ -6591,11 +6591,9 @@ class PolylogueArchiveMixin:
             executor = OperationExecutor.for_archive_root(root)
             args = SessionDeleteArgs(archive=archive, session_ids=(resolved,))
             binding = runtime_operation_binding(actuator)
-            principal = MutationPrincipal(
-                actor, frozenset({"archive.delete_session", "archive.legacy_runtime"}), "api", "write"
-            )
+            principal = MutationPrincipal(actor, frozenset({"archive.delete_session"}), "api", "write")
             preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-            authorization = executor.authorize_bound(binding, preview, principal)
+            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
             receipt = executor.execute_bound(binding, preview, authorization, args)
         deleted = receipt.affected_count > 0
         return DeleteSessionResult(

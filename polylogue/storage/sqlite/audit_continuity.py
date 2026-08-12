@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 _FORMAT = "polylogue.audit-continuity-command.v1"
+AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 = "3230fdd585a4fd2d71b7d720bcfe5d697ff120fdb32aecde394e89d407c7198f"
 _T = TypeVar("_T")
 
 
@@ -209,8 +210,10 @@ class AuditContinuityCoordinator:
                 audit_row = audit.execute(
                     "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
                 ).fetchone()
-        except sqlite3.DatabaseError:
-            return False
+        except sqlite3.DatabaseError as exc:
+            if "no such table" in str(exc).lower():
+                return False
+            raise AuditContinuityError("cannot read audit continuity commit state") from exc
         if source_row is None or audit_row is None:
             raise AuditContinuityError("audit continuity control row is missing")
         if (int(source_row[0]), str(source_row[1])) != (int(audit_row[0]), str(audit_row[1])):
@@ -358,33 +361,34 @@ class AuditContinuityCoordinator:
         prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
         target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
         with closing(sqlite3.connect(self.audit_path)) as audit:
+            audit.execute("BEGIN IMMEDIATE")
             row = audit.execute(
                 "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
             ).fetchone()
-        if row is None:
-            raise AuditContinuityError("audit continuity head is missing while aborting a prepared command")
-        current = (int(row[0]), str(row[1]), row[2])
-        if current[:2] == target and current[2] == mutation.mutation_id:
-            # The audit commit did land. Keep the WAL command for normal
-            # promotion instead of mistaking an ambiguous failure for rollback.
-            return
-        if current[:2] != prior:
-            raise AuditContinuityError("cannot abort prepared command after an unrelated audit head change")
-        with closing(sqlite3.connect(self.source_path)) as source, source:
-            source.execute("BEGIN IMMEDIATE")
-            cursor = source.execute(
-                """
+            if row is None:
+                raise AuditContinuityError("audit continuity head is missing while aborting a prepared command")
+            current = (int(row[0]), str(row[1]), row[2])
+            if current[:2] == target and current[2] == mutation.mutation_id:
+                # The audit commit did land. Keep the WAL command for normal
+                # promotion instead of mistaking an ambiguous failure for rollback.
+                return
+            if current[:2] != prior:
+                raise AuditContinuityError("cannot abort prepared command after an unrelated audit head change")
+            with closing(sqlite3.connect(self.source_path)) as source, source:
+                source.execute("BEGIN IMMEDIATE")
+                cursor = source.execute(
+                    """
                 UPDATE audit_continuity_control
                 SET pending_mutation_id = NULL, pending_payload_json = NULL,
                     pending_payload_sha256 = NULL, prepared_at_ms = NULL
                 WHERE singleton = 1 AND committed_generation = ? AND committed_head_sha256 = ?
                   AND pending_mutation_id = ? AND pending_payload_sha256 = ?
                 """,
-                (prior[0], prior[1], mutation.mutation_id, _sha256(dict(prepared))),
-            )
-            if cursor.rowcount != 1:
-                raise AuditContinuityError("source audit continuity abort lost its prepared command")
-            source.commit()
+                    (prior[0], prior[1], mutation.mutation_id, _sha256(dict(prepared))),
+                )
+                if cursor.rowcount != 1:
+                    raise AuditContinuityError("source audit continuity abort lost its prepared command")
+                source.commit()
 
     def _assert_committed_head_matches_audit(self) -> None:
         with closing(sqlite3.connect(self.source_path)) as source, closing(sqlite3.connect(self.audit_path)) as audit:

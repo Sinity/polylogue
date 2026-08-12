@@ -6,6 +6,8 @@ remain in their owning tiers and are linked by typed receipt references.
 
 from __future__ import annotations
 
+from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
+
 AUDIT_SCHEMA_VERSION = 2
 
 AUDIT_DDL = """
@@ -227,7 +229,9 @@ CREATE TABLE IF NOT EXISTS audit_continuity_head (
 ) STRICT;
 INSERT OR IGNORE INTO audit_continuity_head(
     singleton, generation, head_sha256, mutation_id, advanced_at_ms
-) VALUES (1, 0, '3230fdd585a4fd2d71b7d720bcfe5d697ff120fdb32aecde394e89d407c7198f', NULL, 0);
+) VALUES (1, 0, '__AUDIT_CONTINUITY_GENESIS_HEAD__', NULL, 0);
 """
+
+AUDIT_DDL = AUDIT_DDL.replace("__AUDIT_CONTINUITY_GENESIS_HEAD__", AUDIT_CONTINUITY_GENESIS_HEAD_SHA256)
 
 __all__ = ["AUDIT_DDL", "AUDIT_SCHEMA_VERSION"]

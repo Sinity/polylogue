@@ -273,6 +273,11 @@ class AuditRepository:
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
+        except BaseException:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()
         finally:
             conn.close()
 
@@ -346,6 +351,8 @@ class AuditRepository:
                 "reason": values.get("reason"),
                 "now_ms": int(time.time() * 1000),
             }
+        if kind == "recover_abandoned_attempts":
+            return {"now_ms": int(time.time() * 1000)}
         raise RuntimeError(f"unregistered audit continuity mutation {kind!r}")
 
     def _replay_pending_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
@@ -395,6 +402,8 @@ class AuditRepository:
                     domain_receipt_ref=cast(str | None, payload.get("domain_receipt_ref")),
                     reason=cast(str | None, payload.get("reason")),
                 )
+            if mutation.kind == "recover_abandoned_attempts":
+                return cast(Any, self._recover_abandoned_attempts).__wrapped__(self)
             raise RuntimeError(f"unregistered audit continuity mutation {mutation.kind!r}")
         finally:
             self._coordinated_mutation = None
@@ -727,10 +736,17 @@ class AuditRepository:
         """Finalize one running attempt and parent run in one audit transaction."""
 
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
-        target_state: AuditTargetState = (
-            "unknown" if status == "unknown" else "failed" if status == "failed" else "applied"
+        target_state = cast(
+            AuditTargetState,
+            {
+                "unknown": "unknown",
+                "failed": "failed",
+                "blocked": "rejected",
+            }.get(status, "applied"),
         )
-        attempt_state = "unknown" if target_state == "unknown" else target_state
+        attempt_state = (
+            "unknown" if target_state == "unknown" else "failed" if target_state == "rejected" else target_state
+        )
         with self._connection() as conn:
             self._begin(conn)
             run = conn.execute(
@@ -739,7 +755,7 @@ class AuditRepository:
             if run is None:
                 raise ValueError(f"unknown operation {operation_id!r}")
             target = conn.execute(
-                "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state = 'running' ORDER BY ordinal LIMIT 1",
+                "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state IN ('running', 'pending') ORDER BY ordinal LIMIT 1",
                 (operation_id,),
             ).fetchone()
             ordinal = int(target[0]) if target is not None else None
@@ -751,25 +767,23 @@ class AuditRepository:
                 """,
                 (attempt_state, now_ms, error_summary, unknown_reason, operation_id),
             )
-            if ordinal is not None:
-                conn.execute(
-                    """
-                    UPDATE operation_targets
-                    SET state = ?, completed_at_ms = ?, error_summary = ?, unknown_reason = ?,
-                        domain_receipt_ref = ?, domain_receipt_kind = ?
-                    WHERE operation_id = ? AND ordinal = ?
-                    """,
-                    (
-                        target_state,
-                        now_ms,
-                        error_summary,
-                        unknown_reason,
-                        None if receipt is None else receipt.receipt_ref,
-                        None if receipt is None else "mutation-receipt",
-                        operation_id,
-                        ordinal,
-                    ),
-                )
+            conn.execute(
+                """
+                UPDATE operation_targets
+                SET state = ?, completed_at_ms = ?, error_summary = ?, unknown_reason = ?,
+                    domain_receipt_ref = ?, domain_receipt_kind = ?
+                WHERE operation_id = ? AND state IN ('running', 'pending')
+                """,
+                (
+                    target_state,
+                    now_ms,
+                    error_summary,
+                    unknown_reason,
+                    None if receipt is None else receipt.receipt_ref,
+                    None if receipt is None else "mutation-receipt",
+                    operation_id,
+                ),
+            )
             states = [
                 str(row[0])
                 for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
@@ -816,8 +830,63 @@ class AuditRepository:
                 to_state=run_status,
                 actor_ref=str(run[0]),
                 occurred_at_ms=now_ms,
-                detail={"status": status, "reason": (unknown_reason or error_summary or "")[:512]},
+                detail={
+                    "status": status,
+                    "reason": (unknown_reason or error_summary or "")[:512],
+                    "domain_receipt": {} if receipt is None else receipt.domain_receipt,
+                },
             )
+
+    def recover_abandoned_attempts(self) -> tuple[str, ...]:
+        """Recover only work that a prior process actually left running."""
+
+        with self._connection() as conn:
+            has_running = conn.execute("SELECT 1 FROM operation_attempts WHERE state = 'running' LIMIT 1").fetchone()
+        if has_running is None:
+            return ()
+        return self._recover_abandoned_attempts()
+
+    @_continuity_mutation("recover_abandoned_attempts")
+    def _recover_abandoned_attempts(self) -> tuple[str, ...]:
+        """Mark persisted in-flight work unknown before a fresh executor can act.
+
+        A running attempt has no durable worker lease or resumable process
+        handle.  Seeing it during a new executor construction therefore proves
+        only that the previous process stopped before it finalized the effect.
+        Preserve that uncertainty instead of leaving an unreconcilable running
+        operation forever.
+        """
+
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
+        with self._connection() as conn:
+            self._begin(conn)
+            rows = conn.execute(
+                "SELECT DISTINCT operation_id FROM operation_attempts WHERE state = 'running' ORDER BY operation_id"
+            ).fetchall()
+            operation_ids = tuple(str(row[0]) for row in rows)
+            for operation_id in operation_ids:
+                conn.execute(
+                    "UPDATE operation_attempts SET state = 'unknown', finished_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND state = 'running'",
+                    (now_ms, "process ended before audit finalization", operation_id),
+                )
+                conn.execute(
+                    "UPDATE operation_targets SET state = 'unknown', unknown_reason = ? WHERE operation_id = ? AND state IN ('running', 'pending')",
+                    ("process ended before audit finalization", operation_id),
+                )
+                conn.execute(
+                    "UPDATE operation_runs SET status = 'interrupted', terminal_reason = 'unknown_effect', updated_at_ms = ?, completed_at_ms = ?, unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'), unknown_reason = ? WHERE operation_id = ?",
+                    (now_ms, now_ms, operation_id, "process ended before audit finalization", operation_id),
+                )
+                self._append_event(
+                    conn,
+                    operation_id=operation_id,
+                    event_type="attempt_unknown",
+                    from_state="running",
+                    to_state="interrupted",
+                    occurred_at_ms=now_ms,
+                    detail={"reason": "process ended before audit finalization"},
+                )
+        return operation_ids
 
     @_continuity_mutation("reconcile_attempt")
     def reconcile_attempt(

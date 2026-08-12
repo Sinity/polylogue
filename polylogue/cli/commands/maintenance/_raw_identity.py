@@ -212,7 +212,7 @@ def raw_authority_blocker_resolve_command(
     """
     if not confirmed:
         raise click.ClickException("refusing to resolve a durable blocker without --yes")
-    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.bindings import BindingValidationError, runtime_operation_binding
     from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
     from polylogue.operations.mutation_transaction import (
         MutationPrincipal,
@@ -233,14 +233,21 @@ def raw_authority_blocker_resolve_command(
         binding = runtime_operation_binding(actuator)
         principal = MutationPrincipal(
             "cli",
-            frozenset({"archive.raw_authority.resolve_blocker", "archive.legacy_runtime"}),
+            frozenset({"archive.raw_authority.resolve_blocker"}),
             "cli",
             "write",
         )
         preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=env.config.archive_root)
         authorization = executor.authorize_bound(binding, preview, principal)
         result = executor.execute_bound(binding, preview, authorization, args)
-    except (FileNotFoundError, KeyError, RuntimeError, ValueError, MutationTransactionError) as exc:
+    except (
+        BindingValidationError,
+        FileNotFoundError,
+        KeyError,
+        RuntimeError,
+        ValueError,
+        MutationTransactionError,
+    ) as exc:
         raise click.ClickException(str(exc)) from exc
     if result.status != "applied":
         raise click.ClickException(f"blocker {blocker_id!r} not found or already resolved")
