@@ -13,7 +13,6 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from functools import lru_cache
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -132,6 +131,7 @@ def pytest_configure(config: pytest.Config) -> None:
             raise pytest.UsageError(f"pytest: {exc}") from exc
         basetemp = root / f"pytest-polylogue-{checkout}-{run_id}"
         config.option.basetemp = str(basetemp)
+        os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
         if not hasattr(config, "workerinput"):
             _mark_basetemp_owner(basetemp)
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
@@ -314,7 +314,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if not basetemp:
         return
     basetemp_path = Path(str(basetemp))
-    if basetemp_path.name.startswith("pytest-polylogue-") and "-seeded-" not in basetemp_path.name:
+    if str(basetemp_path) == os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"):
         shutil.rmtree(basetemp_path, ignore_errors=True)
 
 
@@ -405,6 +405,7 @@ _MANAGED_VERIFY_ENV = frozenset(
         "POLYLOGUE_PYTEST_SELECTION_PATH",
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
         "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",
+        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
     }
 )
 
@@ -779,26 +780,8 @@ def cli_workspace(
     }
 
 
-def _tree_bytes(path: Path, *, allocated: bool) -> int:
-    total = 0
-    for item in path.rglob("*"):
-        with contextlib.suppress(OSError):
-            if item.is_file():
-                stat_result = item.stat()
-                total += stat_result.st_blocks * 512 if allocated else stat_result.st_size
-    return total
-
-
-@lru_cache(maxsize=8)
-def _archive_template_apparent_bytes(source: Path) -> int:
-    """Cache the immutable template size instead of rescanning it per test."""
-    return _tree_bytes(source, allocated=False)
-
-
 def _clone_archive_template(source: Path, destination: Path) -> None:
     """Clone one immutable empty archive into a test-private workspace."""
-    started = time.perf_counter()
-    method = "reflink-auto"
     destination.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(
@@ -809,25 +792,7 @@ def _clone_archive_template(source: Path, destination: Path) -> None:
             timeout=10,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        method = "copytree"
         shutil.copytree(source, destination, dirs_exist_ok=True)
-
-    # The managed pytest plugin turns this into a durable fixture-cost record;
-    # ordinary pytest runs remain unaffected because the event sink is absent.
-    try:
-        from devtools.pytest_progress_plugin import record_fixture_timing
-
-        record_fixture_timing(
-            "archive_clone",
-            time.perf_counter() - started,
-            method=method,
-            source=str(source),
-            destination=str(destination),
-            source_apparent_bytes=_archive_template_apparent_bytes(source),
-            destination_apparent_bytes=_archive_template_apparent_bytes(source),
-        )
-    except (ImportError, OSError):
-        pass
 
     bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
     if bootstrap_marker.is_file():

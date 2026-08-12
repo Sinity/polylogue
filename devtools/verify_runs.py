@@ -27,6 +27,8 @@ from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
+DEVTOOLS_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "polylogue" / "devtools"
+VERIFY_HISTORY_PATH = DEVTOOLS_STATE_DIR / "verify-history.jsonl"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
@@ -172,7 +174,6 @@ def aggregate_pytest_statistics(
     *,
     command: list[Any] | tuple[Any, ...] = (),
     step_result: Mapping[str, Any] | None = None,
-    report_path: Path | None = None,
 ) -> dict[str, Any]:
     """Reduce the append-only pytest evidence into one durable step summary.
 
@@ -193,7 +194,6 @@ def aggregate_pytest_statistics(
     outcomes: dict[str, int] = {}
     phase_outcomes: dict[str, dict[str, int]] = {"setup": {}, "call": {}, "teardown": {}}
     nodes: set[str] = set()
-    fixture_timings: dict[str, list[float]] = {}
     workers: set[str] = set()
     for row in events:
         worker = row.get("worker_id")
@@ -214,41 +214,6 @@ def aggregate_pytest_statistics(
                 bucket[outcome] = bucket.get(outcome, 0) + 1
                 if when == "call":
                     outcomes[outcome] = outcomes.get(outcome, 0) + 1
-        elif event == "fixture_timing":
-            name = row.get("name")
-            duration = row.get("duration_s")
-            if isinstance(name, str) and isinstance(duration, (int, float)):
-                fixture_timings.setdefault(name, []).append(float(duration))
-
-    # Some pytest/plugin combinations expose only the final teardown report to
-    # pytest_runtest_logreport.  The structured report has complete per-phase
-    # data when the run reaches a normal pytest exit, so use it to complete the
-    # aggregate instead of publishing a deceptively partial distribution.
-    if report_path is not None and report_path.exists():
-        with contextlib.suppress(OSError, json.JSONDecodeError):
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-            report_tests = report.get("tests", []) if isinstance(report, dict) else []
-            if isinstance(report_tests, list):
-                for test in report_tests:
-                    if not isinstance(test, Mapping):
-                        continue
-                    nodeid = test.get("nodeid")
-                    if isinstance(nodeid, str) and nodeid:
-                        nodes.add(nodeid)
-                    outcome = test.get("outcome")
-                    if isinstance(outcome, str):
-                        outcomes[outcome] = outcomes.get(outcome, 0) + 1
-                    for when in phases:
-                        phase = test.get(when)
-                        if not isinstance(phase, Mapping):
-                            continue
-                        duration = phase.get("duration")
-                        phase_outcome = phase.get("outcome")
-                        if isinstance(duration, (int, float)):
-                            phases[when].append(float(duration))
-                        if isinstance(phase_outcome, str):
-                            bucket = phase_outcomes[when]
-                            bucket[phase_outcome] = bucket.get(phase_outcome, 0) + 1
 
     resources: list[dict[str, Any]] = []
     resources_path = step_dir / "resources.jsonl"
@@ -288,7 +253,6 @@ def aggregate_pytest_statistics(
         "outcomes": outcomes,
         "phase_outcomes": phase_outcomes,
         "phases": {name: _distribution(values) for name, values in phases.items()},
-        "fixtures": {name: _distribution(values) for name, values in fixture_timings.items()},
         "xdist": {
             "worker_ids": sorted(workers),
             "worker_count": max(
@@ -479,11 +443,6 @@ class VerifyRun:
                         self.run_dir / "steps" / step_id,
                         command=step.get("cmd", []),
                         step_result=result,
-                        report_path=(
-                            self.root / str(result["report_path"])
-                            if isinstance(result.get("report_path"), str)
-                            else None
-                        ),
                     )
                     _write_json(statistics_path, statistics)
                     with contextlib.suppress(OSError):

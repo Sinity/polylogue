@@ -551,7 +551,6 @@ def build_seeded_archive(
 
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     """Create a complete private writable archive clone, recording its method."""
-    started = time.perf_counter()
     if destination.exists():
         _remove_tree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -577,24 +576,11 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
 
         bootstrap_marker.unlink()
         _record_fresh_durable_bootstrap(destination)
-    clone = SeededArchiveClone(
+    return SeededArchiveClone(
         root=destination,
         source_manifest_id=artifact.manifest.manifest_id,
         clone_method=method,
     )
-    try:
-        from devtools.pytest_progress_plugin import record_fixture_timing
-
-        record_fixture_timing(
-            "seeded_archive_clone",
-            time.perf_counter() - started,
-            fixture="seeded_archive_clone",
-            method=method,
-            source_manifest_id=artifact.manifest.manifest_id,
-        )
-    except (ImportError, OSError):
-        pass
-    return clone
 
 
 __all__ = [

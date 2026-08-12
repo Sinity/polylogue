@@ -81,6 +81,7 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
+    VERIFY_HISTORY_PATH,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
@@ -215,7 +216,7 @@ def _format_completion_notification(
 # ── history (JSONL) ────────────────────────────────────────────────
 
 
-HISTORY_PATH = Path(".cache/verify-history.jsonl")
+HISTORY_PATH = VERIFY_HISTORY_PATH
 TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")

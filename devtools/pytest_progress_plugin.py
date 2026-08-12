@@ -32,56 +32,6 @@ _COLLECTION_STARTED_AT: float | None = None
 _COLLECTION_DURATION_S: float | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
-_MEASURED_FIXTURES = frozenset(
-    {
-        "empty_archive_template",
-        "workspace_env",
-        "cli_workspace",
-        "seeded_archive",
-        "seeded_archive_writable",
-        "named_seeded_archive",
-        "corpus_seeded_db",
-        "seeded_db",
-    }
-)
-
-
-def record_fixture_timing(name: str, duration_s: float, **metadata: Any) -> None:
-    """Record an explicitly instrumented fixture operation in the run stream.
-
-    Pytest reports setup as one number per node, which cannot distinguish a
-    shared archive clone from ordinary fixture construction.  Small, named
-    instrumentation points use this public helper so the run aggregator can
-    retain that distinction without making fixture code depend on the
-    aggregator's implementation.
-    """
-    _write_event(
-        {
-            "event": "fixture_timing",
-            "name": name,
-            "duration_s": round(float(duration_s), 4),
-            **metadata,
-        }
-    )
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_fixture_setup(fixturedef: Any, request: Any) -> Any:
-    """Measure high-cost fixture setup without tracing every fixture call."""
-    name = str(getattr(fixturedef, "argname", ""))
-    if name not in _MEASURED_FIXTURES:
-        yield
-        return
-    started = time.perf_counter()
-    outcome = yield
-    del outcome
-    record_fixture_timing(
-        f"fixture:{name}",
-        time.perf_counter() - started,
-        fixture=name,
-        scope=str(getattr(fixturedef, "scope", "function")),
-        test_nodeid=str(getattr(request.node, "nodeid", "")),
-    )
 
 
 def _selection_nodeid_limit() -> int:

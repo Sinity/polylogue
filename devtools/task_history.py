@@ -1,7 +1,7 @@
 """Agent-visible task execution history.
 
-Maintains an append-only JSONL log of task executions under
-``.agent/task-history/tasks.jsonl`` for use by agents and operators.
+Maintains an append-only JSONL log of task executions in user state for use by
+agents and operators across linked worktrees.
 
 Subcommands:
 
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from devtools import repo_root as _get_root
-from devtools.verify_runs import CURRENT_RUN_PATH
+from devtools.verify_runs import CURRENT_RUN_PATH, DEVTOOLS_STATE_DIR
 from polylogue.core.json import JSONDocument
 
 TaskRecord = JSONDocument
@@ -40,12 +40,13 @@ def task_history_file_path() -> Path:
     """Return the active task-history JSONL path.
 
     Honors ``POLYLOGUE_TASK_HISTORY_FILE`` (used by tests and one-off overrides);
-    otherwise defaults to ``<repo_root>/.agent/task-history/tasks.jsonl``.
+    otherwise defaults to the user's XDG state directory, shared across
+    worktrees so automatic verify records remain comparable.
     """
     override = os.environ.get("POLYLOGUE_TASK_HISTORY_FILE")
     if override:
         return Path(override)
-    return _get_root() / ".agent" / "task-history" / "tasks.jsonl"
+    return DEVTOOLS_STATE_DIR / "task-history.jsonl"
 
 
 def _ensure_file(path: Path) -> None:

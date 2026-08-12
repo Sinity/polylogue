@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -49,18 +50,21 @@ def _make_real_candidates(
     return shm, scratch
 
 
-def test_runtest_makereport_wrapper_preserves_each_phase_report() -> None:
-    item = SimpleNamespace()
-    reports = [SimpleNamespace(when=phase) for phase in ("setup", "call", "teardown")]
+@pytest.mark.parametrize("exception", [KeyboardInterrupt(), RuntimeError("teardown failure")])
+def test_test_tmp_path_reclamation_runs_after_failure_or_interrupt(
+    tmp_path: Path,
+    exception: BaseException,
+) -> None:
+    tree = tmp_path / "test-private"
+    tree.mkdir()
+    fixture_generator = cast(Any, conftest._reclaim_test_tmp_path).__wrapped__
+    cleanup = cast("Generator[None, BaseException, None]", fixture_generator(tree))
 
-    for report in reports:
-        wrapper = conftest.pytest_runtest_makereport(
-            cast("pytest.Item", item), cast("pytest.CallInfo[None]", SimpleNamespace())
-        )
-        assert next(wrapper) is None
-        with pytest.raises(StopIteration):
-            wrapper.send(cast("Any", SimpleNamespace(get_result=lambda report=report: report)))
-        assert getattr(item, f"rep_{report.when}") is report
+    assert next(cleanup) is None
+    with pytest.raises(type(exception)):
+        cleanup.throw(exception)
+
+    assert not tree.exists()
 
 
 def test_managed_pytest_temp_root_defaults_to_scratch(
@@ -172,6 +176,7 @@ def test_pytest_configure_reports_low_space_as_usage_error(
     # teardown reverts the leak regardless of what the call under test does.
     monkeypatch.delenv("POLYLOGUE_PYTEST_RUN_ID", raising=False)
     monkeypatch.delenv("POLYLOGUE_PYTEST_CHECKOUT", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", raising=False)
     config = SimpleNamespace(
         option=SimpleNamespace(basetemp=None),
         addinivalue_line=lambda *args, **kwargs: None,
@@ -193,6 +198,7 @@ def test_bare_pytest_configure_defaults_to_scratch_without_a_supervisor(
         "POLYLOGUE_PYTEST_TMPFS",
         "POLYLOGUE_PYTEST_RUN_ID",
         "POLYLOGUE_PYTEST_CHECKOUT",
+        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
     ):
         monkeypatch.delenv(name, raising=False)
     config = SimpleNamespace(
@@ -217,6 +223,7 @@ def test_bare_pytest_ignores_leaked_cloud_basetemp_on_workstation(
     monkeypatch.delenv("POLYLOGUE_PYTEST_TMPFS", raising=False)
     monkeypatch.delenv("POLYLOGUE_PYTEST_RUN_ID", raising=False)
     monkeypatch.delenv("POLYLOGUE_PYTEST_CHECKOUT", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", raising=False)
     config = SimpleNamespace(
         option=SimpleNamespace(basetemp=None),
         addinivalue_line=lambda *args, **kwargs: None,
@@ -387,6 +394,38 @@ def test_sessionfinish_leaves_xdist_basetemp_for_supervisor_cleanup(
     conftest.pytest_sessionfinish(cast("pytest.Session", session), 0)
 
     assert basetemp.exists()
+
+
+def test_sessionfinish_reclaims_only_its_managed_basetemp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    basetemp = tmp_path / "pytest-polylogue-run-123"
+    basetemp.mkdir()
+    session = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(basetemp), numprocesses=0)))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "run-123")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(basetemp))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    conftest.pytest_sessionfinish(cast("pytest.Session", session), 1)
+
+    assert not basetemp.exists()
+
+
+def test_sessionfinish_retains_explicit_diagnostic_basetemp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    explicit = tmp_path / "pytest-polylogue-diagnostic"
+    explicit.mkdir()
+    session = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(explicit), numprocesses=0)))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "run-123")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(tmp_path / "pytest-polylogue-other-run"))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    conftest.pytest_sessionfinish(cast("pytest.Session", session), 1)
+
+    assert explicit.exists()
 
 
 def test_archive_template_clone_is_private(tmp_path: Path) -> None:

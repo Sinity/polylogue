@@ -134,12 +134,13 @@ are shared, reused, and built once behind their own `.build.done` guard.
 
 Managed verification refuses to start below 1 GiB available memory instead of
 falling back to the pathological disk lane. Every per-test `tmp_path` tree is
-reclaimed at teardown, including failed tests; node failure evidence remains
-in the managed event, longrepr, summary, and resource receipts. Rerun a node
-with an explicit basetemp when its filesystem witness is needed. The external
-supervisor and parent runner independently remove the whole run root on
-completion or termination, with startup stale-root cleanup as recovery after
-an uncatchable process kill or reboot.
+reclaimed in fixture teardown, including failures and interruptions; node
+failure evidence remains in the managed event, longrepr, summary, and resource
+receipts. The controller removes only the exact basetemp it created. An
+explicit `--basetemp` is retained for targeted filesystem diagnosis. The
+external supervisor and parent runner independently remove the whole run root
+on completion or termination, with startup stale-root cleanup as recovery
+after an uncatchable process kill or reboot.
 
 An affected run that selects zero tests is accepted only when no executable,
 test, dependency, or harness path changed. A zero selection after such a change
@@ -166,7 +167,7 @@ and a postmortem diagnosis. The latest run is mirrored to
 - `.cache/verify/current-pytest-resources.jsonl`
 - `.cache/verify/current-pytest-postmortem.json`
 - `.cache/verify/current-pytest-containment.json`
-- `.cache/verify/current-pytest-statistics.json` — derived phase/fixture
+- `.cache/verify/current-pytest-statistics.json` — derived phase
   distributions, worker count, storage, resource peaks, and cleanup outcome;
   the same file is retained under each run's `steps/*/statistics.json`.
 - `.cache/verify/current-pytest-output.log`
@@ -201,9 +202,13 @@ IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
 broad collection does not retain or write unbounded node-id lists in controller
 or worker processes.
 
-`devtools workspace tasks recent` shows the run id, diagnosis, and peak pytest
-RSS when the current run metadata is available. `devtools workspace tasks stats
---resources` aggregates recorded pytest memory peaks over time.
+The detailed artifacts above are checkout-local and disposable. Each `devtools
+verify` or `devtools test` invocation automatically appends its compact run
+summary to `$XDG_STATE_HOME/polylogue/devtools/` (or
+`~/.local/state/polylogue/devtools/`), so `devtools workspace tasks recent` and
+`devtools workspace tasks stats --resources` compare future runs across linked
+worktrees without a separate recording command. Setup, call, and teardown
+timings come only from pytest reports in the event stream.
 
 `devtools test` uses the same pytest progress plugin and process supervisor for
 focused selections. During or after a run, inspect

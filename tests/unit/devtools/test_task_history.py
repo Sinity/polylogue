@@ -83,6 +83,20 @@ def test_log_and_recent_round_trip(isolated_task_history_file: Path, capsys: pyt
     assert entry["exit_code"] == 0
 
 
+def test_default_history_path_uses_user_state_across_worktrees(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("POLYLOGUE_TASK_HISTORY_FILE", raising=False)
+    monkeypatch.setattr(task_history, "DEVTOOLS_STATE_DIR", tmp_path / "state" / "polylogue" / "devtools")
+
+    path = task_history.task_history_file_path()
+    task_history.record_invocation(command="verify", args=[], duration_ms=1.0, exit_code=0)
+
+    assert path == tmp_path / "state" / "polylogue" / "devtools" / "task-history.jsonl"
+    assert json.loads(path.read_text(encoding="utf-8"))["command"] == "verify"
+
+
 def test_stats_by_class_and_slowest(isolated_task_history_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
     samples = [
         ("verify", 1000.0, 0),

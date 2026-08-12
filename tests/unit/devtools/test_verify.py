@@ -984,7 +984,6 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
                     "outcome": "passed",
                     "worker_id": "gw0",
                 },
-                {"event": "fixture_timing", "name": "archive_clone", "duration_s": 0.25, "method": "reflink-auto"},
             )
         )
         + "\n"
@@ -1008,7 +1007,7 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
 
     assert result["node_count"] == 1
     assert result["phases"]["call"]["p50_s"] == 2.0
-    assert result["fixtures"]["archive_clone"]["sum_s"] == 0.25
+    assert result["phases"]["setup"]["count"] == 1
     assert result["storage"]["basetemp_logical_bytes_max"] == 12 * 1024
     assert result["resources"]["peak_tree_pss_kb"] == 80
     assert result["cleanup"]["complete"] is True
