@@ -322,9 +322,7 @@ def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> 
     assert command[command.index("-n") + 1] == "0"
 
 
-def test_seed_shards_are_deterministic_and_use_one_testmon_writer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     expected = sorted(f"tests/test_seed.py::test_{index:03d}" for index in range(TESTMON_SEED_SHARD_SIZE + 2))
     prepared = _prepare_testmon_seed_shards(
@@ -340,13 +338,15 @@ def test_seed_shards_are_deterministic_and_use_one_testmon_writer(
     assert [shard["nodeid_count"] for shard in shards] == [TESTMON_SEED_SHARD_SIZE, 2]
     assert shards[0]["nodeids"] == expected[:TESTMON_SEED_SHARD_SIZE]
     assert shards[1]["nodeids"] == expected[TESTMON_SEED_SHARD_SIZE:]
-    command = _seed_shard_command(["pytest", "--collect-only", "-n", "0"], shards[0])
+    nodeids_file = tmp_path / "seed-shard.args"
+    command = _seed_shard_command(["pytest", "--collect-only", "-n", "0"], shards[0], nodeids_file=nodeids_file)
     assert "--collect-only" not in command
-    assert command[command.index("-n") + 1] == "0"
+    assert command[command.index("-n") + 1] != "0"
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "--dist=worksteal" in command
-    assert command[-TESTMON_SEED_SHARD_SIZE:] == expected[:TESTMON_SEED_SHARD_SIZE]
+    assert command[-1] == f"@{nodeids_file}"
+    assert nodeids_file.read_text().splitlines() == expected[:TESTMON_SEED_SHARD_SIZE]
 
 
 def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(

@@ -2646,13 +2646,44 @@ def _prepare_testmon_seed_shards(
     return payload
 
 
-def _seed_shard_command(collection_command: Sequence[str], shard: Mapping[str, Any]) -> list[str]:
-    """Build a dynamically balanced explicit-node pytest-testmon invocation."""
+def _seed_shard_command(
+    collection_command: Sequence[str],
+    shard: Mapping[str, Any],
+    *,
+    nodeids_file: Path,
+) -> list[str]:
+    """Build a bounded-argv, dynamically balanced pytest-testmon invocation.
+
+    A full shard's node IDs can exceed the host's ``execve`` argument budget
+    once ``systemd-run`` and the managed environment are included.  Pytest's
+    response-file syntax keeps the authoritative node list in the run
+    artifact while making the child command size independent of shard size.
+    """
     nodeids = shard.get("nodeids")
     if not isinstance(nodeids, list) or not nodeids:
         raise ValueError("testmon seed shard is missing nodeids")
-    command = [argument for argument in collection_command if argument != "--collect-only"]
-    command.extend(["--dist=worksteal", "--testmon", "--testmon-noselect", *nodeids])
+    nodeids_file.parent.mkdir(parents=True, exist_ok=True)
+    nodeids_file.write_text("\n".join(nodeids) + "\n", encoding="utf-8")
+    command: list[str] = []
+    skip_next = False
+    for argument in collection_command:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "--collect-only":
+            continue
+        if argument in {"-n", "--numprocesses"}:
+            skip_next = True
+            continue
+        if argument.startswith("--numprocesses=") or (argument.startswith("-n") and len(argument) > 2):
+            continue
+        command.append(argument)
+    # Collection is deliberately serial, but execution is not. pytest-testmon
+    # has an xdist-aware controller database; retaining the managed worker pool
+    # here avoids turning a 20k-node seed into hours of serial fixture setup.
+    command.extend(
+        ["--dist=worksteal", *_pytest_worker_args(maximum=10), "--testmon", "--testmon-noselect", f"@{nodeids_file}"]
+    )
     return command
 
 
@@ -3422,7 +3453,8 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 shard_index = int(shard["index"])
                 shard_label = f"pytest seed-testmon shard {shard_index}/{len(shards)}"
-                shard_cmd = _seed_shard_command(cmd, shard)
+                shard_args_path = verify_run.run_dir / "seed-shards" / f"{shard_index:04d}.args"
+                shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
                 _warn_low_memory()
                 shard_rc, shard_elapsed, shard_metadata = _run(shard_label, shard_cmd, run=verify_run)
                 shard_result: dict[str, Any] = {
