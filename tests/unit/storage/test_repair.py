@@ -24,7 +24,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -138,6 +138,17 @@ def _complete_bounded_raw_census(config: Config, *, limit: int) -> tuple[repair_
         assert 1.0 <= attempted <= float(limit)
         incomplete_census_ids.append(result.census_receipt.census_id)
     raise AssertionError("bounded raw census did not quiesce")
+
+
+def _repair_after_persisted_census(
+    config: Config,
+    *,
+    dry_run: bool = False,
+    raw_artifact_id: str | None = None,
+) -> repair_mod.RepairResult:
+    """Exercise replay only after the durable parser census reaches quiescence."""
+    _complete_bounded_raw_census(config, limit=1_000)
+    return repair_mod.repair_raw_materialization(config, dry_run=dry_run, raw_artifact_id=raw_artifact_id)
 
 
 def _status(
@@ -376,8 +387,7 @@ def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyP
 
 def test_raw_materialization_preview_counts_replayable_rows_without_erasing_missing_blobs(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
     materialized_raw_id, materialized_size = blob_store.write_from_bytes(b'{"mapping":{"done":{}}}')
@@ -449,39 +459,17 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
     assert result.repaired_count == 0
-    assert result.success is True
-    assert result.metrics == {
-        "raw_materialization_candidate_count": 1.0,
-        "raw_materialization_selected_count": 1.0,
-        "raw_materialization_missing_blob_count": 1.0,
-        "raw_materialization_missing_blob_source_available_count": 0.0,
-        "raw_materialization_missing_blob_source_missing_count": 1.0,
-        "raw_materialization_already_parsed_count": 0.0,
-        "raw_materialization_total_blob_bytes": float(replayable_size),
-        "raw_materialization_max_blob_bytes": float(replayable_size),
-        "raw_materialization_selected_total_blob_bytes": float(replayable_size),
-        "raw_materialization_selected_max_blob_bytes": float(replayable_size),
-        "raw_materialization_adoption_deferred_count": 0.0,
-        "raw_materialization_authority_quarantined_count": 0.0,
-        "raw_materialization_byte_authority_fragment_count": 0.0,
-        "raw_materialization_byte_authority_pending_count": 0.0,
-        "raw_materialization_byte_authority_quarantined_count": 0.0,
-        "raw_materialization_before_component_count": 1.0,
-        "raw_materialization_selected_executable_component_count": 1.0,
-        "raw_materialization_selected_blocked_component_count": 0.0,
-        "raw_materialization_census_sequence": 1.0,
-        "raw_materialization_census_fixed_point": 0.0,
-    }
-    assert "per-session revision authority" in result.detail
-    assert "selected raw payload bytes total=" in result.detail
-    assert "largest=" in result.detail
-    assert "1 raw rows remain blocked by missing blobs (1 with source paths missing)" in result.detail
+    assert result.success is False
+    assert result.census_receipt is not None
+    assert result.census_receipt.quiescent is False
+    assert result.metrics["raw_materialization_census_incomplete_raw_count"] == 1.0
+    assert result.metrics["raw_materialization_missing_blob_count"] == 1.0
+    assert "persisted parser census" in result.detail
 
 
 def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     replacement_raw_id, replacement_size = blob_store.write_from_bytes(b'{"mapping":{"replacement":{}}}')
 
@@ -515,7 +503,7 @@ def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling
         )
         index_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = _repair_after_persisted_census(config, dry_run=True)
 
     assert result.success is True
     assert result.repaired_count == 0
@@ -526,9 +514,7 @@ def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) 
     configured_root = tmp_path / "configured"
     routed_root = tmp_path / "routed"
     configured_root.mkdir()
-    routed_root.mkdir()
-    initialize_archive_database(routed_root / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(routed_root / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(routed_root)
     raw_id, raw_size = BlobStore(routed_root / "blob").write_from_bytes(
         b'{"mapping":{"routed":{"id":"routed","message":{"id":"m1","author":{"role":"user"},'
         b'"content":{"content_type":"text","parts":["hi"]}},"parent":null,"children":[]}},'
@@ -561,7 +547,7 @@ def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) 
     )
 
     backlog = repair_mod.raw_materialization_replay_backlog(config)
-    result = repair_mod.repair_raw_materialization(config)
+    result = _repair_after_persisted_census(config)
 
     assert backlog["execution_blocked"] is False
     assert backlog["execution_block_reason"] is None
@@ -1359,9 +1345,7 @@ def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_bl
     configured_root = tmp_path / "configured"
     routed_root = tmp_path / "routed"
     configured_root.mkdir()
-    routed_root.mkdir()
-    initialize_archive_database(routed_root / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(routed_root / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(routed_root)
     raw_id, raw_size = BlobStore(routed_root / "blob").write_from_bytes(b'{"type":"session_meta"}\n')
     with sqlite3.connect(routed_root / "source.db") as source_conn:
         source_conn.execute(
@@ -1391,7 +1375,7 @@ def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_bl
         db_path=routed_root / "index.db",
     )
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = _repair_after_persisted_census(config, dry_run=True)
 
     assert result.success is True
     assert result.repaired_count == 0
@@ -1701,8 +1685,7 @@ def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path
 
 def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     raw_id, blob_size = blob_store.write_from_bytes(b'{"mapping":{"already-parsed":{}}}')
 
@@ -1728,7 +1711,7 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
         )
         source_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = _repair_after_persisted_census(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.success is True
@@ -1739,8 +1722,7 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
 
 def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     remaining_raw_id, remaining_size = blob_store.write_from_bytes(b'{"mapping":{"remaining":{}}}')
     done_raw_id, done_size = blob_store.write_from_bytes(b'{"mapping":{"done":{}}}')
@@ -1790,7 +1772,7 @@ def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild
         )
         index_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = _repair_after_persisted_census(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.success is True
@@ -2004,8 +1986,7 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
 
 def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     raw_id, blob_size = blob_store.write_from_bytes(b'{"fragment":true}')
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
@@ -2030,18 +2011,21 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
     assert backlog["durable_authority_debt_count"] == 1
     assert backlog["byte_authority_pending_count"] == 1
     assert targeted.success is False
-    assert "pending byte-authority adjudication" in targeted.detail
+    assert targeted.census_receipt is not None
+    assert targeted.census_receipt.quiescent is False
+    assert "persisted parser census" in targeted.detail
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
             """
-            INSERT INTO raw_membership_census (
-                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
-            ) VALUES (?, 'test', 'failed', 0, 2,
-                      'append fragments are governed by byte revision authority')
+            UPDATE raw_membership_census
+            SET parser_fingerprint = 'test', status = 'failed', member_count = 0,
+                censused_at_ms = 2, detail = 'append fragments are governed by byte revision authority'
+            WHERE raw_id = ?
             """,
             (raw_id,),
         )
+        assert source_conn.total_changes == 1
         source_conn.commit()
 
     governed = repair_mod._raw_materialization_candidate_ids(config)
@@ -2065,8 +2049,7 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
 
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     payload = b"""{
       "id": "fixed-point",
       "title": "fixed point",
@@ -2109,7 +2092,7 @@ def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_pa
         )
         source_conn.commit()
 
-    first = repair_mod.repair_raw_materialization(config)
+    first = _repair_after_persisted_census(config)
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
         receipts_after_first = index_conn.execute(
             "SELECT decision_id, raw_id, decision FROM raw_revision_applications ORDER BY decision_id"
@@ -2149,8 +2132,7 @@ def test_raw_materialization_no_progress_component_terminalizes_instead_of_loopi
     automatically reselected on the next pass.
     """
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     payload = b"""{
       "id": "orphan-append",
       "title": "orphan append",
@@ -2208,7 +2190,7 @@ def test_raw_materialization_no_progress_component_terminalizes_instead_of_loopi
         )
         source_conn.commit()
 
-    first = repair_mod.repair_raw_materialization(config)
+    first = _repair_after_persisted_census(config)
     assert first.success is False
     assert first.repaired_count == 0
     assert first.metrics.get("raw_materialization_no_progress_count") == 1.0
@@ -2249,8 +2231,7 @@ def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     first_raw_id, first_size = blob_store.write_from_bytes(
         b'{"mapping":{"first":{"id":"first","message":{"id":"m1","author":{"role":"user"},'
@@ -2309,7 +2290,7 @@ def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
 
     monkeypatch.setattr(parsing_module, "ParsingService", FakeParsingService)
 
-    result = repair_mod.repair_raw_materialization(config)
+    result = _repair_after_persisted_census(config)
 
     assert result.success is True
     assert result.repaired_count == 2
@@ -2322,8 +2303,7 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     older_payload = b"""{
       "id": "logical-session",
       "title": "older raw snapshot",
@@ -2392,6 +2372,13 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
         fts_hits_before = index_conn.execute(
             "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'newer' ORDER BY rowid"
         ).fetchall()
+        message_ids_before = [
+            str(message_id)
+            for (message_id,) in index_conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position",
+                (session_id,),
+            ).fetchall()
+        ]
     assert len(fts_hits_before) == 1
 
     class UnexpectedParsingService:
@@ -2400,7 +2387,7 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
 
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = _repair_after_persisted_census(config)
 
     assert result.success is False
     assert result.repaired_count == 0
@@ -2422,7 +2409,7 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
             "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'newer' ORDER BY rowid"
         ).fetchall()
     assert row == ("newer-index-raw", "newer indexed state", newer_hash, 1)
-    assert message_ids == ["chatgpt-export:logical-session:newer-message"]
+    assert message_ids == message_ids_before
     assert fts_hits_after == fts_hits_before
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         raw_state = source_conn.execute(
@@ -2586,8 +2573,7 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
 
 def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{"pending":{}}}')
     parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"mapping":{"parsed":{}}}')
@@ -2626,13 +2612,13 @@ def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_p
         )
         source_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = _repair_after_persisted_census(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_candidate_count"] == 2.0
     assert "1 already parsed but not materialized" in result.detail
 
-    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=parsed_raw_id)
+    scoped = _repair_after_persisted_census(config, dry_run=True, raw_artifact_id=parsed_raw_id)
 
     assert scoped.repaired_count == 0
     assert scoped.metrics["raw_materialization_candidate_count"] == 1.0
@@ -2682,8 +2668,7 @@ def test_raw_materialization_excludes_parsed_non_session_artifacts(tmp_path: Pat
 
 def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"items":[]}')
 
@@ -2709,6 +2694,7 @@ def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_pat
         )
         source_conn.commit()
 
+    _complete_bounded_raw_census(config, limit=1_000)
     broad = repair_mod.repair_raw_materialization(config, dry_run=True)
     by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="gemini-cli-session")
     by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/gemini"))
@@ -2907,8 +2893,10 @@ def test_raw_materialization_blocks_oversized_actual_replay(
     assert result.metrics["raw_materialization_executed_count"] == 0.0
     assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(1024 * 1024 * 1024)
     assert parser_fingerprint.endswith(":resource-blocked:1073741824")
-    assert repeated.success is True
-    assert repeated_census_count == first_census_count
+    assert repeated.success is False
+    assert len(repeated.plan_outcomes) == 1
+    assert repeated.plan_outcomes[0].status.value == "terminal"
+    assert repeated_census_count == first_census_count + 1
 
 
 def test_raw_materialization_classifies_oversized_stream_record_replay(
@@ -3085,10 +3073,11 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
     assert result.success is False
     assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
     assert len(result.plan_outcomes) == 1
-    assert result.plan_outcomes[0].status.value == "deferred"
-    assert repeated.success is True
-    assert repeated.plan_outcomes == ()
-    assert "unchanged plan(s) remain deferred" in repeated.detail
+    assert result.plan_outcomes[0].status.value == "terminal"
+    assert repeated.success is False
+    assert len(repeated.plan_outcomes) == 1
+    assert repeated.plan_outcomes[0].status.value == "terminal"
+    assert "aggregate payload exceeds 1.0 GiB" in repeated.detail
     assert "aggregate payload exceeds 1.0 GiB" in result.detail
 
 
@@ -3319,7 +3308,7 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
     )
 
     first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
-    assert first.plan_outcomes[0].status.value == "deferred"
+    assert first.plan_outcomes[0].status.value == "terminal"
     (tmp_path / "ops.db").unlink()
 
     second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)

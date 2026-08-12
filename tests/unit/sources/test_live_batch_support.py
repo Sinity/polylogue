@@ -30,6 +30,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
+    CursorAuthorityBlockedError,
     LiveBatchProcessor,
     _ArchiveFullWriteResult,
     append_capability_receipt,
@@ -102,8 +103,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     read_archive_raw_session_envelope,
@@ -112,6 +111,13 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
+
+
+def _complete_archive_storage_probe_fields() -> dict[str, object]:
+    return _archive_storage_probe_fields(
+        present={spec.tier for spec in ARCHIVE_TIER_SPECS.values()},
+        versions={spec.tier: spec.version for spec in ARCHIVE_TIER_SPECS.values()},
+    )
 
 
 def _archive_storage_probe_fields(
@@ -714,7 +720,7 @@ def test_full_ingest_claude_partial_jsonl_has_provider_specific_evidence(
     assert artifact == ("deferred_claude_code_partial_jsonl", "partial_decode", 1)
 
 
-def test_streamed_incomplete_jsonl_capture_defers_then_replays_completed_source(
+def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authority_recovers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -764,16 +770,16 @@ def test_streamed_incomplete_jsonl_capture_defers_then_replays_completed_source(
         artifact = conn.execute("SELECT artifact_kind FROM raw_artifacts ORDER BY last_observed_at_ms DESC").fetchone()
     assert artifact == ("deferred_hot_jsonl_capture",)
 
-    replayed = asyncio.run(processor.ingest_files([path]))
+    with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
+        asyncio.run(processor.ingest_files([path]))
 
-    assert replayed.full_file_count == 1
-    assert replayed.append_file_count == 0
-    assert replayed.succeeded_file_count == 1
     final_cursor = cursor.get_record(path)
     assert final_cursor is not None
-    assert final_cursor.failure_count == 0
+    assert final_cursor.byte_offset == 0
+    assert final_cursor.byte_size == len(completed)
+    assert final_cursor.deferred_end_offset is None
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-0",)]
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == []
 
 
 def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
@@ -1020,9 +1026,6 @@ def test_full_ingest_writes_archive_with_route_observability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "full-v1.jsonl"
@@ -1033,8 +1036,7 @@ def test_full_ingest_writes_archive_with_route_observability(
     source.write_bytes(payload)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -1090,14 +1092,7 @@ def test_full_ingest_writes_archive_with_route_observability(
         "storage_write_tiers": "source,index",
         "archive_active": True,
         "archive_bootstrapped": False,
-        **_archive_storage_probe_fields(
-            present={ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS},
-            versions={
-                ArchiveTier.SOURCE: SOURCE_SCHEMA_VERSION,
-                ArchiveTier.INDEX: INDEX_SCHEMA_VERSION,
-                ArchiveTier.OPS: 1,
-            },
-        ),
+        **_complete_archive_storage_probe_fields(),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
@@ -1126,9 +1121,6 @@ def test_streaming_full_ingest_writes_archive_from_blob(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "stream-v1.jsonl"
@@ -1139,8 +1131,7 @@ def test_streaming_full_ingest_writes_archive_from_blob(
     source.write_bytes(payload)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -1183,14 +1174,7 @@ def test_streaming_full_ingest_writes_archive_from_blob(
         "storage_write_tiers": "source,index",
         "archive_active": True,
         "archive_bootstrapped": False,
-        **_archive_storage_probe_fields(
-            present={ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS},
-            versions={
-                ArchiveTier.SOURCE: SOURCE_SCHEMA_VERSION,
-                ArchiveTier.INDEX: INDEX_SCHEMA_VERSION,
-                ArchiveTier.OPS: 1,
-            },
-        ),
+        **_complete_archive_storage_probe_fields(),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
@@ -1220,9 +1204,6 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
     root = tmp_path / "browser-capture" / "chatgpt"
     root.mkdir(parents=True)
     source = root / "native-capture.json"
@@ -1288,8 +1269,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -1342,9 +1322,6 @@ def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknow
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
     root = tmp_path / "inbox"
     root.mkdir()
     source = root / "large-browser-capture.json"
@@ -1374,8 +1351,7 @@ def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknow
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -2782,8 +2758,6 @@ def test_live_append_chain_survives_post_ingest_compaction(
     protect_chain: bool,
 ) -> None:
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -2796,8 +2770,7 @@ def test_live_append_chain_survives_post_ingest_compaction(
     path.write_bytes(payload)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -2967,11 +2940,7 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
     path.write_bytes(baseline)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -4681,7 +4650,7 @@ def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retri
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_index = -1").fetchone() == (1,)
 
 
-def test_public_full_blob_batch_bind_failure_persists_bytes_and_retries(
+def test_public_full_blob_batch_bind_failure_persists_bytes_and_blocks_unsafe_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4744,13 +4713,12 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_retries(
     )
     assert isinstance(row[13], str) and "injected blob bind failure" in row[13]
 
-    retry = asyncio.run(processor.ingest_files([source], emit_event=False))
+    with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
+        asyncio.run(processor.ingest_files([source], emit_event=False))
 
-    assert retry.full_file_count == 1
-    assert retry.failed_file_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
-        bound = conn.execute(
+        retained = conn.execute(
             """
             SELECT logical_source_key, revision_kind, source_revision,
                    predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -4759,18 +4727,18 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_retries(
             FROM raw_sessions
             """
         ).fetchone()
-    assert bound == (
-        "codex:blob-retry",
+    assert retained == (
+        f"pending-raw:codex-session:0:{source}:{raw_id}",
         "full",
         sha256(payload).hexdigest(),
         None,
         None,
-        raw_id,
+        None,
         None,
         None,
         0,
-        "byte_proven",
-        None,
+        "quarantined",
+        row[13],
     )
 
 
@@ -4883,14 +4851,7 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "append-multi.jsonl"
-    # Real, parseable content -- not a bare `{}` -- because polylogue-xwkh's
-    # declared-non-session-artifact gate now refuses that shape before this
-    # test's mocked parse_payload (returning two sessions) is ever reached.
-    payload = b'{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}\n'
-    path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="multi")
-    owner = _append_owner(tmp_path)
+    path, plan, owner = _seed_live_append_plan(tmp_path, native_id="append-multi")
     # polylogue-9ykn: a message-less ParsedSession carries no positive
     # conversational evidence and is refused before this test's own
     # "more than one session" check ever runs -- give each session one real
@@ -4907,15 +4868,15 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
             messages=[ParsedMessage(provider_message_id="multi-2-0", role=Role.USER, text="hello")],
         ),
     ]
-    monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", lambda *_args, **_kwargs: sessions)
+    monkeypatch.setattr("polylogue.sources.dispatch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
     result = ingest_append_plans(cast(Any, owner), [plan])
 
     assert result.failed == [plan]
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is None
     assert isinstance(parse_error, str) and "did not prove one session and cursor identity" in parse_error
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("append-multi",)]
 
 
 def test_full_multi_session_failure_retries_without_success_mapping(
@@ -5028,12 +4989,10 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     ``write_raw_payload`` -> ``write_source_raw_session`` gate, which is a
     different call site (polylogue-re4a).
     """
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.source_write import (
         deterministic_blob_hash,
         record_excised_blob_hash,
     )
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -5051,7 +5010,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
 
     # Pre-mark the excised file's exact content hash as durably excised,
     # mirroring a prior real `polylogue ops excise` apply.
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_active_archive_root(tmp_path)
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
         record_excised_blob_hash(
