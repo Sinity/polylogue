@@ -18,7 +18,11 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_rebuild_index
-from polylogue.cli.commands.maintenance._migrate_tier import MigrateTierResultPayload
+from polylogue.cli.commands.maintenance._migrate_tier import (
+    MigrateTierErrorPayload,
+    MigrateTierResultPayload,
+    MigrateTierSuccessPayload,
+)
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
@@ -2295,7 +2299,9 @@ def test_migrate_tier_cli_initializes_only_an_absent_durable_tier(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
-    assert MigrateTierResultPayload.model_validate(payload).initialized is True
+    result_payload = MigrateTierResultPayload.model_validate(payload).root
+    assert isinstance(result_payload, MigrateTierSuccessPayload)
+    assert result_payload.initialized is True
     assert payload["ok"] is True
     assert payload["tier"] == "audit"
     assert payload["initialized"] is True
@@ -3574,7 +3580,10 @@ def test_migrate_tier_cli_reports_adopted_audit_continuity_failures(
 
     assert result.exit_code == 1
     if output_format == "json":
-        assert json.loads(result.stdout)["error"] == "inconsistent audit continuity head"
+        payload = json.loads(result.stdout)
+        result_payload = MigrateTierResultPayload.model_validate(payload).root
+        assert isinstance(result_payload, MigrateTierErrorPayload)
+        assert result_payload.error == "inconsistent audit continuity head"
     else:
         assert "Migration blocked for audit: inconsistent audit continuity head" in result.stderr
 

@@ -191,6 +191,63 @@ def test_production_executor_factory_persists_audit_preview(tmp_path: Path) -> N
         assert conn.execute("SELECT preview_id FROM operation_previews").fetchone()[0] == preview.preview_ref
 
 
+def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:
+    """A second composition-root call recognizes the first executor's owner."""
+    initialize_active_archive_root(tmp_path)
+    actuator = _Actuator()
+    first = OperationExecutor.for_archive_root(tmp_path, token_factory=lambda: "first-owner-token")
+    preview = first.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:live-owner",
+        archive_identity_digest="identity:live-owner",
+        parameter_digest="params:live-owner",
+    )
+    authorization = first.authorize_bound(_binding(actuator), preview, _principal())
+    assert first._audit is not None
+    operation_id = first._audit.consume_authorization_and_start(preview, authorization)
+
+    OperationExecutor.for_archive_root(tmp_path)
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT state, worker_id FROM operation_attempts WHERE operation_id = ?", (operation_id,)
+            ).fetchone()[0]
+            == "running"
+        )
+
+
+def test_recovery_marks_a_dead_process_owned_attempt_unknown(tmp_path: Path) -> None:
+    """Restart recovery remains active when the recorded owner no longer exists."""
+    initialize_active_archive_root(tmp_path)
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "dead-owner-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:dead-owner",
+        archive_identity_digest="identity:dead-owner",
+        parameter_digest="params:dead-owner",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+
+    assert audit.recover_abandoned_attempts() == (operation_id,)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "interrupted",
+        )
+
+
 def test_audit_repository_cannot_bypass_the_continuity_coordinator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

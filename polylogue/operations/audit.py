@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import secrets
 import sqlite3
 import time
@@ -72,6 +73,38 @@ def token_sha256(token: str) -> str:
     """Return the only representation of a bearer token accepted for storage."""
 
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _current_process_attempt_owner() -> str:
+    """Return a local process identity that rejects PID reuse when available."""
+
+    pid = os.getpid()
+    try:
+        start_ticks = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+    except (IndexError, OSError):
+        return f"pid:{pid}"
+    return f"pid:{pid}:{start_ticks}"
+
+
+def _attempt_owner_is_live(owner_id: str | None) -> bool:
+    """Return whether an attempt's recorded local process is still its owner."""
+
+    if owner_id is None:
+        return False
+    parts = owner_id.split(":")
+    if len(parts) not in {2, 3} or parts[0] != "pid":
+        return False
+    try:
+        pid = int(parts[1])
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    if len(parts) == 2:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21] == parts[2]
+    except (IndexError, OSError):
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,17 +358,24 @@ def _receipt_from_payload(raw: object) -> MutationReceipt:
 class AuditRepository:
     """Small synchronous repository whose methods make audit transactions explicit."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, attempt_owner_id: str | None = None) -> None:
         self.path = path
+        self._attempt_owner_id = attempt_owner_id
         self._continuity = AuditContinuityCoordinator(path.parent)
         self._coordinated_connection: sqlite3.Connection | None = None
         self._coordinated_mutation: AuditMutation | None = None
 
     @classmethod
-    def for_archive_root(cls, archive_root: Path) -> AuditRepository:
+    def for_archive_root(cls, archive_root: Path, *, attempt_owner_id: str | None = None) -> AuditRepository:
         """Build the repository for an already-initialized archive root."""
 
-        return cls(archive_root / "audit.db")
+        return cls(archive_root / "audit.db", attempt_owner_id=attempt_owner_id)
+
+    @staticmethod
+    def current_process_attempt_owner() -> str:
+        """Return the process identity assigned to production mutation attempts."""
+
+        return _current_process_attempt_owner()
 
     def reconcile_continuity(self) -> None:
         """Reject audit bytes that cannot prove the source control head."""
@@ -788,10 +828,17 @@ class AuditRepository:
                 """
                 INSERT INTO operation_attempts(
                     attempt_id, operation_id, target_ordinal, authorization_id,
-                    state, started_at_ms
-                ) VALUES (?, ?, ?, ?, 'running', ?)
+                    worker_id, state, started_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'running', ?)
                 """,
-                (attempt_id, operation_id, 0 if preview.plan.targets else None, str(row[0]), now_ms),
+                (
+                    attempt_id,
+                    operation_id,
+                    0 if preview.plan.targets else None,
+                    str(row[0]),
+                    self._attempt_owner_id,
+                    now_ms,
+                ),
             )
             self._append_event(
                 conn,
@@ -920,22 +967,15 @@ class AuditRepository:
 
     @_continuity_mutation("recover_abandoned_attempts")
     def _recover_abandoned_attempts(self) -> tuple[str, ...]:
-        """Mark persisted in-flight work unknown before a fresh executor can act.
-
-        A running attempt has no durable worker lease or resumable process
-        handle.  Seeing it during a new executor construction therefore proves
-        only that the previous process stopped before it finalized the effect.
-        Preserve that uncertainty instead of leaving an unreconcilable running
-        operation forever.
-        """
+        """Mark only attempts whose recorded owner is no longer live as unknown."""
 
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
         with self._connection() as conn:
             self._begin(conn)
             rows = conn.execute(
-                "SELECT DISTINCT operation_id FROM operation_attempts WHERE state = 'running' ORDER BY operation_id"
+                "SELECT operation_id, worker_id FROM operation_attempts WHERE state = 'running' ORDER BY operation_id"
             ).fetchall()
-            operation_ids = tuple(str(row[0]) for row in rows)
+            operation_ids = tuple(str(row[0]) for row in rows if not _attempt_owner_is_live(cast(str | None, row[1])))
             for operation_id in operation_ids:
                 conn.execute(
                     "UPDATE operation_attempts SET state = 'unknown', finished_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND state = 'running'",

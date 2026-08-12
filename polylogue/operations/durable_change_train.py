@@ -1148,7 +1148,7 @@ def adopt_missing_audit_tier(
     receipt_path = audit_adoption_receipt_path(archive_root)
     if _load_audit_adoption_receipt(archive_root) is not None:
         validate_audit_adoption_receipt(archive_root)
-        return 1, receipt_path
+        return _audit_live_metadata(path)[0], receipt_path
     stopped_evidence = stopped_daemon_check()
     manifest_path, verification_receipt = validate_full_evidence_backup_for_audit_adoption(
         backup_manifest,

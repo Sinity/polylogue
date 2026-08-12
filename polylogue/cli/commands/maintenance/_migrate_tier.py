@@ -19,9 +19,10 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from typing import Annotated, Literal
 
 import click
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
@@ -38,12 +39,23 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, MigrationError
 
 
-class MigrateTierResultPayload(BaseModel):
-    """Stable machine-readable result for one durable-tier migration route."""
+class DurableRecoveryPayload(BaseModel):
+    """Typed recovery evidence for a blocked durable publication."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ok: bool
+    state: str
+    code: str | None
+    target: str
+    detail: str | None
+
+
+class MigrateTierSuccessPayload(BaseModel):
+    """Successful result for one durable-tier migration route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[True]
     tier: str
     path: str
     initialized: bool
@@ -58,6 +70,26 @@ class MigrateTierResultPayload(BaseModel):
     to_version: int | None
     applied_versions: list[int]
     forward_version_receipt: dict[str, object] | None
+
+
+class MigrateTierErrorPayload(BaseModel):
+    """Blocked result for one durable-tier migration route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[False]
+    tier: str
+    path: str
+    backup_manifest: str | None
+    stopped_daemon_evidence_ref: str | None
+    error: str
+    durable_recovery: DurableRecoveryPayload | None
+
+
+class MigrateTierResultPayload(
+    RootModel[Annotated[MigrateTierSuccessPayload | MigrateTierErrorPayload, Field(discriminator="ok")]]
+):
+    """Published success/error union for the migrate-tier JSON surface."""
 
 
 def _daemon_pidfile_is_live(pidfile: Path) -> bool:
@@ -179,23 +211,19 @@ def migrate_tier_command(
                 )
     except (sqlite3.Error, MigrationError, ArchiveOwnershipError, AuditContinuityError) as exc:
         if output_format == "json":
-            click.echo(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "tier": tier,
-                        "path": str(path),
-                        "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
-                        "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
-                        "error": str(exc),
-                        "durable_recovery": (
-                            exc.cleanup.as_dict() if isinstance(exc, DurablePublicationError) and exc.cleanup else None
-                        ),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
+            cleanup = exc.cleanup if isinstance(exc, DurablePublicationError) else None
+            error_payload = MigrateTierErrorPayload(
+                ok=False,
+                tier=tier,
+                path=str(path),
+                backup_manifest=str(backup_manifest) if backup_manifest is not None else None,
+                stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+                error=str(exc),
+                durable_recovery=(
+                    DurableRecoveryPayload.model_validate(cleanup.as_dict()) if cleanup is not None else None
+                ),
             )
+            click.echo(json.dumps(error_payload.model_dump(mode="json"), indent=2, sort_keys=True))
         else:
             click.echo(f"Migration blocked for {tier}: {exc}", err=True)
             if isinstance(exc, DurablePublicationError) and exc.cleanup is not None:
@@ -209,7 +237,7 @@ def migrate_tier_command(
 
     result = execution.migration_result if execution is not None else None
     receipt = execution.forward_version_receipt if execution is not None else None
-    payload = MigrateTierResultPayload(
+    success_payload = MigrateTierSuccessPayload(
         ok=True,
         tier=tier,
         path=str(path),
@@ -241,7 +269,7 @@ def migrate_tier_command(
         ),
     )
     if output_format == "json":
-        click.echo(json.dumps(payload.model_dump(mode="json"), indent=2, sort_keys=True))
+        click.echo(json.dumps(success_payload.model_dump(mode="json"), indent=2, sort_keys=True))
         return
 
     if adoption_receipt is not None:

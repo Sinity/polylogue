@@ -201,7 +201,6 @@ def excise_command(
     from polylogue.security.excision import plan_session_excision
 
     actuator = SessionExcisionActuator()
-    executor = OperationExecutor.for_archive_root(root)
     excision_args = SessionExcisionArgs(
         archive_root=root,
         session_id=session_id,
@@ -313,6 +312,7 @@ def excise_command(
     # EXECUTE revalidates the hash immediately before mutating -- a stale or
     # tampered authorization refuses (``PlanStaleError``) rather than excising
     # the wrong target set.
+    executor = OperationExecutor.for_archive_root(root)
     binding = runtime_operation_binding(actuator)
     principal = MutationPrincipal(actor, frozenset({"archive.excise_session"}), "cli", "write")
     preview = executor.prepare_bound_for_archive(binding, excision_args, principal, archive_root=root)
@@ -345,7 +345,7 @@ def excise_command(
         affected_count=executor_receipt.affected_count,
         output_format=output_format,
         plain_message=detail_message,
-        detail=executor_receipt.receipt_ref,
+        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or executor_receipt.receipt_ref,
     )
 
 

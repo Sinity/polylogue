@@ -13,17 +13,15 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _seed_session(archive_root: Path, *, native_id: str) -> str:
     archive_root.mkdir(parents=True, exist_ok=True)
+    initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     source_conn = sqlite3.connect(source_db)
     source_conn.execute("PRAGMA foreign_keys = ON")
@@ -130,6 +128,37 @@ class TestExciseStandalone:
         finally:
             index_conn.close()
         assert count == 1
+
+    def test_dry_run_does_not_construct_a_mutating_audit_executor(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="dry-run-no-executor")
+        with (
+            patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root),
+            patch("polylogue.operations.mutation_transaction.OperationExecutor.for_archive_root") as factory,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "excise", "--session", session_id, "--reason", "r", "--dry-run", "--json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        factory.assert_not_called()
+
+    def test_declined_confirmation_does_not_construct_a_mutating_audit_executor(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="declined-no-executor")
+        with (
+            patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root),
+            patch("polylogue.operations.mutation_transaction.OperationExecutor.for_archive_root") as factory,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "excise", "--session", session_id, "--reason", "r"],
+                input="n\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        factory.assert_not_called()
 
     def test_without_yes_aborts_in_json_mode(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

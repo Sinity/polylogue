@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -310,22 +309,6 @@ def initialize_archive_database(
         conn.close()
 
 
-def _source_has_audit_continuity_control(source_path: Path) -> bool:
-    """Return whether source.db is under the replayable audit continuity regime."""
-    if not source_path.is_file():
-        return False
-    try:
-        with closing(sqlite3.connect(f"{source_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
-            return (
-                connection.execute(
-                    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'audit_continuity_control'"
-                ).fetchone()
-                is not None
-            )
-    except (OSError, sqlite3.DatabaseError):
-        return False
-
-
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
@@ -412,11 +395,15 @@ def initialize_active_archive_root(root: Path) -> None:
             # Recompute the path-sensitive classification before deciding
             # whether startup must create the missing bootstrap marker.
             durable_tier_exists, pre_marker_adoption = classify_paths()
+        established_archive = has_bootstrap_marker or (
+            (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+            and (root / archive_tier_spec(ArchiveTier.USER).filename).is_file()
+        )
         if (
             durable_tier_exists
             and not recovering_fresh_durable_bootstrap
+            and established_archive
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
-            and _source_has_audit_continuity_control(root / archive_tier_spec(ArchiveTier.SOURCE).filename)
         ):
             raise RuntimeError(
                 "established archive is missing audit.db; use maintenance migrate-tier audit "

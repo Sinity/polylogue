@@ -584,7 +584,10 @@ class OperationExecutor:
 
         from polylogue.operations.audit import AuditRepository
 
-        audit = AuditRepository.for_archive_root(archive_root)
+        audit = AuditRepository.for_archive_root(
+            archive_root,
+            attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+        )
         audit.reconcile_continuity()
         audit.recover_abandoned_attempts()
         return cls(audit=audit, now_ms=now_ms, token_factory=token_factory, archive_root=archive_root)

@@ -121,6 +121,27 @@ def test_machine_success_payload_validates_against_schema() -> None:
     jsonschema.validate(instance=instance, schema=schema)
 
 
+def test_migrate_tier_error_payload_validates_against_schema() -> None:
+    """A blocked migrate-tier result remains valid against its published union."""
+    import jsonschema
+
+    from polylogue.cli.commands.maintenance._migrate_tier import MigrateTierResultPayload
+
+    schema = _load_published_schema("migrate-tier-result")
+    payload = MigrateTierResultPayload.model_validate(
+        {
+            "ok": False,
+            "tier": "audit",
+            "path": "/archive/audit.db",
+            "backup_manifest": None,
+            "stopped_daemon_evidence_ref": None,
+            "error": "missing audit tier",
+            "durable_recovery": None,
+        }
+    )
+    jsonschema.validate(instance=payload.model_dump(mode="json"), schema=schema)
+
+
 def test_mutation_result_payload_validates_against_schema() -> None:
     """A real MutationResultPayload must validate against the published schema."""
     import jsonschema
