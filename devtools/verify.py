@@ -87,6 +87,7 @@ from devtools.verify_runs import (
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_worker_count,
+    append_verify_history,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
@@ -264,9 +265,7 @@ def _load_history() -> list[dict[str, Any]]:
 
 
 def _save_history(entry: dict[str, Any]) -> None:
-    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(HISTORY_PATH, "a") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_verify_history(entry, path=HISTORY_PATH)
 
 
 def _print_history(file: Path | None = None) -> None:
@@ -278,12 +277,21 @@ def _print_history(file: Path | None = None) -> None:
     print(f"{'time':<20} {'tier':<8} {'head':<10} {'dur':>7} {'exit':>4}  steps")
     print("-" * 75)
     for entry in entries[-10:]:
-        ts = entry["timestamp"][5:19]  # MM-DD HH:MM
-        tier = entry["tier"][:8]
-        head = entry["git_head"][:8]
-        dur = f"{entry['total_duration_s']:.0f}s"
-        ec = entry["exit_code"]
-        steps = ", ".join(f"{s['name']}({s['duration_s']:.0f}s{' FAIL' if s['exit'] else ''})" for s in entry["steps"])
+        timestamp = str(entry.get("timestamp") or entry.get("finished_at") or entry.get("started_at") or "unknown")
+        ts = timestamp[5:19] if timestamp != "unknown" else timestamp
+        tier = str(entry.get("tier") or "unknown")[:8]
+        head = str(entry.get("git_head") or "unknown")[:8]
+        duration = entry.get("total_duration_s", entry.get("duration_s", 0.0))
+        dur = f"{float(duration or 0.0):.0f}s"
+        ec = int(entry.get("exit_code", 1))
+        rendered_steps: list[str] = []
+        for step in entry.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            step_duration = float(step.get("duration_s") or 0.0)
+            step_exit = int(step.get("exit", 1))
+            rendered_steps.append(f"{step.get('name', 'unknown')}({step_duration:.0f}s{' FAIL' if step_exit else ''})")
+        steps = ", ".join(rendered_steps)
         print(f"{ts:<20} {tier:<8} {head:<10} {dur:>7} {ec:>4}  {steps}")
 
 

@@ -47,7 +47,7 @@ from devtools.verify import (
     _clear_pytest_report,
     _run,
 )
-from devtools.verify_runs import VerifyRun, git_head
+from devtools.verify_runs import VerifyRun, append_verify_history, git_head
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
@@ -162,6 +162,7 @@ def main(argv: list[str] | None = None) -> int:
             verification_scope="affected",
             release_baseline_allowed=False,
         )
+        append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     sys.stderr.write(

@@ -71,6 +71,22 @@ class PytestResourceError(RuntimeError):
     """Raised when the host cannot safely start a managed pytest run."""
 
 
+def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
+    """Append one complete invocation to the cross-worktree run history.
+
+    A single ``O_APPEND`` write keeps concurrent worktrees from overwriting or
+    interleaving their records. Detailed artifacts remain checkout-local; this
+    history is the compact durable index used to find and compare them.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(descriptor, payload)
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class PytestRuntimePolicy:
     """One start-time resource decision for a managed pytest run."""

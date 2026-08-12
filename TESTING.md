@@ -204,11 +204,11 @@ or worker processes.
 
 The detailed artifacts above are checkout-local and disposable. Each `devtools
 verify` or `devtools test` invocation automatically appends its compact run
-summary to `$XDG_STATE_HOME/polylogue/devtools/` (or
-`~/.local/state/polylogue/devtools/`), so `devtools workspace tasks recent` and
-`devtools workspace tasks stats --resources` compare future runs across linked
-worktrees without a separate recording command. Setup, call, and teardown
-timings come only from pytest reports in the event stream.
+summary to `$XDG_STATE_HOME/polylogue/devtools/verify-history.jsonl` (or the
+corresponding `~/.local/state` path), shared across linked worktrees without a
+separate recording command. `devtools verify --history` prints the recent
+cross-worktree runs. Setup, call, and teardown timings come only from pytest
+reports in the event stream.
 
 `devtools test` uses the same pytest progress plugin and process supervisor for
 focused selections. During or after a run, inspect

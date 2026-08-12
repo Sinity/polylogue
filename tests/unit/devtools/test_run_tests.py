@@ -93,6 +93,7 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
+    monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
@@ -102,6 +103,8 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert isinstance(captured["run"]._payload["git_dirty"], bool)
     assert captured["run"]._payload["verification_scope"] == "affected"
     assert captured["run"]._payload["release_baseline_allowed"] is False
+    assert captured["history"]["run_id"] == captured["run"].run_id
+    assert captured["history"]["status"] == "success"
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:

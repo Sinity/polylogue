@@ -1013,6 +1013,41 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
     assert result["cleanup"]["complete"] is True
 
 
+def test_print_history_accepts_verify_and_focused_run_records(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_load_history",
+        lambda: [
+            {
+                "timestamp": "2026-08-12T20:00:00+00:00",
+                "tier": "quick",
+                "git_head": "a" * 40,
+                "total_duration_s": 2.0,
+                "exit_code": 0,
+                "steps": [{"name": "ruff", "duration_s": 1.0, "exit": 0}],
+            },
+            {
+                "finished_at": "2026-08-12T20:01:00+00:00",
+                "tier": "focused-test",
+                "git_head": "b" * 40,
+                "duration_s": 3.0,
+                "exit_code": 1,
+                "steps": [{"name": "pytest focused", "duration_s": None, "exit": 1}],
+            },
+        ],
+    )
+
+    verify._print_history()
+
+    output = capsys.readouterr().out
+    assert "quick" in output
+    assert "focused-" in output
+    assert "pytest focused(0s FAIL)" in output
+
+
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     TESTMON_DATA.parent.mkdir(parents=True)
