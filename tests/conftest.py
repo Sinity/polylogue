@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
@@ -317,26 +317,21 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         shutil.rmtree(basetemp_path, ignore_errors=True)
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(
-    item: pytest.Item,
-    call: pytest.CallInfo[None],
-) -> Generator[None, Any, None]:
-    """Retain the call outcome so passing test temp trees can be reclaimed."""
-    outcome = yield
-    report = outcome.get_result()
-    setattr(item, f"rep_{report.when}", report)
-
-
 @pytest.fixture(autouse=True)
-def _reclaim_passing_test_tmp_path(
-    request: pytest.FixtureRequest,
+def _reclaim_test_tmp_path(
     tmp_path: Path,
 ) -> Iterator[None]:
-    """Bound broad-run temp growth while preserving failed-test evidence."""
-    yield
-    report: pytest.TestReport | None = getattr(request.node, "rep_call", None)
-    if report is not None and report.passed:
+    """Release each test's private tree as soon as its teardown finishes.
+
+    Failure evidence belongs in the managed event/longrepr/resource receipts,
+    not in an unbounded filesystem witness. Retaining every failed tree made
+    full-suite tmpfs usage proportional to the number of failures and caused
+    a calm 8-worker run to exceed 2 GiB before completing. A failing node can
+    still be rerun with an explicit basetemp when its files matter.
+    """
+    try:
+        yield
+    finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
@@ -416,7 +411,7 @@ _MANAGED_VERIFY_ENV = frozenset(
 @pytest.fixture(autouse=True)
 def _close_test_opened_sqlite_connections(
     monkeypatch: pytest.MonkeyPatch,
-    _reclaim_passing_test_tmp_path: None,
+    _reclaim_test_tmp_path: None,
 ) -> Iterator[None]:
     """Close sync ``sqlite3`` connections that *test code* opened but never closed.
 
@@ -538,7 +533,7 @@ def _close_test_opened_sqlite_connections(
 def _clear_polylogue_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    _reclaim_passing_test_tmp_path: None,
+    _reclaim_test_tmp_path: None,
     request: pytest.FixtureRequest,
 ) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
