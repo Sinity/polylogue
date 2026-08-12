@@ -783,6 +783,10 @@ def _request_supervisor_termination(
         process.send_signal(signal.SIGTERM)
 
 
+class PytestContainmentError(RuntimeError):
+    """Raised when an interrupted pytest supervisor cannot be confirmed stopped."""
+
+
 def _await_interrupted_pytest_containment(
     process: subprocess.Popen[bytes],
     launch: SupervisorLaunch,
@@ -801,8 +805,12 @@ def _await_interrupted_pytest_containment(
             launch,
             preserved_runner_descendants=preserved_runner_descendants,
         )
-        with contextlib.suppress(subprocess.TimeoutExpired):
+        try:
             process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired as exc:
+            raise PytestContainmentError(
+                "pytest containment did not quiesce after forced termination; leaving its basetemp intact"
+            ) from exc
     reap_exited_children()
 
 
@@ -1598,19 +1606,24 @@ def _run(
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
     interrupted = False
+    pytest_containment_quiescent = True
     if is_pytest:
         try:
             try:
                 result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+            except PytestContainmentError:
+                pytest_containment_quiescent = False
+                raise
             except KeyboardInterrupt:
                 interrupted = True
                 result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
         finally:
-            basetemp_cleanup = cleanup_managed_pytest_basetemp(
-                root=ROOT,
-                run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
-                env=env,
-            )
+            if pytest_containment_quiescent:
+                basetemp_cleanup = cleanup_managed_pytest_basetemp(
+                    root=ROOT,
+                    run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
+                    env=env,
+                )
     else:
         try:
             result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
@@ -1846,12 +1859,8 @@ def _run(
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
     if run is not None and artifacts is not None:
-        run.finish_step(
+        finalized_step = run.finish_step(
             step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": result.returncode, **metadata}
-        )
-        finalized_step = next(
-            (step for step in run._payload["steps"] if step.get("step_id") == artifacts.step_id),
-            None,
         )
         if isinstance(finalized_step, dict):
             for key in ("statistics", "statistics_path"):

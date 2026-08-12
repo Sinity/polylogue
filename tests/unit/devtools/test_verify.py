@@ -9,6 +9,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1129,19 +1130,48 @@ def test_interrupted_run_merges_worker_events_before_statistics(tmp_path: Path) 
 def test_run_returns_finalized_statistics_for_verify_history(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    history_path = tmp_path / "state" / "verify-history.jsonl"
+
+    def _complete_with_evidence(
+        *_args: object, artifacts: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert isinstance(artifacts, verify_runs.PytestStepArtifacts)
+        artifacts.events_merged_path.write_text(
+            json.dumps(
+                {
+                    "event": "test_report",
+                    "nodeid": "tests/unit/example.py::test_one",
+                    "when": "call",
+                    "duration_s": 0.25,
+                    "outcome": "passed",
+                    "worker_id": "controller",
+                }
+            )
+            + "\n"
+        )
+        artifacts.resources_path.write_text(json.dumps({"tree_rss_kb": 512}) + "\n")
+        return completed
 
     with (
-        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._run_pytest_with_heartbeat", side_effect=_complete_with_evidence),
         patch("devtools.verify._read_pytest_report", return_value=None),
+        patch("devtools.verify.copy_current_pytest_artifacts"),
     ):
         rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "-n", "0"], run=run)
 
     assert rc == 0
-    assert metadata["statistics"]["node_count"] == 0
+    append_verify_history(
+        {"tier": "quick", "steps": [{"name": "pytest testmon", "exit": rc, **metadata}]}, path=history_path
+    )
+    shutil.rmtree(run.run_dir)
+
+    durable_row = json.loads(history_path.read_text(encoding="utf-8"))
+    assert durable_row["steps"][0]["statistics"]["node_count"] == 1
+    assert durable_row["steps"][0]["statistics"]["resources"]["peak_tree_rss_kb"] == 512
     assert metadata["statistics_path"].endswith("statistics.json")
 
 
-def test_interrupted_pytest_waits_for_containment_before_cleanup() -> None:
+def test_interrupted_pytest_waits_for_forced_containment_quiescence() -> None:
     process = MagicMock()
     process.poll.return_value = None
     process.wait.side_effect = [subprocess.TimeoutExpired(cmd="pytest", timeout=2.0), None]
@@ -1163,6 +1193,77 @@ def test_interrupted_pytest_waits_for_containment_before_cleanup() -> None:
     force_kill.assert_called_once_with(process, launch, preserved_runner_descendants=())
     assert process.wait.call_count == 2
     reap.assert_called_once()
+
+
+def test_interrupted_pytest_refuses_cleanup_without_containment_quiescence() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [
+        subprocess.TimeoutExpired(cmd="pytest", timeout=2.0),
+        subprocess.TimeoutExpired(cmd="pytest", timeout=1.0),
+    ]
+    launch = MagicMock()
+
+    with (
+        patch("devtools.verify._request_supervisor_termination"),
+        patch("devtools.verify._force_kill_owned_run") as force_kill,
+        patch("devtools.verify.reap_exited_children") as reap,
+        pytest.raises(verify.PytestContainmentError, match="did not quiesce"),
+    ):
+        verify._await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=1.0,
+            preserved_runner_descendants=(),
+        )
+
+    force_kill.assert_called_once_with(process, launch, preserved_runner_descendants=())
+    reap.assert_not_called()
+
+
+def test_run_cleans_and_finalizes_only_after_contained_interrupt(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    order: list[str] = []
+    original_finish_step = run.finish_step
+
+    def _contained_interrupt(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        order.append("contained")
+        raise KeyboardInterrupt
+
+    def _cleanup(**_kwargs: object) -> None:
+        order.append("cleanup")
+        return None
+
+    def _finish_step(*, step_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
+        order.append("finalize")
+        return original_finish_step(step_id=step_id, result=result)
+
+    with (
+        patch("devtools.verify._run_pytest_with_heartbeat", side_effect=_contained_interrupt),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp", side_effect=_cleanup),
+        patch.object(run, "finish_step", side_effect=_finish_step),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest", "-n", "0"], run=run)
+
+    assert rc == 130
+    assert order == ["contained", "cleanup", "finalize"]
+
+
+def test_run_leaves_basetemp_and_step_open_when_containment_fails(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+
+    with (
+        patch(
+            "devtools.verify._run_pytest_with_heartbeat",
+            side_effect=verify.PytestContainmentError("still running"),
+        ),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp") as cleanup,
+        pytest.raises(verify.PytestContainmentError, match="still running"),
+    ):
+        _run("pytest focused", ["pytest", "-n", "0"], run=run)
+
+    cleanup.assert_not_called()
+    assert run._payload["steps"][0]["status"] == "running"
 
 
 def test_print_history_accepts_verify_and_focused_run_records(

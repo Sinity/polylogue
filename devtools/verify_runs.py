@@ -486,7 +486,8 @@ class VerifyRun:
         self.write()
         return artifacts
 
-    def finish_step(self, *, step_id: str, result: dict[str, Any]) -> None:
+    def finish_step(self, *, step_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
+        """Finalize one step and return its durable compact representation."""
         for step in self._payload["steps"]:
             if step.get("step_id") == step_id:
                 step.update(result)
@@ -516,6 +517,7 @@ class VerifyRun:
                     step["statistics"] = statistics
                 break
         self.write()
+        return next((dict(step) for step in self._payload["steps"] if step.get("step_id") == step_id), None)
 
     def finish_interrupted_steps(self, *, exit_code: int, diagnosis: str) -> None:
         """Close any open step when the outer runner receives Ctrl-C."""
