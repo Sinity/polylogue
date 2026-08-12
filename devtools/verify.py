@@ -2631,7 +2631,19 @@ def _prepare_testmon_seed_shards(
     shards = (
         prior_shards
         if prior_shards is not None
-        else (seed_shard_plan(expected, shard_size=TESTMON_SEED_SHARD_SIZE) if expected else [])
+        else (
+            seed_shard_plan(
+                expected,
+                shard_size=TESTMON_SEED_SHARD_SIZE,
+                serial_nodeids=[
+                    nodeid
+                    for nodeid, markers in (selection or {}).get("selected_node_markers", {}).items()
+                    if "load_sensitive" in markers or "tui" in markers
+                ],
+            )
+            if expected
+            else []
+        )
     )
     payload = {
         **dict(prepared),
@@ -2681,9 +2693,18 @@ def _seed_shard_command(
     # Collection is deliberately serial, but execution is not. pytest-testmon
     # has an xdist-aware controller database; retaining the managed worker pool
     # here avoids turning a 20k-node seed into hours of serial fixture setup.
-    command.extend(
-        ["--dist=worksteal", *_pytest_worker_args(maximum=10), "--testmon", "--testmon-noselect", f"@{nodeids_file}"]
-    )
+    if shard.get("execution_mode") == "serial":
+        command.extend(["-n", "0", "--testmon", "--testmon-noselect", f"@{nodeids_file}"])
+    else:
+        command.extend(
+            [
+                "--dist=loadgroup",
+                *_pytest_worker_args(maximum=10),
+                "--testmon",
+                "--testmon-noselect",
+                f"@{nodeids_file}",
+            ]
+        )
     return command
 
 
@@ -3454,7 +3475,27 @@ def main(argv: list[str] | None = None) -> int:
                 shard_index = int(shard["index"])
                 shard_label = f"pytest seed-testmon shard {shard_index}/{len(shards)}"
                 shard_args_path = verify_run.run_dir / "seed-shards" / f"{shard_index:04d}.args"
-                shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
+                try:
+                    shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
+                except PytestResourceError as exc:
+                    shard_result = {
+                        "name": shard_label,
+                        "duration_s": 0.0,
+                        "exit": 125,
+                        "diagnosis": "pytest_resource_refusal",
+                        "error": str(exc),
+                        "shard_index": shard_index,
+                        "shard_count": len(shards),
+                        "shard_nodeid_count": len(shard["nodeids"]),
+                    }
+                    step_results.append(shard_result)
+                    prepared_seed_attempt = _checkpoint_testmon_seed_shard(
+                        prepared=prepared_seed_attempt,
+                        shard_index=shard_index,
+                        step=shard_result,
+                    )
+                    exit_code = 125
+                    break
                 _warn_low_memory()
                 shard_rc, shard_elapsed, shard_metadata = _run(shard_label, shard_cmd, run=verify_run)
                 shard_result: dict[str, Any] = {
