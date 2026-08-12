@@ -1015,6 +1015,31 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
     assert result["cleanup"]["complete"] is True
 
 
+def test_verify_run_embeds_compact_statistics_before_worktree_cleanup(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
+    artifacts.events_merged_path.write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/unit/example.py::test_one",
+                "when": "call",
+                "duration_s": 0.25,
+                "outcome": "passed",
+                "worker_id": "controller",
+            }
+        )
+        + "\n"
+    )
+
+    run.finish_step(step_id=artifacts.step_id, result={"exit": 0, "duration_s": 0.25})
+    payload = run.finish(exit_code=0, duration_s=0.25)
+
+    statistics = payload["steps"][0]["statistics"]
+    assert statistics["node_count"] == 1
+    assert statistics["phases"]["call"]["p50_s"] == 0.25
+
+
 def test_print_history_accepts_verify_and_focused_run_records(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

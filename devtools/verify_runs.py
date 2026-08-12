@@ -75,9 +75,10 @@ class PytestResourceError(RuntimeError):
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
     """Append one complete invocation to the cross-worktree run history.
 
-    A single ``O_APPEND`` write keeps concurrent worktrees from overwriting or
-    interleaving their records. Detailed artifacts remain checkout-local; this
-    history is the compact durable index used to find and compare them.
+    ``O_APPEND`` plus an advisory lock keeps concurrent worktrees from
+    overwriting or interleaving their records, including short writes.
+    Detailed artifacts remain checkout-local; this history is the compact
+    durable index used to find and compare them.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
@@ -471,6 +472,10 @@ class VerifyRun:
                     with contextlib.suppress(OSError):
                         shutil.copyfile(statistics_path, self.root / CURRENT_STATISTICS_PATH)
                     step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
+                    # Keep the compact aggregate in the cross-worktree history
+                    # itself. The detailed artifact path is checkout-local and
+                    # may disappear when a merged lane is cleaned up.
+                    step["statistics"] = statistics
                 break
         self.write()
 
