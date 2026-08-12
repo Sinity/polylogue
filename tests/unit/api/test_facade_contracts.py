@@ -213,6 +213,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "import_annotation_batch",
         "storage_stats",
         "bulk_tag_sessions",
+        "delete_sessions_safe",
         "list_session_profile_insights",
         "get_thread_insight",
         "get_annotation",
@@ -4759,6 +4760,45 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
             ).fetchone()[0]
         assert session_count == 0
         assert tag_count == 1
+    finally:
+        await archive.close()
+
+
+async def test_archive_tiers_api_bulk_delete_commits_one_resolved_set(tmp_path: Path) -> None:
+    """The bulk facade reaches the one-transaction archive delete primitive."""
+    import sqlite3
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive = _archive(tmp_path)
+    sessions = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=f"api-bulk-delete-{index}",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"bulk delete {index}")],
+                )
+            ],
+        )
+        for index in range(2)
+    ]
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            session_ids = tuple(archive_db.write_parsed(session) for session in sessions)
+
+        result = await archive.delete_sessions_safe((*session_ids, session_ids[0], "missing"))
+
+        assert result.outcome == "deleted"
+        assert result.session_count == 3
+        assert result.affected_count == 2
+        with sqlite3.connect(tmp_path / "index.db") as index_conn:
+            assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         await archive.close()
 

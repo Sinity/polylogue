@@ -5038,11 +5038,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         async def _delete(poly: Polylogue) -> int:
-            deleted = 0
-            for session_id in session_ids:
-                result = await poly.delete_session_safe(session_id, actor="user:cli")
-                deleted += result.outcome == "deleted"
-            return deleted
+            result = await poly.delete_sessions_safe(session_ids, actor="user:cli")
+            return result.affected_count
 
         deleted = cast(int, self._sync_run(_delete))
         self._send_json(

@@ -79,22 +79,14 @@ def test_cli_delete_handler_executes_the_resolved_set_through_polylogue() -> Non
     handler = cast(Any, object.__new__(DaemonAPIHandler))
     handler.headers = {"Content-Length": str(len(body))}
     handler.rfile = BytesIO(body)
-    polylogue = SimpleNamespace(
-        delete_session_safe=AsyncMock(
-            side_effect=[
-                SimpleNamespace(outcome="deleted"),
-                SimpleNamespace(outcome="not_found"),
-            ]
-        )
-    )
+    polylogue = SimpleNamespace(delete_sessions_safe=AsyncMock(return_value=SimpleNamespace(affected_count=1)))
     handler._sync_run = lambda operation: asyncio.run(operation(polylogue))
     sent: list[tuple[HTTPStatus, dict[str, object]]] = []
     handler._send_json = lambda status, payload: sent.append((status, payload))
 
     handler._handle_cli_delete()
 
-    assert [call.args for call in polylogue.delete_session_safe.await_args_list] == [("s1",), ("s2",)]
-    assert all(call.kwargs == {"actor": "user:cli"} for call in polylogue.delete_session_safe.await_args_list)
+    polylogue.delete_sessions_safe.assert_awaited_once_with(("s1", "s2"), actor="user:cli")
     assert sent == [
         (
             HTTPStatus.OK,
