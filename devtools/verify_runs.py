@@ -1076,6 +1076,12 @@ def apply_managed_pytest_runtime_policy(
             and effective_tmpfs_budget_kb is not None
             and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
+            if explicit_tmpfs:
+                raise PytestResourceError(
+                    "explicit pytest basetemp declared demand exceeds its safe adaptive tmpfs budget "
+                    f"({explicit_basetemp}: declared demand={required_basetemp_kb / 1024:.0f} MiB, "
+                    f"safe tmpfs budget={effective_tmpfs_budget_kb / 1024:.0f} MiB)"
+                )
             normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
             if configured_tmpfs:
                 # The configured tmpfs root has become unsafe for this run.
