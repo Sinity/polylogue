@@ -458,6 +458,37 @@ def test_seed_shard_checkpoint_does_not_trust_preexisting_testmon_rows(
     assert shard["node_outcomes"][0]["outcome"] == "missing"
 
 
+def test_seed_outcome_does_not_infer_call_success_from_teardown(
+    tmp_path: Path,
+) -> None:
+    nodeid = "tests/test_seed.py::test_call_missing"
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"event": "test_started", "nodeid": nodeid})
+        + "\n"
+        + json.dumps({"event": "test_report", "nodeid": nodeid, "when": "teardown", "outcome": "passed"})
+        + "\n"
+        + json.dumps({"event": "test_finished", "nodeid": nodeid})
+        + "\n"
+    )
+
+    without_database = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=[nodeid],
+        database={"node_outcomes": {}},
+        pytest_step={"exit": 0},
+    )
+    assert without_database[0]["outcome"] == "missing"
+
+    with_failed_database = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=[nodeid],
+        database={"node_outcomes": {nodeid: "failed"}},
+        pytest_step={"exit": 1},
+    )
+    assert with_failed_database[0]["outcome"] == "failed"
+
+
 def test_seed_shard_failure_remains_visible_and_blocks_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     expected = ["tests/test_seed.py::test_failed"]
@@ -1206,8 +1237,8 @@ def test_seed_node_outcomes_preserve_interrupted_active_node(tmp_path: Path) -> 
     assert outcomes[0]["outcome"] == "interrupted"
 
 
-def test_seed_node_outcomes_treat_finished_passing_teardown_as_pass(tmp_path: Path) -> None:
-    """The managed event stream may expose only pytest's terminal teardown phase."""
+def test_seed_node_outcomes_keep_unconfirmed_teardown_incomplete(tmp_path: Path) -> None:
+    """A terminal teardown does not prove that the missing call phase passed."""
     events = tmp_path / "events.jsonl"
     events.write_text(
         "\n".join(
@@ -1234,8 +1265,8 @@ def test_seed_node_outcomes_treat_finished_passing_teardown_as_pass(tmp_path: Pa
         pytest_step={"diagnosis": "pytest_failed"},
     )
 
-    assert outcomes[0]["outcome"] == "passed"
-    assert outcomes[0]["reason"] == "finished node has a passing terminal teardown report"
+    assert outcomes[0]["outcome"] == "missing"
+    assert outcomes[0]["reason"] == "passing teardown without call report or testmon result"
 
 
 def test_seed_resource_timeout_has_a_distinct_typed_terminal_outcome(

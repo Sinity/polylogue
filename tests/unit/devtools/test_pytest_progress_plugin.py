@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from devtools import pytest_progress_plugin
 
 
 @pytest.fixture(autouse=True)
-def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     # Unit tests own their event destinations; do not let a surrounding
     # managed verify invocation redirect them into its step artifacts.
     for name in (
@@ -31,6 +32,9 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     collection_started_at = pytest_progress_plugin._COLLECTION_STARTED_AT
     collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
     yield
+    checkout_cache = Path(__file__).resolve().parents[3] / ".cache" / "testmon"
+    if checkout_cache.exists():
+        shutil.move(str(checkout_cache), str(tmp_path / "checkout-testmon-generated"))
     pytest_progress_plugin._SELECTED_COUNT = selected_count
     pytest_progress_plugin._DESELECTED_COUNT = deselected_count
     pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE[:] = deselected_nodeids

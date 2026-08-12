@@ -2812,11 +2812,16 @@ def _seed_node_outcomes_from_events(
         elif nodeid in finished and any(
             report.get("when") == "teardown" and report.get("outcome") == "passed" for report in node_reports
         ):
-            # Some managed pytest runs emit only the terminal teardown report
-            # into the durable event stream.  A finished node with a passing
-            # teardown and no setup/call failure is an observed pass; treating
-            # it as missing destroys the shard's executed denominator.
-            outcome, reason = "passed", "finished node has a passing terminal teardown report"
+            # Teardown describes fixture cleanup, not the test body.  It may
+            # corroborate a terminal testmon row, but it cannot replace a
+            # missing call report: a failed call can still end with a passing
+            # teardown, and an unrecorded call must remain resumable.
+            if recorded.get(nodeid) == "passed":
+                outcome, reason = "passed", "passing teardown corroborated by testmon success"
+            elif recorded.get(nodeid) == "failed":
+                outcome, reason = "failed", "passing teardown contradicted by testmon failure"
+            else:
+                outcome, reason = "missing", "passing teardown without call report or testmon result"
         elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
             outcome, reason = "timeout", "supervisor timed out while node was active"
         elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
