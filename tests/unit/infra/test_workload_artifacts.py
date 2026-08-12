@@ -45,9 +45,9 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_pat
 def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
     import tests.infra.workload_artifacts as artifacts
 
-    monkeypatch.setattr(artifacts, "_source_semantics_id", lambda: "source-semantics:first")
+    monkeypatch.setattr(artifacts, "lowering_fingerprint", lambda: "emitter-semantics:first")
     first = seeded_archive_key(())
-    monkeypatch.setattr(artifacts, "_source_semantics_id", lambda: "source-semantics:second")
+    monkeypatch.setattr(artifacts, "lowering_fingerprint", lambda: "emitter-semantics:second")
     second = seeded_archive_key(())
 
     assert first.value != second.value

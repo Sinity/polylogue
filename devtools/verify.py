@@ -2240,7 +2240,7 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
 
 def _pytest_uses_full_suite_basetemp(label: str) -> bool:
     """Whether this pytest step can materialize the measured full-suite tree."""
-    return label in BROAD_PYTEST_STEP_LABELS.values()
+    return label in BROAD_PYTEST_STEP_LABELS.values() or label.startswith("pytest seed-testmon shard ")
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {

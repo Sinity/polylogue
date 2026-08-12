@@ -2763,6 +2763,7 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
         ("pytest testmon", False),
         ("pytest testmon (broad)", True),
         ("pytest seed-testmon", True),
+        ("pytest seed-testmon shard 1/4", True),
         ("pytest full (parallel)", True),
         ("pytest load-sensitive (isolated)", True),
     ],
