@@ -1076,6 +1076,47 @@ def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
 
     assert result.failed == []
     assert "full_blob_copy" in phases
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+
+
+def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A definitive sidecar path must never reach large-JSON admission."""
+
+    root = tmp_path / "chatgpt"
+    root.mkdir()
+    path = root / "sessions-index.json"
+    path.write_bytes(b"{}")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch_support._large_non_jsonl_path_can_stream",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("strong sidecar reached large-file streaming admission")
+        ),
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="chatgpt")
+
+    assert result.succeeded == []
+    assert result.failed == []
+    assert not _parse_payload_as_session_artifact(
+        path,
+        provider=Provider.CHATGPT,
+        payload=b'{"mapping":{"session":"would otherwise look like an export"}}',
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
 def test_full_ingest_writes_archive_with_route_observability(
