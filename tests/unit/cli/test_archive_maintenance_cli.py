@@ -2775,6 +2775,52 @@ def test_migrate_tier_cli_serializes_target_absent_cleanup(
     }
 
 
+def test_migrate_tier_cli_serializes_a_prepublication_failure_against_its_schema(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed pre-link publication emits the published nullable recovery target."""
+    import jsonschema
+
+    from polylogue.cli.commands.maintenance import _migrate_tier
+    from polylogue.operations.durable_change_train import DurableCleanupOutcome, DurablePublicationError
+
+    _stage_uninitialized_archive(cli_workspace)
+
+    def fail_prepublication(*_args: object, **_kwargs: object) -> int:
+        raise DurablePublicationError("pre-publication write failed", cleanup=DurableCleanupOutcome("not_attempted"))
+
+    monkeypatch.setattr(_migrate_tier, "initialize_missing_durable_tier", fail_prepublication)
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "audit",
+            "--initialize-missing",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["durable_recovery"] == {
+        "code": None,
+        "detail": None,
+        "state": "not_attempted",
+        "target": None,
+    }
+    schema = json.loads(
+        (Path(__file__).parents[3] / "docs/schemas/cli-output/migrate-tier-result.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    jsonschema.validate(instance=payload, schema=schema)
+
+
 def test_migrate_tier_cli_preserves_replacement_during_checked_leaf_cleanup(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

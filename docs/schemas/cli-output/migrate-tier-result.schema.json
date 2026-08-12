@@ -31,8 +31,15 @@
           "type": "string"
         },
         "target": {
-          "title": "Target",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target"
         }
       },
       "required": [

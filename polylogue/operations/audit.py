@@ -87,6 +87,29 @@ def _linux_process_start_ticks(pid: int) -> str | None:
         return None
 
 
+def _attempt_owner_liveness(owner_id: str | None) -> Literal["live", "dead", "unknown"]:
+    """Classify an owner without mistaking unavailable liveness evidence for death."""
+
+    if owner_id is None:
+        return "unknown"
+    parts = owner_id.split(":")
+    if len(parts) not in {2, 3} or parts[0] != "pid":
+        return "unknown"
+    try:
+        pid = int(parts[1])
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except (OSError, ValueError):
+        return "unknown"
+    if len(parts) == 2:
+        return "live"
+    start_ticks = _linux_process_start_ticks(pid)
+    if start_ticks is None:
+        return "unknown"
+    return "live" if start_ticks == parts[2] else "dead"
+
+
 def _current_process_attempt_owner() -> str:
     """Return a local process identity that rejects PID reuse when available."""
 
@@ -100,19 +123,7 @@ def _current_process_attempt_owner() -> str:
 def _attempt_owner_is_live(owner_id: str | None) -> bool:
     """Return whether an attempt's recorded local process is still its owner."""
 
-    if owner_id is None:
-        return False
-    parts = owner_id.split(":")
-    if len(parts) not in {2, 3} or parts[0] != "pid":
-        return False
-    try:
-        pid = int(parts[1])
-        os.kill(pid, 0)
-    except (OSError, ValueError):
-        return False
-    if len(parts) == 2:
-        return True
-    return _linux_process_start_ticks(pid) == parts[2]
+    return _attempt_owner_liveness(owner_id) == "live"
 
 
 @dataclass(frozen=True, slots=True)
@@ -983,7 +994,9 @@ class AuditRepository:
             rows = conn.execute(
                 "SELECT operation_id, worker_id FROM operation_attempts WHERE state = 'running' ORDER BY operation_id"
             ).fetchall()
-            operation_ids = tuple(str(row[0]) for row in rows if not _attempt_owner_is_live(cast(str | None, row[1])))
+            operation_ids = tuple(
+                str(row[0]) for row in rows if _attempt_owner_liveness(cast(str | None, row[1])) == "dead"
+            )
             for operation_id in operation_ids:
                 conn.execute(
                     "UPDATE operation_attempts SET state = 'unknown', finished_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND state = 'running'",

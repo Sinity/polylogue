@@ -46,7 +46,7 @@ class DurableRecoveryPayload(BaseModel):
 
     state: str
     code: str | None
-    target: str
+    target: str | None
     detail: str | None
 
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from polylogue.operations.audit import (
     AuditRepository,
     _attempt_owner_is_live,
+    _attempt_owner_liveness,
     _current_process_attempt_owner,
     token_sha256,
 )
@@ -253,6 +254,43 @@ def test_recovery_marks_a_dead_process_owned_attempt_unknown(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.parametrize("owner_id", [None, "external:unverifiable"])
+def test_recovery_preserves_attempts_with_unproven_owners(tmp_path: Path, owner_id: str | None) -> None:
+    """Legacy or externally-owned attempts stay running until their owner is proven dead."""
+
+    initialize_active_archive_root(tmp_path)
+    audit = _audit(tmp_path)
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "unproven-owner-token")
+    preview = executor.prepare_bound(
+        _binding(_Actuator()),
+        object(),
+        _principal(),
+        archive_instance_id="archive:unproven-owner",
+        archive_identity_digest="identity:unproven-owner",
+        parameter_digest="params:unproven-owner",
+    )
+    authorization = executor.authorize_bound(_binding(_Actuator()), preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute("UPDATE operation_attempts SET worker_id = ? WHERE operation_id = ?", (owner_id, operation_id))
+        conn.commit()
+
+    assert audit.recover_abandoned_attempts() == ()
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "running",
+        )
+
+
+def test_process_owner_liveness_is_unknown_when_start_ticks_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live PID with unreadable identity evidence is not proof that its owner died."""
+
+    monkeypatch.setattr("polylogue.operations.audit.os.kill", lambda _pid, _signal: None)
+    monkeypatch.setattr(Path, "read_text", lambda _self, *, encoding: (_ for _ in ()).throw(OSError("denied")))
+
+    assert _attempt_owner_liveness("pid:321:known-start") == "unknown"
+
+
 def test_process_owner_uses_proc_start_ticks_after_a_spaced_process_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """PID reuse remains detectable when /proc's parenthesized comm has spaces."""
 
@@ -484,6 +522,11 @@ def test_reconciliation_resolves_the_full_unknown_atomic_batch(tmp_path: Path) -
     )
     authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
     operation_id = audit.consume_authorization_and_start(preview, authorization)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
     audit.recover_abandoned_attempts()
 
     audit.reconcile_attempt(operation_id, outcome="applied", domain_receipt_ref="receipt:reconciled")
