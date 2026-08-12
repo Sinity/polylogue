@@ -52,7 +52,7 @@ def missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
     return [name for name in expected if name not in present]
 
 
-def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> bool:
+def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:
     """Write per-surface freshness rows after a successful startup readiness pass.
 
     Without this, the bounded-recovery and healthy startup paths leave
@@ -67,13 +67,12 @@ def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> bool:
         snapshot = fts_invariant_snapshot_sync(conn)
     except sqlite3.Error:
         logger.warning("daemon: FTS startup freshness snapshot failed", exc_info=True)
-        return False
+        return
     record_fts_invariant_snapshot_sync(conn, snapshot)
 
     from polylogue.storage.fts.drift_sampling import sample_fts_drift_to_ops_sync
 
     sample_fts_drift_to_ops_sync(conn)
-    return True
 
 
 def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
