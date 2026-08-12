@@ -271,7 +271,7 @@ def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> 
 
     label, command = steps[-1]
     assert label == "pytest seed-testmon"
-    assert command[command.index("-n") + 1] == "8"
+    assert command[command.index("-n") + 1] == "10"
 
 
 def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:

@@ -1994,10 +1994,11 @@ def build_verify_steps(
             else:
                 pytest_cmd.append("--testmon-noselect")
                 label = "pytest seed-testmon"
-            # The runtime policy is memory-aware (currently eight workers on
-            # this host). The old four-worker cap made the 20k-node seed
-            # effectively crawl even though the controller remained healthy.
-            pytest_cmd.extend(_pytest_worker_args(maximum=8))
+            # The runtime policy is memory-aware. Keep the seed below the
+            # host's twelve-worker hard ceiling: ten workers fit the measured
+            # memory envelope while leaving headroom for the controller and
+            # supervisor, and materially shorten the 20k-node seed.
+            pytest_cmd.extend(_pytest_worker_args(maximum=10))
             steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
