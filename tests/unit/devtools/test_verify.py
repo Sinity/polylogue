@@ -3162,23 +3162,22 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
 
 @pytest.mark.parametrize(
-    ("first_exit", "first_diagnosis", "expected_calls", "expected_statuses"),
+    ("shard_results", "expected_exit", "expected_statuses"),
     [
         (
+            [(124, "pytest_timeout"), (0, "pytest_passed")],
             124,
-            "pytest_timeout",
-            ["pytest seed-testmon collect", "pytest seed-testmon shard 1/2"],
             ["incomplete", "pending"],
         ),
         (
+            [(1, "pytest_failed"), (0, "pytest_passed")],
             1,
-            "pytest_failed",
-            [
-                "pytest seed-testmon collect",
-                "pytest seed-testmon shard 1/2",
-                "pytest seed-testmon shard 2/2",
-            ],
             ["complete", "complete"],
+        ),
+        (
+            [(1, "pytest_failed"), (124, "pytest_timeout")],
+            124,
+            ["complete", "incomplete"],
         ),
     ],
 )
@@ -3186,9 +3185,8 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    first_exit: int,
-    first_diagnosis: str,
-    expected_calls: list[str],
+    shard_results: list[tuple[int, str]],
+    expected_exit: int,
     expected_statuses: list[str],
 ) -> None:
     nodeids = ["tests/test_seed.py::test_one", "tests/test_seed.py::test_two"]
@@ -3212,10 +3210,10 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
         calls.append(label)
         if label == "pytest seed-testmon collect":
             return 0, 0.01, {"artifact_dir": str(collection_dir)}
-        if label == "pytest seed-testmon shard 1/2":
-            return first_exit, 0.01, {"diagnosis": first_diagnosis}
-        if label == "pytest seed-testmon shard 2/2":
-            return 0, 0.01, {"diagnosis": "pytest_passed"}
+        if label.startswith("pytest seed-testmon shard "):
+            shard_index = int(label.rsplit(" ", 1)[1].split("/", 1)[0])
+            shard_exit, diagnosis = shard_results[shard_index - 1]
+            return shard_exit, 0.01, {"diagnosis": diagnosis}
         pytest.fail(f"unexpected seed step: {label}")
 
     def fake_checkpoint(*, prepared: dict[str, object], shard_index: int, step: dict[str, object]) -> dict[str, object]:
@@ -3225,21 +3223,26 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
         assert isinstance(raw_shards, list)
         assert all(isinstance(shard, dict) for shard in raw_shards)
         shards = [dict(shard) for shard in raw_shards]
-        shards[shard_index - 1]["status"] = "incomplete" if shard_index == 1 and first_exit == 124 else "complete"
+        shard_exit, diagnosis = shard_results[shard_index - 1]
+        shards[shard_index - 1]["status"] = (
+            "incomplete"
+            if verify._seed_shard_failure_requires_stop({"exit": shard_exit, "diagnosis": diagnosis})
+            else "complete"
+        )
         return {**prepared, "shards": shards}
 
     def fake_finalize(
         *, prepared: dict[str, object], step_results: list[dict[str, object]], exit_code: int
     ) -> dict[str, object]:
         del step_results
-        assert exit_code == first_exit
+        assert exit_code == expected_exit
         raw_shards = prepared["shards"]
         assert isinstance(raw_shards, list)
         assert all(isinstance(shard, dict) for shard in raw_shards)
         finalized_shard_statuses.extend(str(shard["status"]) for shard in raw_shards)
         return {
-            "status": "incomplete" if first_exit == 124 else "complete",
-            "outcome": "resource_timeout" if first_exit == 124 else "red-baseline",
+            "status": "incomplete" if "incomplete" in expected_statuses else "complete",
+            "outcome": "resource_timeout" if expected_exit == 124 else "red-baseline",
             "resume": False,
             "expected_count": len(nodeids),
             "release_baseline_allowed": False,
@@ -3271,11 +3274,15 @@ def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
     ):
         rc = main(["--seed-testmon", "--json"])
 
-    assert rc == first_exit
-    assert calls == expected_calls
-    assert checkpointed == list(range(1, len(expected_calls)))
+    assert rc == expected_exit
+    executed_shards = sum(status != "pending" for status in expected_statuses)
+    assert calls == [
+        "pytest seed-testmon collect",
+        *(f"pytest seed-testmon shard {index}/2" for index in range(1, executed_shards + 1)),
+    ]
+    assert checkpointed == list(range(1, executed_shards + 1))
     assert finalized_shard_statuses == expected_statuses
-    assert json.loads(capsys.readouterr().out)["exit_code"] == first_exit
+    assert json.loads(capsys.readouterr().out)["exit_code"] == expected_exit
 
 
 @pytest.mark.parametrize(

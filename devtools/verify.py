@@ -3456,9 +3456,13 @@ def main(argv: list[str] | None = None) -> int:
                     step=shard_result,
                 )
                 if shard_rc != 0:
-                    if exit_code == 0:
+                    stop_seed = _seed_shard_failure_requires_stop(shard_result)
+                    if exit_code == 0 or stop_seed:
+                        # A later infrastructure failure is the terminal
+                        # condition even when an earlier shard recorded
+                        # ordinary red-test evidence.
                         exit_code = shard_rc
-                    if _seed_shard_failure_requires_stop(shard_result):
+                    if stop_seed:
                         break
             continue
         if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
