@@ -8,6 +8,7 @@ selection and event streams, resource samples, and postmortem classification.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -82,7 +83,13 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        os.write(descriptor, payload)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("verification history append made no progress")
+            remaining = remaining[written:]
     finally:
         os.close(descriptor)
 

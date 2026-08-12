@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -80,6 +81,7 @@ from devtools.verify_runs import (
     adaptive_pytest_runtime_policy,
     adaptive_pytest_worker_count,
     aggregate_pytest_statistics,
+    append_verify_history,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
@@ -1046,6 +1048,16 @@ def test_print_history_accepts_verify_and_focused_run_records(
     assert "quick" in output
     assert "focused-" in output
     assert "pytest focused(0s FAIL)" in output
+
+
+def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path: Path) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda sequence: append_verify_history({"sequence": sequence}, path=history), range(64)))
+
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert sorted(row["sequence"] for row in rows) == list(range(64))
 
 
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
