@@ -188,6 +188,8 @@ def validate_seed_shard_ledger(
             and set(outcome_by_node) != set(nodeids)
         ):
             return None
+        if observed.intersection(nodeids):
+            return None
         normalized.append(dict(raw))
         observed.update(nodeids)
     if observed != set(expected):

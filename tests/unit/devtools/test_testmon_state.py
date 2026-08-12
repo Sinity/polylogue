@@ -88,6 +88,7 @@ def _attempt(data: Path, *, outcomes: tuple[str, str] = ("passed", "failed")) ->
 def test_failed_complete_graph_is_selection_only_and_rebindable(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data, failed=True)
+
     stamp = stamp_from_attempt(_attempt(data), data, checkout_root=tmp_path, protocol_version=PROTOCOL)
 
     assert stamp is not None
@@ -105,6 +106,20 @@ def test_failed_complete_graph_is_selection_only_and_rebindable(tmp_path: Path) 
     stamp_path = tmp_path / "seed.json"
     stamp_path.write_text(json.dumps(stamp.as_dict()))
     assert validate_stamp(stamp_path, data, checkout_root=tmp_path, protocol_version=PROTOCOL) is None
+
+
+def test_seed_shard_ledger_rejects_duplicate_nodes_across_shards() -> None:
+    shard = {
+        "index": 1,
+        "nodeids": [NODEIDS[0]],
+        "nodeid_count": 1,
+        "nodeid_digest": hashlib.sha256(NODEIDS[0].encode()).hexdigest(),
+        "status": "complete",
+        "node_outcomes": [{"nodeid": NODEIDS[0], "outcome": "passed"}],
+    }
+    duplicate = {**shard, "index": 2}
+
+    assert testmon_state.validate_seed_shard_ledger([shard, duplicate], expected_nodeids=[NODEIDS[0]]) is None
 
 
 def test_omitted_interrupted_and_uncovered_nodes_fail_closed(tmp_path: Path) -> None:

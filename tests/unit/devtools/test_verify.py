@@ -324,6 +324,7 @@ def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _environment: 64)
     expected = sorted(f"tests/test_seed.py::test_{index:03d}" for index in range(TESTMON_SEED_SHARD_SIZE + 2))
     prepared = _prepare_testmon_seed_shards(
         {"resume": False, "expected_nodeids": []},
@@ -341,7 +342,7 @@ def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, mon
     nodeids_file = tmp_path / "seed-shard.args"
     command = _seed_shard_command(["pytest", "--collect-only", "-n", "0"], shards[0], nodeids_file=nodeids_file)
     assert "--collect-only" not in command
-    assert command[command.index("-n") + 1] != "0"
+    assert command[command.index("-n") + 1] == "10"
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "--dist=loadgroup" in command
@@ -349,6 +350,40 @@ def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, mon
     assert command[command.index("-n") + 1] == str(min(10, adaptive_pytest_worker_count(os.environ)))
     assert command[-1] == f"@{nodeids_file}"
     assert nodeids_file.read_text().splitlines() == expected[:TESTMON_SEED_SHARD_SIZE]
+
+
+def test_seed_outcomes_normalize_xdist_group_suffix(tmp_path: Path) -> None:
+    expected = ["tests/test_seed.py::test_grouped"]
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": f"{expected[0]}@web-reader",
+                "when": "call",
+                "outcome": "passed",
+            }
+        )
+        + "\n"
+    )
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=expected,
+        database={"node_outcomes": {}},
+        pytest_step=None,
+    )
+
+    assert outcomes == [
+        {
+            "nodeid": expected[0],
+            "outcome": "passed",
+            "reason": "test call passed",
+            "started": False,
+            "finished": False,
+            "phases": [{"when": "call", "outcome": "passed", "duration_s": None}],
+        }
+    ]
 
 
 def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(

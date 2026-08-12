@@ -2708,6 +2708,14 @@ def _seed_shard_command(
     return command
 
 
+def _canonical_seed_nodeid(nodeid: str, expected_nodeids: Sequence[str]) -> str:
+    """Map xdist's ``nodeid@group`` reports back to the collected node ID."""
+    if nodeid in expected_nodeids:
+        return nodeid
+    candidates = [expected for expected in expected_nodeids if nodeid.startswith(expected + "@")]
+    return max(candidates, key=len, default=nodeid)
+
+
 def _seed_shard_outcomes(shards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Flatten the shard ledger in canonical node order for legacy readers."""
     outcomes: dict[str, dict[str, Any]] = {}
@@ -2833,6 +2841,7 @@ def _seed_node_outcomes_from_events(
                     nodeid = event.get("nodeid")
                     if not isinstance(nodeid, str) or not nodeid:
                         continue
+                    nodeid = _canonical_seed_nodeid(nodeid, expected_nodeids)
                     if event.get("event") == "test_started":
                         started.add(nodeid)
                     elif event.get("event") == "test_finished":
@@ -3477,12 +3486,16 @@ def main(argv: list[str] | None = None) -> int:
                 shard_args_path = verify_run.run_dir / "seed-shards" / f"{shard_index:04d}.args"
                 try:
                     shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
-                except PytestResourceError as exc:
+                except (OSError, PytestResourceError) as exc:
                     resource_failure_result = {
                         "name": shard_label,
                         "duration_s": 0.0,
                         "exit": 125,
-                        "diagnosis": "pytest_resource_refusal",
+                        "diagnosis": (
+                            "pytest_resource_refusal"
+                            if isinstance(exc, PytestResourceError)
+                            else "testmon_seed_args_file_write_failed"
+                        ),
                         "error": str(exc),
                         "shard_index": shard_index,
                         "shard_count": len(shards),
