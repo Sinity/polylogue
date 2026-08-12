@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -47,6 +47,20 @@ def _make_real_candidates(
         lambda path: {"used_kb": 0, "free_kb": 32 * 1024 * 1024} if path in (shm, scratch_parent) else None,
     )
     return shm, scratch
+
+
+def test_runtest_makereport_wrapper_preserves_each_phase_report() -> None:
+    item = SimpleNamespace()
+    reports = [SimpleNamespace(when=phase) for phase in ("setup", "call", "teardown")]
+
+    for report in reports:
+        wrapper = conftest.pytest_runtest_makereport(
+            cast("pytest.Item", item), cast("pytest.CallInfo[None]", SimpleNamespace())
+        )
+        assert next(wrapper) is None
+        with pytest.raises(StopIteration):
+            wrapper.send(cast("Any", SimpleNamespace(get_result=lambda report=report: report)))
+        assert getattr(item, f"rep_{report.when}") is report
 
 
 def test_managed_pytest_temp_root_defaults_to_scratch(
