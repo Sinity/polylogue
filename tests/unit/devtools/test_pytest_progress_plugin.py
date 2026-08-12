@@ -87,6 +87,10 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "POLYLOGUE_PYTEST_NESTED_PRIVATE": "1",
         }
     )
+    selection_path = Path(env["POLYLOGUE_PYTEST_SELECTION_PATH"])
+    summary_path = Path(env["POLYLOGUE_PYTEST_SUMMARY_PATH"])
+    selection_path.write_text("selection-sentinel\n", encoding="utf-8")
+    summary_path.write_text("summary-sentinel\n", encoding="utf-8")
     result = subprocess.run(
         [
             sys.executable,
@@ -105,6 +109,8 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    assert selection_path.read_text(encoding="utf-8") == "selection-sentinel\n"
+    assert summary_path.read_text(encoding="utf-8") == "summary-sentinel\n"
     events = [json.loads(line) for path in events_dir.glob("*.jsonl") for line in path.read_text().splitlines()]
     reports = [event for event in events if event.get("event") == "test_report"]
     assert len(reports) == 3

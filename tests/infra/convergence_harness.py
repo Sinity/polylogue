@@ -27,7 +27,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger, SessionState
-from polylogue.daemon.convergence_stages import make_fts_freshness_stage, make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -354,13 +355,15 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
         (
             make_fts_stage(archive.root / "index.db"),
             make_insights_stage(archive.root / "index.db"),
-            make_fts_freshness_stage(archive.root / "index.db"),
         )
     )
     states, _timings = converger.converge_sessions(persisted_session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
+    with sqlite3.connect(archive.root / "index.db") as conn:
+        if not record_fts_freshness_snapshot_sync(conn):
+            raise AssertionError("exact FTS freshness snapshot failed after production convergence")
     _analyze_registry_tables(archive.root / "index.db")
     return states
 
