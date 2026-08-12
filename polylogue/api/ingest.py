@@ -71,9 +71,7 @@ class PolylogueIngestMixin:
             root = _active_archive_root(self.config)
             executor = OperationExecutor.for_archive_root(root)
             binding = runtime_operation_binding(actuator)
-            principal = MutationPrincipal(
-                "facade", frozenset({"archive.rebuild_index", "archive.legacy_runtime"}), "api", "write"
-            )
+            principal = MutationPrincipal("facade", frozenset({"archive.rebuild_index"}), "api", "write")
             preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
             authorization = executor.authorize_bound(binding, preview, principal)
             receipt = executor.execute_bound(binding, preview, authorization, args)

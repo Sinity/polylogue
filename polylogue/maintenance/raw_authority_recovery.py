@@ -1543,7 +1543,7 @@ def apply_raw_authority_recovery(
                 binding = runtime_operation_binding(actuator)
                 principal = MutationPrincipal(
                     "cli:maintenance",
-                    frozenset({"archive.raw_authority_recovery", "archive.legacy_runtime"}),
+                    frozenset({"archive.raw_authority_recovery"}),
                     "maintenance",
                     "maintenance",
                 )

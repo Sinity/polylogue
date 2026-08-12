@@ -36,15 +36,16 @@ class _Actuator:
     changed: bool = False
     calls: int = 0
     crash: bool = False
+    target_refs: tuple[str, ...] = ("session:fixture",)
     destructive_class: DestructiveClass = "reversible"
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, _args: object) -> MutationPlan:
-        target = "session:changed" if self.changed else "session:fixture"
+        targets = ("session:changed",) if self.changed else self.target_refs
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
-            target_refs=(target,),
+            target_refs=targets,
             affected_tiers=("user",),
             reversible=True,
         )
@@ -58,7 +59,7 @@ class _Actuator:
             plan_hash=plan.plan_hash,
             status="applied",
             target_refs=plan.target_refs,
-            affected_count=1,
+            affected_count=len(plan.target_refs),
             detail=None,
             receipt_ref=None,
             applied_at="now",
@@ -292,12 +293,95 @@ def test_typed_domain_receipt_replays_after_source_prepare_crash(
             ]
         )
     assert "private-cache" not in receipt_json
-    assert json.loads(receipt_json)["domain_receipt"]["outcomes"] == [
-        {"row_ref": "assertion:typed", "status": "imported"}
-    ]
+    detail = json.loads(receipt_json)
+    assert detail["affected_count"] == 1
+    assert "domain_receipt" not in detail
+    assert "annotation-batch:typed" not in receipt_json
     with sqlite3.connect(tmp_path / "source.db") as source:
         command = source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0]
     assert command is None
+
+
+def test_atomic_batch_finalization_marks_every_target_and_terminates_run(tmp_path: Path) -> None:
+    audit = _audit(tmp_path)
+    actuator = _Actuator(target_refs=("session:first", "session:second"))
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "batch-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:batch",
+        archive_identity_digest="identity:batch",
+        parameter_digest="params:batch",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+
+    receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+    assert receipt.operation_id is not None
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, affected_count, unknown_count FROM operation_runs WHERE operation_id = ?",
+            (receipt.operation_id,),
+        ).fetchone() == ("completed", 2, 0)
+        assert conn.execute(
+            "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
+            (receipt.operation_id,),
+        ).fetchall() == [("applied",), ("applied",)]
+
+
+def test_blocked_finalization_rejects_targets_and_fails_parent_run(tmp_path: Path) -> None:
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "blocked-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:blocked",
+        archive_identity_digest="identity:blocked",
+        parameter_digest="params:blocked",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+
+    audit.finalize_attempt(operation_id, status="blocked")
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason, rejected_count FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("failed", "target_rejected", 1)
+        assert conn.execute(
+            "SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("rejected",)
+
+
+def test_reconciliation_resolves_the_full_unknown_atomic_batch(tmp_path: Path) -> None:
+    audit = _audit(tmp_path)
+    actuator = _Actuator(target_refs=("session:first", "session:second"))
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "reconcile-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:reconcile",
+        archive_identity_digest="identity:reconcile",
+        parameter_digest="params:reconcile",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+    audit.recover_abandoned_attempts()
+
+    audit.reconcile_attempt(operation_id, outcome="applied", domain_receipt_ref="receipt:reconciled")
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, affected_count, unknown_count FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("completed", 2, 0)
+        assert conn.execute(
+            "SELECT state, domain_receipt_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
+            (operation_id,),
+        ).fetchall() == [("applied", "receipt:reconciled"), ("applied", "receipt:reconciled")]
 
 
 def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path) -> None:

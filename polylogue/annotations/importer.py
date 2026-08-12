@@ -475,7 +475,7 @@ async def import_annotation_batch(
     binding = runtime_operation_binding(actuator)
     principal = MutationPrincipal(
         request.actor_ref,
-        frozenset({"archive.annotation.import_batch", "archive.legacy_runtime"}),
+        frozenset({"archive.annotation.import_batch"}),
         "internal",
         "write",
     )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 from typing import Literal
@@ -1614,6 +1614,81 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
 )
 
 DECLARED_OPERATION_SPECS: tuple[OperationSpec, ...] = (
+    *RUNTIME_OPERATION_SPECS,
+    *DECLARED_CONTROL_PLANE_OPERATION_SPECS,
+)
+
+
+_USER_MUTATION_TARGET_KINDS = (
+    "annotation",
+    "assertion",
+    "blackboard",
+    "block",
+    "correction",
+    "message",
+    "recall_pack",
+    "saved_view",
+    "session",
+    "workspace",
+)
+
+_LEGACY_EXECUTOR_CAPABILITIES: dict[str, str] = {
+    "mutate-add-tag": "archive.add_tag",
+    "mutate-remove-tag": "archive.remove_tag",
+    "mutate-bulk-tag-sessions": "archive.bulk_tag_sessions",
+    "mutate-set-metadata": "archive.set_metadata",
+    "mutate-delete-metadata": "archive.delete_metadata",
+    "mutate-add-mark": "archive.add_mark",
+    "mutate-remove-mark": "archive.remove_mark",
+    "mutate-save-annotation": "archive.save_annotation",
+    "mutate-delete-annotation": "archive.delete_annotation",
+    "mutate-blackboard-post": "archive.post_blackboard_note",
+    "mutate-capture-assertion-candidate": "archive.capture_assertion_candidate",
+    "mutate-save-saved-view": "archive.save_view",
+    "mutate-delete-saved-view": "archive.delete_view",
+    "mutate-save-recall-pack": "archive.create_recall_pack",
+    "mutate-delete-recall-pack": "archive.delete_recall_pack",
+    "mutate-save-workspace": "archive.save_workspace",
+    "mutate-delete-workspace": "archive.delete_workspace",
+    "mutate-record-correction": "archive.record_correction",
+    "mutate-delete-correction": "archive.delete_correction",
+    "mutate-clear-corrections": "archive.clear_corrections",
+}
+
+
+def _declare_executor_authority(specs: tuple[OperationSpec, ...]) -> tuple[OperationSpec, ...]:
+    """Give every executor route a specific capability and surface boundary."""
+
+    declared: list[OperationSpec] = []
+    for spec in specs:
+        if spec.executor_status != "executor-routed" or spec.target_authority:
+            declared.append(spec)
+            continue
+        capability = _LEGACY_EXECUTOR_CAPABILITIES.get(spec.name)
+        if capability is None:
+            raise ValueError(f"executor-routed operation lacks target authority: {spec.name}")
+        declared.append(
+            replace(
+                spec,
+                allowed_surfaces=("api",),
+                target_authority=(
+                    TargetAuthorityPolicy(
+                        key=spec.name.removeprefix("mutate-"),
+                        target_kinds=_USER_MUTATION_TARGET_KINDS,
+                        required_capabilities=(capability,),
+                        destructive_class="reversible",
+                        required_confirmation="role_only",
+                        allowed_durabilities=("durable",),
+                        allowed_recovery=("none",),
+                    ),
+                ),
+            )
+        )
+    return tuple(declared)
+
+
+RUNTIME_OPERATION_SPECS = _declare_executor_authority(RUNTIME_OPERATION_SPECS)
+DECLARED_OPERATION_SPECS = (
     *RUNTIME_OPERATION_SPECS,
     *DECLARED_CONTROL_PLANE_OPERATION_SPECS,
 )

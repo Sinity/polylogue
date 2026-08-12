@@ -21,6 +21,7 @@ import sqlite3
 from pathlib import Path
 
 import click
+from pydantic import BaseModel, ConfigDict
 
 from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
@@ -35,6 +36,28 @@ from polylogue.operations.durable_change_train import (
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, MigrationError
+
+
+class MigrateTierResultPayload(BaseModel):
+    """Stable machine-readable result for one durable-tier migration route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: bool
+    tier: str
+    path: str
+    initialized: bool
+    adoption_receipt: str | None
+    restore_receipt: str | None
+    backup_manifest: str | None
+    stopped_daemon_evidence_ref: str | None
+    train_manifest: str | None
+    train_state: str | None
+    backup_receipt: str | None
+    from_version: int | None
+    to_version: int | None
+    applied_versions: list[int]
+    forward_version_receipt: dict[str, object] | None
 
 
 def _daemon_pidfile_is_live(pidfile: Path) -> bool:
@@ -186,26 +209,24 @@ def migrate_tier_command(
 
     result = execution.migration_result if execution is not None else None
     receipt = execution.forward_version_receipt if execution is not None else None
-    payload = {
-        "ok": True,
-        "tier": tier,
-        "path": str(path),
-        "initialized": initialized,
-        "adoption_receipt": str(adoption_receipt) if adoption_receipt is not None else None,
-        "restore_receipt": str(restore_receipt) if restore_receipt is not None else None,
-        "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
-        "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
-        "train_manifest": (
+    payload = MigrateTierResultPayload(
+        ok=True,
+        tier=tier,
+        path=str(path),
+        initialized=initialized,
+        adoption_receipt=str(adoption_receipt) if adoption_receipt is not None else None,
+        restore_receipt=str(restore_receipt) if restore_receipt is not None else None,
+        backup_manifest=str(backup_manifest) if backup_manifest is not None else None,
+        stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+        train_manifest=(
             str(execution.manifest_path) if execution is not None and execution.manifest_path is not None else None
         ),
-        "train_state": execution.train.state.value if execution is not None and execution.train is not None else None,
-        "backup_receipt": str(result.backup_receipt)
-        if result is not None and result.backup_receipt is not None
-        else None,
-        "from_version": result.from_version if result is not None else 0 if initialized else None,
-        "to_version": result.to_version if result is not None else initialized_version,
-        "applied_versions": list(result.applied_versions) if result is not None else [],
-        "forward_version_receipt": (
+        train_state=execution.train.state.value if execution is not None and execution.train is not None else None,
+        backup_receipt=str(result.backup_receipt) if result is not None and result.backup_receipt is not None else None,
+        from_version=result.from_version if result is not None else 0 if initialized else None,
+        to_version=result.to_version if result is not None else initialized_version,
+        applied_versions=list(result.applied_versions) if result is not None else [],
+        forward_version_receipt=(
             {
                 "tier": receipt.tier.value,
                 "historical_train_id": receipt.historical_train_id,
@@ -218,9 +239,9 @@ def migrate_tier_command(
             if receipt is not None
             else None
         ),
-    }
+    )
     if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        click.echo(json.dumps(payload.model_dump(mode="json"), indent=2, sort_keys=True))
         return
 
     if adoption_receipt is not None:

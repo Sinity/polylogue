@@ -9,12 +9,26 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.audit_continuity import (
+    AUDIT_CONTINUITY_GENESIS_HEAD_SHA256,
     AuditContinuityCoordinator,
     AuditContinuityError,
     AuditMutation,
 )
+
+
+def test_genesis_head_is_shared_by_fresh_ddl_and_additive_migrations() -> None:
+    migration_paths = (
+        Path("polylogue/storage/sqlite/migrations/audit/002_audit_continuity_head.sql"),
+        Path("polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql"),
+    )
+
+    assert AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 in AUDIT_DDL
+    assert AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 in SOURCE_DDL
+    assert all(AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 in path.read_text(encoding="utf-8") for path in migration_paths)
 
 
 def _mutation(number: int) -> AuditMutation:

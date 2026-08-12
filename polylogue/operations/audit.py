@@ -40,6 +40,32 @@ AuditTargetState = Literal[
 _F = TypeVar("_F", bound=Callable[..., object])
 
 
+def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
+    """Derive the parent lifecycle state from the complete target set."""
+
+    if "unknown" in states:
+        return "interrupted", "unknown_effect"
+    if "rejected" in states:
+        return "failed", "target_rejected"
+    if "failed" in states:
+        return "failed", "domain_failure"
+    if states and all(state in {"applied", "already_satisfied"} for state in states):
+        return "completed", None
+    return "running", None
+
+
+def _receipt_event_detail(receipt: MutationReceipt | None, *, status: str, reason: str | None) -> dict[str, object]:
+    """Return bounded audit evidence without copying user-authored domain payloads."""
+
+    return {
+        "status": status,
+        "reason": (reason or "")[:512],
+        "receipt_ref": None if receipt is None else receipt.receipt_ref,
+        "target_count": 0 if receipt is None else len(receipt.target_refs),
+        "affected_count": 0 if receipt is None else receipt.affected_count,
+    }
+
+
 def token_sha256(token: str) -> str:
     """Return the only representation of a bearer token accepted for storage."""
 
@@ -788,19 +814,13 @@ class AuditRepository:
                 str(row[0])
                 for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
             ]
-            if "unknown" in states:
-                run_status, terminal_reason = "interrupted", "unknown_effect"
-            elif "failed" in states:
-                run_status, terminal_reason = "failed", "domain_failure"
-            elif states and all(state in {"applied", "already_satisfied"} for state in states):
-                run_status, terminal_reason = "completed", None
-            else:
-                run_status, terminal_reason = "running", None
+            run_status, terminal_reason = _run_state_for_targets(states)
             conn.execute(
                 """
                 UPDATE operation_runs
                 SET status = ?, terminal_reason = ?, updated_at_ms = ?,
                     completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'interrupted') THEN ? ELSE completed_at_ms END,
+                    rejected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'rejected'),
                     failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
                     unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
                     affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state IN ('applied', 'already_satisfied')),
@@ -813,6 +833,7 @@ class AuditRepository:
                     now_ms,
                     run_status,
                     now_ms,
+                    operation_id,
                     operation_id,
                     operation_id,
                     operation_id,
@@ -830,11 +851,7 @@ class AuditRepository:
                 to_state=run_status,
                 actor_ref=str(run[0]),
                 occurred_at_ms=now_ms,
-                detail={
-                    "status": status,
-                    "reason": (unknown_reason or error_summary or "")[:512],
-                    "domain_receipt": {} if receipt is None else receipt.domain_receipt,
-                },
+                detail=_receipt_event_detail(receipt, status=status, reason=unknown_reason or error_summary),
             )
 
     def recover_abandoned_attempts(self) -> tuple[str, ...]:
@@ -902,40 +919,54 @@ class AuditRepository:
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
         with self._connection() as conn:
             self._begin(conn)
-            target = conn.execute(
-                "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state = 'unknown' ORDER BY ordinal LIMIT 1",
+            rows = conn.execute(
+                "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state = 'unknown' ORDER BY ordinal",
                 (operation_id,),
-            ).fetchone()
-            ordinal = int(target[0]) if target is not None else None
-            if ordinal is None:
+            ).fetchall()
+            if not rows:
                 raise ValueError(f"operation {operation_id!r} has no unknown target to reconcile")
+            ordinal = int(rows[0][0])
             target_state = "applied" if outcome == "applied" else "pending" if outcome == "absent" else "unknown"
-            run_state = (
-                "completed" if target_state == "applied" else "running" if target_state == "pending" else "interrupted"
-            )
             conn.execute(
                 "UPDATE operation_attempts SET state = 'reconciled', finished_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND state = 'unknown'",
                 (now_ms, reason, operation_id),
             )
             conn.execute(
-                "UPDATE operation_targets SET state = ?, domain_receipt_ref = ?, domain_receipt_kind = ?, completed_at_ms = ? WHERE operation_id = ? AND ordinal = ?",
+                "UPDATE operation_targets SET state = ?, domain_receipt_ref = ?, domain_receipt_kind = ?, completed_at_ms = ? WHERE operation_id = ? AND state = 'unknown'",
                 (
                     target_state,
                     domain_receipt_ref,
                     "domain" if domain_receipt_ref else None,
                     now_ms if target_state == "applied" else None,
                     operation_id,
-                    ordinal,
                 ),
             )
+            states = [
+                str(row[0])
+                for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
+            ]
+            run_state, terminal_reason = _run_state_for_targets(states)
             conn.execute(
-                "UPDATE operation_runs SET status = ?, terminal_reason = ?, updated_at_ms = ?, completed_at_ms = CASE WHEN ? = 'completed' THEN ? ELSE completed_at_ms END WHERE operation_id = ?",
+                """
+                UPDATE operation_runs
+                SET status = ?, terminal_reason = ?, updated_at_ms = ?,
+                    completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'interrupted') THEN ? ELSE completed_at_ms END,
+                    rejected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'rejected'),
+                    failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
+                    unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
+                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state IN ('applied', 'already_satisfied'))
+                WHERE operation_id = ?
+                """,
                 (
                     run_state,
-                    None if run_state == "completed" else "reconciliation_unknown",
+                    terminal_reason,
                     now_ms,
                     run_state,
                     now_ms,
+                    operation_id,
+                    operation_id,
+                    operation_id,
+                    operation_id,
                     operation_id,
                 ),
             )
@@ -947,7 +978,7 @@ class AuditRepository:
                 from_state="unknown",
                 to_state=target_state,
                 occurred_at_ms=now_ms,
-                detail={"reason": (reason or "")[:512]},
+                detail={"reason": (reason or "")[:512], "target_count": len(rows)},
             )
 
     def get_operation(self, operation_id: str) -> dict[str, object] | None:

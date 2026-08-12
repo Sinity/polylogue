@@ -1,0 +1,165 @@
+{
+  "$id": "https://polylogue.dev/schemas/cli-output/migrate-tier-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Result from `polylogue ops maintenance migrate-tier --output-format json`, including durable adoption and restore receipt references.\n\nGenerated from `polylogue.cli.commands.maintenance._migrate_tier.MigrateTierResultPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "adoption_receipt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Adoption Receipt"
+    },
+    "applied_versions": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Applied Versions",
+      "type": "array"
+    },
+    "backup_manifest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Backup Manifest"
+    },
+    "backup_receipt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Backup Receipt"
+    },
+    "forward_version_receipt": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Forward Version Receipt"
+    },
+    "from_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "From Version"
+    },
+    "initialized": {
+      "title": "Initialized",
+      "type": "boolean"
+    },
+    "ok": {
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    },
+    "restore_receipt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Restore Receipt"
+    },
+    "stopped_daemon_evidence_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stopped Daemon Evidence Ref"
+    },
+    "tier": {
+      "title": "Tier",
+      "type": "string"
+    },
+    "to_version": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "To Version"
+    },
+    "train_manifest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Train Manifest"
+    },
+    "train_state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Train State"
+    }
+  },
+  "required": [
+    "ok",
+    "tier",
+    "path",
+    "initialized",
+    "adoption_receipt",
+    "restore_receipt",
+    "backup_manifest",
+    "stopped_daemon_evidence_ref",
+    "train_manifest",
+    "train_state",
+    "backup_receipt",
+    "from_version",
+    "to_version",
+    "applied_versions",
+    "forward_version_receipt"
+  ],
+  "title": "Migrate Tier Result",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue ops maintenance migrate-tier --output-format json"
+  ],
+  "x-polylogue-source-model": "MigrateTierResultPayload"
+}

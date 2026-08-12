@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
+from polylogue.cli.commands.maintenance._migrate_tier import MigrateTierResultPayload
 from polylogue.operations.action_contracts import ActionAffordanceListPayload
 from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
@@ -258,6 +259,16 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "GET /api/action-affordances",
             "MCP action_affordances",
         ),
+    ),
+    CliOutputSchema(
+        name="migrate-tier-result",
+        title="Migrate Tier Result",
+        description=(
+            "Result from `polylogue ops maintenance migrate-tier --output-format json`, including durable "
+            "adoption and restore receipt references."
+        ),
+        model=MigrateTierResultPayload,
+        surfaces=("polylogue ops maintenance migrate-tier --output-format json",),
     ),
     CliOutputSchema(
         name="machine-error",

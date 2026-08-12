@@ -1400,19 +1400,6 @@ def restore_adopted_audit_tier(
     rebind_mutation_id = f"audit-restore:{operation_id}"
     coordinator = AuditContinuityCoordinator(archive_root)
     rebind_already_committed = False
-    if has_pending_restore:
-        # A restore can stop after its audit-side rebind commit while the source
-        # WAL still awaits promotion. Reconcile that exact operation before a
-        # retry tries to prepare a second command.
-        try:
-            rebind_already_committed = (
-                coordinator.reconcile_pending_rebind(rebind_mutation_id)
-                if coordinator.has_pending_rebind(rebind_mutation_id)
-                else coordinator.has_committed_mutation(rebind_mutation_id)
-            )
-        except AuditContinuityError as exc:
-            if "cannot read audit continuity commit state" not in str(exc):
-                raise
     published = False
     try:
         if _audit_file_matches_artifact(archive_root / "audit.db", sha256=artifact_sha256, size=artifact_size):
@@ -1440,6 +1427,14 @@ def restore_adopted_audit_tier(
         version, application_id, quick_check = _audit_live_metadata(path)
         if version != artifact_version or application_id != expected_application_id or quick_check != ("ok",):
             raise MigrationError("adopted-audit restore published artifact is not the verified SQLite image")
+        if has_pending_restore:
+            # The pending source-side rebind can only be inspected after this
+            # retry has restored a readable, verified audit authority image.
+            rebind_already_committed = (
+                coordinator.reconcile_pending_rebind(rebind_mutation_id)
+                if coordinator.has_pending_rebind(rebind_mutation_id)
+                else coordinator.has_committed_mutation(rebind_mutation_id)
+            )
         if stopped_daemon_check() != stopped_evidence:
             raise MigrationError("daemon stopped proof changed after adopted-audit restore publication")
         revalidate_exact_backup()

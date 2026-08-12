@@ -428,13 +428,9 @@ def initialize_active_archive_root(root: Path) -> None:
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)
-        # Runtime mutation composition must observe a reconciled source/audit
-        # head before it can open any tier for writes. Older adopted archives
-        # have no source-side continuity control to reconcile.
-        if _source_has_audit_continuity_control(root / archive_tier_spec(ArchiveTier.SOURCE).filename):
-            from polylogue.operations.audit import AuditRepository
-
-            AuditRepository.for_archive_root(root).reconcile_continuity()
+        # Mutation composition performs source/audit reconciliation immediately
+        # before it consumes authority. Ordinary archive opens stay read-only
+        # with respect to continuity, including their steady-state path.
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)
