@@ -111,6 +111,7 @@ _PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
+_DAEMON_MUTATION_TIMEOUT_S: float | None = None
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 _TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
 
@@ -1455,6 +1456,50 @@ def _fetch_daemon_payload(
     return None
 
 
+def _submit_daemon_mutation(
+    config: Config,
+    path: str,
+    *,
+    body: dict[str, object],
+) -> dict[str, object] | None:
+    """Submit a confirmed write to the matching daemon and retain its outcome.
+
+    Read fast paths may give up quickly and read from SQLite instead. A delete
+    cannot do that after its request reaches the daemon, because retrying
+    offline would make the confirmed actuator outcome ambiguous.
+    """
+
+    if _daemon_disabled():
+        return None
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    client = DaemonClient(
+        daemon_socket_path(config.archive_root),
+        timeout_s=_DAEMON_MUTATION_TIMEOUT_S,
+        auth_token=resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    if (
+        client.probe(
+            archive_root=str(config.archive_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        return None
+    payload = client.request_mutation_json("POST", path, body)
+    if payload is not None and client.last_elapsed_ms is not None:
+        payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
+    return payload
+
+
 def _fetch_daemon_sessions_payload_with_deadline(
     daemon_url: str,
     auth_token: str | None,
@@ -2211,15 +2256,63 @@ def _emit_delete(
                 ).to_json(exclude_none=True)
             )
             return
-    actuator = SessionDeleteActuator()
-    executor = OperationExecutor.for_archive_root(archive.archive_root)
-    prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal("user:cli", frozenset({"archive.delete_session"}), "cli", "write")
-    preview = executor.prepare_bound_for_archive(binding, prepare_args, principal, archive_root=archive.archive_root)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
-    receipt = executor.execute_bound(binding, preview, authorization, prepare_args)
-    deleted = receipt.affected_count
+    executor.authorize(
+        actuator,
+        plan,
+        actor="user:cli",
+        role="write",
+        capability="archive.delete_session",
+        confirmation_strength="confirm_flag",
+    )
+    config = load_effective_config(env)
+    from polylogue.daemon_client import DaemonMutationIndeterminateError, DaemonResponseError
+
+    try:
+        daemon_payload = _submit_daemon_mutation(
+            config,
+            "/api/cli/delete",
+            body={"session_ids": list(session_ids)},
+        )
+    except DaemonMutationIndeterminateError as exc:
+        raise click.ClickException(
+            "delete outcome is indeterminate after the daemon accepted the request; "
+            "do not retry offline, inspect the archive or wait for the daemon to report completion"
+        ) from exc
+    except DaemonResponseError as exc:
+        raise click.ClickException(f"daemon refused delete ({exc.status}): {exc.detail}") from exc
+    if daemon_payload is not None:
+        deleted = _object_int(daemon_payload.get("affected_count"))
+    else:
+        from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+        from polylogue.storage.archive_identity import ArchiveOwnershipError
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+        try:
+            with (
+                acquire_durable_archive_ownership(
+                    archive_root,
+                    owner_id=f"cli-delete:{os.getpid()}",
+                ),
+                ArchiveStore.open_existing(archive_root, read_only=False) as writable_archive,
+            ):
+                writable_args = SessionDeleteArgs(archive=writable_archive, session_ids=session_ids)
+                writable_plan = executor.prepare(actuator, writable_args)
+                authorization = executor.authorize(
+                    actuator,
+                    writable_plan,
+                    actor="user:cli",
+                    role="write",
+                    capability="archive.delete_session",
+                    confirmation_strength="confirm_flag",
+                )
+                receipt = executor.execute(actuator, writable_plan, authorization, writable_args)
+                deleted = receipt.affected_count
+        except ArchiveOwnershipError as exc:
+            raise click.ClickException(
+                "the daemon did not accept the delete and the archive is owned by another writer; "
+                "retry through the matching deployed CLI/daemon or stop the daemon before an offline delete"
+            ) from exc
     # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.
     click.echo(
         MutationResultPayload(

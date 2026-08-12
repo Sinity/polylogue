@@ -264,3 +264,34 @@ def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A connected daemon with no receipt is never interchangeable with no daemon."""
+
+    from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+
+    socket_path = tmp_path / "daemon.sock"
+    socket_path.touch()
+
+    class TimedOutConnection:
+        connected = True
+
+        def __init__(self, _socket_path: Path, _timeout: float | None) -> None:
+            pass
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def getresponse(self) -> object:
+            raise TimeoutError("slow daemon response")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", TimedOutConnection)
+
+    with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/cli/delete"):
+        DaemonClient(socket_path, timeout_s=0.01).request_mutation_json(
+            "POST", "/api/cli/delete", {"session_ids": ["s1"]}
+        )

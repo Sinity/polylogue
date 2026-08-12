@@ -100,6 +100,36 @@ def test_cli_delete_handler_executes_the_resolved_set_through_polylogue() -> Non
     ]
 
 
+def test_cli_delete_handler_accepts_the_complete_confirmed_batch() -> None:
+    session_ids = [f"s{index:05d}-{'x' * 128}" for index in range(10_001)]
+    body = json.dumps({"session_ids": session_ids}).encode()
+    assert len(body) > 1_048_576
+    handler = cast(Any, object.__new__(DaemonAPIHandler))
+    handler.headers = {"Content-Length": str(len(body))}
+    handler.rfile = BytesIO(body)
+    polylogue = SimpleNamespace(
+        delete_sessions_safe=AsyncMock(return_value=SimpleNamespace(affected_count=len(session_ids)))
+    )
+    handler._sync_run = lambda operation: asyncio.run(operation(polylogue))
+    sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+    handler._send_json = lambda status, payload: sent.append((status, payload))
+
+    handler._handle_cli_delete()
+
+    polylogue.delete_sessions_safe.assert_awaited_once_with(tuple(session_ids), actor="user:cli")
+    assert sent == [
+        (
+            HTTPStatus.OK,
+            {
+                "status": "deleted",
+                "operation": "delete",
+                "session_count": len(session_ids),
+                "affected_count": len(session_ids),
+            },
+        )
+    ]
+
+
 def test_user_post_and_delete_hold_named_gates_around_dispatch() -> None:
     post_timeline: list[str] = []
     post_handler = _handler(["api", "user", "marks"], post_timeline)

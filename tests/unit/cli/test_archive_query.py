@@ -6,6 +6,8 @@ import csv
 import io
 import json
 import types
+from http import HTTPStatus
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -43,6 +45,8 @@ from polylogue.cli.archive_query import (
     _tool_tokens,
     _tuple_tokens,
 )
+from polylogue.config import Config
+from polylogue.daemon_client import DaemonMutationIndeterminateError, DaemonResponseError
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
@@ -897,7 +901,7 @@ class TestEmitDeleteMachineModeNoPrompt:
         archive = self._archive()
 
         with patch(
-            "polylogue.cli.archive_query._fetch_daemon_payload",
+            "polylogue.cli.archive_query._submit_daemon_mutation",
             return_value={"status": "deleted", "affected_count": 2},
         ) as daemon_delete:
             _emit_delete(env, archive, ("s1", "s2"), params={"force": True, "dry_run": False})
@@ -909,6 +913,80 @@ class TestEmitDeleteMachineModeNoPrompt:
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "deleted"
         assert payload["affected_count"] == 2
+
+    @pytest.mark.parametrize(
+        "daemon_error",
+        [
+            pytest.param(
+                DaemonMutationIndeterminateError(method="POST", path="/api/cli/delete"),
+                id="slow-response-is-indeterminate",
+            ),
+            pytest.param(
+                DaemonResponseError(
+                    status=HTTPStatus.BAD_REQUEST,
+                    code="invalid_request",
+                    detail="invalid session_ids",
+                ),
+                id="http-refusal-is-not-offline-absence",
+            ),
+        ],
+    )
+    def test_confirmed_delete_never_falls_back_after_daemon_error(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        daemon_error: Exception,
+    ) -> None:
+        from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+
+        env = self._env(plain=True)
+        archive = self._archive()
+
+        with (
+            patch("polylogue.cli.archive_query._submit_daemon_mutation", side_effect=daemon_error),
+            patch(
+                "polylogue.operations.durable_change_train.acquire_durable_archive_ownership",
+                wraps=acquire_durable_archive_ownership,
+            ) as offline_ownership,
+            pytest.raises(click.ClickException),
+        ):
+            _emit_delete(env, archive, ("s1", "s2"), params={"force": True, "dry_run": False})
+
+        offline_ownership.assert_not_called()
+        archive.delete_sessions.assert_not_called()
+        assert capsys.readouterr().out == ""
+
+    def test_confirmed_delete_uses_an_unbounded_daemon_wait(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from types import SimpleNamespace
+
+        import polylogue.cli.archive_query as archive_query
+
+        initialized: list[dict[str, object]] = []
+
+        class Client:
+            last_elapsed_ms = 250
+
+            def __init__(self, _socket_path: Path, **kwargs: object) -> None:
+                initialized.append(kwargs)
+
+            def probe(self, **_kwargs: object) -> dict[str, object]:
+                return {"ok": True}
+
+            def request_mutation_json(self, method: str, path: str, body: dict[str, object]) -> dict[str, object]:
+                assert (method, path, body) == ("POST", "/api/cli/delete", {"session_ids": ["s1"]})
+                return {"status": "deleted", "affected_count": 1}
+
+        config = cast("Config", SimpleNamespace(archive_root=tmp_path, api_auth_token=None, api_allow_no_auth=True))
+        monkeypatch.setattr(archive_query, "_daemon_disabled", lambda **_kwargs: False)
+        monkeypatch.setattr("polylogue.cli.daemon_client.DaemonClient", Client)
+        monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: tmp_path / "daemon.sock")
+        monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+
+        payload = archive_query._submit_daemon_mutation(config, "/api/cli/delete", body={"session_ids": ["s1"]})
+
+        assert initialized == [{"timeout_s": None, "auth_token": None}]
+        assert payload == {"status": "deleted", "affected_count": 1, "_daemon_elapsed_ms": 250}
 
     def test_interactive_forceless_delete_still_prompts(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Human interactive use (non-plain) must keep the confirmation prompt.

@@ -5022,7 +5022,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """Delete the CLI's resolved session set under daemon writer ownership."""
 
         content_length = int(self.headers.get("Content-Length", 0))
-        if content_length <= 0 or content_length > 1_048_576:
+        if content_length <= 0:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
         try:
@@ -5031,7 +5031,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if not isinstance(raw_session_ids, list):
                 raise TypeError("session_ids must be a list")
             session_ids = tuple(dict.fromkeys(str(value) for value in raw_session_ids))
-            if len(session_ids) > 10_000 or any(not session_id for session_id in session_ids):
+            if any(not session_id for session_id in session_ids):
                 raise ValueError("invalid session_ids")
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
