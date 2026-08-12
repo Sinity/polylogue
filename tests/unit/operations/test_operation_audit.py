@@ -282,6 +282,11 @@ def test_typed_domain_receipt_replays_after_source_prepare_crash(
     monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_finalize)
     with pytest.raises(AuditFinalizationError, match="not reported completed"):
         executor.execute_bound(_binding(actuator), preview, authorization, object())
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        pending_payload = str(source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0])
+    assert "private-cache" not in pending_payload
+    assert "annotation-batch:typed" not in pending_payload
+    assert '"domain_receipt"' not in pending_payload
     monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
 
     AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
@@ -328,6 +333,32 @@ def test_atomic_batch_finalization_marks_every_target_and_terminates_run(tmp_pat
             "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
             (receipt.operation_id,),
         ).fetchall() == [("applied",), ("applied",)]
+
+
+def test_zero_target_finalization_completes_a_successful_noop(tmp_path: Path) -> None:
+    """The real start/finalize route terminalizes a successful empty target set."""
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator(target_refs=())
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "zero-target-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:zero-target",
+        archive_identity_digest="identity:zero-target",
+        parameter_digest="params:zero-target",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+
+    receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+    assert receipt.operation_id is not None
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason, affected_count FROM operation_runs WHERE operation_id = ?",
+            (receipt.operation_id,),
+        ).fetchone() == ("completed", None, 0)
 
 
 def test_blocked_finalization_rejects_targets_and_fails_parent_run(tmp_path: Path) -> None:

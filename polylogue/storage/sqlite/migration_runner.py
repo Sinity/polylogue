@@ -945,7 +945,11 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
 
 
 def validate_full_evidence_backup_for_adopted_audit_restore(
-    path: Path, *, archive_root: Path, allow_source_continuity_rebind: bool = False
+    path: Path,
+    *,
+    archive_root: Path,
+    allow_source_continuity_rebind: bool = False,
+    source_continuity_rebind_mutation_id: str | None = None,
 ) -> tuple[Path, Path]:
     """Authorize replacing adopted ``audit.db`` from one exact backup.
 
@@ -1029,14 +1033,22 @@ def validate_full_evidence_backup_for_adopted_audit_restore(
             raise MigrationError(f"adopted-audit restore backup belongs to a different archive tier: {tier}.db")
         if not live_path.is_file():
             raise MigrationError(f"adopted-audit restore live tier is missing: {live_path}")
+        if tier == "source" and allow_source_continuity_rebind:
+            if not source_continuity_rebind_mutation_id:
+                raise MigrationError("adopted-audit restore lacks an operation-owned source continuity rebind")
+            if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+                raise MigrationError("adopted-audit restore backup is stale for source.db")
+            # A retry can retain this operation's committed source WAL after
+            # a crash. Validate SQLite's logical WAL view, not only its file.
+            _validate_source_continuity_rebind_delta(
+                artifact_path,
+                live_path,
+                expected_mutation_id=source_continuity_rebind_mutation_id,
+            )
+            continue
         wal_path = live_path.with_name(f"{live_path.name}-wal")
         if wal_path.exists() and wal_path.stat().st_size:
             raise MigrationError(f"adopted-audit restore has live WAL divergence for {tier}.db")
-        if tier == "source" and allow_source_continuity_rebind:
-            if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
-                raise MigrationError("adopted-audit restore backup is stale for source.db")
-            _validate_source_continuity_rebind_delta(artifact_path, live_path)
-            continue
         if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
             raise MigrationError(f"adopted-audit restore backup is stale for {tier}.db")
         if str(fingerprint.get("sha256")) != _sha256_file(live_path):
@@ -1046,7 +1058,7 @@ def validate_full_evidence_backup_for_adopted_audit_restore(
     return manifest_path, receipt_path
 
 
-def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path) -> None:
+def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path, *, expected_mutation_id: str) -> None:
     """Allow a retrying restore to differ only in the source continuity table."""
 
     try:
@@ -1054,6 +1066,59 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path)
             connection.execute(
                 "ATTACH DATABASE ? AS backup_source", (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro",)
             )
+            control = connection.execute(
+                "SELECT pending_mutation_id, pending_payload_json, pending_payload_sha256 "
+                "FROM main.audit_continuity_control WHERE singleton = 1"
+            ).fetchone()
+            if control is None:
+                raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+            pending_mutation_id, pending_payload_json, pending_payload_sha256 = control
+            if pending_mutation_id is not None:
+                if (
+                    pending_mutation_id != expected_mutation_id
+                    or not isinstance(pending_payload_json, str)
+                    or not isinstance(pending_payload_sha256, str)
+                ):
+                    raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
+                try:
+                    prepared = json.loads(pending_payload_json)
+                except json.JSONDecodeError as exc:
+                    raise MigrationError("adopted-audit restore source continuity rebind is malformed") from exc
+                if (
+                    not isinstance(prepared, dict)
+                    or hashlib.sha256(
+                        json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                    ).hexdigest()
+                    != pending_payload_sha256
+                    or not isinstance(prepared.get("command"), dict)
+                    or prepared["command"].get("kind") != "rebind"
+                    or prepared["command"].get("mutation_id") != expected_mutation_id
+                ):
+                    raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
+            else:
+                source_head = connection.execute(
+                    "SELECT committed_generation, committed_head_sha256 "
+                    "FROM main.audit_continuity_control WHERE singleton = 1"
+                ).fetchone()
+                backup_head = connection.execute(
+                    "SELECT committed_generation, committed_head_sha256 "
+                    "FROM backup_source.audit_continuity_control WHERE singleton = 1"
+                ).fetchone()
+                if source_head != backup_head:
+                    audit_path = live_path.parent / "audit.db"
+                    with closing(
+                        sqlite3.connect(f"{audit_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)
+                    ) as audit:
+                        audit_head = audit.execute(
+                            "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
+                        ).fetchone()
+                    if (
+                        source_head is None
+                        or audit_head is None
+                        or (int(source_head[0]), str(source_head[1])) != (int(audit_head[0]), str(audit_head[1]))
+                        or audit_head[2] != expected_mutation_id
+                    ):
+                        raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
             schema_sql = """
                 SELECT type, name, tbl_name, sql
                 FROM {schema}.sqlite_schema

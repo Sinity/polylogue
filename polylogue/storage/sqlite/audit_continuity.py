@@ -74,6 +74,18 @@ def _sha256(payload: object) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def audit_semantic_sha256(path: Path) -> str:
+    """Hash audit content while excluding the self-mutating continuity head."""
+
+    try:
+        uri = f"{path.resolve(strict=True).as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            lines = (line for line in connection.iterdump() if "audit_continuity_head" not in line)
+            return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+    except sqlite3.DatabaseError as exc:
+        raise AuditContinuityError("cannot hash audit content for continuity validation") from exc
+
+
 class AuditContinuityCoordinator:
     """Coordinate typed audit commands through source.db's durable WAL row."""
 
@@ -189,6 +201,12 @@ class AuditContinuityCoordinator:
         if not isinstance(expected_image_sha256, str) or len(expected_image_sha256) != 64:
             raise AuditContinuityError("rebind requires an exact audit image sha256")
         if self.has_committed_mutation(mutation_id):
+            return
+        # Adoption and restore publish their immutable evidence only after
+        # this machine head advances. Resume this exact source-WAL command on
+        # retry instead of treating it as an unrelated competing mutation.
+        if self.has_pending_rebind(mutation_id):
+            self.reconcile_pending_rebind(mutation_id)
             return
         mutation = AuditMutation("rebind", mutation_id, now_ms, dict(evidence))
 
@@ -441,4 +459,4 @@ class AuditContinuityCoordinator:
             raise AuditContinuityError("audit continuity requires initialized source.db and audit.db")
 
 
-__all__ = ["AuditContinuityCoordinator", "AuditContinuityError", "AuditMutation"]
+__all__ = ["AuditContinuityCoordinator", "AuditContinuityError", "AuditMutation", "audit_semantic_sha256"]

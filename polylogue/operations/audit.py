@@ -43,6 +43,8 @@ _F = TypeVar("_F", bound=Callable[..., object])
 def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
     """Derive the parent lifecycle state from the complete target set."""
 
+    if not states:
+        return "completed", None
     if "unknown" in states:
         return "interrupted", "unknown_effect"
     if "rejected" in states:
@@ -127,8 +129,52 @@ def _target_from_payload(raw: object) -> MutationTarget:
     )
 
 
+def _context_sha256(context: Mapping[str, object]) -> str:
+    """Bind omitted authored context without retaining it in source.db."""
+
+    encoded = json.dumps(context, sort_keys=True, default=str, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _replay_plan_payload(plan: MutationPlan) -> dict[str, object]:
+    """Persist only the plan fields the audit replay path consumes."""
+
+    return {
+        "operation": plan.operation,
+        "destructive_class": plan.destructive_class,
+        "target_refs": list(plan.target_refs),
+        "affected_tiers": list(plan.affected_tiers),
+        "reversible": plan.reversible,
+        "prepared_at": plan.prepared_at,
+        "plan_hash": plan.plan_hash,
+        "context_sha256": _context_sha256(plan.context),
+        "operation_version": plan.operation_version,
+        "archive_instance_id": plan.archive_instance_id,
+        "archive_identity_digest": plan.archive_identity_digest,
+        "required_capabilities": list(plan.required_capabilities),
+        "required_confirmation": plan.required_confirmation,
+        "targets": [target.canonical_dict() for target in plan.targets],
+        "parameter_digest": plan.parameter_digest,
+        "target_digest": plan.target_digest,
+        "prepared_at_ms": plan.prepared_at_ms,
+        "expires_at_ms": plan.expires_at_ms,
+    }
+
+
 def _plan_from_payload(raw: object) -> MutationPlan:
     value = cast(dict[str, object], raw)
+    raw_context = value.get("context")
+    if raw_context is None:
+        context_digest = value.get("context_sha256")
+        if not isinstance(context_digest, str) or len(context_digest) != 64:
+            raise ValueError("replayed plan lacks an authored-context digest")
+        context: Mapping[str, object] = {}
+    elif isinstance(raw_context, Mapping):
+        # Compatibility for pending commands written before this replay-only
+        # format. New commands never write authored context to source.db.
+        context = cast(Mapping[str, object], raw_context)
+    else:
+        raise ValueError("replayed plan context is malformed")
     return MutationPlan(
         operation=cast(str, value["operation"]),
         destructive_class=cast(Any, value["destructive_class"]),
@@ -137,7 +183,7 @@ def _plan_from_payload(raw: object) -> MutationPlan:
         reversible=cast(bool, value["reversible"]),
         prepared_at=cast(str, value["prepared_at"]),
         plan_hash=cast(str, value["plan_hash"]),
-        context=cast(dict[str, object], value["context"]),
+        context=context,
         operation_version=cast(int, value["operation_version"]),
         archive_instance_id=cast(str, value["archive_instance_id"]),
         archive_identity_digest=cast(str, value["archive_identity_digest"]),
@@ -171,7 +217,7 @@ def _principal_from_payload(raw: object) -> MutationPrincipal:
 
 
 def _preview_payload(preview: MutationPreview) -> dict[str, object]:
-    return {"preview_ref": preview.preview_ref, "plan": preview.plan.to_dict()}
+    return {"preview_ref": preview.preview_ref, "plan": _replay_plan_payload(preview.plan)}
 
 
 def _preview_from_payload(raw: object) -> MutationPreview:
@@ -246,9 +292,18 @@ def _json_primitive(value: object) -> object:
 
 
 def _receipt_payload(receipt: MutationReceipt) -> dict[str, object]:
-    payload = _json_primitive(receipt.to_dict())
-    assert isinstance(payload, dict)
-    return payload
+    """Persist only finalization data consumed by the audit state transition."""
+
+    return {
+        "operation": receipt.operation,
+        "plan_hash": receipt.plan_hash,
+        "status": receipt.status,
+        "target_refs": list(receipt.target_refs),
+        "affected_count": receipt.affected_count,
+        "receipt_ref": receipt.receipt_ref,
+        "applied_at": receipt.applied_at,
+        "operation_id": receipt.operation_id,
+    }
 
 
 def _receipt_from_payload(raw: object) -> MutationReceipt:
@@ -262,7 +317,7 @@ def _receipt_from_payload(raw: object) -> MutationReceipt:
         detail=cast(str | None, value.get("detail")),
         receipt_ref=cast(str | None, value.get("receipt_ref")),
         applied_at=cast(str, value["applied_at"]),
-        domain_receipt=cast(dict[str, object], value["domain_receipt"]),
+        domain_receipt=cast(dict[str, object], value.get("domain_receipt", {})),
         operation_id=cast(str | None, value.get("operation_id")),
     )
 
@@ -331,7 +386,7 @@ class AuditRepository:
             plan, principal = cast(MutationPlan, args[0]), cast(MutationPrincipal, args[1])
             return {
                 "preview_id": f"preview:{secrets.token_urlsafe(18)}",
-                "plan": plan.to_dict(),
+                "plan": _replay_plan_payload(plan),
                 "principal": _principal_payload(principal),
             }
         if kind == "issue_authorization":
