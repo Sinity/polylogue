@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, cast
 
 import polylogue.daemon.convergence_stages as convergence_stages
 from polylogue.archive.message.roles import Role
-from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger, SessionState
@@ -45,7 +44,8 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.raw_admission import PriorRawHead, admit_raw_observation
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -228,6 +228,7 @@ def ingest_convergence_pathology(
     selected = _validate_session_indexes(pathology, session_indexes)
     source_paths: list[Path] = []
     session_ids: list[str] = []
+    prior_heads: dict[str, PriorRawHead] = {}
     for index in selected:
         session = _parsed_session(pathology.sessions[index], corpus_index=index)
         content_hash = str(session_content_hash(session))
@@ -265,9 +266,10 @@ def ingest_convergence_pathology(
                 attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
         session = session.model_copy(update={"attachments": preacquired_attachments})
         raw_blob_publisher.flush()
+        logical_source_key = str(make_session_id(session.source_name, session.provider_session_id))
         with sqlite3.connect(root / "source.db") as source_conn:
             with source_conn:
-                raw_id = write_source_raw_session(
+                admission = admit_raw_observation(
                     source_conn,
                     origin="codex-session",
                     capture_mode=Provider.CODEX,
@@ -276,16 +278,23 @@ def ingest_convergence_pathology(
                     payload=payload,
                     acquired_at_ms=_acquired_at_ms(index),
                     native_id=session.provider_session_id,
-                    revision=RawRevisionEnvelope(
-                        logical_source_key=str(make_session_id(session.source_name, session.provider_session_id)),
-                        kind=RawRevisionKind.FULL,
-                        source_revision=raw_blob_hash,
-                        acquisition_generation=index,
-                    ),
+                    logical_source_key=logical_source_key,
+                    prior_head=prior_heads.get(logical_source_key),
                     blob_publication_receipt_id=raw_blob_publisher.receipt_id(raw_blob_hash),
                     additional_blob_refs=tuple(attachment_blob_refs),
                     manage_transaction=False,
                 )
+                if admission.arm.value not in {"baseline", "append", "supersede"}:
+                    raise AssertionError(f"raw fixture admission was not executable: {admission!r}")
+                prior = prior_heads.get(logical_source_key)
+                prior_heads[logical_source_key] = PriorRawHead(
+                    raw_id=admission.raw_id,
+                    source_revision=raw_blob_hash,
+                    payload=payload,
+                    baseline_raw_id=prior.baseline_raw_id if prior and prior.baseline_raw_id else admission.raw_id,
+                    acquisition_generation=(prior.acquisition_generation + 1) if prior else 0,
+                )
+                raw_id = admission.raw_id
                 consume_blob_publication_receipt(
                     source_conn,
                     raw_blob_publisher.receipt_id(raw_blob_hash),

@@ -390,7 +390,7 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
 _CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT = 20
 
 
-def _record_convergence_fts_freshness_sync(conn: sqlite3.Connection) -> None:
+def _record_convergence_fts_freshness_sync(conn: sqlite3.Connection) -> bool:
     """Publish freshness after insights materialization.
 
     Insights writes ``session_work_events`` after the FTS stage has run, so
@@ -398,7 +398,7 @@ def _record_convergence_fts_freshness_sync(conn: sqlite3.Connection) -> None:
     """
     from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
 
-    record_fts_freshness_snapshot_sync(conn)
+    return record_fts_freshness_snapshot_sync(conn)
 
 
 def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> None:
@@ -754,8 +754,7 @@ def make_fts_freshness_stage(db_path: Path) -> ConvergenceStage:
         from polylogue.storage.sqlite.connection_profile import open_connection
 
         with open_connection(archive_db) as conn:
-            _record_convergence_fts_freshness_sync(conn)
-        return True
+            return _record_convergence_fts_freshness_sync(conn)
 
     def check(_path: Path) -> bool:
         return db_path.exists() or _active_archive_index_path(db_path) is not None
@@ -1177,7 +1176,6 @@ def make_default_convergence_stages(
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_insights_stage(db_path),
-            make_fts_freshness_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
     )

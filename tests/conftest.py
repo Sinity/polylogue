@@ -641,12 +641,23 @@ def _clear_polylogue_env(
     from tests.infra.schema_access import ALLOW_MISSING_SCHEMAS_ENV
 
     # A pytest process launched by a test inherits the outer supervisor's
-    # selection/summary destinations. Letting the nested process write them
-    # corrupts the outer shard ledger; its event reports are still useful and
-    # remain on the shared event stream. ``PYTEST_CURRENT_TEST`` is present
-    # for the parent test and absent at normal top-level pytest startup.
-    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("POLYLOGUE_VERIFY_RUN_ID"):
-        for key in ("POLYLOGUE_PYTEST_SELECTION_PATH", "POLYLOGUE_PYTEST_SUMMARY_PATH"):
+    # ledger destinations and run identity. Letting the nested process write
+    # them corrupts the outer shard ledger: its reports are not evidence that
+    # the parent shard executed those nodes. ``PYTEST_CURRENT_TEST`` is
+    # present for the parent test and absent at normal top-level pytest
+    # startup, so nested pytest gets an entirely private progress namespace.
+    if (
+        os.environ.get("PYTEST_CURRENT_TEST")
+        and os.environ.get("POLYLOGUE_VERIFY_RUN_ID")
+        and not os.environ.get("POLYLOGUE_PYTEST_NESTED_PRIVATE")
+    ):
+        for key in (
+            "POLYLOGUE_VERIFY_RUN_ID",
+            "POLYLOGUE_PYTEST_EVENTS_DIR",
+            "POLYLOGUE_PYTEST_EVENTS_PATH",
+            "POLYLOGUE_PYTEST_SELECTION_PATH",
+            "POLYLOGUE_PYTEST_SUMMARY_PATH",
+        ):
             monkeypatch.delenv(key, raising=False)
 
     for key in list(os.environ):

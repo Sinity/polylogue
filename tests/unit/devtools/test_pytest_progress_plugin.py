@@ -81,6 +81,10 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
             "POLYLOGUE_VERIFY_RUN_ID": "subprocess-regression",
+            # This child deliberately owns a private destination so the test
+            # can verify the nested-process isolation contract without making
+            # its reports part of the outer seed ledger.
+            "POLYLOGUE_PYTEST_NESTED_PRIVATE": "1",
         }
     )
     result = subprocess.run(
