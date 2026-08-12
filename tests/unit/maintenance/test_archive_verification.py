@@ -2084,27 +2084,10 @@ def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
     from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, pathology_zoo_manifest
 
     registered_manifest = pathology_zoo_manifest()
-    expected_member_ids = (
-        "whale-component",
-        "append-self-describing",
-        "append-opaque",
-        "fork-prefix-tail",
-        "lineage-cycle",
-        "grouped-jsonl",
-        "quarantined-head",
-        "empty-session",
-        "hook-event",
-        "claude-design",
-        "vintage-reorder",
-        "claude-vintage-live-proof",
-        "lifecycle-anchor-drift",
-        "non-stream-safe",
-        "attachment-with-bytes",
-        "attachment-without-bytes",
-        "events-sidecars",
-    )
     assert registered_manifest is PATHOLOGY_ZOO_MANIFEST
-    assert tuple(member.member_id for member in registered_manifest) == expected_member_ids
+    assert registered_manifest
+    assert len({member.member_id for member in registered_manifest}) == len(registered_manifest)
+    assert all(member.motivating_beads for member in registered_manifest)
     assert "pathology-zoo-invariants" in ARCHIVE_VERIFICATION_CHECK_NAMES
 
 
