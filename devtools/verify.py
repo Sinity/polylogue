@@ -1834,6 +1834,21 @@ def _stop_after_failed_step(label: str) -> bool:
     return label.startswith("pytest") or label in {"lab smoke", "bench slo"}
 
 
+def _seed_shard_failure_requires_stop(step: Mapping[str, Any], *, shard_complete: bool) -> bool:
+    """Stop shard admission after harness failure while retaining red-test evidence.
+
+    A normal pytest exit 1 with a structured ``pytest_failed`` diagnosis is
+    useful seed evidence: later shards can still populate the resumable
+    dependency graph. Timeouts, resource refusals, worker/internal errors,
+    usage errors, and unclassified failures mean the harness is no longer
+    healthy enough to admit another expensive shard.
+    """
+    exit_code = step.get("exit")
+    if exit_code == 0:
+        return False
+    return not (exit_code == 1 and step.get("diagnosis") == "pytest_failed" and shard_complete)
+
+
 # ── step builder ────────────────────────────────────────────────────
 
 
@@ -3529,8 +3544,26 @@ def main(argv: list[str] | None = None) -> int:
                     shard_index=shard_index,
                     step=shard_result,
                 )
-                if shard_rc != 0 and exit_code == 0:
-                    exit_code = shard_rc
+                checkpointed_shards = prepared_seed_attempt.get("shards")
+                if (
+                    not isinstance(checkpointed_shards, list)
+                    or shard_index > len(checkpointed_shards)
+                    or not isinstance(checkpointed_shards[shard_index - 1], Mapping)
+                ):
+                    raise RuntimeError("testmon seed shard checkpoint is malformed")
+                shard_complete = checkpointed_shards[shard_index - 1].get("status") == SeedShardStatus.COMPLETE.value
+                if shard_rc != 0:
+                    stop_seed = _seed_shard_failure_requires_stop(
+                        shard_result,
+                        shard_complete=shard_complete,
+                    )
+                    if exit_code == 0 or stop_seed:
+                        # A later infrastructure failure is the terminal
+                        # condition even when an earlier shard recorded
+                        # ordinary red-test evidence.
+                        exit_code = shard_rc
+                    if stop_seed:
+                        break
             continue
         if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
             _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
@@ -3566,13 +3599,21 @@ def main(argv: list[str] | None = None) -> int:
         "total_duration_s": total_duration,
         "exit_code": exit_code,
     }
-    pytest_diagnosis = next(
+    fallback_pytest_diagnosis = next(
         (
             str(step["diagnosis"])
-            for step in step_results
+            for step in reversed(step_results)
             if str(step.get("name", "")).startswith("pytest") and "diagnosis" in step
         ),
         None,
+    )
+    pytest_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in reversed(step_results)
+            if str(step.get("name", "")).startswith("pytest") and step.get("exit") == exit_code and "diagnosis" in step
+        ),
+        fallback_pytest_diagnosis,
     )
     if pytest_diagnosis is not None:
         history_entry["diagnosis"] = pytest_diagnosis
