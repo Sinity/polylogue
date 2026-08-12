@@ -783,6 +783,29 @@ def _request_supervisor_termination(
         process.send_signal(signal.SIGTERM)
 
 
+def _await_interrupted_pytest_containment(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    term_grace_s: float,
+    preserved_runner_descendants: Sequence[tuple[int, int]],
+) -> None:
+    """Wait for an interrupted pytest supervisor before its caller cleans up."""
+    if process.poll() is None:
+        _request_supervisor_termination(process, launch, reason="pytest runner interrupted")
+    try:
+        process.wait(timeout=max(1.0, term_grace_s + 1.0))
+    except subprocess.TimeoutExpired:
+        _force_kill_owned_run(
+            process,
+            launch,
+            preserved_runner_descendants=preserved_runner_descendants,
+        )
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1.0)
+    reap_exited_children()
+
+
 def _force_kill_owned_run(
     process: subprocess.Popen[bytes],
     launch: SupervisorLaunch,
@@ -1424,8 +1447,12 @@ def _run_pytest_with_heartbeat(
             if process.poll() is not None and not selector.get_map():
                 break
     except BaseException:
-        if process.poll() is None:
-            _request_supervisor_termination(process, launch, reason="pytest runner interrupted")
+        _await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=term_grace_s,
+            preserved_runner_descendants=preserved_runner_descendants,
+        )
         raise
     finally:
         selector.close()
@@ -1822,6 +1849,14 @@ def _run(
         run.finish_step(
             step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": result.returncode, **metadata}
         )
+        finalized_step = next(
+            (step for step in run._payload["steps"] if step.get("step_id") == artifacts.step_id),
+            None,
+        )
+        if isinstance(finalized_step, dict):
+            for key in ("statistics", "statistics_path"):
+                if key in finalized_step:
+                    metadata[key] = finalized_step[key]
     if is_pytest and artifacts is not None:
         copy_current_pytest_artifacts(
             Path.cwd(),

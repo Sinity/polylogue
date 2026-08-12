@@ -9,7 +9,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1124,6 +1124,45 @@ def test_interrupted_run_merges_worker_events_before_statistics(tmp_path: Path) 
 
     assert artifacts.events_merged_path.exists()
     assert run._payload["steps"][0]["statistics"]["node_count"] == 1
+
+
+def test_run_returns_finalized_statistics_for_verify_history(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+
+    with (
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "-n", "0"], run=run)
+
+    assert rc == 0
+    assert metadata["statistics"]["node_count"] == 0
+    assert metadata["statistics_path"].endswith("statistics.json")
+
+
+def test_interrupted_pytest_waits_for_containment_before_cleanup() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [subprocess.TimeoutExpired(cmd="pytest", timeout=2.0), None]
+    launch = MagicMock()
+
+    with (
+        patch("devtools.verify._request_supervisor_termination") as request_termination,
+        patch("devtools.verify._force_kill_owned_run") as force_kill,
+        patch("devtools.verify.reap_exited_children") as reap,
+    ):
+        verify._await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=1.0,
+            preserved_runner_descendants=(),
+        )
+
+    request_termination.assert_called_once()
+    force_kill.assert_called_once_with(process, launch, preserved_runner_descendants=())
+    assert process.wait.call_count == 2
+    reap.assert_called_once()
 
 
 def test_print_history_accepts_verify_and_focused_run_records(
