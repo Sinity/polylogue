@@ -376,11 +376,11 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
     items = list(_iter_json_stream(BytesIO(raw), "test.jsonl"))
 
     assert items == [{"id": 1}]
-    # First 3 non-trailing broken lines get individual warning-level records;
-    # the decoder also emits one aggregate count after the stream closes.
-    line_warnings = [warning for warning in warnings if "Skipping invalid JSON line" in warning]
-    assert len(line_warnings) == 3
-    assert warnings[-1] == "Skipped 4 invalid JSON lines in test.jsonl"
+    # The first 3 non-trailing broken lines get individual warnings, followed
+    # by the decoder's aggregate warning for further malformed records.
+    assert len(warnings) == 4
+    assert all("Skipping invalid JSON line in test.jsonl" in w for w in warnings[:3])
+    assert warnings[3] == "Skipped 4 invalid JSON lines in test.jsonl"
     # Trailing broken line gets debug (in-progress file truncation tolerance)
     assert any("Skipping truncated trailing line in test.jsonl" in d for d in debugs)
 
