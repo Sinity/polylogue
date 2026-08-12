@@ -1574,6 +1574,25 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
         writer.close()
 
 
+def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_roots(tmp_path: Path) -> None:
+    """The watch backend wakes only for source suffixes or real directories."""
+
+    root = tmp_path / "codex-state"
+    root.mkdir()
+    unmatched = root / "history.log"
+    unmatched.write_text("noise", encoding="utf-8")
+    child_directory = root / "new-session"
+    child_directory.mkdir()
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="codex-state", root=root, suffixes=(".jsonl",)),),
+    )
+
+    assert watcher._watch_filter(object(), str(unmatched)) is False
+    assert watcher._watch_filter(object(), str(child_directory)) is True
+
+
 def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     root.mkdir()

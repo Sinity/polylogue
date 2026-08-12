@@ -1512,6 +1512,48 @@ def test_superseded_raw_cleanup_follows_active_index_pointer(tmp_path: Path) -> 
     assert "skipped 1 active revision raw rows" in result.detail
 
 
+def test_superseded_raw_cleanup_preserves_explicit_index_override(tmp_path: Path) -> None:
+    """An explicit generation remains cleanup authority even when a pointer differs."""
+
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    pointer_index = tmp_path / "generations" / "pointer" / "index.db"
+    explicit_index = tmp_path / "generations" / "explicit" / "index.db"
+    initialize_archive_database(pointer_index, ArchiveTier.INDEX)
+    initialize_archive_database(explicit_index, ArchiveTier.INDEX)
+    source_file = tmp_path / "source.jsonl"
+    source_file.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'chatgpt-export', ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                ("raw-explicit", "native-explicit", str(source_file), bytes.fromhex("11" * 32), 10, 1),
+                ("raw-newer", "native-newer", str(source_file), bytes.fromhex("22" * 32), 11, 2),
+            ),
+        )
+        source_conn.commit()
+    with sqlite3.connect(explicit_index) as index_conn:
+        index_conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('native-explicit', 'chatgpt-export', 'raw-explicit', 'explicit', ?)
+            """,
+            (bytes(32),),
+        )
+        index_conn.commit()
+    (tmp_path / ".index-active-pointer").write_text(f"{pointer_index}\n", encoding="utf-8")
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=explicit_index)
+
+    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
+
+    assert result.success is True
+    assert result.repaired_count == 0
+    assert "skipped 1 active revision raw rows" in result.detail
+
+
 def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path) -> None:
     config = _config(tmp_path)
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)

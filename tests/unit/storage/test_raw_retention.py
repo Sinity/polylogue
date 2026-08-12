@@ -646,6 +646,86 @@ def test_current_terminal_artifact_authorizes_historical_raws_but_not_later_sess
     assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
 
 
+def test_terminal_cursor_exemption_requires_every_source_coordinate(tmp_path: Path) -> None:
+    """A terminal sibling cannot hide an unheaded conversational coordinate."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "bundle.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ("raw-terminal", "claude-code-session", "terminal", str(source_path), 0, bytes(32), 1, 1),
+                ("raw-session", "claude-code-session", "session", str(source_path), 1, bytes(1) * 32, 1, 2),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, 'workflow_journal', 'unknown', 'terminal coordinate', 0, 0, 0, 1, 1)
+            """,
+            ("artifact-terminal", "raw-terminal", "claude-code-session", str(source_path), 0),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=2)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_terminal_artifact_retention_batches_source_paths_below_sqlite_limit(tmp_path: Path) -> None:
+    """Terminal evidence remains protectable when more than one SQL batch is needed."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        for number in range(501):
+            source_path = tmp_path / f"terminal-{number}.jsonl"
+            raw_id = f"raw-terminal-{number}"
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, 'claude-code-session', ?, ?, 0, ?, 1, ?)
+                """,
+                (raw_id, raw_id, str(source_path), number.to_bytes(32, "big"), number),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                    support_status, classification_reason, parse_as_session, schema_eligible,
+                    malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'claude-code-session', ?, 0, 'workflow_journal',
+                          'unknown', 'terminal', 0, 0, 0, ?, ?)
+                """,
+                (f"artifact-{number}", raw_id, str(source_path), number, number),
+            )
+        conn.commit()
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 500)
+        authority = active_raw_retention_authority(conn, index_db_path=index_db)
+
+    assert authority.protected_raw_ids == frozenset(f"raw-terminal-{number}" for number in range(501))
+    assert authority.eligible_raw_ids == frozenset()
+
+
 def test_active_raw_protection_rejects_incomplete_predecessor_chain(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
@@ -1856,6 +1936,38 @@ def test_raw_frontier_integrity_semantic_membership_cursor_is_intentionally_not_
     assert snapshot.cursor_authority_gap_count == 0
     assert snapshot.cursor_ahead_samples == ()
     assert snapshot.overall_status == "healthy"
+
+
+def test_raw_frontier_integrity_reports_missing_semantic_head_source_raw(tmp_path: Path) -> None:
+    """Semantic membership skips byte validation only after finding its source raw."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-missing-semantic",
+        accepted_raw_id="raw-missing-semantic",
+        accepted_revision="semantic-revision",
+        generation=0,
+        frontier=1,
+        append_end_offset=None,
+    )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'semantic'")
+        conn.commit()
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.broken_head_status == "violated"
+    assert snapshot.broken_head_count == 1
+    assert snapshot.broken_head_checked_count == 1
+    assert snapshot.broken_head_samples[0].accepted_raw_id == "raw-missing-semantic"
+    assert "missing from source tier" in snapshot.broken_head_samples[0].reason
 
 
 def test_raw_frontier_integrity_snapshot_cursor_at_exact_accepted_frontier_is_healthy(tmp_path: Path) -> None:

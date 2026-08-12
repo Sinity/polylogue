@@ -31,11 +31,11 @@ def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> Li
 
 
 @pytest.mark.parametrize("route", ["append", "full"])
+@pytest.mark.uses_real_clock("requires a bounded subprocess exit deadline while the injected writer remains blocked")
 def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
     script = textwrap.dedent(
         f"""
         import asyncio
-        import contextlib
         import tempfile
         import threading
         from pathlib import Path
@@ -68,11 +68,9 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             watcher._parse_stage = None
             watcher._batch_processor._parse_stage = None
             started = threading.Event()
-            release = threading.Event()
-
             def stuck(*args, **kwargs):
                 started.set()
-                release.wait()
+                threading.Event().wait()
 
             if {route!r} == "append":
                 stat = path.stat()
@@ -99,21 +97,18 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             while not started.is_set():
                 await asyncio.sleep(0.001)
             caller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await caller
-            try:
-                assert await coordinator.shutdown(timeout=0.01) is False
-            finally:
-                # The injected thread is intentionally unlike production
-                # parsing: it has no natural completion condition. Releasing
-                # it after the coordinator's fail-safe result proves the
-                # process-exit assertion without making asyncio's executor
-                # shutdown permanently unreleasable.
-                release.set()
-                assert await coordinator.shutdown(timeout=1.0) is True
-                watcher.stop()
+            assert await coordinator.shutdown(timeout=0.01) is False
+            # The injected writer remains blocked through interpreter
+            # termination. A non-daemon bridge thread would pin this
+            # subprocess after the loop closes.
+            watcher.stop()
 
-        asyncio.run(main())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(main())
+        finally:
+            loop.close()
         """
     )
 

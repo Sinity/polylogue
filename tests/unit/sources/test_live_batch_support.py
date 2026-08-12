@@ -457,7 +457,7 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
 
 
 def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(tmp_path: Path) -> None:
-    root = tmp_path / "unknown"
+    root = tmp_path / "chatgpt"
     root.mkdir()
     path = root / "export.jsonl"
     path.write_bytes(b"")
@@ -475,6 +475,29 @@ def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(t
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_export_no_session", "unsupported_parseable", 0)
+
+
+def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path: Path) -> None:
+    """NDJSON takes the same strict terminal classification route as JSONL."""
+
+    root = tmp_path / "chatgpt"
+    path = root / "analysis" / "export.ndjson"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root, suffixes=(".jsonl", ".ndjson")),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unknown_export_no_session", 0)
 
 
 def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_retrying(tmp_path: Path) -> None:
@@ -921,6 +944,76 @@ def test_streaming_sized_full_ingest_uses_archive(
     assert result.succeeded == [source]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
+
+
+def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A weak path cannot force an eager whole-file evidence decode."""
+
+    root = tmp_path / "unknown"
+    path = root / "analysis" / "export.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(
+        json.dumps(
+            {
+                "id": "weak-large",
+                "title": "weak large export",
+                "create_time": 1781442866.0,
+                "update_time": 1781442966.0,
+                "current_node": "assistant-node",
+                "mapping": {
+                    "root": {"id": "root", "message": None, "parent": None, "children": ["user-node"]},
+                    "user-node": {
+                        "id": "user-node",
+                        "parent": "root",
+                        "children": ["assistant-node"],
+                        "message": {
+                            "id": "weak-u1",
+                            "author": {"role": "user"},
+                            "content": {"content_type": "text", "parts": ["question"]},
+                            "metadata": {},
+                        },
+                    },
+                    "assistant-node": {
+                        "id": "assistant-node",
+                        "parent": "user-node",
+                        "children": [],
+                        "message": {
+                            "id": "weak-a1",
+                            "author": {"role": "assistant"},
+                            "content": {"content_type": "text", "parts": ["answer"]},
+                            "metadata": {},
+                        },
+                    },
+                },
+            }
+        ).encode()
+        + (b" " * (9 * 1024 * 1024))
+    )
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.has_decoded_session_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("large input decoded before streaming route")),
+    )
+    phases: list[str] = []
+
+    def heartbeat(phase: str, **_kwargs: object) -> None:
+        phases.append(phase)
+
+    result = processor._ingest_full_paths_sync([path], source_name="chatgpt", heartbeat=heartbeat)
+
+    assert result.failed == []
+    assert "full_blob_copy" in phases
 
 
 def test_full_ingest_writes_archive_with_route_observability(

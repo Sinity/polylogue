@@ -3772,8 +3772,8 @@ def _raw_materialization_archive_root(config: Config) -> Path:
 
 
 def _raw_materialization_index_path(config: Config, archive_root: Path) -> Path:
-    """Return the active derived tier while keeping durable tiers at root."""
-    return config.db_path if config.db_path.name == "index.db" else archive_root / "index.db"
+    """Return an explicit index override or the archive's active generation."""
+    return config.db_path if config.db_path.name == "index.db" else resolve_active_index_path(archive_root)
 
 
 def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
@@ -5890,7 +5890,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
     archive_root = _raw_materialization_archive_root(config)
     repair_db_path = archive_root / "source.db"
     if repair_db_path.exists():
-        index_db_path = resolve_active_index_path(archive_root)
+        index_db_path = _raw_materialization_index_path(config, archive_root)
         with closing(open_connection(repair_db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             try:
