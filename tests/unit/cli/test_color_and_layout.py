@@ -29,10 +29,7 @@ from polylogue.cli.query_output import (
     _summary_list_layout,
     _title_budget,
 )
-from polylogue.cli.shared.formatting import (
-    no_color_requested,
-    should_use_plain,
-)
+from polylogue.cli.shared.formatting import should_use_plain
 
 pytestmark = pytest.mark.contract
 
@@ -43,16 +40,9 @@ class TestNoColorEnv:
     Actual ``NO_COLOR`` environment-variable resolution happens once, in the
     5-layer config resolution (``ConfigInventoryEntry(env_var="NO_COLOR")``,
     pinned by ``tests/unit/core/test_config_inventory.py``). By the time CLI
-    code reaches ``no_color_requested`` / ``should_use_plain`` the value has
-    already been resolved into a plain bool, so these tests exercise that
-    passthrough contract directly rather than re-reading the environment.
+    code reaches ``should_use_plain`` the value has already been resolved into
+    a plain bool.
     """
-
-    def test_no_color_requested_passes_through_resolved_value(self) -> None:
-        """``no_color_requested`` returns whatever resolved value it is given."""
-        assert no_color_requested() is False
-        assert no_color_requested(no_color=False) is False
-        assert no_color_requested(no_color=True) is True
 
     def test_should_use_plain_bridges_no_color(self) -> None:
         """A resolved ``no_color=True`` forces plain mode even off force_plain/tty state."""
