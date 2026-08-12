@@ -47,7 +47,29 @@ class DaemonClient:
         body: dict[str, object] | None = None,
         *,
         raise_for_status: bool = False,
+        accepted_statuses: frozenset[int] = frozenset({200}),
     ) -> dict[str, Any] | None:
+        response = self._request_json_response(method, path, body)
+        if response is None:
+            return None
+        status, payload = response
+        if status not in accepted_statuses:
+            if raise_for_status:
+                envelope = payload if isinstance(payload, dict) else {}
+                code = envelope.get("error")
+                detail = envelope.get("detail")
+                raise DaemonResponseError(
+                    status=status,
+                    code=code if isinstance(code, str) else None,
+                    detail=detail if isinstance(detail, str) else None,
+                )
+            return None
+        return payload
+
+    def _request_json_response(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> tuple[int, dict[str, Any] | None] | None:
+        """Return the response status with its decoded JSON object, if any."""
         if not self.socket_path.exists():
             return None
         connection = _UnixHTTPConnection(self.socket_path, self.timeout_s)
@@ -59,20 +81,9 @@ class DaemonClient:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
             connection.request(method, path, body=raw, headers=headers)
             response = connection.getresponse()
-            payload = json.loads(response.read().decode())
+            decoded = json.loads(response.read().decode())
             self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
-            if response.status != 200:
-                if raise_for_status:
-                    envelope = payload if isinstance(payload, dict) else {}
-                    code = envelope.get("error")
-                    detail = envelope.get("detail")
-                    raise DaemonResponseError(
-                        status=response.status,
-                        code=code if isinstance(code, str) else None,
-                        detail=detail if isinstance(detail, str) else None,
-                    )
-                return None
-            return payload if isinstance(payload, dict) else None
+            return response.status, decoded if isinstance(decoded, dict) else None
         except (OSError, TimeoutError, ValueError, http.client.HTTPException):
             return None
         finally:
@@ -81,8 +92,31 @@ class DaemonClient:
     def cli_query(self, params: dict[str, object]) -> dict[str, Any] | None:
         return self.request_json("POST", "/api/cli/query", {"params": params})
 
-    def probe(self, *, archive_root: str, index_schema_version: int, daemon_version: str) -> dict[str, Any] | None:
-        health = self.request_json("GET", "/api/health")
+    def probe(
+        self,
+        *,
+        archive_root: str,
+        index_schema_version: int,
+        daemon_version: str,
+        accept_degraded: bool = False,
+    ) -> dict[str, Any] | None:
+        """Return identity only for the daemon serving the requested archive.
+
+        Maintenance callers may accept only the health endpoint's typed
+        ``degraded`` lifecycle 503 envelope in order to reach the daemon-owned
+        repair route. This does not authorize the repair: the write endpoint
+        still runs its typed preflight. Query callers retain the strict
+        200-only default.
+        """
+        response = self._request_json_response("GET", "/api/health")
+        if response is None:
+            return None
+        status, health = response
+        if status == 503:
+            if not accept_degraded or health is None or health.get("raw_failure_lifecycle_state") != "degraded":
+                return None
+        elif status != 200:
+            return None
         if health is None:
             return None
         if health.get("archive_root") != archive_root:

@@ -492,6 +492,7 @@ def run_daemon_canary_rebuild(
             archive_root=str(root),
             index_schema_version=index_schema_version,
             daemon_version=POLYLOGUE_VERSION,
+            accept_degraded=True,
         )
         is None
     ):

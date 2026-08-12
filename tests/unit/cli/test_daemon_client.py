@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+from collections.abc import Iterator
 from os import getpid
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture
+def _short_uds_runtime_dir() -> Iterator[Path]:
+    """Keep UDS route tests under the operating system socket-path limit."""
+    runtime_dir = Path(tempfile.mkdtemp(prefix="plg-client-uds-"))
+    try:
+        yield runtime_dir
+    finally:
+        shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
 def test_daemon_client_import_does_not_load_storage() -> None:
@@ -70,7 +83,9 @@ def test_daemon_probe_rejects_the_tmp_archive_config_trap(monkeypatch: pytest.Mo
     )
 
 
-def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_daemon_client_probes_the_production_uds_server(
+    monkeypatch: pytest.MonkeyPatch, _short_uds_runtime_dir: Path
+) -> None:
     """The stdlib client reaches the production AF_UNIX server, not a TCP substitute."""
 
     from http import HTTPStatus
@@ -92,7 +107,7 @@ def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.Monk
         )
 
     monkeypatch.setattr(DaemonAPIHandler, "_handle_health", health)
-    socket_path = Path("/realm/tmp") / f"polylogue-uds-{getpid()}.sock"
+    socket_path = _short_uds_runtime_dir / f"daemon-{getpid()}.sock"
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
     server.auth_token = "uds-test-token"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -113,7 +128,107 @@ def test_daemon_client_probes_the_production_uds_server(monkeypatch: pytest.Monk
         thread.join(timeout=2)
 
 
-def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server() -> None:
+def test_daemon_client_can_probe_matching_writer_through_degraded_health(
+    monkeypatch: pytest.MonkeyPatch,
+    _short_uds_runtime_dir: Path,
+) -> None:
+    """Maintenance discovers the writer without weakening query readiness."""
+    from http import HTTPStatus
+
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+
+    def degraded_health(self: DaemonAPIHandler) -> None:
+        self._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "archive_root": "/realm/archive",
+                "index_schema_version": 24,
+                "daemon_version": "0.1.0",
+                "raw_failure_lifecycle_state": "degraded",
+            },
+        )
+
+    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", degraded_health)
+    socket_path = _short_uds_runtime_dir / f"degraded-{getpid()}.sock"
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = DaemonClient(socket_path)
+        assert (
+            client.probe(
+                archive_root="/realm/archive",
+                index_schema_version=24,
+                daemon_version="0.1.0",
+            )
+            is None
+        )
+        assert (
+            client.probe(
+                archive_root="/realm/archive",
+                index_schema_version=24,
+                daemon_version="0.1.0",
+                accept_degraded=True,
+            )
+            is not None
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_daemon_client_rejects_unrelated_503_when_degraded_probe_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    _short_uds_runtime_dir: Path,
+) -> None:
+    """The production probe route accepts a maintenance ``degraded`` 503,
+    not any matching identity payload. Mutating that lifecycle state to
+    ``blocked`` must keep the writer unavailable to the caller."""
+    from http import HTTPStatus
+
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+
+    def blocked_health(self: DaemonAPIHandler) -> None:
+        self._send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "archive_root": "/realm/archive",
+                "index_schema_version": 24,
+                "daemon_version": "0.1.0",
+                "raw_failure_lifecycle_state": "blocked",
+            },
+        )
+
+    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", blocked_health)
+    socket_path = _short_uds_runtime_dir / f"blocked-{getpid()}.sock"
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = DaemonClient(socket_path)
+        assert (
+            client.probe(
+                archive_root="/realm/archive",
+                index_schema_version=24,
+                daemon_version="0.1.0",
+                accept_degraded=True,
+            )
+            is None
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server(
+    _short_uds_runtime_dir: Path,
+) -> None:
     """Maintenance clients can surface a daemon validation reason, not only a transport failure."""
     from http import HTTPStatus
 
@@ -129,7 +244,7 @@ def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server
                 "receipt is missing the canonical acceptance profile",
             )
 
-    socket_path = Path("/realm/tmp") / f"polylogue-uds-canary-4xx-{getpid()}.sock"
+    socket_path = _short_uds_runtime_dir / f"canary-4xx-{getpid()}.sock"
     server = DaemonAPIUnixHTTPServer(socket_path, InvalidCanaryReportHandler)
     server.auth_token = "uds-test-token"
     thread = threading.Thread(target=server.serve_forever, daemon=True)

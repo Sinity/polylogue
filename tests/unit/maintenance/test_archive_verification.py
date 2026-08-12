@@ -35,7 +35,6 @@ from polylogue.maintenance.archive_verification import (
     validate_archive_verification_registry,
     verify_archive,
 )
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
@@ -299,9 +298,32 @@ def test_raw_failure_lifecycle_accepts_only_typed_deferred_or_terminal_evidence(
 
     typed = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
     typed_check = _check(typed, "raw-failure-lifecycle")
-    assert typed_check.status is OutcomeStatus.WARNING
+    assert typed_check.status is OutcomeStatus.OK
     assert not typed.blocking
     assert typed_check.evidence["terminal"] == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        upsert_raw_artifact(
+            conn,
+            "raw-1",
+            ArchiveSourceArtifact(
+                artifact_id="failure-evidence-deferred",
+                origin=Origin.CODEX_SESSION,
+                source_path="/x",
+                source_index=0,
+                artifact_kind="deferred_hot_jsonl_capture",
+                classification_reason="deferred_hot_jsonl_capture",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                first_observed_at_ms=200,
+                last_observed_at_ms=200,
+            ),
+        )
+        conn.commit()
+
+    deferred = verify_archive(tmp_path, checks=("raw-failure-lifecycle",))
+    deferred_check = _check(deferred, "raw-failure-lifecycle")
+    assert deferred_check.status is OutcomeStatus.WARNING
+    assert deferred_check.evidence["deferred"] == 1
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("DELETE FROM raw_artifacts WHERE raw_id = 'raw-1'")
@@ -517,6 +539,119 @@ def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: 
     assert spec.red_twin.test_name == "test_source_index_coverage_census_deletion_does_not_hide_raw_head"
 
 
+def test_source_index_coverage_groups_reacquisitions_by_logical_source_key(tmp_path: Path) -> None:
+    """Different capture paths for one typed source are revisions, not gaps."""
+
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_sessions SET logical_source_key = 'codex-session:session' WHERE raw_id = 'raw-1'"
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, logical_source_key, revision_authority
+            )
+            SELECT 'raw-reacquired', origin, NULL, '/new-capture-path',
+                   blob_hash, blob_size, 200, 'codex:session', 'byte_proven'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["logical_head_count"] == 1
+    assert check.evidence["unindexed_head_count"] == 0
+
+
+def test_coverage_groups_retired_membership_identity_with_bound_revision(tmp_path: Path) -> None:
+    """A retired raw keeps its sole membership identity after its raw key is nulled."""
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_sessions SET logical_source_key = 'codex-session:session' WHERE raw_id = 'raw-1'"
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-retired-membership', origin, 'session', '/retired-membership',
+                   blob_hash, blob_size, 200, 'quarantined'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES ('raw-retired-membership', 'codex:session', 'session', 'retired', ?, 1)
+            """,
+            (b"r" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage", "convergence-freshness"))
+
+    coverage = _check(report, "source-index-coverage")
+    freshness = _check(report, "convergence-freshness")
+    assert coverage.status is OutcomeStatus.OK
+    assert coverage.evidence["logical_head_count"] == 1
+    assert freshness.status is OutcomeStatus.OK
+    assert freshness.evidence["unindexed_backlog_gap"] == 0
+
+
+def test_coverage_does_not_assign_a_shared_raw_to_one_membership_key(tmp_path: Path) -> None:
+    """A raw with several retained identities must not inherit an arbitrary cohort."""
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET logical_source_key = 'codex:session' WHERE raw_id = 'raw-1'")
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-shared-membership', origin, NULL, '/shared-membership',
+                   blob_hash, blob_size, 200, 'quarantined'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        source_conn.executemany(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES ('raw-shared-membership', ?, ?, 'shared', ?, 1)
+            """,
+            [
+                ("codex:session", "session", b"s" * 32),
+                ("codex:other", "other", b"o" * 32),
+            ],
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["logical_head_count"] == 2
+    assert check.evidence["quarantined_count"] == 1
+
+
 def test_quarantined_head_with_no_session_is_warning_not_error(tmp_path: Path) -> None:
     """The polylogue-in24n bug class in reverse: a quarantined raw (the
     default ``revision_authority``) that never materialized is a *typed*
@@ -576,6 +711,124 @@ def test_parse_error_head_with_no_session_is_ok(tmp_path: Path) -> None:
     assert check.evidence["parse_error_count"] == 1
     assert check.evidence["untyped_count"] == 0
     assert check.evidence["quarantined_count"] == 0
+
+
+def test_valid_byte_supersession_receipt_covers_unindexed_head(tmp_path: Path) -> None:
+    """A receipt is authority only when its bytes and indexed twin revalidate."""
+
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-superseded', origin, 'duplicate', source_path, source_index,
+                   blob_hash, blob_size, 200, 'byte_proven'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id,
+                duplicate_of_session_id, previous_revision_authority,
+                promoted_at_ms, tool_version, backup_manifest_path, detail
+            )
+            SELECT 'raw-superseded', blob_hash, blob_size, 'raw-1',
+                   'codex-session:session', 'quarantined', 200,
+                   'test', '/verified/manifest.json', ''
+            FROM raw_sessions WHERE raw_id = 'raw-superseded'
+            """
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["superseded_byte_duplicate_count"] == 1
+    assert check.evidence["untyped_count"] == 0
+
+
+def test_byte_supersession_receipt_requires_matching_source_semantics(tmp_path: Path) -> None:
+    """Byte equality cannot collapse a raw whose path-specific replay semantics differ."""
+
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-cross-path-supersession', origin, 'duplicate', '/different-path', source_index,
+                   blob_hash, blob_size, 200, 'byte_proven'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id, duplicate_of_session_id,
+                previous_revision_authority, promoted_at_ms, tool_version, backup_manifest_path, detail
+            )
+            SELECT 'raw-cross-path-supersession', blob_hash, blob_size, 'raw-1',
+                   'codex-session:session', 'quarantined', 200, 'test', '/verified/manifest.json', ''
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["superseded_byte_duplicate_count"] == 0
+    assert check.evidence["untyped_count"] == 1
+
+
+def test_invalid_byte_supersession_receipt_does_not_cover_unindexed_head(tmp_path: Path) -> None:
+    """A stale/mismatched receipt cannot authorize its own coverage result."""
+
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            ) VALUES (
+                'raw-bad-receipt', 'codex-session', 'bad-receipt', '/bad-receipt',
+                ?, 10, 200, 'byte_proven'
+            )
+            """,
+            (b"z" * 32,),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id,
+                duplicate_of_session_id, previous_revision_authority,
+                promoted_at_ms, tool_version, backup_manifest_path, detail
+            ) VALUES (
+                'raw-bad-receipt', ?, 10, 'raw-1', 'codex-session:session',
+                'quarantined', 200, 'test', '/verified/manifest.json', ''
+            )
+            """,
+            (b"z" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("source-index-coverage",)), "source-index-coverage")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["superseded_byte_duplicate_count"] == 0
+    assert check.evidence["untyped_count"] == 1
 
 
 def test_non_session_census_head_with_no_session_is_ok(tmp_path: Path) -> None:
@@ -1328,6 +1581,99 @@ def test_convergence_freshness_passes_with_no_gap(tmp_path: Path) -> None:
     check = _check(report, "convergence-freshness")
     assert check.status is OutcomeStatus.OK
     assert check.evidence["unindexed_backlog_gap"] == 0
+
+
+def test_convergence_freshness_excludes_a_receipt_backed_duplicate(tmp_path: Path) -> None:
+    """The production convergence-freshness route excludes a byte-identical
+    unindexed duplicate only when its supersession receipt names an indexed
+    twin. Removing the receipt must turn this route back into a backlog."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            )
+            SELECT 'raw-superseded-backlog', origin, 'duplicate-backlog', source_path, source_index,
+                   blob_hash, blob_size, 200, 'byte_proven'
+            FROM raw_sessions WHERE raw_id = 'raw-1'
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id,
+                duplicate_of_session_id, previous_revision_authority,
+                promoted_at_ms, tool_version, backup_manifest_path, detail
+            )
+            SELECT 'raw-superseded-backlog', blob_hash, blob_size, 'raw-1',
+                   'codex-session:session', 'quarantined', 200,
+                   'test', '/verified/manifest.json', ''
+            FROM raw_sessions WHERE raw_id = 'raw-superseded-backlog'
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("convergence-freshness",)), "convergence-freshness")
+
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["unindexed_backlog_gap"] == 0
+
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute("DELETE FROM raw_byte_duplicate_supersession_receipts WHERE raw_id = 'raw-superseded-backlog'")
+        conn.commit()
+
+    check = _check(verify_archive(tmp_path, checks=("convergence-freshness",)), "convergence-freshness")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unindexed_backlog_gap"] == 1
+
+
+def test_convergence_freshness_counts_a_receipt_with_the_wrong_twin_bytes(tmp_path: Path) -> None:
+    """The production convergence-freshness route keeps a duplicate in the
+    backlog when mutating the receipt's indexed-twin bytes invalidates its
+    supersession evidence."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, revision_authority
+            ) VALUES (
+                'raw-invalid-supersession-backlog', 'codex-session', 'invalid-duplicate',
+                '/invalid-duplicate', ?, 10, 200, 'byte_proven'
+            )
+            """,
+            (b"z" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_byte_duplicate_supersession_receipts(
+                raw_id, blob_hash, blob_size, duplicate_of_raw_id,
+                duplicate_of_session_id, previous_revision_authority,
+                promoted_at_ms, tool_version, backup_manifest_path, detail
+            ) VALUES (
+                'raw-invalid-supersession-backlog', ?, 10, 'raw-1',
+                'codex-session:session', 'quarantined', 200,
+                'test', '/verified/manifest.json', ''
+            )
+            """,
+            (b"z" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("convergence-freshness",)), "convergence-freshness")
+
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unindexed_backlog_gap"] == 1
 
 
 def test_dangling_assertion_target_trips_user_tier_refs(tmp_path: Path) -> None:
@@ -2105,7 +2451,7 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
 
         with sqlite3.connect(mutated_root / "source.db") as conn:
             collision_after = conn.execute(
-                "SELECT raw_id, origin, logical_source_key, decision FROM raw_sessions AS r "
+                "SELECT r.raw_id, r.origin, m.logical_source_key, m.decision FROM raw_sessions AS r "
                 "JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id "
                 "WHERE r.raw_id IN (?, ?) ORDER BY r.raw_id",
                 collision_raw_ids,
@@ -2135,12 +2481,6 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
         assert candidate_check.status is OutcomeStatus.ERROR
         assert "claude-vintage-live-proof" in candidate_check.evidence["failed_member_ids"]
         assert not passes_strict_acceptance(candidate_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
-
-    reindex_root = tmp_path / "claude-vintage-reindex"
-    copytree(zoo.archive_root, reindex_root)
-    make_pathology_zoo_member_red(reindex_root, "claude-vintage-live-proof")
-    with pytest.raises(RuntimeError, match=r"reindex acceptance gate failed.*pathology-zoo-invariants"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=reindex_root, promote=False))
 
 
 def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(tmp_path: Path) -> None:

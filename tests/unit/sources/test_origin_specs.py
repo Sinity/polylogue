@@ -119,6 +119,28 @@ def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_
     assert before != after
 
 
+def test_lowering_fingerprint_changes_when_session_emitter_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seeded source semantics include the emitter that admits and enriches sessions."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    emitter = source_dir / "emitter.py"
+    emitter.write_text("def emit(payload):\n    return payload\n", encoding="utf-8")
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
+    origin_specs._fingerprint_sources_cached.cache_clear()
+
+    before = origin_specs.lowering_fingerprint()
+    emitter.write_text("def emit(payload):\n    return {'session': payload}\n", encoding="utf-8")
+    after = origin_specs.lowering_fingerprint()
+
+    assert before != after
+
+
 def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None:
     current_parser = parser_fingerprint_for_origin(Origin.CODEX_SESSION)
     command = (

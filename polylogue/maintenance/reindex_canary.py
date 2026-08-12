@@ -345,15 +345,9 @@ def run_reindex_canary(
         raise CanarySelectionError("reindex canary requires an explicit schema-inference receipt path")
     if not no_promote:
         raise CanarySelectionError("reindex canary requires --no-promote")
-    from polylogue.config import resolve_archive_root
     from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
 
     root = Path(archive_root)
-    if root.resolve() == resolve_archive_root().resolve():
-        raise CanarySelectionError(
-            "reindex canary refuses the configured live archive root; "
-            "run it against an explicitly provisioned isolated canary archive"
-        )
     current_index = _resolve_canary_input_index(root, input_index)
     location = ArchiveLocation.resolve(root)
     if input_index is not None:

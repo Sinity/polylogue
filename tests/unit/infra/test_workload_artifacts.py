@@ -19,6 +19,7 @@ from tests.infra.workload_artifacts import (
     _journal_mode_delete_with_retry,
     build_seeded_archive,
     clone_seeded_archive,
+    seeded_archive_key,
 )
 
 
@@ -39,6 +40,17 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_pat
     assert isinstance(phases, list)
     assert any(isinstance(phase, dict) and phase.get("name") == "raw_authority_frontier" for phase in phases)
     assert not (first.root.stat().st_mode & os.W_OK)
+
+
+def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    monkeypatch.setattr(artifacts, "lowering_fingerprint", lambda: "emitter-semantics:first")
+    first = seeded_archive_key(())
+    monkeypatch.setattr(artifacts, "lowering_fingerprint", lambda: "emitter-semantics:second")
+    second = seeded_archive_key(())
+
+    assert first.value != second.value
 
 
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: Path) -> None:

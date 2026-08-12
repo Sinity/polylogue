@@ -14,8 +14,7 @@ no change is needed to the ZIP/directory walking or emitter plumbing.
 Resolution results are recorded as ``session_events`` rather than new
 attachment/schema columns (index.db is a derived tier; a schema bump needs a
 declared delta class) — same precedent as this file's neighbors
-(``chatgpt.py``'s ``chatgpt_block_metadata``/``repo_identity_evidence``
-events). ``provider_file_id`` IS updated in place when an id-grade match is
+(``chatgpt.py``'s ``chatgpt_block_metadata`` events). ``provider_file_id`` IS updated in place when an id-grade match is
 found (tiers 1-4 of the sandbox resolver, or any ``.dat`` id resolution) —
 that is a real identity strengthening, not a guess.
 """

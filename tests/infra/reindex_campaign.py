@@ -22,8 +22,10 @@ from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_st
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS
 
@@ -490,7 +492,20 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
             parser_failure_raw_id,
             provider=Provider.CLAUDE_CODE,
             error=ValueError("campaign parser failure"),
+            preserve_existing_failure_evidence=True,
         )
+        with archive._ensure_source_conn():
+            record_current_parser_source_census(archive._ensure_source_conn(), parser_failure_raw_id)
+
+    # Phase-2 source freeze requires byte authority for single-document raws
+    # and membership authority for grouped/provider bundles. Exercise the
+    # complete production remediation route so the fixture cannot substitute
+    # one authority model for the other or edit durable columns directly.
+    with patch(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        SyntheticAntigravityLanguageServerClient,
+    ):
+        backfill_historical_revision_evidence(root, ingest_workers=1)
 
     session_ids = _campaign_session_ids(root)
     states, _timings = DaemonConverger(

@@ -2039,7 +2039,7 @@ def build_verify_steps(
                 f"({base_marker}) and not load_sensitive and not tui",
                 *_pytest_worker_args(),
             ]
-            steps.append(("pytest full (parallel)", bulk_cmd))
+            steps.append((BROAD_PYTEST_STEP_LABELS["full_parallel"], bulk_cmd))
 
             def _isolated_report_arg(arg: str) -> str:
                 # Keep the bulk lane's canonical report artifacts intact for
@@ -2052,11 +2052,11 @@ def build_verify_steps(
 
             isolated_cmd = [_isolated_report_arg(arg) for arg in pytest_cmd]
             isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
-            steps.append(("pytest load-sensitive (isolated)", isolated_cmd))
+            steps.append((BROAD_PYTEST_STEP_LABELS["load_sensitive"], isolated_cmd))
         else:
             pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args()])
             pytest_cmd.append("--testmon-forceselect")
-            label = "pytest testmon (broad)" if broad_testmon else "pytest testmon"
+            label = BROAD_PYTEST_STEP_LABELS["testmon_broad"] if broad_testmon else "pytest testmon"
             steps.append((label, pytest_cmd))
 
     if lab:
@@ -2185,6 +2185,15 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["-n", str(workers)]
 
 
+BROAD_PYTEST_STEP_LABELS = {
+    "seed": "pytest seed-testmon",
+    "seed_resume": "pytest seed-testmon (resume)",
+    "full_parallel": "pytest full (parallel)",
+    "load_sensitive": "pytest load-sensitive (isolated)",
+    "testmon_broad": "pytest testmon (broad)",
+}
+
+
 def _pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
     """Return the last xdist worker request from a final pytest command.
 
@@ -2231,14 +2240,7 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
 
 def _pytest_uses_full_suite_basetemp(label: str) -> bool:
     """Whether this pytest step can materialize the measured full-suite tree."""
-    return label.startswith(
-        (
-            "pytest seed-testmon",
-            "pytest full",
-            "pytest load-sensitive",
-            "pytest testmon (broad)",
-        )
-    )
+    return label in BROAD_PYTEST_STEP_LABELS.values() or label.startswith("pytest seed-testmon shard ")
 
 
 _BROAD_TESTMON_CHANGED_PATHS = {

@@ -792,6 +792,11 @@ def apply_managed_pytest_runtime_policy(
             and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
             normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+            if configured_tmpfs:
+                # The configured tmpfs root has become unsafe for this run.
+                # Leaving it in place would make the resolver select it even
+                # though tmpfs has just been disabled, without its cap.
+                normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
     if default_full_suite_scratch:
         # Broad-suite demand grows with the fixture universe and has exceeded
         # the supervised 2 GiB ceiling while tests were still progressing.

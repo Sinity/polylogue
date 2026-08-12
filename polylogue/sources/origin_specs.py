@@ -48,6 +48,7 @@ ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/sources/dispatch.py",
+    "polylogue/sources/emitter.py",
     "polylogue/pipeline/ids.py",
     "polylogue/storage/sqlite/archive_tiers/write.py",
     "polylogue/archive/session_revision_membership.py",

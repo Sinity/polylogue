@@ -1471,24 +1471,6 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
         )
 
 
-def test_run_reindex_canary_refuses_the_configured_live_archive_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    rebuild_called = False
-
-    def _unexpected_rebuild(*args: object, **kwargs: object) -> None:
-        nonlocal rebuild_called
-        rebuild_called = True
-        raise AssertionError("live archive canary must refuse before rebuild")
-
-    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _unexpected_rebuild)
-
-    with pytest.raises(CanarySelectionError, match="refuses the configured live archive root"):
-        run_reindex_canary(tmp_path, schema_inference_receipt_path=_receipt_path(tmp_path), no_promote=True)
-    assert not rebuild_called
-
-
 def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

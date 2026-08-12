@@ -23,6 +23,7 @@ import pytest
 
 from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
 from polylogue.maintenance.rebuild_index import RebuildSchemaCurrencyError
+from polylogue.maintenance.schema_inference_gate import run_schema_inference_gate
 from polylogue.storage.archive_identity import (
     ArchiveLocation,
     ArchiveOwnershipError,
@@ -30,16 +31,23 @@ from polylogue.storage.archive_identity import (
     assert_owns_archive_location,
 )
 from polylogue.storage.archive_readiness import probe_archive_tier
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
-from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.schema_inference import seed_schema_inference_archive
 
 
-def _init_empty_source(root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
-        initialize_archive_database(root / f"{tier.value}.db", tier)
+def _init_empty_source(root: Path) -> Path:
+    return seed_schema_inference_archive(root)
+
+
+def _schema_inference_receipt(root: Path, ground_truth: Path, tmp_path: Path) -> Path:
+    receipt = tmp_path / f"{root.name}-schema-inference-gate-receipt.json"
+    result = run_schema_inference_gate(
+        root,
+        receipt_path=receipt,
+        ground_truth_roots={"codex-session": (ground_truth,)},
+    )
+    assert result.passed, result.payload["pass_fail_reasons"]
+    return receipt
 
 
 def test_daemon_bulk_rebuild_rejects_schema_mismatch_before_transaction_bookkeeping(tmp_path: Path) -> None:
@@ -71,8 +79,8 @@ def test_daemon_bulk_rebuild_rechecks_schema_currency_after_ownership(
     from polylogue.daemon import bulk_rebuild
 
     root = tmp_path / "archive"
-    _init_empty_source(root)
-    receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    ground_truth = _init_empty_source(root)
+    receipt = _schema_inference_receipt(root, ground_truth, tmp_path)
     real_assert = assert_owns_archive_location
 
     def mutate_audit_after_ownership(owned: OwnedArchiveLocation, location: ArchiveLocation) -> None:
@@ -92,7 +100,9 @@ def test_daemon_bulk_rebuild_rechecks_schema_currency_after_ownership(
     assert not (root / ".index-rebuild-transactions").exists()
 
 
-def test_daemon_bulk_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> None:
+def test_daemon_bulk_rebuild_refuses_when_archive_location_already_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A concurrent holder of the archive-location ownership lock must block
     the daemon's bulk-rebuild transaction resolve/retire path before any
     generation directory or transaction record is created -- mirroring
@@ -100,12 +110,19 @@ def test_daemon_bulk_rebuild_refuses_when_archive_location_already_owned(tmp_pat
     offline rebuild entry point.
     """
     root = tmp_path / "archive"
-    _init_empty_source(root)
+    ground_truth = _init_empty_source(root)
+    receipt = _schema_inference_receipt(root, ground_truth, tmp_path)
+    # This test proves ownership around transaction bookkeeping. The schema
+    # gate above is real; the source-admission route is separately covered
+    # and the helper's tiny gate corpus deliberately has no replay census.
+    from polylogue.daemon import bulk_rebuild
+
+    monkeypatch.setattr(bulk_rebuild, "validate_rebuild_source_admission", lambda *_args: None)
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="concurrent-campaign")
     try:
         with pytest.raises(ArchiveOwnershipError):
-            resolve_or_start_daemon_bulk_rebuild_transaction(root)
+            resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt)
         # Failure happened before any generation/transaction bookkeeping was created.
         assert not (root / ".index-generations").exists()
         assert not (root / ".index-rebuild-transactions").exists()
@@ -113,19 +130,25 @@ def test_daemon_bulk_rebuild_refuses_when_archive_location_already_owned(tmp_pat
         owned.release()
 
     # Releasing the concurrent holder's ownership lets the daemon proceed.
-    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(root)
+    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt)
     assert transaction.status == "running"
 
 
-def test_daemon_bulk_rebuild_releases_ownership_lock_after_resolving(tmp_path: Path) -> None:
+def test_daemon_bulk_rebuild_releases_ownership_lock_after_resolving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The ownership lock must not be left held after resolving/starting a
     transaction, so a subsequent maintenance/campaign writer can still
     acquire it.
     """
     root = tmp_path / "archive"
-    _init_empty_source(root)
+    ground_truth = _init_empty_source(root)
+    receipt = _schema_inference_receipt(root, ground_truth, tmp_path)
+    from polylogue.daemon import bulk_rebuild
 
-    resolve_or_start_daemon_bulk_rebuild_transaction(root)
+    monkeypatch.setattr(bulk_rebuild, "validate_rebuild_source_admission", lambda *_args: None)
+
+    resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt)
 
     location = ArchiveLocation.resolve(root)
     owned = OwnedArchiveLocation.acquire(location, owner_id="post-resolve-probe")

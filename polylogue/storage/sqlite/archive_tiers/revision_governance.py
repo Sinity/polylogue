@@ -1709,20 +1709,25 @@ def raw_revision_rebuild_selection(
 
 def raw_membership_census_rows(
     store: RawRevisionGovernanceHost, raw_ids: Sequence[str] | None = None
-) -> tuple[tuple[str, int], ...]:
-    """Return every retained raw whose membership census may affect authority."""
+) -> tuple[tuple[str, int, bool], ...]:
+    """Return retained raws and whether durable evidence says they are non-sessions."""
     conn = store._ensure_source_conn()
+    columns = """
+        r.raw_id,
+        r.source_index,
+        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+    """
     if raw_ids is None:
-        rows = conn.execute("SELECT raw_id, source_index FROM raw_sessions ORDER BY raw_id").fetchall()
+        rows = conn.execute(f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id").fetchall()
     elif raw_ids:
         placeholders = ",".join("?" for _ in raw_ids)
         rows = conn.execute(
-            f"SELECT raw_id, source_index FROM raw_sessions WHERE raw_id IN ({placeholders}) ORDER BY raw_id",
+            f"SELECT {columns} FROM raw_sessions AS r WHERE r.raw_id IN ({placeholders}) ORDER BY r.raw_id",
             tuple(raw_ids),
         ).fetchall()
     else:
         rows = []
-    return tuple((str(row[0]), int(row[1])) for row in rows)
+    return tuple((str(row[0]), int(row[1]), bool(row[2])) for row in rows)
 
 
 def raw_payload_sizes(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> dict[str, int]:
@@ -1879,6 +1884,11 @@ def record_current_parser_source_census(
         membership_logical_keys=membership_keys,
     )
     typed_non_session = bool(raw[2])
+    if typed_non_session:
+        # Terminal parser evidence and other typed non-session artifacts have
+        # an authoritative empty identity set. Requiring a session logical key
+        # here makes those durable dispositions impossible to freeze.
+        durable_keys = ()
     observed_keys = (
         tuple(
             sorted(

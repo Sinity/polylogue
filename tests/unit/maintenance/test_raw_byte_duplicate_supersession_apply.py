@@ -67,7 +67,7 @@ def _build_fixture_archive(tmp_path: Path) -> Path:
             archive,
             raw_id="raw-indexed-twin",
             payload=_DUPLICATE_PAYLOAD,
-            source_path=str(tmp_path / "twin.jsonl"),
+            source_path=str(tmp_path / "duplicate.jsonl"),
         )
         # The genuine duplicate -- byte-identical to the indexed twin, no
         # logical_source_key: the population this bead resolves.
@@ -75,7 +75,7 @@ def _build_fixture_archive(tmp_path: Path) -> Path:
             archive,
             raw_id="raw-duplicate",
             payload=_DUPLICATE_PAYLOAD,
-            source_path=str(tmp_path / "dup.jsonl"),
+            source_path=str(tmp_path / "duplicate.jsonl"),
         )
         # A genuinely novel row: quarantined, no logical_source_key, but no
         # indexed byte-identical twin anywhere -- must never be resolved

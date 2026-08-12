@@ -37,11 +37,12 @@ from polylogue.scenarios.workload import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticArtifactFacts
+from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
-_ARTIFACT_PROTOCOL_VERSION = 1
+_ARTIFACT_PROTOCOL_VERSION = 2
 _CACHE_ROOT = Path("/realm/tmp/polylogue-seeded-artifacts")
 _RECIPE_PATHS = (
     Path("polylogue/schemas/synthetic/build_batch.py"),
@@ -59,6 +60,7 @@ class SeededArchiveKey:
     spec_payload: dict[str, object]
     build_id: str
     recipe_id: str
+    source_semantics_id: str
 
     @property
     def value(self) -> str:
@@ -74,6 +76,7 @@ class SeededArchiveManifest:
     profile_id: str
     build_id: str
     recipe_id: str
+    source_semantics_id: str
     facts: tuple[SyntheticArtifactFacts, ...]
     files: tuple[dict[str, object], ...]
     receipt: dict[str, object]
@@ -183,6 +186,21 @@ def _build_id() -> str:
     return f"git:{result.stdout.strip()}"
 
 
+def _source_semantics_id() -> str:
+    """Bind cached archives to the parser semantics that produced them."""
+
+    payload = {
+        "lowering": lowering_fingerprint(),
+        "parsers": {
+            spec.origin.value: spec.parser_fingerprint()
+            for spec in origin_specs()
+            if spec.parser_paths or spec.stream_parser_path or spec.assembly_paths or spec.assembly_spec_path
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"source-semantics:sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def _archive_build_spec(
     *,
     key: SeededArchiveKey,
@@ -224,6 +242,7 @@ def seeded_archive_key(specs: Iterable[CorpusSpec]) -> SeededArchiveKey:
         spec_payload={"corpus_specs": [spec.to_payload() for spec in specs]},
         build_id=_build_id(),
         recipe_id=_recipe_id(),
+        source_semantics_id=_source_semantics_id(),
     )
 
 
@@ -510,6 +529,7 @@ def build_seeded_archive(
                 profile_id=profile_id,
                 build_id=key.build_id,
                 recipe_id=key.recipe_id,
+                source_semantics_id=key.source_semantics_id,
                 facts=facts,
                 files=_archive_files(staging),
                 receipt=dict(receipt.to_payload()),

@@ -31,6 +31,7 @@ from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, markdown_export_payload
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 
 CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
 CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
@@ -562,6 +563,20 @@ def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
         _codex_records("zoo-cycle-a", ("cycle A", "cycle A revised"), parent="zoo-cycle-b", subagent=True),
     )
     asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
+    with sqlite3.connect(archive_root / "source.db") as connection:
+        claude_vintage_raw_ids = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT raw_id FROM raw_sessions WHERE source_path LIKE ? ORDER BY source_path",
+                ("%claude-live-proof%",),
+            )
+        ]
+    if len(claude_vintage_raw_ids) != 2:
+        raise RuntimeError("pathology zoo Claude vintage pair did not produce exactly two durable raw rows")
+    # The invariant is about revision governance, so build its green fixture
+    # through the production census/replay route rather than hand-authoring
+    # raw_session_memberships rows that merely resemble its output.
+    backfill_historical_revision_evidence(archive_root, selected_raw_ids=claude_vintage_raw_ids)
     hook_event_path = enqueue_hook_event(
         event_id="zoo-hook-event",
         provider="claude-code",
