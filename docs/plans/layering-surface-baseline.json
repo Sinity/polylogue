@@ -601,21 +601,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/formatting.py",
-    "import": "polylogue.pipeline.run_activity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/formatting.py",
-    "import": "polylogue.storage.cursor_state"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/formatting.py",
-    "import": "polylogue.storage.run_state"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/shared/helper_summary.py",
     "import": "polylogue.storage.embeddings"
   },
