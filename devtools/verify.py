@@ -216,7 +216,7 @@ TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
 TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 6
+TESTMON_SEED_PROTOCOL_VERSION = 7
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -1980,7 +1980,12 @@ def build_verify_steps(
             "-p",
             "devtools.pytest_progress_plugin",
         ]
-        base_marker = f"not slow and {scale_marker_expr}" if skip_slow else scale_marker_expr
+        # Benchmark cases opt out through their marker. The benchmarks tree
+        # also contains correctness-shaped scale-tier tests which must remain
+        # in the default/testmon collection.
+        base_marker = f"not benchmark and {scale_marker_expr}"
+        if skip_slow:
+            base_marker = f"not slow and {base_marker}"
         if seed_testmon:
             pytest_cmd.extend(["-m", base_marker, "--testmon"])
             if resume_testmon_seed:
@@ -1989,7 +1994,11 @@ def build_verify_steps(
             else:
                 pytest_cmd.append("--testmon-noselect")
                 label = "pytest seed-testmon"
-            pytest_cmd.extend(_pytest_worker_args(maximum=4))
+            # The runtime policy is memory-aware. Keep the seed below the
+            # host's twelve-worker hard ceiling: ten workers fit the measured
+            # memory envelope while leaving headroom for the controller and
+            # supervisor, and materially shorten the 20k-node seed.
+            pytest_cmd.extend(_pytest_worker_args(maximum=10))
             steps.append((label, pytest_cmd))
         elif full_pytest:
             # #1775: the full diagnostic runs as two lanes. The bulk lane keeps

@@ -28,6 +28,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger, SessionState
 from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -44,7 +45,8 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.raw_admission import PriorRawHead, admit_raw_observation
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -227,26 +229,85 @@ def ingest_convergence_pathology(
     selected = _validate_session_indexes(pathology, session_indexes)
     source_paths: list[Path] = []
     session_ids: list[str] = []
+    prior_heads: dict[str, PriorRawHead] = {}
     for index in selected:
         session = _parsed_session(pathology.sessions[index], corpus_index=index)
+        content_hash = str(session_content_hash(session))
         payload = _raw_payload(session)
         source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_bytes(payload)
-        with sqlite3.connect(root / "source.db") as source_conn:
-            raw_id = write_source_raw_session(
-                source_conn,
-                origin="codex-session",
-                capture_mode=Provider.CODEX,
-                source_path=str(source_path),
-                source_index=-1 if append_only else index,
-                payload=payload,
-                acquired_at_ms=_acquired_at_ms(index),
-                native_id=session.provider_session_id,
+        raw_blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+        raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
+        preacquired_attachments: list[ParsedAttachment] = []
+        attachment_blob_refs: list[ArchiveSourceBlobRef] = []
+        attachment_receipts: list[tuple[str, bytes]] = []
+        for attachment in session.attachments:
+            if attachment.inline_bytes is None:
+                preacquired_attachments.append(attachment)
+                continue
+            attachment_hash, attachment_size = raw_blob_publisher.write_from_bytes(attachment.inline_bytes)
+            attachment_receipt = raw_blob_publisher.receipt_id(attachment_hash)
+            preacquired_attachments.append(
+                attachment.model_copy(
+                    update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
+                )
             )
+            attachment_blob_refs.append(
+                ArchiveSourceBlobRef(
+                    blob_hash=bytes.fromhex(attachment_hash),
+                    ref_type="attachment",
+                    source_path=str(source_path),
+                    size_bytes=attachment_size,
+                    acquired_at_ms=_acquired_at_ms(index),
+                    publication_receipt_id=attachment_receipt,
+                )
+            )
+            if attachment_receipt is not None:
+                attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
+        session = session.model_copy(update={"attachments": preacquired_attachments})
+        raw_blob_publisher.flush()
+        logical_source_key = str(make_session_id(session.source_name, session.provider_session_id))
+        with sqlite3.connect(root / "source.db") as source_conn:
+            with source_conn:
+                admission = admit_raw_observation(
+                    source_conn,
+                    origin="codex-session",
+                    capture_mode=Provider.CODEX,
+                    source_path=str(source_path),
+                    source_index=-1 if append_only else index,
+                    payload=payload,
+                    acquired_at_ms=_acquired_at_ms(index),
+                    native_id=session.provider_session_id,
+                    logical_source_key=logical_source_key,
+                    prior_head=prior_heads.get(logical_source_key),
+                    blob_publication_receipt_id=raw_blob_publisher.receipt_id(raw_blob_hash),
+                    additional_blob_refs=tuple(attachment_blob_refs),
+                    manage_transaction=False,
+                )
+                if admission.arm.value not in {"baseline", "append", "supersede"}:
+                    raise AssertionError(f"raw fixture admission was not executable: {admission!r}")
+                prior = prior_heads.get(logical_source_key)
+                prior_heads[logical_source_key] = PriorRawHead(
+                    raw_id=admission.raw_id,
+                    source_revision=raw_blob_hash,
+                    payload=payload,
+                    baseline_raw_id=prior.baseline_raw_id if prior and prior.baseline_raw_id else admission.raw_id,
+                    acquisition_generation=(prior.acquisition_generation + 1) if prior else 0,
+                )
+                raw_id = admission.raw_id
+                consume_blob_publication_receipt(
+                    source_conn,
+                    raw_blob_publisher.receipt_id(raw_blob_hash),
+                    bytes.fromhex(raw_blob_hash),
+                )
+                for attachment_receipt, attachment_hash_bytes in attachment_receipts:
+                    consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
+        if raw_blob_size != len(payload):
+            raise AssertionError(f"published raw payload size drifted for {source_path}")
         payload_model = SessionWritePayload(
             session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-            content_hash=str(session_content_hash(session)),
+            content_hash=content_hash,
             parsed_session=session,
             message_count=len(session.messages),
             attachment_count=len(session.attachments),
@@ -273,7 +334,10 @@ def ingest_convergence_pathology(
         session_id = payload_model.session_id
         source_paths.append(source_path)
         session_ids.append(session_id)
-        make_messages_fts_stale(root / "index.db", session_id=session_id)
+        # Some valid provider fixtures contain no text-bearing blocks and
+        # therefore have no FTS rows to corrupt. The corpus builder may skip
+        # that inapplicable mutation; direct corruption tests remain strict.
+        make_messages_fts_stale(root / "index.db", session_id=session_id, require_rows=False)
         archive = ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
         if converge_after_each:
             converge_convergence_archive(archive)
@@ -288,12 +352,18 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
             str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
     converger = DaemonConverger(
-        (make_fts_stage(archive.root / "index.db"), make_insights_stage(archive.root / "index.db"))
+        (
+            make_fts_stage(archive.root / "index.db"),
+            make_insights_stage(archive.root / "index.db"),
+        )
     )
     states, _timings = converger.converge_sessions(persisted_session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
+    with sqlite3.connect(archive.root / "index.db") as conn:
+        if not record_fts_freshness_snapshot_sync(conn):
+            raise AssertionError("exact FTS freshness snapshot failed after production convergence")
     _analyze_registry_tables(archive.root / "index.db")
     return states
 
@@ -364,15 +434,17 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
                 f"primary insight readiness is incomplete for {root}: "
                 f"missing={sorted(missing_models)}, unready={unready_models}"
             )
-        # The status projection also reports secondary work-event FTS and
-        # retrieval surfaces. They remain in the equality snapshot, as does
-        # the production messages_fts status. The two-stage route owns
-        # messages-FTS repair for changed sessions, while the neutral parser
-        # fixture can expose archive-wide excess rows from provider-derived
-        # blocks. Keep that production readiness signal in the equality law
-        # instead of asserting a global repair this route does not promise.
+        # This harness starts at ParsedSession, not provider-wire bytes. Raw
+        # parser-census readiness is therefore intentionally outside this
+        # derived-materialization law; provider replay/census tests own it.
         readiness = archive_readiness_status(root)
-        if readiness.get("checked") is not True or readiness.get("blocked_surface_count") != 0:
+        surfaces = readiness.get("surfaces", {})
+        blocked_non_source = [
+            name
+            for name, surface in surfaces.items()
+            if name != "raw_artifacts" and isinstance(surface, dict) and surface.get("ready") is not True
+        ]
+        if readiness.get("checked") is not True or blocked_non_source:
             raise AssertionError(f"archive readiness is incomplete for {root}: {readiness!r}")
     if left_snapshot != right_snapshot:
         raise AssertionError(
@@ -658,7 +730,7 @@ def set_debt_retry_at(
         raise AssertionError(f"expected one convergence debt row, updated {cursor.rowcount}")
 
 
-def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
+def make_messages_fts_stale(index_db: Path, *, session_id: str, require_rows: bool = True) -> int:
     """Delete only this session's real FTS rows to create unrelated stage debt."""
     with open_connection(index_db) as conn:
         block_ids = tuple(
@@ -679,7 +751,7 @@ def make_messages_fts_stale(index_db: Path, *, session_id: str) -> int:
         conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.executemany("DELETE FROM messages_fts_identity WHERE rowid = ?", ((row_id,) for row_id in row_ids))
         conn.commit()
-    if not row_ids:
+    if require_rows and not row_ids:
         raise AssertionError(f"session {session_id!r} has no indexed blocks")
     return len(row_ids)
 

@@ -255,10 +255,12 @@ def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest
 
     label, command = steps[-1]
     assert label == "pytest seed-testmon"
+    assert "--ignore=tests/benchmarks" not in command
+    assert "--collect-only" not in command
     assert "--testmon" in command
     assert "--testmon-noselect" in command
     assert "-n" in command
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "8"
 
 
 def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -269,7 +271,7 @@ def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> 
 
     label, command = steps[-1]
     assert label == "pytest seed-testmon"
-    assert command[command.index("-n") + 1] == "4"
+    assert command[command.index("-n") + 1] == "10"
 
 
 def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
@@ -283,6 +285,7 @@ def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
 
     label, command = steps[-1]
     assert label == "pytest seed-testmon (resume)"
+    assert "--collect-only" not in command
     assert "--testmon" in command
     assert "--testmon-forceselect" in command
     assert "--testmon-noselect" not in command
@@ -356,6 +359,7 @@ def test_marker_filters_keep_testmon_selection_forced() -> None:
     label, command = steps[-1]
     assert label == "pytest testmon"
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not scale_medium" in marker_expr
     assert "not scale_large" in marker_expr
     assert "--testmon-forceselect" in command
@@ -370,6 +374,7 @@ def test_skip_slow_composes_with_forced_testmon_selection() -> None:
     # ``scale_medium``/``scale_large``; ``--skip-slow`` composes with that
     # filter via ``and`` rather than replacing it.
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not slow" in marker_expr
     assert "not scale_medium" in marker_expr
     assert "not scale_large" in marker_expr
@@ -383,6 +388,7 @@ def test_default_verify_excludes_medium_and_large_scale_markers() -> None:
     label, command = steps[-1]
     assert label == "pytest testmon"
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not scale_medium" in marker_expr
     assert "not scale_large" in marker_expr
     # ``scale_small`` is *not* excluded — it runs in the default gate.
@@ -396,6 +402,7 @@ def test_lab_verify_includes_medium_scale_marker() -> None:
     pytest_step = next((label, command) for label, command in steps if label.startswith("pytest"))
     label, command = pytest_step
     marker_expr = _pytest_marker_expr(command)
+    assert "not benchmark" in marker_expr
     assert "not scale_large" in marker_expr
     assert "not scale_medium" not in marker_expr
     assert "scale_small" not in marker_expr

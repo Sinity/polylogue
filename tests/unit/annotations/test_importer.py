@@ -238,10 +238,13 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
                 branch_type=BranchType.SUBAGENT,
             )
         )
-    instruction_block_id = f"{parent_session_id}:dispatch:0"
+    with ArchiveStore.open_existing(archive_root) as archive:
+        actions = archive.query_session_actions([parent_session_id], limit=10)
+    instruction_block_id = next(action.tool_use_block_id for action in actions if action.semantic_type == "subagent")
+    instruction_message_id, instruction_position = instruction_block_id.rsplit(":", 1)
     target_ref = f"delegation:{instruction_block_id}"
     evidence_ref = f"block:{instruction_block_id}"
-    evidence_span = f"{parent_session_id}::{parent_session_id}:dispatch::0"
+    evidence_span = f"{parent_session_id}::{instruction_message_id}::{instruction_position}"
     valid_rows = [
         {
             "row_key": f"delegation-{index}",
