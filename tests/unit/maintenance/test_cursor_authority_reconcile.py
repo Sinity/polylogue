@@ -22,18 +22,24 @@ def _private_path_file(path: Path, source: Path) -> None:
 
 def test_dry_run_plan_is_deterministic_and_does_not_store_private_path(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tests.unit.sources.test_live_watcher import _live_archive_snapshot, _seed_live_cursor_authority_case
 
     _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
-    monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     path_file = tmp_path / "selected-path"
     _private_path_file(path_file, source_path)
     before = _live_archive_snapshot(tmp_path)
 
-    first = reconcile.build_reconciliation_plan(source_path_file=path_file, output_plan=tmp_path / "plan-1.json")
-    second = reconcile.build_reconciliation_plan(source_path_file=path_file, output_plan=tmp_path / "plan-2.json")
+    first = reconcile.build_reconciliation_plan(
+        source_path_file=path_file,
+        output_plan=tmp_path / "plan-1.json",
+        archive_root=tmp_path,
+    )
+    second = reconcile.build_reconciliation_plan(
+        source_path_file=path_file,
+        output_plan=tmp_path / "plan-2.json",
+        archive_root=tmp_path,
+    )
 
     assert first | {"observed_at_ms": None, "plan_digest": None} == second | {
         "observed_at_ms": None,
@@ -94,18 +100,17 @@ async def test_scoped_authorization_rejects_a_different_path_without_mutation(tm
     watcher.stop()
 
 
-def test_plan_refuses_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_plan_refuses_overwrite(tmp_path: Path) -> None:
     from tests.unit.sources.test_live_watcher import _seed_live_cursor_authority_case
 
     _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
-    monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     path_file = tmp_path / "selected-path"
     _private_path_file(path_file, source_path)
     output = tmp_path / "plan.json"
-    reconcile.build_reconciliation_plan(source_path_file=path_file, output_plan=output)
+    reconcile.build_reconciliation_plan(source_path_file=path_file, output_plan=output, archive_root=tmp_path)
 
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="already exists"):
-        reconcile.build_reconciliation_plan(source_path_file=path_file, output_plan=output)
+        reconcile.build_reconciliation_plan(source_path_file=path_file, output_plan=output, archive_root=tmp_path)
     watcher.stop()
 
 
@@ -465,6 +470,7 @@ def test_recovery_attempt_requires_a_later_completed_observation(tmp_path: Path)
 def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(reconcile, "configured_archive_root", lambda: tmp_path)
     backup = tmp_path / "backup"
     backup.mkdir()
     blob_payload = b"blob"
@@ -517,9 +523,8 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
         ],
     }
     (backup / "verification-receipt.json").write_text(json.dumps(receipt_payload), encoding="utf-8")
-    monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="attestation"):
-        reconcile._validate_backup(backup, plan)
+        reconcile._validate_backup(backup, plan, archive_root=tmp_path)
     monkeypatch.setattr(reconcile, "verify_verification_receipt", lambda *args, **kwargs: None)
     validated = reconcile._validate_backup(backup, plan)
     assert isinstance(validated["root"], dict)
@@ -655,9 +660,12 @@ def test_typed_deferred_apply_receipt_is_metric_backed_and_does_not_claim_cursor
     receipt_path = tmp_path / "receipt.json"
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
-    monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     monkeypatch.setattr(reconcile, "_require_daemon_stopped", lambda root: None)
-    monkeypatch.setattr(reconcile, "_validate_backup", lambda manifest, plan: {"root": "backup"})
+    monkeypatch.setattr(
+        reconcile,
+        "_validate_backup",
+        lambda manifest, plan, *, archive_root: {"root": "backup"},
+    )
     monkeypatch.setattr(reconcile, "_find_path_by_digest", lambda root, digest: source_path)
     monkeypatch.setattr(reconcile, "_build_plan", lambda root, path: plan)
 
@@ -679,6 +687,7 @@ def test_typed_deferred_apply_receipt_is_metric_backed_and_does_not_claim_cursor
         plan_path=plan_path,
         backup_manifest=tmp_path / "backup",
         receipt=receipt_path,
+        archive_root=tmp_path,
     )
 
     assert result["verdict"] == "typed_deferred"
@@ -712,9 +721,12 @@ def test_observed_recovery_receipt_does_not_claim_local_cursor_mutation(
     receipt_path = tmp_path / "receipt.json"
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
-    monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     monkeypatch.setattr(reconcile, "_require_daemon_stopped", lambda root: None)
-    monkeypatch.setattr(reconcile, "_validate_backup", lambda manifest, plan: {"root": "backup"})
+    monkeypatch.setattr(
+        reconcile,
+        "_validate_backup",
+        lambda manifest, plan, *, archive_root: {"root": "backup"},
+    )
     monkeypatch.setattr(reconcile, "_find_path_by_digest", lambda root, digest: source_path)
     monkeypatch.setattr(reconcile, "_build_plan", lambda root, path: None)
     monkeypatch.setattr(
@@ -734,6 +746,7 @@ def test_observed_recovery_receipt_does_not_claim_local_cursor_mutation(
         plan_path=plan_path,
         backup_manifest=tmp_path / "backup",
         receipt=receipt_path,
+        archive_root=tmp_path,
     )
 
     assert result["verdict"] == "reconciled"
@@ -757,9 +770,12 @@ def test_unexpected_post_ingest_failure_writes_typed_audit_receipt(
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
     projection = replace(reconcile._projection_for(tmp_path), broken_head_count=1)
     receipt_path = tmp_path / "receipt.json"
-    monkeypatch.setattr(reconcile, "ARCHIVE_ROOT", tmp_path)
     monkeypatch.setattr(reconcile, "_require_daemon_stopped", lambda root: None)
-    monkeypatch.setattr(reconcile, "_validate_backup", lambda manifest, plan: {"root": "backup"})
+    monkeypatch.setattr(
+        reconcile,
+        "_validate_backup",
+        lambda manifest, plan, *, archive_root: {"root": "backup"},
+    )
     monkeypatch.setattr(reconcile, "_find_path_by_digest", lambda root, digest: source_path)
     monkeypatch.setattr(reconcile, "_build_plan", lambda root, path: plan)
 
@@ -778,7 +794,12 @@ def test_unexpected_post_ingest_failure_writes_typed_audit_receipt(
     monkeypatch.setattr(reconcile, "_quick_checks", lambda root: {})
 
     with pytest.raises(reconcile.CursorAuthorityReconciliationError, match="raw-frontier worsening"):
-        reconcile.apply_reconciliation(plan_path=plan_path, backup_manifest=tmp_path / "backup", receipt=receipt_path)
+        reconcile.apply_reconciliation(
+            plan_path=plan_path,
+            backup_manifest=tmp_path / "backup",
+            receipt=receipt_path,
+            archive_root=tmp_path,
+        )
 
     payload = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert payload["verdict"] == "failed"
