@@ -3478,7 +3478,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
                 except PytestResourceError as exc:
-                    shard_result = {
+                    resource_failure_result = {
                         "name": shard_label,
                         "duration_s": 0.0,
                         "exit": 125,
@@ -3488,11 +3488,11 @@ def main(argv: list[str] | None = None) -> int:
                         "shard_count": len(shards),
                         "shard_nodeid_count": len(shard["nodeids"]),
                     }
-                    step_results.append(shard_result)
+                    step_results.append(resource_failure_result)
                     prepared_seed_attempt = _checkpoint_testmon_seed_shard(
                         prepared=prepared_seed_attempt,
                         shard_index=shard_index,
-                        step=shard_result,
+                        step=resource_failure_result,
                     )
                     exit_code = 125
                     break
