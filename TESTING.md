@@ -133,10 +133,13 @@ published read-only fixture copies cannot leak tmpfs indefinitely. Shared
 are shared, reused, and built once behind their own `.build.done` guard.
 
 Managed verification refuses to start below 1 GiB available memory instead of
-falling back to the pathological disk lane. Passing-test roots are reclaimed at
-teardown; the external supervisor and parent runner independently remove the
-whole run root on completion or termination, with startup stale-root cleanup as
-recovery after an uncatchable process kill or reboot.
+falling back to the pathological disk lane. Every per-test `tmp_path` tree is
+reclaimed at teardown, including failed tests; node failure evidence remains
+in the managed event, longrepr, summary, and resource receipts. Rerun a node
+with an explicit basetemp when its filesystem witness is needed. The external
+supervisor and parent runner independently remove the whole run root on
+completion or termination, with startup stale-root cleanup as recovery after
+an uncatchable process kill or reboot.
 
 An affected run that selects zero tests is accepted only when no executable,
 test, dependency, or harness path changed. A zero selection after such a change
