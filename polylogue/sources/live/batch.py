@@ -2004,6 +2004,11 @@ class LiveBatchProcessor:
                 and path_artifact is not None
                 and not path_artifact.parse_as_session
                 and stat.st_size < _STREAMING_FULL_INGEST_BYTES
+                # An unknown ordinary JSON payload must reach the generic
+                # JSON route.  That route retains raw bytes and records a
+                # typed terminal outcome for malformed or empty input.
+                # Other weak-path artifacts remain excluded before acquisition.
+                and not (fallback_provider is Provider.UNKNOWN and path.suffix.lower() == ".json")
                 and not has_decoded_session_evidence(path, provider=fallback_provider)
             ):
                 # Keep path-only metadata out of the generic JSON fallback,

@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
@@ -51,6 +52,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
@@ -504,6 +506,60 @@ def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_export_no_session", 0)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_artifact"),
+    [
+        (b"{", ("terminal_unknown_json_decode", "decode_failed")),
+        (b"", ("terminal_unknown_json_decode", "decode_failed")),
+    ],
+)
+def test_full_ingest_unknown_weak_path_json_retains_terminal_evidence(
+    tmp_path: Path,
+    payload: bytes,
+    expected_artifact: tuple[str, str],
+) -> None:
+    """Unknown weak-path JSON reaches durable generic terminal handling."""
+
+    root = tmp_path / "unknown"
+    path = root / "analysis" / "export.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(payload)
+    path_artifact = classify_artifact_path(path, provider=Provider.UNKNOWN)
+    assert path_artifact is not None and not path_artifact.parse_as_session
+    assert not has_decoded_session_evidence(path, provider=Provider.UNKNOWN)
+
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw = conn.execute(
+            "SELECT raw_id, blob_size, parse_error FROM raw_sessions WHERE source_path = ?", (str(path),)
+        ).fetchone()
+        artifact = conn.execute(
+            """
+            SELECT artifact_kind, support_status
+            FROM raw_artifacts
+            WHERE raw_id = ?
+            """,
+            (raw[0],) if raw is not None else (None,),
+        ).fetchone()
+    # The preconditions above would take the weak path-exclusion branch if
+    # the production unknown-JSON exemption were removed.
+    assert raw is not None
+    assert raw[1] == len(payload)
+    assert isinstance(raw[2], str)
+    assert artifact == expected_artifact
 
 
 def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_retrying(tmp_path: Path) -> None:
