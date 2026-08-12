@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +69,41 @@ def test_progress_plugin_records_call_and_setup_failures(
     ]
     assert events[1]["duration_s"] == 0.25
     assert events[2]["longrepr"] == "fixture exploded"
+
+
+def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:
+    events_dir = tmp_path / "events"
+    env = os.environ.copy()
+    env.update(
+        {
+            "POLYLOGUE_PYTEST_EVENTS_DIR": str(events_dir),
+            "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
+            "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
+            "POLYLOGUE_VERIFY_RUN_ID": "subprocess-regression",
+            "POLYLOGUE_PYTEST_RUN_ID": "subprocess-regression",
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            "--testmon-noselect",
+            "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id",
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = [json.loads(line) for path in events_dir.glob("*.jsonl") for line in path.read_text().splitlines()]
+    reports = [event for event in events if event.get("event") == "test_report"]
+    assert {event["when"] for event in reports} == {"setup", "call", "teardown"}
 
 
 def test_progress_plugin_records_node_start_and_finish(
