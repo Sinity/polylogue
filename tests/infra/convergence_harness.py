@@ -342,12 +342,6 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
-    # Insights can materialize work-event rows after the FTS stage has run.
-    # Refresh the shared freshness ledger only once both real stages complete.
-    from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
-
-    with sqlite3.connect(archive.root / "index.db") as conn:
-        record_fts_freshness_snapshot_sync(conn)
     _analyze_registry_tables(archive.root / "index.db")
     return states
 
@@ -406,6 +400,22 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
             "session_tag_rollups",
         }
     )
+    # This law owns derived convergence. ``raw_artifacts`` remains in the
+    # compared snapshot, but source-authority acceptance has its own receipt
+    # and verification laws; making it a green precondition here couples an
+    # FTS/insights oracle to unrelated parser-census remediation.
+    required_readiness_surfaces = frozenset(
+        {
+            "archive_sessions",
+            "search",
+            "session_profiles",
+            "timeline_work_events",
+            "timeline_phases",
+            "threads",
+            "tool_usage",
+            "latency_profiles",
+        }
+    )
     for root in (left, right):
         with sqlite3.connect(root / "index.db") as conn:
             derived_models = collect_derived_model_statuses_sync(conn)
@@ -426,7 +436,15 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
         # blocks. Keep that production readiness signal in the equality law
         # instead of asserting a global repair this route does not promise.
         readiness = archive_readiness_status(root)
-        if readiness.get("checked") is not True or readiness.get("blocked_surface_count") != 0:
+        surface_payload = readiness.get("surfaces")
+        unready_readiness_surfaces = sorted(
+            surface
+            for surface in required_readiness_surfaces
+            if not isinstance(surface_payload, dict)
+            or not isinstance(surface_payload.get(surface), dict)
+            or surface_payload[surface].get("ready") is not True
+        )
+        if readiness.get("checked") is not True or unready_readiness_surfaces:
             raise AssertionError(f"archive readiness is incomplete for {root}: {readiness!r}")
     if left_snapshot != right_snapshot:
         raise AssertionError(

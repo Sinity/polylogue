@@ -1060,6 +1060,11 @@ def _optional_session_work_events_fts_invariant_sync(conn: sqlite3.Connection) -
     )
 
 
+def session_work_events_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
+    """Return the exact work-event FTS invariant without rescanning messages."""
+    return _optional_session_work_events_fts_invariant_sync(conn)
+
+
 def _messages_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
     """Return the block-backed message FTS invariant."""
     return _trigger_invariant_sync(
@@ -1120,6 +1125,7 @@ __all__ = [
     "replace_fts_rows_for_messages_sync",
     "restore_message_fts_triggers_sync",
     "restore_fts_triggers_sync",
+    "session_work_events_fts_invariant_sync",
     "suspend_message_fts_triggers_sync",
     "suspend_fts_triggers_sync",
 ]

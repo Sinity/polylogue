@@ -556,6 +556,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     session_ids=session_ids,
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
+                _record_fts_freshness_after_insights(conn)
                 conn.commit()
                 logger.info(
                     "insights: refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d",
@@ -632,6 +633,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     session_ids=session_ids,
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
+                _record_fts_freshness_after_insights(conn)
                 conn.commit()
                 logger.info(
                     "insights: batch refreshed paths=%d sessions=%d profiles=%d work_events=%d phases=%d threads=%d",
@@ -700,6 +702,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
                     session_ids=ids,
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
+                _record_fts_freshness_after_insights(conn)
                 conn.commit()
                 remaining = _stale_session_profile_ids(conn, ids)
                 logger.info(
@@ -1431,6 +1434,34 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
             if ready
             else "targeted changed-session repair left an archive-wide FTS gap"
         ),
+    )
+
+
+def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> None:
+    """Publish exact FTS readiness after insight rows have changed.
+
+    The insights materializer writes ``session_work_events`` after the message
+    FTS convergence stage has run. Its triggers keep the derived FTS rows in
+    sync, but readiness consumers use the durable freshness snapshot rather
+    than inferring health from trigger presence. Record the exact post-write
+    invariant here so every production insights route owns the same final
+    state; test harnesses must not repair the ledger themselves.
+    """
+    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
+    from polylogue.storage.fts.fts_lifecycle import session_work_events_fts_invariant_sync
+
+    surface = session_work_events_fts_invariant_sync(conn)
+    record_fts_surface_state_sync(
+        conn,
+        surface=surface.name,
+        state=READY if surface.ready else STALE,
+        source_rows=surface.source_rows,
+        indexed_rows=surface.indexed_rows,
+        missing_rows=surface.missing_rows,
+        excess_rows=surface.excess_rows,
+        duplicate_rows=surface.duplicate_rows,
+        identity_mismatch_rows=surface.identity_mismatch_rows,
+        detail=None if surface.ready else "exact invariant failed after insights refresh",
     )
 
 
@@ -2351,8 +2382,10 @@ def _archive_insights_execute_ids(
         stage_timings_s=stage_timings_s,
         stage_timing_prefix="insights",
     )
-    # rebuild_session_insights_sync commits internally when session_ids is
-    # not None; no explicit conn.commit() needed here.
+    # The rebuild commits its own rows. Publish and commit the final exact FTS
+    # state in the same production stage before reporting success.
+    _record_fts_freshness_after_insights(conn)
+    conn.commit()
     remaining = _archive_stale_session_profile_ids(conn, list(session_ids))
     logger.info(
         "insights: archive refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",

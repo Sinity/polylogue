@@ -81,7 +81,7 @@ def _is_ignored_absolute_path(path: PurePosixPath) -> bool:
         return True
     if parts[:2] == ("nix", "store"):
         return True
-    if parts[0] == "tmp" and any(_AGENT_TMP_SPOOL_RE.fullmatch(part) for part in parts[1:]):
+    if len(parts) >= 2 and parts[0] == "tmp" and _AGENT_TMP_SPOOL_RE.fullmatch(parts[1]):
         return True
     if parts[:2] == ("home", Path.home().name):
         if parts[2:3] in ((".claude",), (".codex",)):
@@ -106,10 +106,8 @@ def _ambient_noise_root(path: PurePosixPath) -> PurePosixPath | None:
     every descendant look repository-owned.
     """
     parts = tuple(part for part in path.parts if part != "/")
-    if len(parts) >= 2 and parts[0] == "tmp":
-        for index, part in enumerate(parts[1:], start=1):
-            if _AGENT_TMP_SPOOL_RE.fullmatch(part):
-                return PurePosixPath("/", *parts[: index + 1])
+    if len(parts) >= 2 and parts[0] == "tmp" and _AGENT_TMP_SPOOL_RE.fullmatch(parts[1]):
+        return PurePosixPath("/", *parts[:2])
     if parts[:2] == ("nix", "store"):
         return PurePosixPath("/nix/store")
     if parts[:2] == ("home", Path.home().name):

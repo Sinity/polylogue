@@ -992,6 +992,7 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
     monkeypatch.setattr("polylogue.daemon.convergence_stages._hot_insight_session_ids", lambda _conn, _ids: set())
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(stages, "_record_fts_freshness_after_insights", lambda _conn: None)
 
     assert make_insights_stage(db_path).execute(tmp_path / "source.jsonl") is True
     assert opened_paths == [db_path]
@@ -1336,6 +1337,7 @@ def test_insights_stage_batches_sync_rebuild_chunks(
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr(stages, "_record_fts_freshness_after_insights", lambda _conn: None)
     monkeypatch.setattr(
         stages,
         "_session_ids_for_source_paths",

@@ -404,6 +404,36 @@ def test_attribution_preserves_repo_directory_with_agent_prefix(monkeypatch: pyt
     assert attribution.languages_detected == ("python",)
 
 
+def test_attribution_preserves_nested_numeric_agent_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agent-like names are noise only when they are direct temporary roots."""
+    monkeypatch.setattr(attribution_module, "_repo_root_from_path", lambda _path: "/tmp/project")
+    deleted_path = "/tmp/project/claude-3/parser.py"
+    action = Action(
+        action_id="action-nested-agent-prefix-repo-directory",
+        message_id="msg-nested-agent-prefix-repo-directory",
+        timestamp=datetime(2026, 4, 12, 15, 0, tzinfo=timezone.utc),
+        sequence_index=0,
+        kind=ToolCategory.FILE_WRITE,
+        tool_name="Write",
+        tool_id=None,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        affected_paths=(deleted_path,),
+        cwd_path=None,
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text="deleted repository path",
+        raw={},
+    )
+
+    attribution = extract_attribution_from_actions([action])
+
+    assert attribution.file_paths_touched == (deleted_path,)
+    assert attribution.languages_detected == ("python",)
+
+
 def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
     session = Session(
         id=SessionId("conv-dialogue-r-noise"),
