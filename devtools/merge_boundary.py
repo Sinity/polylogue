@@ -443,6 +443,8 @@ def _receipt_is_fresh_for_scope(
     valid_scopes = {scope.value for scope in VerificationScope}
     if verification_scope not in valid_scopes:
         return False
+    if verification_scope not in merge_gate._MERGE_AUTHORIZING_VERIFICATION_SCOPES:
+        return False
     release_allowed = receipt.get("release_baseline_allowed")
     if not isinstance(release_allowed, bool):
         return False

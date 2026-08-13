@@ -83,6 +83,13 @@ _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
 _DEFAULT_POLL_ROUNDS = 3
 _DEFAULT_POLL_INTERVAL_S = 20
+_MERGE_AUTHORIZING_VERIFICATION_SCOPES = frozenset(
+    {
+        VerificationScope.AFFECTED.value,
+        VerificationScope.NARROW_TERMINAL.value,
+        VerificationScope.RELEASE_BASELINE.value,
+    }
+)
 
 
 def _gh_json(args: list[str]) -> Any:
@@ -611,6 +618,9 @@ def cmd_check(
                 verdict.reasons.append(
                     "verification receipt lacks a valid typed verification_scope; command text cannot grant authority"
                 )
+            elif verification_scope not in _MERGE_AUTHORIZING_VERIFICATION_SCOPES:
+                verdict.ok = False
+                verdict.reasons.append("verification receipt contains no test execution and cannot authorize a merge")
             release_allowed = receipt.get("release_baseline_allowed")
             if not isinstance(release_allowed, bool):
                 verdict.ok = False

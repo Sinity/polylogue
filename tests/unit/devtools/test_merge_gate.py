@@ -243,6 +243,21 @@ def test_check_accepts_affected_receipt_without_release_baseline_permission(
     assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 0
 
 
+def test_check_rejects_successful_non_test_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A quick gate cannot become a zero-tests merge authorization."""
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view, command="devtools verify --quick")
+    receipt_path = merge_gate._receipt_path(42)
+    receipt = json.loads(receipt_path.read_text())
+    receipt["verification_scope"] = "non-test"
+    receipt["release_baseline_allowed"] = False
+    receipt_path.write_text(json.dumps(receipt))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
+
+
 @pytest.mark.parametrize(
     "command", ["devtools verify --all", "devtools verify --full", "devtools verify --seed-testmon"]
 )

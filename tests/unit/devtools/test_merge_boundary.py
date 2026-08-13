@@ -13,6 +13,7 @@ import pytest
 
 from devtools import merge_boundary, merge_gate, pr_scope
 from devtools.checkout_guard import checkout_environment_fingerprint
+from tests.infra.frozen_clock import FrozenClock
 
 _SCOPE_BEAD = {
     "_type": "issue",
@@ -510,6 +511,44 @@ def test_merge_replaces_a_recent_failed_receipt_instead_of_reusing_it(
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
     assert receipt["exit_code"] == 0
     assert receipt["verification_scope"] == "affected"
+
+
+def test_cached_non_test_receipt_is_not_fresh_merge_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """The wrapper reruns tests instead of reusing a successful quick gate."""
+    monkeypatch.chdir(tmp_path)
+    scope = pr_scope.ScopeVerdict(
+        ok=True,
+        scope_digest="scope-digest",
+        beads_digest="beads-digest",
+        assigned_beads=[],
+        mutated_beads=[],
+    )
+    head_sha = "a" * 40
+    base_sha = "b" * 40
+    attestation = pr_scope.attestation_payload(scope, head_sha=head_sha, base_sha=base_sha)
+    merge_gate._receipt_path(42).parent.mkdir(parents=True, exist_ok=True)
+    merge_gate._receipt_path(42).write_text(
+        json.dumps(
+            {
+                "head_sha": head_sha,
+                "pr_scope_attestation_digest": attestation["attestation_digest"],
+                "exit_code": 0,
+                "verification_scope": "non-test",
+                "release_baseline_allowed": False,
+                "recorded_at": frozen_clock.time(),
+            }
+        )
+    )
+
+    assert not merge_boundary._receipt_is_fresh_for_scope(
+        42,
+        head_sha=head_sha,
+        scope=scope,
+        base_sha=base_sha,
+        max_age_s=3600,
+    )
 
 
 def test_merge_dry_run_never_calls_gh_pr_merge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
