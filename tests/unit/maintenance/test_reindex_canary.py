@@ -1828,6 +1828,34 @@ def test_review_manifest_rejects_closed_successor_authority(tmp_path: Path) -> N
         load_canary_review_manifest(manifest)
 
 
+def test_review_manifest_rejects_unknown_successor_authority(tmp_path: Path) -> None:
+    """An unexpected difference cannot cite an invented successor Bead."""
+
+    manifest = tmp_path / "reviews.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": "blocks",
+                        "operation": "changed",
+                        "identity": {"block_id": "unknown-successor"},
+                        "changed_columns": ["text"],
+                        "classification": "unexpected",
+                        "reference": "successor:polylogue-does-not-exist",
+                        "authority": {"kind": "successor", "id": "polylogue-does-not-exist"},
+                        "rationale": "fabricated successor cannot own unresolved work",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="unknown successor polylogue-does-not-exist"):
+        load_canary_review_manifest(manifest)
+
+
 def test_partial_canary_scopes_thread_membership_by_session_not_thread_aggregate(tmp_path: Path) -> None:
     """A selected thread member must not pull un-replayed siblings into the denominator."""
 
