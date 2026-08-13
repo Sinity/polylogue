@@ -708,7 +708,7 @@ def _census_historical_revision_evidence(
                     source_index=source_index,
                     manage_transaction=False,
                 )
-                if terminalized:
+                if provider is not Provider.UNKNOWN:
                     archive.replace_raw_membership_census(
                         raw_id,
                         [],
@@ -716,7 +716,14 @@ def _census_historical_revision_evidence(
                         censused_at_ms=0,
                         manage_transaction=False,
                     )
-            if terminalized:
+                    if not terminalized:
+                        apply_source_raw_state_update(
+                            archive._ensure_source_conn(),
+                            raw_id,
+                            state=_raw_parse_success_state(provider),
+                            manage_transaction=False,
+                        )
+            if provider is not Provider.UNKNOWN:
                 commit_unit()
                 return
         state.classified += int(len(sessions) == 1)

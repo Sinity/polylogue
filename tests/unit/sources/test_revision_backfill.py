@@ -657,10 +657,13 @@ def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp
     census_historical_revision_evidence(tmp_path)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT origin FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
-            "claude-code-session",
-        )
+        assert conn.execute(
+            "SELECT origin, parsed_at_ms IS NOT NULL FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("claude-code-session", 1)
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "non_session",
+        )
 
 
 def test_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -782,6 +785,13 @@ def test_backfill_preserves_latest_terminal_artifact_observation(tmp_path: Path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT raw_id, last_observed_at_ms FROM raw_artifacts").fetchone() == (newer_raw_id, 2)
         assert older_raw_id > newer_raw_id
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_sessions WHERE raw_id IN (?, ?) AND parsed_at_ms IS NOT NULL",
+            (older_raw_id, newer_raw_id),
+        ).fetchone() == (2,)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        assert all(row[2] for row in archive.raw_membership_census_rows([older_raw_id, newer_raw_id]))
 
 
 def test_backfill_uses_raw_observation_order_for_equal_time_artifacts(tmp_path: Path) -> None:

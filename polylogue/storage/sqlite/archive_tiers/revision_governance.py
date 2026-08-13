@@ -1715,16 +1715,26 @@ def raw_membership_census_rows(
     columns = """
         r.raw_id,
         r.source_index,
-        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+        (
+            EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+            OR EXISTS(
+                SELECT 1 FROM raw_membership_census AS c
+                WHERE c.raw_id = r.raw_id
+                  AND c.parser_fingerprint = ?
+                  AND c.status = 'non_session'
+            )
+        ),
         r.rowid
     """
     if raw_ids is None:
-        rows = conn.execute(f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id").fetchall()
+        rows = conn.execute(
+            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (RAW_AUTHORITY_PARSER_FINGERPRINT,)
+        ).fetchall()
     elif raw_ids:
         placeholders = ",".join("?" for _ in raw_ids)
         rows = conn.execute(
             f"SELECT {columns} FROM raw_sessions AS r WHERE r.raw_id IN ({placeholders}) ORDER BY r.raw_id",
-            tuple(raw_ids),
+            (RAW_AUTHORITY_PARSER_FINGERPRINT, *raw_ids),
         ).fetchall()
     else:
         rows = []
