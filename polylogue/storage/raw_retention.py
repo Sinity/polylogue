@@ -381,6 +381,7 @@ def active_raw_retention_authority(
     conn: sqlite3.Connection,
     *,
     index_db_path: Path,
+    terminal_source_paths: Iterable[Path] | None = None,
 ) -> RawRetentionAuthority:
     """Return current protection plus explicitly authorized deletion rows.
 
@@ -396,14 +397,15 @@ def active_raw_retention_authority(
         session_raw_ids, heads, eligible_receipts = _active_index_raw_authority(index_db_path)
         seeds = set(session_raw_ids)
         seeds.update(head.accepted_raw_id for head in heads)
-        all_raw_ids = frozenset(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions").fetchall())
-        terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn)
         if not seeds:
+            all_raw_ids = frozenset(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions").fetchall())
+            terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn)
             if all_raw_ids and all_raw_ids.issubset(terminal_artifact_raw_ids):
                 return RawRetentionAuthority(protected_raw_ids=all_raw_ids, eligible_raw_ids=frozenset())
             if all_raw_ids:
                 raise RawRetentionSafetyError("source tier contains raw evidence but index has no raw authority")
             return RawRetentionAuthority(protected_raw_ids=frozenset(), eligible_raw_ids=frozenset())
+        terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn, source_paths=terminal_source_paths)
         authority_raw_ids = seeds.union(receipt.raw_id for receipt in eligible_receipts)
         rows_by_id = _raw_revision_rows(conn, authority_raw_ids)
         protected: set[str] = set()
@@ -1706,11 +1708,19 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
     return result
 
 
-def _terminal_artifact_raw_ids(conn: sqlite3.Connection) -> frozenset[str]:
+def _terminal_artifact_raw_ids(
+    conn: sqlite3.Connection,
+    *,
+    source_paths: Iterable[Path] | None = None,
+) -> frozenset[str]:
     """Return all retained raw evidence for paths with terminal current observations."""
 
-    source_paths = {str(row[0]) for row in conn.execute("SELECT DISTINCT source_path FROM raw_sessions").fetchall()}
-    terminal_paths = _terminal_artifact_paths(conn, source_paths)
+    selected_paths = (
+        {str(row[0]) for row in conn.execute("SELECT DISTINCT source_path FROM raw_sessions").fetchall()}
+        if source_paths is None
+        else {str(path) for path in source_paths}
+    )
+    terminal_paths = _terminal_artifact_paths(conn, selected_paths)
     if not terminal_paths:
         return frozenset()
     raw_ids: set[str] = set()

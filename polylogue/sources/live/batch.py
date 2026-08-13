@@ -20,7 +20,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path, strong_path_classification
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -1881,6 +1881,7 @@ class LiveBatchProcessor:
             captured_file_observations[path] = _file_observation(stat)
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
             path_artifact = classify_artifact_path(path, provider=fallback_provider)
+            strong_path_artifact = strong_path_classification(path, provider=fallback_provider)
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -2013,6 +2014,7 @@ class LiveBatchProcessor:
                     fallback_provider is Provider.UNKNOWN
                     and path.suffix.lower() == ".json"
                     and path_artifact.kind is ArtifactKind.METADATA_DOCUMENT
+                    and (strong_path_artifact is None or strong_path_artifact.parse_as_session)
                 )
                 and not has_decoded_session_evidence(path, provider=fallback_provider)
             ):
@@ -3881,7 +3883,11 @@ class LiveBatchProcessor:
         with closing(sqlite3.connect(source_db)) as conn, conn:
             conn.row_factory = sqlite3.Row
             try:
-                retention_authority = active_raw_retention_authority(conn, index_db_path=index_db)
+                retention_authority = active_raw_retention_authority(
+                    conn,
+                    index_db_path=index_db,
+                    terminal_source_paths=paths,
+                )
             except RawRetentionSafetyError as exc:
                 logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
                 return

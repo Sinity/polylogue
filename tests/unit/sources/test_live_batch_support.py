@@ -562,6 +562,30 @@ def test_full_ingest_unknown_weak_path_json_retains_terminal_evidence(
     assert artifact == expected_artifact
 
 
+def test_full_ingest_unknown_weak_directory_still_excludes_strong_sidecar(tmp_path: Path) -> None:
+    """A weak directory cannot override a definitive non-session filename."""
+
+    root = tmp_path / "unknown"
+    path = root / "analysis" / "sessions-index.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"mapping":{"looks":"conversational"}}', encoding="utf-8")
+    path_artifact = classify_artifact_path(path, provider=Provider.UNKNOWN)
+    assert path_artifact is not None and path_artifact.kind.value == "metadata_document"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "ops.db"))),
+        (WatchSource(name="unknown", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(tmp_path / "ops.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="unknown")
+
+    assert result.succeeded == []
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+
 def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_retrying(tmp_path: Path) -> None:
     """Complete malformed JSONL lines are terminal decode evidence, not no-session evidence."""
     root = tmp_path / "unknown"
