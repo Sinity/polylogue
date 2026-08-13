@@ -13,6 +13,7 @@ from polylogue.archive.artifact_taxonomy import (
     ArtifactKind,
     classify_artifact,
 )
+from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
@@ -295,6 +296,23 @@ def scan_jsonl_session_artifact(
                         sample=tuple(sample),
                         oversized_records=oversized_records,
                     )
+    if oversized_records and provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
+        # A size-bounded inspection skip is unresolved evidence, not negative
+        # evidence. These providers have streaming parsers, so retain the raw
+        # as a parse candidate instead of allowing a weak path heuristic to
+        # terminalize a genuine session whose only record was oversized.
+        subagent = is_subagent_path(source_path)
+        return JSONLSessionArtifactScan(
+            artifact=ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM,
+                parse_as_session=True,
+                schema_eligible=False,
+                default_priority=90 if subagent else 120,
+                reason="uninspected oversized provider JSONL record retained for streaming parse",
+            ),
+            oversized_records=oversized_records,
+        )
     return JSONLSessionArtifactScan(artifact=None, oversized_records=oversized_records)
 
 

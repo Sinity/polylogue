@@ -204,6 +204,51 @@ def test_recovery_reader_discards_oversized_record_in_bounded_chunks() -> None:
     assert len(scan.sample) == 1
 
 
+@pytest.mark.parametrize(
+    ("provider", "source_name"),
+    [
+        pytest.param(Provider.CLAUDE_CODE, "claude-code", id="claude-code"),
+        pytest.param(Provider.CODEX, "codex", id="codex"),
+    ],
+)
+def test_single_oversized_provider_record_under_weak_path_remains_parse_candidate(
+    blob_store: BlobStore,
+    provider: Provider,
+    source_name: str,
+) -> None:
+    if provider is Provider.CLAUDE_CODE:
+        content = (
+            b'{"type":"user","uuid":"message-1","sessionId":"oversized-session",'
+            b'"parentUuid":null,"message":{"role":"user","content":"'
+            + (b"x" * (_INSPECTION_PREFIX_BYTES * 2))
+            + b'"}}\n'
+        )
+    else:
+        content = (
+            b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+            b'"role":"user","content":[{"type":"input_text","text":"'
+            + (b"x" * (_INSPECTION_PREFIX_BYTES * 2))
+            + b'"}]}}\n'
+        )
+    assert content.find(b"\n") > _INSPECTION_PREFIX_BYTES
+    record = _write_record(
+        blob_store,
+        content=content,
+        source_path=f"{source_name}/analysis/re-homed-session.jsonl",
+        source_name=source_name,
+        provider=provider,
+    )
+
+    observation = inspect_raw_artifact(record)
+
+    assert observation.parse_as_session is True
+    assert observation.schema_eligible is False
+    assert observation.artifact_kind == "session_record_stream"
+    assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+    assert observation.malformed_jsonl_lines == 0
+    assert observation.decode_error is None
+
+
 def test_recovered_stream_retains_subagent_artifact_kind(blob_store: BlobStore) -> None:
     oversized = b'{"ignored":"' + (b"x" * (_INSPECTION_PREFIX_BYTES * 2)) + b'"}\n'
     message = (
