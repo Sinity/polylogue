@@ -64,6 +64,33 @@ def test_raw_materialization_binds_current_generation_under_writer_lease(
         pass
 
 
+def test_raw_snapshot_cleanup_binds_authority_and_delete_under_writer_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Promotion cannot change the protected generation during destructive raw cleanup."""
+
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    initialize_active_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[])
+
+    class InnerReachedError(RuntimeError):
+        pass
+
+    def inspect_inner(*_args: object, **_kwargs: object) -> Any:
+        with pytest.raises(RebuildLeaseUnavailableError):
+            with RebuildLease(tmp_path):
+                pass
+        raise InnerReachedError
+
+    monkeypatch.setattr(repair_mod, "_repair_superseded_raw_snapshots", inspect_inner)
+
+    with pytest.raises(InnerReachedError):
+        repair_mod.repair_superseded_raw_snapshots(config)
+    with RebuildLease(tmp_path):
+        pass
+
+
 def test_raw_materialization_reparses_legacy_indexed_raw_before_receipting(tmp_path: Path) -> None:
     """The daemon reopens legacy bytes instead of certifying old durable bindings."""
     from polylogue.archive.message.roles import Role

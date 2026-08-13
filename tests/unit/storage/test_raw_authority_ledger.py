@@ -942,6 +942,19 @@ def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_pa
     assert receipt["application_rows"] == []
 
 
+def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    (tmp_path / "index.db").write_bytes(b"not a sqlite database")
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    assert census.accepted_head_count == 0
+    assert census.plan_count == 0
+
+
 @pytest.mark.parametrize("field", ["session_id", "accepted_raw_id", "accepted_content_hash"])
 def test_application_receipt_requires_exact_application_authority(tmp_path: Path, field: str) -> None:
     initialize_active_archive_root(tmp_path)

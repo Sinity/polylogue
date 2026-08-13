@@ -5893,6 +5893,22 @@ def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
 
 
 def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
+    """Delete redundant raw snapshots while promotion cannot change the protected set."""
+
+    if dry_run:
+        return _repair_superseded_raw_snapshots(config, dry_run=True)
+
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    lease = ActiveWriterLease(_raw_materialization_archive_root(config))
+    lease.acquire()
+    try:
+        return _repair_superseded_raw_snapshots(config, dry_run=False)
+    finally:
+        lease.close()
+
+
+def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.raw_retention import (
         RawRetentionSafetyError,
         active_raw_retention_authority,

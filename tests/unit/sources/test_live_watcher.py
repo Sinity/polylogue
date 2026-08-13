@@ -3541,6 +3541,7 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
     sessions = root / "sessions"
     sessions.mkdir(parents=True)
     path = sessions / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (
@@ -3554,6 +3555,9 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
         assert watcher._source_accepts(path) is True
         assert watcher._source_name_for(path) == "codex"
         assert watcher._batch_processor._source_name_for(path) == "codex"
+        assert watcher._source_for_directory(sessions).name == "codex"
+        candidates = watcher._scan_catch_up_candidates([root, sessions])
+        assert [(candidate.path, candidate.source_name) for candidate in candidates] == [(path, "codex")]
     finally:
         watcher._parse_stage.shutdown()
 

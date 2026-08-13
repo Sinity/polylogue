@@ -644,6 +644,12 @@ class LiveBatchProcessor:
         exist. Once they do, the readiness proof is fail-closed and shared
         with raw convergence, recovery, and reindex.
         """
+        if _source_tier_acquisition_required():
+            # The derived tier is explicitly unavailable in this mode. Raw
+            # admission establishes source authority without consulting or
+            # mutating it; trying to resolve the active index pointer here
+            # would defeat the acquire-only route before it can run.
+            return None
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         if (
             not (archive_root / "source.db").is_file()
@@ -1114,7 +1120,8 @@ class LiveBatchProcessor:
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
-                    self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
+                    if not _source_tier_acquisition_required():
+                        self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
@@ -1143,7 +1150,7 @@ class LiveBatchProcessor:
             stage_payload=summary_stage_payload,
         )
 
-        if succeeded_paths:
+        if succeeded_paths and not _source_tier_acquisition_required():
             await self._run_sync(
                 "watcher.live_ingest.raw_compaction",
                 self._compact_superseded_raw_snapshots,
@@ -3881,8 +3888,9 @@ class LiveBatchProcessor:
         return ingest_append_plans(self, plans)
 
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
-        if not paths:
+        if not paths or _source_tier_acquisition_required():
             return
+        from polylogue.storage.index_generation import ActiveWriterLease
         from polylogue.storage.raw_retention import (
             RawRetentionSafetyError,
             active_raw_retention_authority,
@@ -3891,28 +3899,33 @@ class LiveBatchProcessor:
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        index_db = ArchiveLocation.resolve(archive_root).active_index_path
         if not source_db.exists():
             return
-        with closing(sqlite3.connect(source_db)) as conn, conn:
-            conn.row_factory = sqlite3.Row
-            try:
-                retention_authority = active_raw_retention_authority(
+        lease = ActiveWriterLease(archive_root)
+        lease.acquire()
+        try:
+            index_db = ArchiveLocation.resolve(archive_root).active_index_path
+            with closing(sqlite3.connect(source_db)) as conn, conn:
+                conn.row_factory = sqlite3.Row
+                try:
+                    retention_authority = active_raw_retention_authority(
+                        conn,
+                        index_db_path=index_db,
+                        terminal_source_paths=paths,
+                    )
+                except RawRetentionSafetyError as exc:
+                    logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
+                    return
+                result = compact_paths_superseded_raw_snapshots(
                     conn,
-                    index_db_path=index_db,
-                    terminal_source_paths=paths,
+                    paths,
+                    limit_per_path=25,
+                    min_acquired_at=self._raw_compaction_min_acquired_at,
+                    protected_raw_ids=retention_authority.protected_raw_ids,
+                    eligible_raw_ids=retention_authority.eligible_raw_ids,
                 )
-            except RawRetentionSafetyError as exc:
-                logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
-                return
-            result = compact_paths_superseded_raw_snapshots(
-                conn,
-                paths,
-                limit_per_path=25,
-                min_acquired_at=self._raw_compaction_min_acquired_at,
-                protected_raw_ids=retention_authority.protected_raw_ids,
-                eligible_raw_ids=retention_authority.eligible_raw_ids,
-            )
+        finally:
+            lease.close()
         if result.errors:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
