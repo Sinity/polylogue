@@ -15,16 +15,24 @@ import json
 import sqlite3
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.archive.actions.actions import Action
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
+from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.runtime_matching import matches_referenced_path
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.session.domain_models import Session as ArchiveSession
 from polylogue.archive.stats import ArchiveStats
+from polylogue.archive.viewport.enums import ToolCategory
+from polylogue.cli import query_semantic
 from polylogue.cli.query import async_execute_query_request, project_query_results
 from polylogue.cli.query_contracts import (
     QueryAction,
@@ -35,7 +43,8 @@ from polylogue.cli.query_contracts import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.enums import MaterialOrigin, Provider
+from polylogue.core.enums import MaterialOrigin, Origin, Provider
+from polylogue.core.types import SessionId
 from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
@@ -56,6 +65,28 @@ pytestmark = [
     pytest.mark.query_routing,
 ]
 SearchWorkspace = dict[str, Path]
+
+
+def _semantic_path_action(*, action_id: str, message_id: str, affected_path: str) -> Action:
+    return Action(
+        action_id=action_id,
+        message_id=message_id,
+        timestamp=None,
+        sequence_index=0,
+        kind=ToolCategory.SHELL,
+        tool_name="bash",
+        tool_id=None,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        affected_paths=(affected_path,),
+        cwd_path="/repo",
+        branch_names=(),
+        command=None,
+        query=None,
+        url=None,
+        output_text=None,
+        search_text=affected_path,
+        raw={},
+    )
 
 
 @pytest.fixture
@@ -3997,3 +4028,53 @@ def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
                 },
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_semantic_path_stats_match_substrate_and_across_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Semantic action stats and the substrate keep AND-across-actions path parity.
+
+    This is the live parity coverage moved from the retired query-support
+    module. It drives the production semantic stats function, its
+    session-level path predicate, and the substrate referenced-path filter.
+    A session with only one requested path must be excluded, while two actions
+    that collectively satisfy both terms must be included by both paths.
+    """
+    terms = ("foo.py", "bar.py")
+    only_foo = _semantic_path_action(action_id="foo-only", message_id="message-foo", affected_path="/repo/foo.py")
+    foo = _semantic_path_action(action_id="foo", message_id="message-foo", affected_path="/repo/foo.py")
+    bar = _semantic_path_action(action_id="bar", message_id="message-bar", affected_path="/repo/bar.py")
+    session = ArchiveSession(
+        id=SessionId("semantic-path-parity"),
+        origin=Origin.CLAUDE_CODE_SESSION,
+        messages=MessageCollection.empty(),
+    )
+
+    monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: (only_foo,))
+    assert matches_referenced_path(SessionQueryPlan(referenced_path=terms), session) is False
+    assert query_semantic.session_matches_referenced_path((only_foo,), terms) is False
+
+    monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: (foo, bar))
+    assert matches_referenced_path(SessionQueryPlan(referenced_path=terms), session) is True
+    assert query_semantic.session_matches_referenced_path((foo, bar), terms) is True
+
+    env = SimpleNamespace(
+        polylogue=SimpleNamespace(
+            get_actions_batch=AsyncMock(return_value={"only-foo": (only_foo,), "both-paths": (foo, bar)})
+        )
+    )
+    with patch("click.echo") as echo:
+        await query_semantic.output_stats_by_semantic_ids(
+            env,
+            ["only-foo", "both-paths"],
+            "action",
+            selection=SessionQuerySpec(referenced_path=terms),
+            output_format="json",
+        )
+
+    payload = json.loads(echo.call_args.args[0])
+    assert payload["rows"] == [
+        {"group": "none", "sessions": 1, "facts": 0, "messages": 0},
+        {"group": "shell", "sessions": 1, "facts": 2, "messages": 2},
+    ]
+    assert payload["summary"] == {"group": "MATCHED", "sessions": 2, "facts": 2, "messages": 2}
