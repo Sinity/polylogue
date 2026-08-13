@@ -120,7 +120,7 @@ def _open_source_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
         with open_verified_sqlite_read_connection(path) as connection:
             yield connection
     except AuditLeafError as exc:
-        raise AuditContinuityError(f"cannot safely read source continuity tier: {path}") from exc
+        raise AuditContinuityError(f"cannot safely read source continuity tier: {path}: {exc}") from exc
 
 
 @contextmanager
@@ -129,7 +129,7 @@ def _open_source_write_connection(path: Path) -> Iterator[sqlite3.Connection]:
         with open_verified_sqlite_write_connection(path) as connection:
             yield connection
     except AuditLeafError as exc:
-        raise AuditContinuityError(f"cannot safely write source continuity tier: {path}") from exc
+        raise AuditContinuityError(f"cannot safely write source continuity tier: {path}: {exc}") from exc
 
 
 def _entry_is_absent(path: Path) -> bool:

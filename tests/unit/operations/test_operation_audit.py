@@ -413,7 +413,12 @@ def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
     def replace_after_open(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
         nonlocal swapped
         connection = original_connect(database, *args, **kwargs)
-        if not swapped and ("/dev/fd/" in str(database) or "/proc/self/fd/" in str(database)):
+        database_text = str(database)
+        if (
+            not swapped
+            and database_text.split("?", 1)[0].endswith("/audit.db")
+            and ("/dev/fd/" in database_text or "/proc/self/fd/" in database_text)
+        ):
             swapped = True
             audit_path.unlink()
             replacement.replace(audit_path)
