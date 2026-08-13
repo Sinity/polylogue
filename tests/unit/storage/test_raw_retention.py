@@ -869,6 +869,59 @@ def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_
     assert after.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
 
 
+def test_successful_reparse_revokes_stale_ordinary_artifact_cursor_authority(tmp_path: Path) -> None:
+    """An ordinary sidecar classification cannot stay terminal after a later parse."""
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "reparsed-sidecar.json"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, 0, ?, 1, 1, 20)
+            """,
+            (
+                "raw-ordinary-reparsed",
+                "codex-session",
+                "ordinary-reparsed",
+                str(source_path),
+                bytes(32),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index,
+                artifact_kind, support_status, classification_reason,
+                parse_as_session, schema_eligible, malformed_jsonl_lines,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, 0, 'session_metadata', 'supported_parseable', ?, 0, 0, 0, 10, 10)
+            """,
+            (
+                "artifact-ordinary-reparsed",
+                "raw-ordinary-reparsed",
+                "codex-session",
+                str(source_path),
+                "ordinary sidecar classification before parser support",
+            ),
+        )
+        conn.commit()
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=source_path, byte_offset=1)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        snapshot = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            ops_db_path=tmp_path / "ops.db",
+        )
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
 def test_terminal_artifact_retention_batches_source_paths_below_sqlite_limit(tmp_path: Path) -> None:
     """Terminal evidence remains protectable when more than one SQL batch is needed."""
 

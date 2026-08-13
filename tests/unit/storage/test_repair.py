@@ -958,6 +958,49 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
 
 
+def test_raw_materialization_refuses_validation_failure_newer_than_parse(tmp_path: Path) -> None:
+    """A later validation failure remains current authority after an earlier parse."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"later-validation-failure"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"current failure"}]}}\n'
+            ),
+            source_path="later-validation-failure.jsonl",
+            acquired_at_ms=1,
+        )
+
+    config = _config(tmp_path)
+    assert repair_mod.repair_raw_materialization(config).success is True
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        parsed_at_ms = int(
+            conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        )
+        conn.execute(
+            """
+            UPDATE raw_sessions
+            SET validation_status = 'failed', validation_error = ?, validated_at_ms = ?
+            WHERE raw_id = ?
+            """,
+            ("strict validation rejected the later observation", parsed_at_ms + 1, raw_id),
+        )
+        conn.commit()
+
+    active_index = tmp_path / "generations" / "after-validation" / "index.db"
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+
+    assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
+    assert repair_mod.raw_materialization_replay_backlog(config)["candidate_count"] == 0
+
+
 @pytest.mark.parametrize("artifact_kind", ["deferred_hot_jsonl_capture", "deferred_claude_code_partial_jsonl"])
 def test_raw_materialization_does_not_replay_hot_partial_capture(tmp_path: Path, artifact_kind: str) -> None:
     """Hot partial evidence stays deferred until a complete source observation arrives."""
