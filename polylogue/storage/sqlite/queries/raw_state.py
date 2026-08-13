@@ -12,9 +12,28 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
-# raw_sessions carries a single ``origin`` column (#1743). Provider-token
-# filters translate the token to its canonical origin value before matching.
-RAW_ORIGIN_FILTER_SQL = "origin"
+# Raw filters follow parser-classified provider evidence when present while
+# preserving immutable acquisition origin as the fallback. The CASE keeps the
+# comparison in public Origin vocabulary even though detected_provider retains
+# the exact provider-wire token (including the Gemini/Drive fiber).
+RAW_ORIGIN_FILTER_SQL = """
+CASE detected_provider
+    WHEN 'chatgpt' THEN 'chatgpt-export'
+    WHEN 'claude-ai' THEN 'claude-ai-export'
+    WHEN 'claude-design' THEN 'claude-design-session'
+    WHEN 'claude-code' THEN 'claude-code-session'
+    WHEN 'codex' THEN 'codex-session'
+    WHEN 'gemini' THEN 'aistudio-drive'
+    WHEN 'drive' THEN 'aistudio-drive'
+    WHEN 'gemini-cli' THEN 'gemini-cli-session'
+    WHEN 'hermes' THEN 'hermes-session'
+    WHEN 'antigravity' THEN 'antigravity-session'
+    WHEN 'beads' THEN 'beads-issue'
+    WHEN 'grok' THEN 'grok-export'
+    WHEN 'unknown' THEN 'unknown-export'
+    ELSE origin
+END
+""".strip()
 
 
 def origin_filter_value(token: str) -> str:

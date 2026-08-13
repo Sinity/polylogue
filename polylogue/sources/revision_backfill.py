@@ -815,7 +815,7 @@ def _census_historical_revision_evidence(
                         [],
                         parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                         censused_at_ms=0,
-                        retire_full_revision_governance=revision_kind is not RawRevisionKind.UNKNOWN,
+                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
                         manage_transaction=False,
                     )
                     if not terminalized:
@@ -952,6 +952,7 @@ def _census_historical_revision_evidence(
                         continue
                     apply_outcome(raw_id, source_index, parsed_outcomes)
                 if head_by_older:
+                    source_index_by_raw_id = dict(pending_rows)
                     head_to_key = {
                         raw_id: key for key, raw_ids in state.provisional_full_raw_ids.items() for raw_id in raw_ids
                     }
@@ -976,7 +977,7 @@ def _census_historical_revision_evidence(
                         if resolved_key is not None:
                             bind_byte_proven_older_member(older_raw_id, resolved_key)
                         else:
-                            apply_outcome(older_raw_id, 0, fallback_outcomes)
+                            apply_outcome(older_raw_id, source_index_by_raw_id[older_raw_id], fallback_outcomes)
                 if census_selection is None:
                     break
                 expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))

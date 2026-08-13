@@ -320,7 +320,7 @@ def test_raw_parse_recovery_skips_validation_failed_cas_frontier_failure(tmp_pat
 
 
 def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_path: Path) -> None:
-    """CAS authority replays an unmaterialized raw even when parsing had completed."""
+    """A stale validation failure does not suppress newer parse authority."""
     initialize_active_archive_root(tmp_path)
     path = tmp_path / "previously-parsed-cas-frontier.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
@@ -338,7 +338,7 @@ def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_pa
         )
         conn.execute(
             "UPDATE raw_sessions SET validation_status = 'failed', validated_at_ms = ? WHERE raw_id = ?",
-            (parsed_at_ms, raw_id),
+            (parsed_at_ms - 1, raw_id),
         )
         assert conn.total_changes == 1
         conn.commit()
@@ -349,6 +349,32 @@ def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_pa
     assert stage.execute(path) is True
     assert stage.check(path) is False
     assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
+
+
+def test_raw_parse_recovery_skips_current_validation_failure_after_prior_parse(tmp_path: Path) -> None:
+    """A current validation failure cannot leave CAS recovery permanently pending."""
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "current-validation-failed-cas-frontier.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CHATGPT)
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CHATGPT,
+            error=RawCASFrontierError("frontier changed before current validation failure"),
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        parsed_at_ms = int(
+            conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        )
+        conn.execute(
+            "UPDATE raw_sessions SET validation_status = 'failed', validated_at_ms = ? WHERE raw_id = ?",
+            (parsed_at_ms, raw_id),
+        )
+        conn.commit()
+
+    assert make_raw_parse_recovery_stage(tmp_path / "index.db").check(path) is False
 
 
 def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(

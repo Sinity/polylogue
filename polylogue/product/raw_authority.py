@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from polylogue.config import Config
+from polylogue.config import Config, active_archive_root
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ def materialization_generation_lease(config: Config) -> Iterator[Path]:
     """Pin one active index generation through a replay-adjacent closure."""
     from polylogue.storage.index_generation import ActiveWriterLease
 
-    lease = ActiveWriterLease(config.archive_root)
+    lease = ActiveWriterLease(active_archive_root(config))
     lease.acquire()
     try:
         yield config.current_db_path()

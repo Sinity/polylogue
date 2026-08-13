@@ -635,6 +635,72 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     assert artifact_rows == (0,)
 
 
+def test_source_only_full_ingest_refuses_missing_durable_source_tier(tmp_path: Path) -> None:
+    """An established archive cannot silently bootstrap over source.db loss."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / "source.db").unlink()
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "pending.jsonl"
+    path.write_text('{"opaque":"must remain pending"}\n', encoding="utf-8")
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        result = processor._ingest_full_paths_sync([path], source_name="claude-code")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == []
+    assert result.failed == [path]
+    assert result.source_payload_read_bytes == 0
+    assert not (tmp_path / "source.db").exists()
+
+
+def test_source_only_antigravity_metadata_stays_pending_with_mutable_companion(tmp_path: Path) -> None:
+    """Cursor authority cannot cover metadata while omitting its sibling bytes."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    initialize_active_archive_root(tmp_path)
+    root = tmp_path / "antigravity"
+    metadata = root / "brain" / "work-session" / "plan.md.metadata.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('{"summary":"plan"}', encoding="utf-8")
+    companion = metadata.with_name("plan.md")
+    companion.write_text("contemporaneous body", encoding="utf-8")
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="antigravity", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        metrics = asyncio.run(processor.ingest_files([metadata], emit_event=False))
+    finally:
+        clear_degraded()
+
+    assert metrics.succeeded_file_count == 0
+    assert metrics.failed_paths == [str(metadata)]
+    cursor_record = cursor.get_record(metadata)
+    assert cursor_record is not None
+    assert cursor_record.excluded is False
+    assert cursor_record.failure_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+
 def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -642,6 +708,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     """The production full-ingest ZIP route must retain bytes before decode."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
+    initialize_active_archive_root(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
     bundle = root / "degraded.zip"
@@ -691,6 +758,7 @@ def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
     """The real source-only route must not exclude a transiently unreadable ZIP."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
+    initialize_active_archive_root(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
     bundle = root / "retry.zip"
@@ -757,6 +825,7 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
     """Recovery, not acquisition, resolves UNKNOWN ZIP bytes and replays each coordinate."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
+    initialize_active_archive_root(tmp_path)
     root = tmp_path / "inbox"
     root.mkdir()
     bundle = root / "export.zip"
@@ -833,7 +902,10 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("zip-chatgpt", 2)]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE origin = 'chatgpt-export'").fetchone() == (2,)
+        assert conn.execute("SELECT origin, detected_provider FROM raw_sessions ORDER BY source_index").fetchall() == [
+            ("unknown-export", "chatgpt"),
+            ("unknown-export", "chatgpt"),
+        ]
 
 
 def test_zip_duplicate_member_coordinates_match_normal_and_source_only_routes(tmp_path: Path) -> None:
@@ -893,6 +965,7 @@ def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shap
     """A degraded source tier retains a valid but future-shaped Codex state DB."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
+    initialize_active_archive_root(tmp_path)
     root = tmp_path / "codex"
     root.mkdir()
     state_db = root / "state_5.sqlite"
@@ -957,6 +1030,7 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
     """Removing the replay effect leaves the durable state raw pending and title-less."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
+    initialize_active_archive_root(tmp_path)
     root = tmp_path / "codex"
     state_db = root / "state_5.sqlite"
     _write_codex_thread_state_db(state_db)
@@ -996,6 +1070,7 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
     """A direct file copy loses an uncheckpointed WAL row; the snapshot retains it."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
+    initialize_active_archive_root(tmp_path)
     root = tmp_path / "hermes"
     state_db = root / state_name
     state_db.parent.mkdir(parents=True)

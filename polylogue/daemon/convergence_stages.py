@@ -928,7 +928,11 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
             WHERE (r.source_path = ? OR r.source_path LIKE ?)
               AND NOT (
                 COALESCE(r.validation_status, '') = 'failed'
-                AND r.parsed_at_ms IS NULL
+                AND (
+                  r.parsed_at_ms IS NULL
+                  OR r.validated_at_ms IS NULL
+                  OR r.validated_at_ms >= r.parsed_at_ms
+                )
               )
               AND (
                 (

@@ -1775,9 +1775,6 @@ class LiveBatchProcessor:
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = archive_root / "blob"
-        from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-        blob_store = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
         raw_records: list[RawSessionRecord] = []
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
@@ -1794,8 +1791,19 @@ class LiveBatchProcessor:
         acquisition_capture_mode = fallback_provider
 
         source_only = _source_tier_acquisition_required()
+        source_db = archive_root / "source.db"
+        if source_only and not source_db.is_file():
+            logger.error("source-only acquisition refused because the durable source tier is missing: %s", source_db)
+            return _FullIngestResult(
+                succeeded=[],
+                failed=list(paths),
+                source_payload_read_bytes=0,
+            )
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+        blob_store = ArchiveBlobPublisher(source_db, blob_root)
         archive_active = self._archive_active(archive_root)
-        archive_bootstrapped = not archive_active and (not source_only or not (archive_root / "source.db").exists())
+        archive_bootstrapped = not archive_active and not source_only
         if archive_bootstrapped:
             initialize_archive_root(archive_root)
         archive_active = self._archive_active(archive_root)
@@ -1972,6 +1980,14 @@ class LiveBatchProcessor:
                 # derived tier to consume their result. Preserve the original
                 # bytes under the configured source identity and let the
                 # normal raw replay classify them once the index is available.
+                # Antigravity brain metadata is the one path whose parser also
+                # reads a mutable sibling artifact. Until the derived route can
+                # consume both contemporaneously, leave this observation
+                # pending instead of advancing a cursor backed by only half of
+                # its material.
+                if fallback_provider is Provider.ANTIGRAVITY and path.name.endswith(".metadata.json"):
+                    failed.append(path)
+                    continue
                 provider = fallback_provider
                 source_name = provider.value
                 try:

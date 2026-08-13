@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 
@@ -65,8 +64,8 @@ def compile_raw_state_update(
             provider = state.payload_provider
         elif isinstance(state.validation_provider, Provider):
             provider = state.validation_provider
-        set_clauses.append("origin = COALESCE(?, origin)")
-        params.append(origin_from_provider(provider).value if provider is not None else None)
+        set_clauses.append("detected_provider = COALESCE(?, detected_provider)")
+        params.append(provider.value if provider is not None else None)
     if state.detection_warnings is not UNSET:
         warnings = state.detection_warnings
         set_clauses.append("detection_warnings_json = ?")

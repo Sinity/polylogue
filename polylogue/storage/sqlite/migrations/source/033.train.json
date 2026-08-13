@@ -1,0 +1,72 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v33",
+  "tier": "source",
+  "current_version": 32,
+  "target_version": 33,
+  "slot": 33,
+  "owner_ref": "github:pull/3952#discussion_r3775839929",
+  "migration": {
+    "tier": "source",
+    "target_version": 33,
+    "slot": 33,
+    "path": "033_detected_raw_provider.sql",
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/033_detected_raw_provider.sql",
+    "sql_sha256": "0952a74b0a397a83f00ef45a618db1e084337cd1413409894b8811d234e9babc",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:detected-raw-provider",
+      "owner_ref": "github:pull/3952#discussion_r3775839929",
+      "schema_objects": ["column:raw_sessions.detected_provider"],
+      "runtime_consumers": [
+        {
+          "consumer_id": "raw-state-update",
+          "production_ref": "polylogue.storage.sqlite.raw_state_update:compile_raw_state_update",
+          "behavior_proof_ref": "proof:source-v33:preserve-acquisition-origin",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "revision-provider-resolution",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.revision_governance:raw_revision_descriptor",
+          "behavior_proof_ref": "proof:source-v33:reuse-detected-provider",
+          "roles": ["read"]
+        },
+        {
+          "consumer_id": "raw-record-hydration",
+          "production_ref": "polylogue.storage.sqlite.queries.mappers_archive:_row_to_raw_session",
+          "behavior_proof_ref": "proof:source-v33:split-acquisition-and-parser-identity",
+          "roles": ["read"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:source-v33:preserve-acquisition-origin",
+        "proof:source-v33:reuse-detected-provider",
+        "proof:source-v33:split-acquisition-and-parser-identity"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:source-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "587200f83f1b9f9ed677412c95910592f8cb2dcbc51c1e3dbfc6098319b5587e"
+}

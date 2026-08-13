@@ -441,6 +441,8 @@ def active_raw_retention_authority(
             protected_raw_ids=protected_ids,
             eligible_raw_ids=frozenset(eligible.difference(protected_ids)),
         )
+    except sqlite3.Error as exc:
+        raise RawRetentionSafetyError(f"raw retention authority is unreadable: {exc}") from exc
     finally:
         conn.row_factory = original_row_factory
 
@@ -1675,7 +1677,8 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
     terminal_raw_failure_kinds = tuple(sorted(_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS))
     raw_failure_placeholders = ", ".join("?" for _ in raw_failure_kinds)
     terminal_raw_failure_placeholders = ", ".join("?" for _ in terminal_raw_failure_kinds)
-    path_batch_size = max(1, 500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds))
+    # The path batch binds once for observation receipts and once for raw rows.
+    path_batch_size = max(1, (500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds)) // 2)
     pending = set(source_paths)
     while pending:
         batch = tuple(sorted(pending)[:path_batch_size])
@@ -1683,25 +1686,45 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
         placeholders = ", ".join("?" for _ in batch)
         rows = conn.execute(
             f"""
-            WITH newest_per_coordinate AS (
+            WITH latest_raw_observation AS (
+                SELECT raw_id, acquired_at_ms, observation_rowid
+                FROM (
+                    SELECT
+                        ref_id AS raw_id,
+                        acquired_at_ms,
+                        rowid AS observation_rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ref_id
+                            ORDER BY acquired_at_ms DESC, rowid DESC
+                        ) AS observation_rank
+                    FROM blob_refs
+                    WHERE ref_type = 'raw_payload'
+                      AND source_path IN ({placeholders})
+                )
+                WHERE observation_rank = 1
+            ),
+            newest_per_coordinate AS (
                 SELECT raw_id, source_path, origin, source_index, parse_error,
                        validation_status, validated_at_ms, parsed_at_ms
                 FROM (
                     SELECT
-                        raw_id,
-                        source_path,
-                        origin,
-                        source_index,
-                        parse_error,
-                        validation_status,
-                        validated_at_ms,
-                        parsed_at_ms,
+                        raw.raw_id,
+                        raw.source_path,
+                        raw.origin,
+                        raw.source_index,
+                        raw.parse_error,
+                        raw.validation_status,
+                        raw.validated_at_ms,
+                        raw.parsed_at_ms,
                         ROW_NUMBER() OVER (
-                            PARTITION BY source_path, origin, source_index
-                            ORDER BY acquired_at_ms DESC, rowid DESC
+                            PARTITION BY raw.source_path, raw.origin, raw.source_index
+                            ORDER BY
+                                COALESCE(observation.acquired_at_ms, raw.acquired_at_ms) DESC,
+                                COALESCE(observation.observation_rowid, raw.rowid) DESC
                         ) AS coordinate_rank
-                    FROM raw_sessions
-                    WHERE source_path IN ({placeholders})
+                    FROM raw_sessions AS raw
+                    LEFT JOIN latest_raw_observation AS observation ON observation.raw_id = raw.raw_id
+                    WHERE raw.source_path IN ({placeholders})
                 )
                 WHERE coordinate_rank = 1
             ),
@@ -1736,9 +1759,17 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                           )
                       )
                   )
+            ),
+            terminal_evidence AS (
+                SELECT raw_id FROM terminal_artifacts
+                UNION
+                SELECT evidence_raw.raw_id
+                FROM newest_per_coordinate AS evidence_raw
+                JOIN raw_membership_census AS census ON census.raw_id = evidence_raw.raw_id
+                WHERE census.status = 'non_session'
             )
             SELECT DISTINCT terminal_raw.source_path
-            FROM terminal_artifacts AS artifact
+            FROM terminal_evidence AS artifact
             JOIN newest_per_coordinate AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
             WHERE NOT EXISTS (
                 SELECT 1
@@ -1746,12 +1777,12 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                 WHERE coordinate.source_path = terminal_raw.source_path
                   AND NOT EXISTS (
                       SELECT 1
-                      FROM terminal_artifacts AS current_artifact
+                      FROM terminal_evidence AS current_artifact
                       WHERE current_artifact.raw_id = coordinate.raw_id
                   )
             )
             """,
-            (*batch, *raw_failure_kinds, *terminal_raw_failure_kinds),
+            (*batch, *batch, *raw_failure_kinds, *terminal_raw_failure_kinds),
         ).fetchall()
         result.update(str(row[0]) for row in rows)
     return result

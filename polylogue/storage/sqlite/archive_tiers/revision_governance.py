@@ -1516,7 +1516,7 @@ def raw_revision_descriptor(
         store._ensure_source_conn()
         .execute(
             """
-        SELECT origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
+        SELECT origin, detected_provider, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
         FROM raw_sessions WHERE raw_id = ?
         """,
             (raw_id,),
@@ -1526,11 +1526,15 @@ def raw_revision_descriptor(
     if row is None:
         raise KeyError(raw_id)
     return (
-        provider_from_origin(Origin.from_string(str(row[0])), family_hint=row[1]),
-        str(row[2]),
+        (
+            Provider.from_string(str(row[1]))
+            if row[1] is not None
+            else provider_from_origin(Origin.from_string(str(row[0])), family_hint=row[2])
+        ),
         str(row[3]),
-        RawRevisionKind(str(row[4])),
-        int(row[5]),
+        str(row[4]),
+        RawRevisionKind(str(row[5])),
+        int(row[6]),
     )
 
 

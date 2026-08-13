@@ -104,6 +104,29 @@ def test_materialization_generation_lease_pins_active_index_and_excludes_promoti
                 pass
 
 
+def test_materialization_generation_lease_uses_explicit_split_root(tmp_path: Path) -> None:
+    configured_root = tmp_path / "configured"
+    active_root = tmp_path / "active"
+    configured_root.mkdir()
+    active_root.mkdir()
+    active_index = active_root / "index.db"
+    active_index.touch()
+    config = Config(
+        archive_root=configured_root,
+        render_root=tmp_path / "render",
+        sources=[],
+        db_path=active_index,
+    )
+
+    with raw_authority.materialization_generation_lease(config) as index_db:
+        assert index_db == active_index
+        with pytest.raises(RebuildLeaseUnavailableError):
+            with RebuildLease(active_root):
+                pass
+        with RebuildLease(configured_root):
+            pass
+
+
 @pytest.mark.parametrize(
     ("selected_plan_ids", "preview_census_id", "outcome_plan_id", "message"),
     [

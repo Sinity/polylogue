@@ -31,6 +31,11 @@ from polylogue.storage.raw_retention import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_cursor
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    upsert_raw_artifact,
+    write_source_raw_session,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -735,6 +740,66 @@ def test_current_terminal_artifact_authorizes_historical_raws_but_not_later_sess
     assert snapshot.cursor_ahead_status == "unknown"
     assert snapshot.cursor_authority_gap_count == 1
     assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_terminal_coordinate_uses_latest_repeated_raw_observation(tmp_path: Path) -> None:
+    """A→B→A ranks A's reacquisition receipt, not its first raw-row time."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    source_path = tmp_path / "repeated.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        raw_a = write_source_raw_session(
+            conn,
+            origin="claude-code-session",
+            source_path=str(source_path),
+            source_index=0,
+            payload=b"session A",
+            acquired_at_ms=1,
+        )
+        raw_b = write_source_raw_session(
+            conn,
+            origin="claude-code-session",
+            source_path=str(source_path),
+            source_index=0,
+            payload=b"terminal B",
+            acquired_at_ms=2,
+        )
+        upsert_raw_artifact(
+            conn,
+            raw_b,
+            ArchiveSourceArtifact(
+                artifact_id="artifact-repeated-coordinate",
+                origin="claude-code-session",
+                source_path=str(source_path),
+                source_index=0,
+                artifact_kind="workflow_journal",
+                classification_reason="terminal B",
+                parse_as_session=False,
+                first_observed_at_ms=2,
+                last_observed_at_ms=2,
+            ),
+        )
+        assert (
+            write_source_raw_session(
+                conn,
+                origin="claude-code-session",
+                source_path=str(source_path),
+                source_index=0,
+                payload=b"session A",
+                acquired_at_ms=3,
+            )
+            == raw_a
+        )
+        assert conn.execute("SELECT acquired_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_a,)).fetchone() == (1,)
+        assert conn.execute(
+            "SELECT acquired_at_ms FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?", (raw_a,)
+        ).fetchone() == (3,)
+
+        assert raw_retention_mod._terminal_artifact_paths(conn, {str(source_path)}) == set()
+        with pytest.raises(RawRetentionSafetyError, match="index has no raw authority"):
+            active_raw_retention_authority(conn, index_db_path=index_db)
 
 
 def test_terminal_cursor_exemption_requires_every_source_coordinate(tmp_path: Path) -> None:
@@ -2578,6 +2643,22 @@ def test_raw_frontier_integrity_snapshot_unavailable_source_tier_is_unknown_neve
     assert snapshot.cursor_ahead_status == "unknown"
     assert snapshot.overall_status == "unknown"
     assert "unreadable" in snapshot.broken_head_reason
+
+
+def test_active_retention_translates_missing_source_authority_table(tmp_path: Path) -> None:
+    """Cleanup callers receive the typed fail-closed exception contract."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE placeholder (id INTEGER PRIMARY KEY)")
+        conn.commit()
+
+    with (
+        sqlite3.connect(source_db) as conn,
+        pytest.raises(RawRetentionSafetyError, match="raw retention authority is unreadable"),
+    ):
+        active_raw_retention_authority(conn, index_db_path=index_db)
 
 
 def test_raw_frontier_integrity_snapshot_partial_source_schema_is_unknown_not_violated(tmp_path: Path) -> None:
