@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, cast
 
+from polylogue.storage.sqlite.audit_leaf import AuditLeafError, VerifiedAuditLeaf, open_verified_audit_connection
+
 _FORMAT = "polylogue.audit-continuity-command.v1"
 AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 = "3230fdd585a4fd2d71b7d720bcfe5d697ff120fdb32aecde394e89d407c7198f"
 _T = TypeVar("_T")
@@ -78,11 +80,10 @@ def audit_semantic_sha256(path: Path) -> str:
     """Hash audit content while excluding the self-mutating continuity head."""
 
     try:
-        uri = f"{path.resolve(strict=True).as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as connection:
+        with open_verified_audit_connection(path) as connection:
             lines = (line for line in connection.iterdump() if "audit_continuity_head" not in line)
             return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
-    except sqlite3.DatabaseError as exc:
+    except (AuditLeafError, sqlite3.DatabaseError) as exc:
         raise AuditContinuityError("cannot hash audit content for continuity validation") from exc
 
 
@@ -167,7 +168,7 @@ class AuditContinuityCoordinator:
         try:
             with (
                 closing(sqlite3.connect(self.source_path)) as source,
-                closing(sqlite3.connect(self.audit_path)) as audit,
+                open_verified_audit_connection(self.audit_path) as audit,
             ):
                 source.execute("SELECT 1 FROM audit_continuity_control WHERE singleton = 1").fetchone()
                 audit.execute("SELECT 1 FROM audit_continuity_head WHERE singleton = 1").fetchone()
@@ -220,7 +221,7 @@ class AuditContinuityCoordinator:
         try:
             with (
                 closing(sqlite3.connect(self.source_path)) as source,
-                closing(sqlite3.connect(self.audit_path)) as audit,
+                open_verified_audit_connection(self.audit_path) as audit,
             ):
                 source_row = source.execute(
                     "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
@@ -316,7 +317,7 @@ class AuditContinuityCoordinator:
     ) -> _T:
         self._validate_prepared(prepared)
         mutation = AuditMutation.from_command(prepared["command"])
-        with closing(sqlite3.connect(self.audit_path)) as conn, conn:
+        with open_verified_audit_connection(self.audit_path) as conn, conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("BEGIN IMMEDIATE")
@@ -378,7 +379,7 @@ class AuditContinuityCoordinator:
         mutation = AuditMutation.from_command(prepared["command"])
         prior = (cast(int, prepared["prior_generation"]), str(prepared["prior_head_sha256"]))
         target = (cast(int, prepared["next_generation"]), str(prepared["next_head_sha256"]))
-        with closing(sqlite3.connect(self.audit_path)) as audit:
+        with open_verified_audit_connection(self.audit_path) as audit:
             audit.execute("BEGIN IMMEDIATE")
             row = audit.execute(
                 "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
@@ -409,7 +410,10 @@ class AuditContinuityCoordinator:
                 source.commit()
 
     def _assert_committed_head_matches_audit(self) -> None:
-        with closing(sqlite3.connect(self.source_path)) as source, closing(sqlite3.connect(self.audit_path)) as audit:
+        with (
+            closing(sqlite3.connect(self.source_path)) as source,
+            open_verified_audit_connection(self.audit_path) as audit,
+        ):
             source_row = source.execute(
                 "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
             ).fetchone()
@@ -446,10 +450,12 @@ class AuditContinuityCoordinator:
             raise AuditContinuityError("rebind command lacks an audit image sha256")
         digest = hashlib.sha256()
         try:
-            with self.audit_path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        except OSError as exc:
+            with VerifiedAuditLeaf(self.audit_path.parent, filename=self.audit_path.name) as leaf:
+                with leaf.anchored_path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                leaf.assert_unchanged()
+        except (AuditLeafError, OSError) as exc:
             raise AuditContinuityError("cannot read audit image for rebind") from exc
         if digest.hexdigest() != expected:
             raise AuditContinuityError("audit image changed before continuity rebind")

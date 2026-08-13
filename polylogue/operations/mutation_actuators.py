@@ -39,6 +39,7 @@ from polylogue.operations.mutation_transaction import (
     build_plan,
     make_target_ref,
 )
+from polylogue.security.lifecycle import LifecycleMode
 from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
@@ -211,6 +212,67 @@ class SessionExcisionActuator:
             receipt_ref=receipt.receipt_assertion_id,
             applied_at=plan.prepared_at,
             domain_receipt=receipt.as_dict(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle request (mutate-session-lifecycle-request)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SessionLifecycleRequestArgs:
+    """Arguments for the durable mirror/primary excision-request outbox row."""
+
+    archive_root: Path
+    session_id: str
+    mode: LifecycleMode
+    reason: str
+    actor: str
+    now_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class SessionLifecycleRequestActuator:
+    """Create the local lifecycle request through the audit-backed executor."""
+
+    operation: str = "mutate-session-lifecycle-request"
+    destructive_class: DestructiveClass = "additive"
+    required_confirmation: ConfirmationStrength = "confirm_flag"
+
+    def prepare(self, args: SessionLifecycleRequestArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class=self.destructive_class,
+            target_refs=(make_target_ref("session", args.session_id),),
+            affected_tiers=("user",),
+            reversible=True,
+            context={"mode": args.mode, "reason": args.reason},
+        )
+
+    def apply(self, plan: MutationPlan, args: SessionLifecycleRequestArgs) -> MutationReceipt:
+        from polylogue.security.lifecycle import submit_lifecycle_request
+
+        user_db = args.archive_root / "user.db"
+        with sqlite3.connect(user_db) as connection:
+            assertion_id = submit_lifecycle_request(
+                connection,
+                target_ref=make_target_ref("session", args.session_id),
+                mode=args.mode,
+                reason=args.reason,
+                actor=args.actor,
+                now_ms=args.now_ms,
+            )
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=assertion_id,
+            applied_at=plan.prepared_at,
+            domain_receipt={"assertion_id": assertion_id, "mode": args.mode},
         )
 
 
@@ -2026,6 +2088,8 @@ __all__ = [
     "SessionDeleteArgs",
     "SessionExcisionActuator",
     "SessionExcisionArgs",
+    "SessionLifecycleRequestActuator",
+    "SessionLifecycleRequestArgs",
     "TagAddActuator",
     "TagAddArgs",
     "TagRemoveActuator",

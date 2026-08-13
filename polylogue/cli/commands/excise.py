@@ -125,8 +125,6 @@ def excise_command(
     root = archive_root()
 
     if mode != "standalone":
-        from polylogue.security.lifecycle import submit_lifecycle_request
-
         target_ref = f"session:{session_id}"
         if dry_run:
             _emit(
@@ -161,25 +159,33 @@ def excise_command(
                 env.ui.console.print("Aborted.")
                 return
 
-        import sqlite3
-
+        from polylogue.operations.bindings import runtime_operation_binding
+        from polylogue.operations.mutation_actuators import SessionLifecycleRequestActuator, SessionLifecycleRequestArgs
+        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+        from polylogue.security.lifecycle import LifecycleMode
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        user_db = root / "user.db"
         initialize_active_archive_root(root)
-        conn = sqlite3.connect(user_db)
-        try:
-            with conn:
-                assertion_id = submit_lifecycle_request(
-                    conn,
-                    target_ref=target_ref,
-                    mode=mode,  # type: ignore[arg-type]
-                    reason=reason,
-                    actor=actor,
-                    now_ms=_now_ms(),
-                )
-        finally:
-            conn.close()
+        lifecycle_actuator = SessionLifecycleRequestActuator()
+        lifecycle_args = SessionLifecycleRequestArgs(
+            archive_root=root,
+            session_id=session_id,
+            mode=cast(LifecycleMode, mode),
+            reason=reason,
+            actor=actor,
+            now_ms=_now_ms(),
+        )
+        executor = OperationExecutor.for_archive_root(root)
+        lifecycle_binding = runtime_operation_binding(lifecycle_actuator)
+        lifecycle_principal = MutationPrincipal(actor, frozenset({"archive.request_session_lifecycle"}), "cli", "write")
+        lifecycle_preview = executor.prepare_bound_for_archive(
+            lifecycle_binding, lifecycle_args, lifecycle_principal, archive_root=root
+        )
+        lifecycle_authorization = executor.authorize_bound(
+            lifecycle_binding, lifecycle_preview, lifecycle_principal, confirmation_strength="confirm_flag"
+        )
+        receipt = executor.execute_bound(lifecycle_binding, lifecycle_preview, lifecycle_authorization, lifecycle_args)
+        assertion_id = cast(str, receipt.domain_receipt["assertion_id"])
         _emit(
             env,
             status="ok",

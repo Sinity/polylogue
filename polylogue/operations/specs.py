@@ -8,6 +8,7 @@ from functools import lru_cache
 from typing import Literal
 
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
+from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 from polylogue.operations.mutation_transaction import (
     IdempotencyPolicy,
     Surface,
@@ -1370,6 +1371,42 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
+        name="mutate-session-lifecycle-request",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Create one durable mirror/primary session lifecycle-request outbox row through "
+            "OperationExecutor so its intent, authorization, and receipt share audit continuity authority."
+        ),
+        consumes=("archive_session_rows",),
+        produces=("excision_receipt",),
+        path_targets=("session-excision-loop",),
+        code_refs=(
+            "polylogue.cli.commands.excise.excise_command",
+            "polylogue.security.lifecycle.submit_lifecycle_request",
+            "polylogue.operations.mutation_actuators.SessionLifecycleRequestActuator",
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        affected_tiers=("user", "audit"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="session-lifecycle-request",
+                target_kinds=("session",),
+                required_capabilities=("archive.request_session_lifecycle",),
+                destructive_class="additive",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("retry_convergent",),
+            ),
+        ),
+    ),
+    OperationSpec(
         name="mutate-identity-reset",
         kind=OperationKind.MAINTENANCE,
         description=(
@@ -1402,7 +1439,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 destructive_class="reset",
                 required_confirmation="confirm_flag",
                 allowed_durabilities=("durable",),
-                allowed_recovery=("rebuild",),
+                allowed_recovery=("reconcile_required",),
             ),
         ),
     ),
@@ -1623,13 +1660,11 @@ _USER_MUTATION_TARGET_KINDS = (
     "annotation",
     "assertion",
     "blackboard",
-    "block",
     "correction",
-    "message",
     "recall_pack",
     "saved_view",
-    "session",
     "workspace",
+    *TARGET_KIND_NAMES,
 )
 
 _LEGACY_EXECUTOR_CAPABILITIES: dict[str, str] = {

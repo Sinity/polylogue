@@ -1143,12 +1143,12 @@ def adopt_missing_audit_tier(
     if path.name != "audit.db":
         raise MigrationError(f"established-archive adoption is only supported for audit.db: {path}")
     archive_root = path.parent.resolve()
-    if path.exists() or path.is_symlink():
-        raise MigrationError(f"audit tier already exists; refusing established-archive adoption: {path}")
     receipt_path = audit_adoption_receipt_path(archive_root)
     if _load_audit_adoption_receipt(archive_root) is not None:
         validate_audit_adoption_receipt(archive_root)
         return _audit_live_metadata(path)[0], receipt_path
+    if path.exists() or path.is_symlink():
+        raise MigrationError(f"audit tier already exists; refusing established-archive adoption: {path}")
     stopped_evidence = stopped_daemon_check()
     manifest_path, verification_receipt = validate_full_evidence_backup_for_audit_adoption(
         backup_manifest,
@@ -1371,7 +1371,7 @@ def restore_adopted_audit_tier(
     backup_version, backup_application_id, backup_quick_check = _audit_live_metadata(manifest_path.parent / "audit.db")
     if (
         backup_version != artifact_version
-        or backup_version < expected_initial_version
+        or backup_version != ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
         or backup_application_id != expected_application_id
         or backup_quick_check != ("ok",)
     ):

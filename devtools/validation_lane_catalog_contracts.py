@@ -281,6 +281,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "mutate-clear-corrections",
             "mutate-delete-session",
             "mutate-session-excision",
+            "mutate-session-lifecycle-request",
             "mutate-identity-reset",
         ),
         tags=("contract", "mutation", "operation-executor"),

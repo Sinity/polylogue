@@ -8,7 +8,6 @@ import math
 import os
 import secrets
 import sqlite3
-import stat
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -25,8 +24,14 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     MutationReceipt,
     MutationTarget,
+    TokenExpiredError,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.audit_leaf import (
+    AuditLeafError,
+    assert_verified_audit_leaf,
+    open_verified_audit_connection,
+)
 
 AuditTargetState = Literal[
     "pending",
@@ -407,13 +412,9 @@ class AuditRepository:
         """Refuse an audit pathname that redirects authority outside the archive root."""
 
         try:
-            metadata = self.path.lstat()
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"audit tier is missing or uninitialized: {self.path}") from exc
-        except OSError as exc:
-            raise RuntimeError(f"cannot inspect audit tier leaf: {self.path}") from exc
-        if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeError(f"audit tier must be an archive-owned regular file: {self.path}")
+            assert_verified_audit_leaf(self.path)
+        except AuditLeafError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -421,18 +422,16 @@ class AuditRepository:
         if self._coordinated_connection is not None:
             yield self._coordinated_connection
             return
-        conn = sqlite3.connect(f"{self.path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
-            yield conn
-        except BaseException:
-            conn.rollback()
-            raise
-        else:
-            conn.commit()
-        finally:
-            conn.close()
+        with open_verified_audit_connection(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                yield conn
+            except BaseException:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
 
     def _continuity_payload(
         self, kind: str, args: tuple[object, ...], kwargs: Mapping[str, object]
@@ -469,13 +468,16 @@ class AuditRepository:
             )
             return {
                 "authorization_id": f"authorization:{secrets.token_urlsafe(18)}",
-                "issued_at_ms": int(time.time() * 1000),
+                "issued_at_ms": cast(int, values.get("issued_at_ms", int(time.time() * 1000))),
                 "preview": _preview_payload(preview),
                 "principal": _principal_payload(principal),
                 "authorization": _authorization_payload(authorization),
             }
         if kind == "consume_authorization_and_start":
-            preview, authorization = cast(MutationPreview, args[0]), cast(MutationAuthorization, args[1])
+            if isinstance(args[0], _StoredAuthorizationDigest):
+                preview, authorization = cast(MutationPreview, args[1]), cast(MutationAuthorization, args[2])
+            else:
+                preview, authorization = cast(MutationPreview, args[0]), cast(MutationAuthorization, args[1])
             return {
                 "operation_id": f"operation:{secrets.token_urlsafe(18)}",
                 "attempt_id": f"attempt:{secrets.token_urlsafe(18)}",
@@ -684,6 +686,8 @@ class AuditRepository:
         preview: MutationPreview,
         principal: MutationPrincipal,
         authorization: MutationAuthorization,
+        *,
+        issued_at_ms: int | None = None,
     ) -> str:
         """Persist token digest and exact proved capabilities, never token material."""
 
@@ -694,6 +698,7 @@ class AuditRepository:
             preview,
             principal,
             authorization,
+            issued_at_ms=issued_at_ms,
         )
 
     def _persist_authorization(
@@ -702,11 +707,16 @@ class AuditRepository:
         preview: MutationPreview,
         principal: MutationPrincipal,
         authorization: MutationAuthorization,
+        *,
+        issued_at_ms: int | None = None,
     ) -> str:
         authorization_id = cast(
             str, self._command_value("authorization_id", f"authorization:{secrets.token_urlsafe(18)}")
         )
-        issued_at_ms = cast(int, self._command_value("issued_at_ms", int(time.time() * 1000)))
+        effective_issued_at_ms = cast(
+            int,
+            self._command_value("issued_at_ms", issued_at_ms if issued_at_ms is not None else int(time.time() * 1000)),
+        )
         with self._connection() as conn:
             self._begin(conn)
             preview_row = conn.execute(
@@ -737,8 +747,8 @@ class AuditRepository:
                     principal.role_label,
                     authorization.confirmation_strength,
                     token_digest.value,
-                    issued_at_ms,
-                    authorization.expires_at_ms or issued_at_ms,
+                    effective_issued_at_ms,
+                    authorization.expires_at_ms or effective_issued_at_ms,
                 ),
             )
             for capability in authorization.capabilities:
@@ -748,24 +758,37 @@ class AuditRepository:
                 )
         return authorization_id
 
-    @_continuity_mutation("consume_authorization_and_start")
     def consume_authorization_and_start(self, preview: MutationPreview, authorization: MutationAuthorization) -> str:
         """Consume a token and create run, targets, and initial attempt atomically."""
 
         if authorization.token is None:
             raise ValueError("authorization token is missing")
-        return self._consume_authorization(
+        operation_id = self._consume_authorization_and_start(
             _StoredAuthorizationDigest(token_sha256(authorization.token)),
             preview,
             authorization,
         )
+        if operation_id is None:
+            raise TokenExpiredError("authorization token is expired")
+        return operation_id
+
+    @_continuity_mutation("consume_authorization_and_start")
+    def _consume_authorization_and_start(
+        self,
+        token_digest: _StoredAuthorizationDigest,
+        preview: MutationPreview,
+        authorization: MutationAuthorization,
+    ) -> str | None:
+        """Commit an expired-token transition before reporting it to the caller."""
+
+        return self._consume_authorization(token_digest, preview, authorization)
 
     def _consume_authorization(
         self,
         token_digest: _StoredAuthorizationDigest,
         preview: MutationPreview,
         authorization: MutationAuthorization,
-    ) -> str:
+    ) -> str | None:
         operation_id = cast(str, self._command_value("operation_id", f"operation:{secrets.token_urlsafe(18)}"))
         attempt_id = cast(str, self._command_value("attempt_id", f"attempt:{secrets.token_urlsafe(18)}"))
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
@@ -790,7 +813,7 @@ class AuditRepository:
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),
                 )
-                raise RuntimeError("authorization token is expired")
+                return None
             if str(row[2]) != authorization.actor or str(row[3]) != (authorization.surface or ""):
                 raise ValueError("authorization principal mismatch")
             if str(row[6]) != preview.plan.plan_hash or authorization.plan_hash != preview.plan.plan_hash:
@@ -902,10 +925,11 @@ class AuditRepository:
                 "unknown": "unknown",
                 "failed": "failed",
                 "blocked": "rejected",
+                "already_satisfied": "already_satisfied",
             }.get(status, "applied"),
         )
         attempt_state = (
-            "unknown" if target_state == "unknown" else "failed" if target_state == "rejected" else target_state
+            "unknown" if target_state == "unknown" else "failed" if target_state == "rejected" else "applied"
         )
         with self._connection() as conn:
             self._begin(conn)
@@ -957,7 +981,7 @@ class AuditRepository:
                     rejected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'rejected'),
                     failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
                     unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
-                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state IN ('applied', 'already_satisfied')),
+                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'applied'),
                     error_summary = ?, unknown_reason = ?
                 WHERE operation_id = ?
                 """,
@@ -1114,6 +1138,23 @@ class AuditRepository:
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
             return dict(row) if row is not None else None
+
+    def find_interrupted_operation(self, *, operation_name: str, parameter_digest: str) -> str | None:
+        """Return the one interrupted operation bound to an exact durable parameter digest."""
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT operation_id
+                FROM operation_runs
+                WHERE operation_name = ? AND parameter_digest = ? AND status = 'interrupted'
+                ORDER BY started_at_ms, operation_id
+                """,
+                (operation_name, parameter_digest),
+            ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError("multiple interrupted operations share the same durable parameter digest")
+        return None if not rows else str(rows[0][0])
 
     def list_events(self, operation_id: str) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:

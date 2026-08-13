@@ -226,7 +226,7 @@ def compute_target_digest(targets: tuple[MutationTarget, ...]) -> str:
     return _sha256_document([target.canonical_dict() for target in targets])
 
 
-def _parameter_digest(raw_plan: MutationPlan) -> str:
+def compute_parameter_digest(raw_plan: MutationPlan) -> str:
     """Hash stable caller intent without the clock-bound preview envelope."""
 
     return _sha256_document(
@@ -648,7 +648,7 @@ class OperationExecutor:
             principal,
             archive_instance_id=self._audit.ensure_archive_authority(now_ms=self._now_ms()),
             archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
-            parameter_digest=_parameter_digest(raw_plan),
+            parameter_digest=compute_parameter_digest(raw_plan),
             raw_plan=raw_plan,
         )
 
@@ -690,7 +690,9 @@ class OperationExecutor:
             surface=principal.surface,
         )
         if self._audit is not None:
-            authorization_id = self._audit.issue_authorization(preview, principal, authorization)
+            authorization_id = self._audit.issue_authorization(
+                preview, principal, authorization, issued_at_ms=self._now_ms()
+            )
             authorization = replace(authorization, authorization_id=authorization_id)
         return authorization
 
@@ -706,7 +708,11 @@ class OperationExecutor:
         binding.validate()
         if authorization.preview_ref != preview.preview_ref or authorization.token is None:
             raise AuthorizationMismatchError("authorization is not bound to this preview")
-        if authorization.expires_at_ms is not None and self._now_ms() >= authorization.expires_at_ms:
+        if (
+            self._audit is None
+            and authorization.expires_at_ms is not None
+            and self._now_ms() >= authorization.expires_at_ms
+        ):
             raise TokenExpiredError("authorization token is expired")
         if self._archive_root is not None:
             from polylogue.storage.archive_identity import ArchiveIdentity
@@ -773,6 +779,16 @@ class OperationExecutor:
             outcome=outcome,
             domain_receipt_ref=domain_receipt_ref,
             reason=reason,
+        )
+
+    def find_interrupted_operation(self, *, operation_name: str, parameter_digest: str) -> str | None:
+        """Find the uniquely identified interrupted durable attempt for a recovery route."""
+
+        if self._audit is None:
+            raise MutationTransactionError("interrupted-operation lookup requires a durable audit repository")
+        return self._audit.find_interrupted_operation(
+            operation_name=operation_name,
+            parameter_digest=parameter_digest,
         )
 
     def _typed_plan_from_actuator(
@@ -944,6 +960,7 @@ __all__ = [
     "TokenExpiredError",
     "build_plan",
     "build_typed_plan",
+    "compute_parameter_digest",
     "compute_plan_hash",
     "compute_target_digest",
     "compute_typed_plan_hash",

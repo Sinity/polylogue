@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,6 +11,7 @@ from typing import Literal
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -341,13 +341,15 @@ def initialize_active_archive_root(root: Path) -> None:
 
             audit_path = root / archive_tier_spec(ArchiveTier.AUDIT).filename
             try:
-                metadata = audit_path.lstat()
+                audit_path.lstat()
             except FileNotFoundError:
                 return
             except OSError as exc:
                 raise RuntimeError(f"cannot inspect audit tier leaf: {audit_path}") from exc
-            if not stat.S_ISREG(metadata.st_mode):
-                raise RuntimeError(f"audit tier must be an archive-owned regular file: {audit_path}")
+            try:
+                assert_verified_audit_leaf(audit_path)
+            except AuditLeafError as exc:
+                raise RuntimeError(str(exc)) from exc
 
         def assert_owned_root() -> None:
             """Refuse pathname writes after the owned root has been replaced."""

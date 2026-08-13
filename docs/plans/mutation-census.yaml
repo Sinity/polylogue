@@ -61,6 +61,14 @@ rows:
     adapters:
       - polylogue.cli.commands.excise.excise_command
 
+  - operation: mutate-session-lifecycle-request
+    spec_name: mutate-session-lifecycle-request
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.SessionLifecycleRequestActuator
+    surfaces: [cli]
+    adapters:
+      - polylogue.cli.commands.excise.excise_command (--mode mirror/primary)
+
   - operation: mutate-identity-reset
     spec_name: mutate-identity-reset
     status: executor-routed

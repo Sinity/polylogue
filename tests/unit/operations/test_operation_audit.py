@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import BaseModel
@@ -28,6 +30,7 @@ from polylogue.operations.mutation_transaction import (
     PlanStaleError,
     TargetAuthorityPolicy,
     TargetDurability,
+    TokenExpiredError,
     build_plan,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
@@ -95,6 +98,12 @@ class _TypedReceiptActuator(_Actuator):
                 "outcomes": (_TypedDomainOutcome(row_ref="assertion:typed", status="imported"),),
             },
         )
+
+
+@dataclass
+class _AlreadySatisfiedActuator(_Actuator):
+    def apply(self, plan: MutationPlan, args: object) -> MutationReceipt:
+        return replace(super().apply(plan, args), status="already_satisfied", affected_count=0)
 
 
 def _binding(
@@ -214,6 +223,56 @@ def test_audit_authority_rejects_a_symlinked_audit_leaf_without_touching_its_tar
         AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
 
     assert external_audit.read_bytes() == before
+
+
+def test_audit_authority_rejects_a_hardlinked_audit_leaf_without_touching_its_target(tmp_path: Path) -> None:
+    """A regular-looking audit leaf must still have exactly one archive-owned link."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    external_audit = tmp_path.parent / "external-hardlinked-audit.db"
+    external_audit.write_bytes(audit_path.read_bytes())
+    audit_path.unlink()
+    audit_path.hardlink_to(external_audit)
+    before = external_audit.read_bytes()
+
+    with pytest.raises(RuntimeError, match="one link"):
+        initialize_active_archive_root(tmp_path)
+    with pytest.raises(RuntimeError, match="one link"):
+        AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
+
+    assert external_audit.read_bytes() == before
+
+
+def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLite never yields a connection after the descriptor-checked leaf changes."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    replacement = tmp_path / "replacement-audit.db"
+    replacement.write_bytes(audit_path.read_bytes())
+    before = replacement.read_bytes()
+    original_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
+    swapped = False
+
+    def replace_after_open(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        nonlocal swapped
+        connection = original_connect(database, *args, **kwargs)
+        if not swapped and "/proc/self/fd/" in str(database):
+            swapped = True
+            audit_path.unlink()
+            replacement.replace(audit_path)
+        return connection
+
+    monkeypatch.setattr("polylogue.storage.sqlite.audit_leaf.sqlite3.connect", replace_after_open)
+
+    with pytest.raises(RuntimeError, match="changed during SQLite open"):
+        AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
+
+    assert swapped
+    assert audit_path.read_bytes() == before
 
 
 def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:
@@ -499,6 +558,64 @@ def test_zero_target_finalization_completes_a_successful_noop(tmp_path: Path) ->
             "SELECT status, terminal_reason, affected_count FROM operation_runs WHERE operation_id = ?",
             (receipt.operation_id,),
         ).fetchone() == ("completed", None, 0)
+
+
+def test_expired_authorization_is_durably_marked_before_execute_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound execution route commits expiry instead of rolling it back with the refusal."""
+
+    audit = _audit(tmp_path)
+    clock = [1_000]
+    executor = OperationExecutor(audit=audit, now_ms=lambda: clock[0], token_factory=lambda: "expired-token")
+    preview = executor.prepare_bound(
+        _binding(_Actuator()),
+        object(),
+        _principal(),
+        archive_instance_id="archive:expired",
+        archive_identity_digest="identity:expired",
+        parameter_digest="params:expired",
+        expires_at_ms=61_000,
+    )
+    authorization = executor.authorize_bound(_binding(_Actuator()), preview, _principal())
+    clock[0] = 61_000
+    monkeypatch.setattr("polylogue.operations.audit.time.time", lambda: 61.0)
+
+    with pytest.raises(TokenExpiredError):
+        executor.execute_bound(_binding(_Actuator()), preview, authorization, object())
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT state FROM operation_authorizations").fetchone() == ("expired",)
+
+
+def test_already_satisfied_receipt_preserves_target_state_and_zero_affected_count(tmp_path: Path) -> None:
+    """A nonempty idempotent success remains distinct from an applied domain effect."""
+
+    audit = _audit(tmp_path)
+    actuator = _AlreadySatisfiedActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "already-satisfied-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:already-satisfied",
+        archive_identity_digest="identity:already-satisfied",
+        parameter_digest="params:already-satisfied",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+    assert receipt.operation_id is not None
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT state FROM operation_targets WHERE operation_id = ?", (receipt.operation_id,)
+        ).fetchone() == ("already_satisfied",)
+        assert conn.execute(
+            "SELECT status, affected_count FROM operation_runs WHERE operation_id = ?", (receipt.operation_id,)
+        ).fetchone() == (
+            "completed",
+            0,
+        )
 
 
 def test_blocked_finalization_rejects_targets_and_fails_parent_run(tmp_path: Path) -> None:

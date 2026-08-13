@@ -275,6 +275,10 @@ class TestExciseMirrorPrimary:
         assert row is not None
         assert row[0] == "excision_request"
         assert row[1] == f"session:{session_id}"
+        with sqlite3.connect(archive_root / "audit.db") as audit_connection:
+            assert audit_connection.execute(
+                "SELECT status FROM operation_runs WHERE operation_name = 'mutate-session-lifecycle-request'"
+            ).fetchone() == ("completed",)
 
         # Local content is untouched by mirror/primary mode.
         index_conn = sqlite3.connect(archive_root / "index.db")
@@ -309,6 +313,37 @@ class TestExciseMirrorPrimary:
 
         assert result.exit_code != 0
         assert "missing audit.db" in str(result.exception)
+        with sqlite3.connect(archive_root / "user.db") as connection:
+            assert connection.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'excision_request'").fetchone() == (
+                0,
+            )
+
+    def test_primary_refuses_broken_audit_continuity_without_writing_a_lifecycle_request(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="primary-broken-continuity")
+        with sqlite3.connect(archive_root / "audit.db") as connection:
+            connection.execute("UPDATE audit_continuity_head SET head_sha256 = ? WHERE singleton = 1", ("0" * 64,))
+            connection.commit()
+
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "ops",
+                    "excise",
+                    "--session",
+                    session_id,
+                    "--reason",
+                    "leak",
+                    "--mode",
+                    "primary",
+                    "--yes",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "continuity head regressed" in str(result.exception)
         with sqlite3.connect(archive_root / "user.db") as connection:
             assert connection.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'excision_request'").fetchone() == (
                 0,

@@ -217,7 +217,7 @@ def test_census_reset_refuses_wal_visible_ledger_drift(tmp_path: Path, monkeypat
     refreshed = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     assert refreshed.ledger_digest != plan.ledger_digest
     assert refreshed.plan_digest != plan.plan_digest
-    with pytest.raises(RawAuthorityRecoveryError, match="stale before lease acquisition"):
+    with pytest.raises(RawAuthorityRecoveryError, match="stale after ownership acquisition"):
         apply_raw_authority_recovery(plan)
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT residual_json FROM raw_authority_censuses WHERE census_id = 'c1'").fetchone() == (
@@ -278,6 +278,9 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["operation_id"] == operation_id
     assert receipt["plan_digest"] == recovered.plan.plan_digest
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        assert audit.execute("SELECT status FROM operation_runs").fetchone() == ("completed",)
+        assert audit.execute("SELECT state FROM operation_targets").fetchone() == ("applied",)
 
 
 def test_persisted_recovery_plan_ignores_process_scoped_archive_metadata(
@@ -526,7 +529,7 @@ def test_uncommitted_recovery_intent_reauthorizes_through_executor(
     def require_authorization(*_args: object, **_kwargs: object) -> Never:
         raise RuntimeError("executor authorization was required")
 
-    monkeypatch.setattr(OperationExecutor, "authorize", require_authorization)
+    monkeypatch.setattr(OperationExecutor, "authorize_bound", require_authorization)
     with pytest.raises(RuntimeError, match="executor authorization was required"):
         apply_raw_authority_recovery(plan)
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -942,12 +945,12 @@ def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
     plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
     _write_recovery_intent(plan)
 
-    original_authorize = OperationExecutor.authorize
+    original_authorize = OperationExecutor.authorize_bound
 
     def require_authorization(*_args: object, **_kwargs: object) -> Never:
         raise RuntimeError("executor authorization was required")
 
-    monkeypatch.setattr(OperationExecutor, "authorize", require_authorization)
+    monkeypatch.setattr(OperationExecutor, "authorize_bound", require_authorization)
     with pytest.raises(RuntimeError, match="executor authorization was required"):
         resume_raw_authority_recovery(
             tmp_path,
@@ -958,7 +961,7 @@ def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (2,)
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (2,)
 
-    monkeypatch.setattr(OperationExecutor, "authorize", original_authorize)
+    monkeypatch.setattr(OperationExecutor, "authorize_bound", original_authorize)
     resumed = resume_raw_authority_recovery(
         tmp_path,
         RecoveryOperation.PRUNE_INDEX_SEEDS,
