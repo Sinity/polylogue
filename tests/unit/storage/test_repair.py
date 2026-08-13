@@ -31,7 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _config(tmp_path: Path) -> Config:
-    return Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "archive.db")
+    return Config(archive_root=tmp_path, render_root=tmp_path, sources=[])
 
 
 def test_raw_materialization_binds_current_generation_under_writer_lease(
@@ -1777,7 +1777,7 @@ def test_superseded_raw_cleanup_fails_closed_without_index(tmp_path: Path) -> No
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     # This valid but unrelated legacy anchor must never authorize deletion
     # from the split archive_root/source.db file set.
-    initialize_archive_database(config.db_path, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "archive.db", ArchiveTier.INDEX)
     source_file = tmp_path / "source.jsonl"
     source_file.write_text("{}", encoding="utf-8")
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -3524,7 +3524,10 @@ def test_raw_materialization_fair_rotation_mutation_recreates_starvation(
             mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", retry_oldest)
             if remove_fair_rotation:
 
-                def acquisition_only_order(candidates: Any, *, archive_root: Path) -> list[tuple[str, ...]]:
+                def acquisition_only_order(
+                    candidates: Any, *, archive_root: Path, index_db_path: Path
+                ) -> list[tuple[str, ...]]:
+                    del index_db_path
                     return sorted(
                         candidates.authority_components,
                         key=lambda component: min(candidates.raw_acquired_at_ms[raw_id] for raw_id in component),
@@ -3593,7 +3596,10 @@ def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large
         with monkeypatch.context() as mutation:
             if prefer_cheap:
 
-                def cheap_first_order(candidates: Any, *, archive_root: Path) -> list[tuple[str, ...]]:
+                def cheap_first_order(
+                    candidates: Any, *, archive_root: Path, index_db_path: Path
+                ) -> list[tuple[str, ...]]:
+                    del index_db_path
                     candidate_ids = set(candidates.raw_ids)
                     source_components = candidates.authority_components or tuple(
                         (raw_id,) for raw_id in candidates.raw_ids

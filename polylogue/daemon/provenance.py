@@ -272,7 +272,9 @@ def _quarantine_state(row: ProvenanceRow) -> tuple[bool, str | None]:
         return True, "no_raw_artifact"
     if row.parse_error:
         return True, "parse_error"
-    if row.validation_status == "failed" and row.parsed_at is None:
+    if row.validation_status == "failed" and (
+        row.parsed_at is None or row.validated_at is None or row.validated_at > row.parsed_at
+    ):
         return True, "validation_failed"
     return False, None
 

@@ -403,6 +403,7 @@ class TestProvenancePayload:
             raw_id=raw_id,
             source_path="/tmp/x.json",
             blob_size=2,
+            validated_at_ms=1_767_225_602_000,
             validation_status="failed",
         )
 

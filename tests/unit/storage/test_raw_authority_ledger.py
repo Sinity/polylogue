@@ -48,7 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "archive.db")
+    return Config(archive_root=root, render_root=root / "render", sources=[])
 
 
 def _read_detail_document(root: Path, query_handle: str, *, chunk_chars: int = 256) -> dict[str, object]:
@@ -900,6 +900,29 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
     assert sessions_after_resume == sessions_before_resume
     assert fts_after_resume == fts_before_resume
     assert fts_hits_after_resume == fts_hits_before_resume
+
+
+def test_interrupted_recovery_receives_repair_pinned_index_path(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    _write_codex_raw(tmp_path, native_id="pinned-recovery", source_path="pinned-recovery.jsonl", acquired_at_ms=1)
+
+    with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")):
+        with pytest.raises(RuntimeError, match="synthetic crash"):
+            repair_raw_materialization(_config(tmp_path))
+
+    expected_index = resolve_active_index_path(tmp_path)
+    recover = raw_authority_mod.recover_interrupted_raw_authority_censuses
+    received: list[Path | None] = []
+
+    def capture_pinned_index(root: Path, *, index_db_path: Path | None = None) -> tuple[tuple[str, JSONDocument], ...]:
+        received.append(index_db_path)
+        return recover(root, index_db_path=index_db_path)
+
+    with patch.object(repair_mod, "recover_interrupted_raw_authority_censuses", side_effect=capture_pinned_index):
+        result = repair_raw_materialization(_config(tmp_path))
+
+    assert result.metrics["raw_materialization_recovered_census_count"] == 1.0
+    assert received == [expected_index]
 
 
 def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_path: Path) -> None:

@@ -313,6 +313,7 @@ def test_raw_parse_recovery_skips_validation_failed_cas_frontier_failure(tmp_pat
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE raw_sessions SET validation_status = 'failed' WHERE raw_id = ?", (raw_id,))
+        assert conn.total_changes == 1
         conn.commit()
 
     assert make_raw_parse_recovery_stage(tmp_path / "index.db").check(path) is False
@@ -332,7 +333,14 @@ def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_pa
             error=RawCASFrontierError("frontier changed after parsing completed"),
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute("UPDATE raw_sessions SET validation_status = 'failed' WHERE raw_id = ?", (raw_id,))
+        parsed_at_ms = int(
+            conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        )
+        conn.execute(
+            "UPDATE raw_sessions SET validation_status = 'failed', validated_at_ms = ? WHERE raw_id = ?",
+            (parsed_at_ms, raw_id),
+        )
+        assert conn.total_changes == 1
         conn.commit()
 
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")

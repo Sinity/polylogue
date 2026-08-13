@@ -618,7 +618,6 @@ def test_unified_frontier_strategy_uses_the_selected_active_generation(tmp_path:
         archive_root=tmp_path,
         render_root=tmp_path / "render",
         sources=[],
-        db_path=active_index,
     )
 
     census = inspect_raw_authority_frontier(config)

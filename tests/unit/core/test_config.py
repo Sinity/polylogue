@@ -99,6 +99,38 @@ class TestConfig:
 
         assert config.db_path == active_index
 
+    def test_with_sources_keeps_implicit_active_generation_tracking(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        first = tmp_path / "first" / "index.db"
+        second = tmp_path / "second" / "index.db"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.touch()
+        second.touch()
+        pointer = archive_root / ".index-active-pointer"
+        pointer.write_text(str(first), encoding="utf-8")
+
+        clone = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[]).with_sources([])
+        pointer.write_text(str(second), encoding="utf-8")
+
+        assert clone.current_db_path() == second
+
+    def test_current_db_path_honors_explicit_nonstandard_filename(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        active = tmp_path / "generation" / "index.db"
+        explicit = tmp_path / "selected" / "archive.db"
+        active.parent.mkdir()
+        explicit.parent.mkdir()
+        active.touch()
+        explicit.touch()
+        (archive_root / ".index-active-pointer").write_text(str(active), encoding="utf-8")
+
+        config = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[], db_path=explicit)
+
+        assert config.current_db_path() == explicit
+
     def test_config_db_path_warns_on_stale_conventional_index_shadowing_pointer(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

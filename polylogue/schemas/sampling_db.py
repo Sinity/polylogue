@@ -75,6 +75,7 @@ class _RawSessionRow:
     file_mtime_ms: int | None
     acquired_at_ms: int | None
     parsed_at_ms: int | None
+    validated_at_ms: int | None
     validation_status: str | None
 
     @property
@@ -119,6 +120,7 @@ def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
         file_mtime_ms=row["file_mtime_ms"],
         acquired_at_ms=row["acquired_at_ms"],
         parsed_at_ms=row["parsed_at_ms"],
+        validated_at_ms=row["validated_at_ms"],
         validation_status=row["validation_status"],
     )
 
@@ -305,7 +307,7 @@ def _iter_schema_units_from_db(
                 WITH heads AS (
                     SELECT
                         source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
-                        validation_status,
+                        validated_at_ms, validation_status,
                         ROW_NUMBER() OVER (
                             PARTITION BY origin, {logical_cohort_expr}
                             ORDER BY acquired_at_ms DESC, raw_id DESC
@@ -314,13 +316,13 @@ def _iter_schema_units_from_db(
                     WHERE origin IN ({placeholders})
                 )
                 SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
-                       validation_status
+                       validated_at_ms, validation_status
                 FROM heads WHERE rn = 1
             """
         else:
             query = f"""
                 SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
-                       validation_status
+                       validated_at_ms, validation_status
                 FROM raw_sessions
                 WHERE origin IN ({placeholders})
             """
@@ -370,7 +372,9 @@ def _iter_schema_units_from_db(
                     )
                     continue
 
-                if row.validation_status == "failed" and row.parsed_at_ms is None:
+                if row.validation_status == "failed" and (
+                    row.parsed_at_ms is None or row.validated_at_ms is None or row.validated_at_ms > row.parsed_at_ms
+                ):
                     _record_terminal(
                         terminal_recorder,
                         row,

@@ -377,6 +377,7 @@ def test_live_full_replay_streams_retained_jsonl_raw(
 
 def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """polylogue-gbs02: a derived-only degraded reason must still acquire raw content.
 
@@ -412,6 +413,10 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
             message="index.db:46!=57",
             derived_only=True,
         )
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._parse_payload_as_session_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not decode source-only evidence")),
     )
     try:
         result = processor._ingest_full_paths_sync([path], source_name="codex")

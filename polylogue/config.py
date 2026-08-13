@@ -141,7 +141,7 @@ class Config:
     def current_db_path(self) -> Path:
         """Resolve the current generation unless the caller pinned an override."""
 
-        if self._db_path_explicit and self.db_path.name == "index.db":
+        if self._db_path_explicit:
             return self.db_path
         return resolve_active_index_path(self.archive_root)
 
@@ -174,7 +174,7 @@ class Config:
             archive_root=self.archive_root,
             render_root=self.render_root,
             sources=sources,
-            db_path=self.db_path,
+            db_path=self.db_path if self._db_path_explicit else None,
             drive_config=self.drive_config,
             index_config=self.index_config,
             embedding_model=self.embedding_model,

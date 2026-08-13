@@ -1780,7 +1780,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
-        if self._parse_stage is not None:
+        if self._parse_stage is not None and not _source_tier_acquisition_required():
             # polylogue-wf8a: pre-parse eligible candidates BEFORE ever
             # asking the write coordinator for the writer hold below --
             # identical sequencing guarantee to ``DaemonParseStage.warm``
@@ -2439,6 +2439,7 @@ class LiveBatchProcessor:
         result = _ArchiveFullWriteResult()
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         with _open_archive_for_live_write(archive_root) as archive:
+            source_only = _source_tier_acquisition_required()
             for record_index, record in enumerate(records):
                 # polylogue-11cg9: a single logical session write cannot be
                 # split mid-transaction (it must remain atomic), so the
@@ -2473,20 +2474,22 @@ class LiveBatchProcessor:
                         provider,
                         record.source_path,
                     )
-                    session_evidence = (
-                        _blob_jsonl_has_session_evidence(
-                            blob_store,
-                            blob_hash,
-                            provider=provider,
-                            source_path=record.source_path,
+                    session_evidence = False
+                    if artifact_classification is not None and not source_only:
+                        session_evidence = (
+                            _blob_jsonl_has_session_evidence(
+                                blob_store,
+                                blob_hash,
+                                provider=provider,
+                                source_path=record.source_path,
+                            )
+                            if payload is None
+                            else _parse_payload_as_session_artifact(
+                                Path(record.source_path),
+                                provider=provider,
+                                payload=payload,
+                            )
                         )
-                        if payload is None
-                        else _parse_payload_as_session_artifact(
-                            Path(record.source_path),
-                            provider=provider,
-                            payload=payload,
-                        )
-                    )
                     if artifact_classification is not None and not session_evidence:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:

@@ -54,7 +54,7 @@ from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
-from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -1297,7 +1297,13 @@ class LiveWatcher:
             return
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        index_db = resolve_active_index_path(archive_root)
+        try:
+            index_db = resolve_active_index_path(archive_root)
+        except (ArchiveLocationError, OSError, UnicodeError):
+            self._archived_cursor_conns = None
+            self._archived_cursor_index_untrusted = False
+            yield
+            return
         conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         if source_db.exists() and index_db.exists():
             try:
@@ -1432,7 +1438,7 @@ class LiveWatcher:
                 closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
             ):
                 return self._path_corroborated_by_index(path, source_conn=source_conn, index_conn=index_conn)
-        except sqlite3.Error:
+        except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             # Cannot prove absence on a transient DB error -- don't force a
             # spurious re-ingest of an otherwise-healthy cursor.
             return True
@@ -1473,7 +1479,7 @@ class LiveWatcher:
                     closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
                 ):
                     row = self._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn)
-        except sqlite3.Error:
+        except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
             return _ArchivedCursorReconciliation.INCOMPATIBLE

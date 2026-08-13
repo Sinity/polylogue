@@ -457,6 +457,46 @@ def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: P
     assert terminal_paths == {str(source_path)}
 
 
+def test_terminal_retention_batches_make_progress_when_failure_kinds_fill_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    source_paths = {tmp_path / "first.json", tmp_path / "second.json"}
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        for index, source_path in enumerate(sorted(source_paths)):
+            raw_id = f"raw-{index}"
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, 'unknown-export', ?, ?, 0, ?, 1, ?)
+                """,
+                (raw_id, raw_id, str(source_path), bytes([index + 1]) * 32, index + 1),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                    support_status, classification_reason, parse_as_session, schema_eligible,
+                    malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'unknown-export', ?, 0,
+                          'workflow_journal', 'unknown', 'terminal', 0, 0, 0, ?, ?)
+                """,
+                (f"artifact-{index}", raw_id, str(source_path), index + 1, index + 1),
+            )
+        monkeypatch.setattr(raw_retention_mod, "RAW_FAILURE_EVIDENCE_KINDS", frozenset(f"raw-{i}" for i in range(250)))
+        monkeypatch.setattr(
+            raw_retention_mod,
+            "_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS",
+            frozenset(f"terminal-{i}" for i in range(250)),
+        )
+
+        assert raw_retention_mod._terminal_artifact_paths(conn, {str(path) for path in source_paths}) == {
+            str(path) for path in source_paths
+        }
+
+
 def test_semantic_head_receipt_authorizes_no_raw_deletion(tmp_path: Path) -> None:
     old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -704,7 +744,7 @@ def test_terminal_cursor_exemption_requires_every_source_coordinate(tmp_path: Pa
             """,
             (
                 ("raw-terminal", "claude-code-session", "terminal", str(source_path), 0, bytes(32), 1, 1),
-                ("raw-session", "claude-code-session", "session", str(source_path), 1, bytes(1) * 32, 1, 2),
+                ("raw-session", "claude-code-session", "session", str(source_path), 1, bytes([1]) * 32, 1, 2),
             ),
         )
         conn.execute(
