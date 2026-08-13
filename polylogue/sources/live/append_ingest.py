@@ -41,6 +41,48 @@ class _AppendIngestOwner(Protocol):
     _polylogue: Any
 
 
+def _bind_append_revision(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+    session_id: str,
+    plan: _AppendPlan,
+) -> tuple[str, RawRevisionAuthority]:
+    """Persist an APPEND envelope from the append plan's durable identity."""
+    if plan.cursor_fingerprint is None:
+        raise ValueError("append payload did not prove cursor identity")
+    logical_source_key = f"{provider.value}:{session_id}"
+    parent = archive.raw_append_revision_parent(
+        logical_source_key,
+        plan.start_offset,
+        plan.cursor_fingerprint,
+    )
+    predecessor_raw_id: str | None = None
+    baseline_raw_id: str | None = None
+    generation = archive.raw_full_revision_generation(logical_source_key)
+    authority = RawRevisionAuthority.QUARANTINED
+    if parent is not None:
+        predecessor_raw_id, baseline_raw_id, generation = parent
+        authority = RawRevisionAuthority.BYTE_PROVEN
+    archive.bind_raw_revision(
+        raw_id,
+        RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.APPEND,
+            source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
+            acquisition_generation=generation,
+            predecessor_source_revision=plan.cursor_fingerprint,
+            predecessor_raw_id=predecessor_raw_id,
+            baseline_raw_id=baseline_raw_id,
+            append_start_offset=plan.start_offset,
+            append_end_offset=plan.last_complete_newline,
+            authority=authority,
+        ),
+    )
+    return logical_source_key, authority
+
+
 def reset_transient_raw_parse_state(
     archive: Any,
     raw_id: str,
@@ -191,6 +233,22 @@ def _ingest_append_plans_archive(
                         post_parse=True,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        if plan.native_id_hint is None:
+                            raise ValueError("source-only append has no durable session identity")
+                        _bind_append_revision(
+                            archive,
+                            raw_id,
+                            provider=provider,
+                            session_id=plan.native_id_hint,
+                            plan=plan,
+                        )
+                        # Keep the byte-contiguous append chain replayable
+                        # even when this delta is runtime-only or cannot be
+                        # parsed while the derived tier is unavailable.
+                        succeeded.append(plan)
+                        continue
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session
                     # identity over the bare filename stem. For Codex this is
@@ -239,44 +297,13 @@ def _ingest_append_plans_archive(
                         failed.append(plan)
                         continue
                     session = sessions[0]
-                    logical_source_key = f"{provider.value}:{session.provider_session_id}"
-                    parent = archive.raw_append_revision_parent(
-                        logical_source_key,
-                        plan.start_offset,
-                        plan.cursor_fingerprint,
-                    )
-                    predecessor_raw_id: str | None = None
-                    baseline_raw_id: str | None = None
-                    generation = archive.raw_full_revision_generation(logical_source_key)
-                    authority = RawRevisionAuthority.QUARANTINED
-                    if parent is not None:
-                        predecessor_raw_id, baseline_raw_id, generation = parent
-                        authority = RawRevisionAuthority.BYTE_PROVEN
-                    archive.bind_raw_revision(
+                    logical_source_key, authority = _bind_append_revision(
+                        archive,
                         raw_id,
-                        RawRevisionEnvelope(
-                            logical_source_key=logical_source_key,
-                            kind=RawRevisionKind.APPEND,
-                            source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
-                            acquisition_generation=generation,
-                            predecessor_source_revision=plan.cursor_fingerprint,
-                            predecessor_raw_id=predecessor_raw_id,
-                            baseline_raw_id=baseline_raw_id,
-                            append_start_offset=plan.start_offset,
-                            append_end_offset=plan.last_complete_newline,
-                            authority=authority,
-                        ),
+                        provider=provider,
+                        session_id=session.provider_session_id,
+                        plan=plan,
                     )
-                    degraded = degraded_reason()
-                    if degraded is not None and degraded.derived_only:
-                        # Source-only acquisition must preserve the append
-                        # chain before it returns.  The delta usually has no
-                        # session_meta record of its own, so replay needs this
-                        # resolved session identity, predecessor, and byte
-                        # offsets instead of falling back to the filename
-                        # stem as a synthetic full revision.
-                        succeeded.append(plan)
-                        continue
                     if authority is RawRevisionAuthority.QUARANTINED:
                         deferred.append(plan)
                         continue

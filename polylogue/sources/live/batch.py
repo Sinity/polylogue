@@ -3811,7 +3811,7 @@ class LiveBatchProcessor:
             path, payload, existing_id=identity
         ):
             return None
-        return payload, None
+        return payload, identity
 
     def _existing_provider_session_id(self, path: Path, *, expected_origin: str) -> str | None:
         identity = self._existing_archive_session_native_id(path, expected_origin=expected_origin)

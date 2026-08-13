@@ -273,7 +273,10 @@ def test_live_append_replay_streams_retained_jsonl_raw(
     assert result.failed == []
 
 
-def test_live_append_acquires_with_unreadable_active_pointer(tmp_path: Path) -> None:
+def test_live_append_acquires_with_unreadable_active_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="degraded-append")
@@ -284,6 +287,10 @@ def test_live_append_acquires_with_unreadable_active_pointer(tmp_path: Path) -> 
             message="derived generation unavailable",
             derived_only=True,
         )
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.dispatch.parse_stream_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("source-only append must not parse")),
     )
     try:
         result = ingest_append_plans(cast(Any, owner), [plan])
