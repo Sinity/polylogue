@@ -110,7 +110,8 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "Register this run's structured-failure selection, matched rows, and headline numbers "
             "as durable query/result-set/finding evidence in the archive's user tier (polylogue-rxdo.13). "
-            "Off by default; report generation stays read-only unless explicitly requested."
+            "Off by default; report generation stays read-only unless explicitly requested, and the "
+            "materializing form requires exclusive offline writer ownership."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON report to stdout.")
@@ -449,6 +450,7 @@ def _failure_outcome_rows(conn: Connection, *, limit: int, origin: str | None) -
             SELECT
                 r.session_id,
                 r.message_id AS tool_result_message_id,
+                r.block_id AS tool_result_block_id,
                 r.tool_id AS tool_result_tool_id,
                 s.origin,
                 r.tool_result_is_error AS is_error,
@@ -463,6 +465,7 @@ def _failure_outcome_rows(conn: Connection, *, limit: int, origin: str | None) -
             SELECT
                 r.session_id,
                 r.message_id AS tool_result_message_id,
+                r.block_id AS tool_result_block_id,
                 r.tool_id AS tool_result_tool_id,
                 s.origin,
                 r.tool_result_is_error AS is_error,
@@ -479,6 +482,7 @@ def _failure_outcome_rows(conn: Connection, *, limit: int, origin: str | None) -
             SELECT
                 r.session_id,
                 r.message_id AS tool_result_message_id,
+                r.block_id AS tool_result_block_id,
                 r.tool_id AS tool_result_tool_id,
                 s.origin,
                 r.tool_result_is_error AS is_error,
@@ -494,7 +498,7 @@ def _failure_outcome_rows(conn: Connection, *, limit: int, origin: str | None) -
         )
         SELECT *
         FROM failed
-        ORDER BY session_id, tool_result_tool_id, order_message_id
+        ORDER BY session_id, tool_result_tool_id, order_message_id, tool_result_block_id
         LIMIT ?
         """,
         params,
@@ -510,7 +514,7 @@ def _paired_failure_rows(
     paired_rows: list[dict[str, object]] = []
     for start in range(0, len(failure_rows), chunk_size):
         chunk = failure_rows[start : start + chunk_size]
-        placeholders = ",".join("(?, ?, ?, ?, ?, ?, ?, ?)" for _ in chunk)
+        placeholders = ",".join("(?, ?, ?, ?, ?, ?, ?, ?, ?)" for _ in chunk)
         params: list[object] = []
         for offset, row in enumerate(chunk, start=start):
             params.extend(
@@ -518,6 +522,7 @@ def _paired_failure_rows(
                     offset,
                     row["session_id"],
                     row["tool_result_message_id"],
+                    row["tool_result_block_id"],
                     row["tool_result_tool_id"],
                     row["origin"],
                     row["is_error"],
@@ -533,6 +538,7 @@ def _paired_failure_rows(
                     sort_index,
                     session_id,
                     tool_result_message_id,
+                    tool_result_block_id,
                     tool_result_tool_id,
                     origin,
                     is_error,
@@ -547,6 +553,7 @@ def _paired_failure_rows(
                         w.session_id,
                         u.message_id,
                         w.tool_result_message_id,
+                        w.tool_result_block_id,
                         w.tool_result_tool_id,
                         u.tool_name,
                         u.tool_command,
@@ -576,6 +583,7 @@ def _paired_failure_rows(
                     p.session_id,
                     p.message_id,
                     p.tool_result_message_id,
+                    p.tool_result_block_id,
                     p.tool_result_tool_id,
                     p.tool_name,
                     p.tool_command,
@@ -1015,6 +1023,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "session_ref": f"session:{row['session_id']}",
             "tool_message_ref": f"message:{row['message_id']}",
             "tool_result_message_ref": f"message:{row['tool_result_message_id']}",
+            "tool_result_block_ref": f"block:{row['tool_result_block_id']}",
             "tool_result_tool_id": row["tool_result_tool_id"],
             "next_message_ref": f"message:{row['next_message_id']}" if row["next_message_id"] else None,
             "tool_name": tool,
@@ -1131,7 +1140,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
                 "then proportional fill by origin failure count; each origin candidate frame is bounded "
                 "before pairing to tool-use rows"
             ),
-            "selection_order": "origin, session_id, tool_id, tool_result_message_id",
+            "selection_order": "origin, session_id, tool_id, tool_result_message_id, tool_result_block_id",
             "failure_predicate": "tool_result_is_error = 1 OR tool_result_exit_code != 0",
             "classification_scope": "immediately following assistant message only",
             "sensitivity_scope": "next 3 assistant messages after the failed result, stopping before the next user message",
@@ -1184,7 +1193,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "other": "Any tool name outside the explicit benign/consequential methodology sets.",
         },
         "evidence": {
-            "member_refs": sorted({f"message:{row['tool_result_message_id']}" for row in rows}),
+            "member_refs": sorted(f"block:{row['tool_result_block_id']}" for row in rows),
         },
         "calibration": calibration,
         "calibration_sample": [

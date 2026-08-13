@@ -326,7 +326,7 @@ def test_claim_vs_evidence_builds_bounded_artifacts(tmp_path: Path) -> None:
                 "total_structured_failures": 2,
             },
         ],
-        "selection_order": "origin, session_id, tool_id, tool_result_message_id",
+        "selection_order": "origin, session_id, tool_id, tool_result_message_id, tool_result_block_id",
         "selection_strategy": (
             "origin-stratified bounded sample; at least one row per origin when limit allows, "
             "then proportional fill by origin failure count; each origin candidate frame is bounded "
@@ -716,3 +716,5 @@ def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: P
         "message:tool-missing-next",
         "message:tool-wordless",
     }
+    assert len(report["evidence"]["member_refs"]) == report["totals"]["failed_outcomes"]
+    assert all(ref.startswith("block:") for ref in report["evidence"]["member_refs"])

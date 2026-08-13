@@ -12,8 +12,9 @@ run to tier generations and the runtime build (the AnalysisRun), and
 
 It writes through the same production primitives the daemon's own
 standing-query convergence stage uses
-(``polylogue/daemon/convergence_standing_queries.py``) via
-``open_daemon_connection`` -- not a new generic finding registry, not a
+(``polylogue/daemon/convergence_standing_queries.py``), but only after taking
+the archive's exclusive offline-writer lease -- not through a second live
+SQLite writer, not a new generic finding registry, not a
 metric/pattern/cohort/experiment definition system, and not a scheduler. A
 finding is written with ``public_claim=None`` (no ``PublicClaimDeclaration``)
 unless the run's own construct-validity gates (``n_min``, non-zero classified
@@ -36,6 +37,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.query_identity import JsonValue
 from polylogue.core.query_identity import query_ref as _query_object_ref
 from polylogue.core.query_identity import result_set_ref as _result_set_object_ref
+from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAssertionEnvelope,
     FindingAssertion,
@@ -61,7 +63,7 @@ CLASSIFIER_DEFINITION_VERSION = "2"
 ANALYSIS_TARGET_REF = "analysis:claim-vs-evidence"
 _QUERY_GRAIN = "structured-failure-followup"
 _QUERY_LANE = "analysis"
-_QUERY_RANK_POLICY = "origin,session_id,tool_id,tool_result_message_id"
+_QUERY_RANK_POLICY = "origin,session_id,tool_id,tool_result_message_id,tool_result_block_id"
 
 
 class MaterializedEvidence(TypedDict):
@@ -100,7 +102,7 @@ def build_query_definition(report: dict[str, Any]) -> dict[str, JsonValue]:
 
 
 def build_result_set_members(report: dict[str, Any]) -> tuple[str, ...]:
-    """Return the sorted ``message:`` refs the run actually classified."""
+    """Return one sorted ``block:`` ref per failed outcome classified."""
     return tuple(report["evidence"]["member_refs"])
 
 
@@ -230,10 +232,10 @@ def materialize_claim_vs_evidence_evidence(
 ) -> MaterializedEvidence:
     """Register one report run's query, result set, receipt, and findings.
 
-    Writes through ``open_daemon_connection`` (the same connection helper the
-    daemon's own standing-query convergence stage uses), so this coexists
-    with the running daemon's single-writer discipline instead of bypassing
-    it with a bare ``sqlite3.connect``.
+    Writes through ``open_daemon_connection`` (the same connection profile the
+    daemon's standing-query stage uses) while holding the exclusive side of
+    the daemon writer lease. A running writer therefore makes this operation
+    fail before ``user.db`` is opened.
 
     The AnalysisDefinition (query) and its matched-row ResultSetManifest are
     content-addressed: identical selection logic and identical matched rows
@@ -248,56 +250,73 @@ def materialize_claim_vs_evidence_evidence(
     index_db = Path(report["index_db"])
     query_definition = build_query_definition(report)
     member_refs = build_result_set_members(report)
-    conn = open_daemon_connection(archive_root / "user.db", timeout=30.0)
-    try:
-        query: QueryObject = put_query(
-            conn,
-            query_definition,
-            grain=_QUERY_GRAIN,
-            lane=_QUERY_LANE,
-            rank_policy=_QUERY_RANK_POLICY,
-            created_at_ms=now_ms,
-        )
-        query_reference = _query_object_ref(query.query_hash).format()
-        result_set_id = f"finding-{membership_merkle_root(member_refs)}"
-        result_set: ResultSetManifest | None = get_result_set(conn, result_set_id)
-        if result_set is None:
-            result_set = put_result_set(
+    # ArchiveStore keeps the shared side of this lease for a daemon writer's
+    # entire lifetime. The explicit devtools mutation takes the exclusive side
+    # before opening user.db, so it fails before SQLite when any live writer is
+    # present instead of racing convergence or overlay writes.
+    with RebuildLease(archive_root):
+        conn = open_daemon_connection(archive_root / "user.db", timeout=30.0)
+        try:
+            query: QueryObject = put_query(
                 conn,
-                result_set_id=result_set_id,
-                query_hash=query.query_hash,
+                query_definition,
                 grain=_QUERY_GRAIN,
-                corpus_epoch=_index_epoch(index_db),
-                member_refs=member_refs,
-                exactness="capped",
-                persistence_class="finding",
+                lane=_QUERY_LANE,
+                rank_policy=_QUERY_RANK_POLICY,
                 created_at_ms=now_ms,
             )
-        result_set_reference = _result_set_object_ref(result_set.result_set_id).format()
-        receipt = build_evaluation_receipt(
-            archive_root,
-            index_db,
-            query_hash=query.query_hash,
-            result_set_id=result_set.result_set_id,
-            created_at_ms=now_ms,
-        )
-        put_evaluation_receipt(
-            conn,
-            query_hash=query.query_hash,
-            receipt=receipt,
-            result_set_id=result_set.result_set_id,
-            created_at_ms=now_ms,
-        )
-        findings = build_findings(
-            report,
-            query_reference=query_reference,
-            result_set_reference=result_set_reference,
-            receipt=receipt,
-        )
-        envelopes: list[ArchiveAssertionEnvelope] = upsert_findings_as_assertions(conn, findings, now_ms=now_ms)
-        conn.commit()
-    finally:
-        conn.close()
+            query_reference = _query_object_ref(query.query_hash).format()
+            corpus_epoch = _index_epoch(index_db)
+            result_set_digest = hash_payload(
+                (
+                    query.query_hash,
+                    _QUERY_GRAIN,
+                    corpus_epoch,
+                    membership_merkle_root(member_refs),
+                    hash_payload(list(member_refs)),
+                    "capped",
+                    "finding",
+                )
+            )
+            result_set_id = f"finding-{result_set_digest}"
+            result_set: ResultSetManifest | None = get_result_set(conn, result_set_id)
+            if result_set is None:
+                result_set = put_result_set(
+                    conn,
+                    result_set_id=result_set_id,
+                    query_hash=query.query_hash,
+                    grain=_QUERY_GRAIN,
+                    corpus_epoch=corpus_epoch,
+                    member_refs=member_refs,
+                    exactness="capped",
+                    persistence_class="finding",
+                    created_at_ms=now_ms,
+                )
+            result_set_reference = _result_set_object_ref(result_set.result_set_id).format()
+            receipt = build_evaluation_receipt(
+                archive_root,
+                index_db,
+                query_hash=query.query_hash,
+                result_set_id=result_set.result_set_id,
+                created_at_ms=now_ms,
+            )
+            put_evaluation_receipt(
+                conn,
+                query_hash=query.query_hash,
+                receipt=receipt,
+                result_set_id=result_set.result_set_id,
+                created_at_ms=now_ms,
+            )
+            findings = build_findings(
+                report,
+                query_reference=query_reference,
+                result_set_reference=result_set_reference,
+                receipt=receipt,
+            )
+            envelopes: list[ArchiveAssertionEnvelope] = upsert_findings_as_assertions(conn, findings, now_ms=now_ms)
+            conn.commit()
+        finally:
+            conn.close()
     return {
         "query_ref": query_reference,
         "result_set_ref": result_set_reference,
