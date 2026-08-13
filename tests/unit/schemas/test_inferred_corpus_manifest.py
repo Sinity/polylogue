@@ -205,9 +205,6 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
         registry=cast(Any, registry),
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
-        campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
 
     antigravity_entries = [entry for entry in manifest.entries if entry.key.provider == "antigravity"]
