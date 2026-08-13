@@ -3823,6 +3823,14 @@ def main(argv: list[str] | None = None) -> int:
         "total_duration_s": total_duration,
         "exit_code": exit_code,
     }
+    checkout_stability_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in reversed(step_results)
+            if step.get("name") == "checkout stability" and "diagnosis" in step
+        ),
+        None,
+    )
     fallback_pytest_diagnosis = next(
         (
             str(step["diagnosis"])
@@ -3839,8 +3847,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         fallback_pytest_diagnosis,
     )
-    if pytest_diagnosis is not None:
-        history_entry["diagnosis"] = pytest_diagnosis
+    run_diagnosis = checkout_stability_diagnosis or pytest_diagnosis
+    if run_diagnosis is not None:
+        history_entry["diagnosis"] = run_diagnosis
     if seed_receipt is not None:
         history_entry["testmon_seed"] = {
             "status": seed_receipt["status"],
@@ -3905,10 +3914,11 @@ def main(argv: list[str] | None = None) -> int:
     verify_run.finish(
         exit_code=exit_code,
         duration_s=total_duration,
-        diagnosis=pytest_diagnosis,
+        diagnosis=run_diagnosis,
         verification_scope=verification_scope.value,
         release_baseline_allowed=release_baseline_allowed,
         terminal_authorization=args.terminal_authorization,
+        final_worktree_fingerprint=final_checkout_fingerprint,
     )
     if exit_code == 0:
         _stamp_head()

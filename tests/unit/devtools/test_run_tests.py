@@ -186,6 +186,63 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     assert command[command.index("--junit-xml") + 1] == str(invocation / "reports" / "results.xml")
 
 
+def test_normalize_selection_paths_preserves_pytest_path_option_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    invocation = tmp_path / "invocation"
+    expanded_root = tmp_path / "expanded-root"
+    invocation.mkdir()
+    expanded_root.mkdir()
+    absolute_config = tmp_path / "absolute.ini"
+    monkeypatch.setenv("PYTEST_ROOT", str(expanded_root))
+
+    normalized = run_tests._normalize_selection_paths(
+        [
+            "-cconfig/pytest.ini",
+            "-c",
+            "separate/pytest.ini",
+            "--config-file=other/pytest.ini",
+            "--config-file",
+            "separate-config/pytest.ini",
+            "--log-file",
+            "logs/test.log",
+            "--log-file=logs/joined.log",
+            "--debug",
+            "logs/debug-separated.log",
+            "--debug=logs/debug.log",
+            "--rootdir",
+            "$PYTEST_ROOT/relative",
+            "--rootdir=$PYTEST_ROOT/joined",
+            "--junitxml=reports/junit.xml",
+            "--junit-xml",
+            "reports/junit-alias.xml",
+            "--ignore-glob=fixtures/*.json",
+            "--basetemp",
+            str(absolute_config),
+            "--config-file",
+            "$PYTEST_ROOT/literal.ini",
+        ],
+        invocation_directory=invocation,
+    )
+
+    assert f"-c{invocation / 'config' / 'pytest.ini'}" in normalized
+    assert normalized[normalized.index("-c") + 1] == str(invocation / "separate" / "pytest.ini")
+    assert f"--config-file={invocation / 'other' / 'pytest.ini'}" in normalized
+    assert normalized[normalized.index("--config-file") + 1] == str(invocation / "separate-config" / "pytest.ini")
+    assert normalized[normalized.index("--log-file") + 1] == str(invocation / "logs" / "test.log")
+    assert f"--log-file={invocation / 'logs' / 'joined.log'}" in normalized
+    assert normalized[normalized.index("--debug") + 1] == str(invocation / "logs" / "debug-separated.log")
+    assert f"--debug={invocation / 'logs' / 'debug.log'}" in normalized
+    assert normalized[normalized.index("--rootdir") + 1] == str(expanded_root / "relative")
+    assert f"--rootdir={expanded_root / 'joined'}" in normalized
+    assert f"--junitxml={invocation / 'reports' / 'junit.xml'}" in normalized
+    assert normalized[normalized.index("--junit-xml") + 1] == str(invocation / "reports" / "junit-alias.xml")
+    assert f"--ignore-glob={invocation / 'fixtures' / '*.json'}" in normalized
+    assert normalized[normalized.index("--basetemp") + 1] == str(absolute_config)
+    assert normalized[-1] == str(invocation / "$PYTEST_ROOT" / "literal.ini")
+
+
 def test_main_withholds_success_when_checkout_changes_during_pytest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

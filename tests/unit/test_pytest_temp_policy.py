@@ -350,7 +350,7 @@ def test_explicit_basetemp_clears_stale_managed_identity_from_prior_in_process_r
         addinivalue_line=lambda *args, **kwargs: None,
         rootpath=tmp_path,
     )
-    monkeypatch.setattr(conftest, "_ACTIVE_MANAGED_PYTEST_IDENTITIES", [])
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_SCOPES", [])
     monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "prior-run")
     monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(explicit))
 
@@ -406,6 +406,53 @@ def test_nested_explicit_basetemp_restores_active_outer_managed_identity(
 
     assert os.environ.get("POLYLOGUE_PYTEST_RUN_ID") == ambient_identity[0]
     assert os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP") == ambient_identity[1]
+
+
+def test_nested_unmanaged_scopes_do_not_reclaim_the_live_outer_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _shm, _scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_SCOPES", [])
+    for name in (
+        "POLYLOGUE_VERIFY_RUN_ID",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_CHECKOUT",
+        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    outer = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    middle = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(tmp_path / "middle-diagnostic")),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    inner = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(tmp_path / "inner-diagnostic")),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    with _configured_pytest(outer):
+        outer_basetemp = Path(str(outer.option.basetemp))
+        live_outer_tree = outer_basetemp / "still-live"
+        live_outer_tree.mkdir(parents=True)
+        with _configured_pytest(middle):
+            with _configured_pytest(inner):
+                assert "POLYLOGUE_PYTEST_MANAGED_BASETEMP" not in os.environ
+            assert "POLYLOGUE_PYTEST_MANAGED_BASETEMP" not in os.environ
+            fixture_generator = cast(Any, conftest._reclaim_test_tmp_path).__wrapped__
+            request = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(outer_basetemp))))
+            cleanup = cast("Generator[None, BaseException, None]", fixture_generator(live_outer_tree, request))
+            assert next(cleanup) is None
+            cleanup.close()
+            assert live_outer_tree.exists()
 
 
 def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_path: Path) -> None:

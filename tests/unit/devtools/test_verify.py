@@ -4334,6 +4334,51 @@ def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
     assert checkout_step["final_worktree_fingerprint"] == fingerprints[1]
 
 
+@pytest.mark.parametrize(
+    ("fingerprints", "expected_diagnosis"),
+    [
+        (("unavailable", "stable"), "checkout_fingerprint_unavailable"),
+        (("stable", "changed"), "checkout_changed_during_verification"),
+    ],
+)
+def test_checkout_stability_failure_controls_every_broad_run_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fingerprints: tuple[str, str],
+    expected_diagnosis: str,
+) -> None:
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation" / "run.json"
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "broad-invocation")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {"diagnosis": "pytest_passed"})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    run_payload = json.loads(next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json")).read_text())
+    current_payload = json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text())
+    receipt_payload = json.loads(receipt.read_text())
+
+    for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
+        assert durable_payload["diagnosis"] == expected_diagnosis
+        assert durable_payload["final_worktree_fingerprint"] == fingerprints[1]
+
+
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[str] = []
 

@@ -59,18 +59,30 @@ ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
 _PATH_VALUE_OPTIONS = frozenset(
     {
+        "-c",
         "--basetemp",
+        "--config-file",
         "--confcutdir",
+        "--debug",
         "--ignore",
         "--ignore-glob",
         "--junit-xml",
         "--junitxml",
+        "--log-file",
         "--rootdir",
     }
 )
+_ENV_EXPANDING_PATH_OPTIONS = frozenset({"--rootdir"})
 
 
-def _absolute_option_path(value: str, *, invocation_directory: Path) -> str:
+def _absolute_option_path(
+    value: str,
+    *,
+    invocation_directory: Path,
+    expand_environment_variables: bool = False,
+) -> str:
+    if expand_environment_variables:
+        value = os.path.expandvars(value)
     path = Path(value)
     return str(path if path.is_absolute() else (invocation_directory / path).resolve())
 
@@ -78,21 +90,39 @@ def _absolute_option_path(value: str, *, invocation_directory: Path) -> str:
 def _normalize_selection_paths(selection: list[str], *, invocation_directory: Path) -> list[str]:
     """Preserve path selections relative to the directory that invoked devtools."""
     normalized: list[str] = []
-    option_value_pending = False
+    pending_option: str | None = None
     for argument in selection:
-        if option_value_pending:
-            normalized.append(_absolute_option_path(argument, invocation_directory=invocation_directory))
-            option_value_pending = False
+        if pending_option is not None:
+            normalized.append(
+                _absolute_option_path(
+                    argument,
+                    invocation_directory=invocation_directory,
+                    expand_environment_variables=pending_option in _ENV_EXPANDING_PATH_OPTIONS,
+                )
+            )
+            pending_option = None
             continue
         option_name, equals, option_value = argument.partition("=")
         if option_name in _PATH_VALUE_OPTIONS:
             if equals:
-                normalized.append(
-                    f"{option_name}={_absolute_option_path(option_value, invocation_directory=invocation_directory)}"
+                normalized_value = _absolute_option_path(
+                    option_value,
+                    invocation_directory=invocation_directory,
+                    expand_environment_variables=option_name in _ENV_EXPANDING_PATH_OPTIONS,
                 )
+                normalized.append(f"{option_name}={normalized_value}")
             else:
                 normalized.append(argument)
-                option_value_pending = True
+                pending_option = option_name
+            continue
+        if argument.startswith("-c") and len(argument) > len("-c"):
+            normalized.append(
+                "-c"
+                + _absolute_option_path(
+                    argument[len("-c") :],
+                    invocation_directory=invocation_directory,
+                )
+            )
             continue
         if argument.startswith("-"):
             normalized.append(argument)
