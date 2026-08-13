@@ -102,7 +102,8 @@ def _inferred_selection() -> tuple[CorpusSpec, SyntheticSchemaSelection]:
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
-        wire_support_receipt=build_wire_support_receipt(registry=registry),
+        providers=("codex",),
+        wire_support_receipt=build_wire_support_receipt(registry=registry, providers=("codex",)),
     )
     handoff = build_inferred_corpus_convergence_handoff(manifest)
     for spec, selection in zip(handoff.specs, handoff.selections, strict=True):

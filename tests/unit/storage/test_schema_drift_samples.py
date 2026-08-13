@@ -91,7 +91,30 @@ class TestSchemaDriftSamples:
     def test_row_cap_prunes_oldest_first(self, tmp_path: Path) -> None:
         conn = _ops_conn(tmp_path)
         try:
-            for i in range(SCHEMA_DRIFT_SAMPLE_ROW_CAP + 5):
+            # Model a real, already-full telemetry table directly, then exercise
+            # the production writer for every record that crosses the cap.
+            conn.executemany(
+                """
+                INSERT INTO schema_drift_samples (
+                    sample_id, origin, element_kind, classification,
+                    unseen_key_signature, native_id_example, raw_id, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        f"historical-{i}",
+                        "codex-session",
+                        "session_record",
+                        "new_field",
+                        "x",
+                        f"raw-{i}",
+                        f"raw-{i}",
+                        i,
+                    )
+                    for i in range(SCHEMA_DRIFT_SAMPLE_ROW_CAP)
+                ),
+            )
+            for i in range(SCHEMA_DRIFT_SAMPLE_ROW_CAP, SCHEMA_DRIFT_SAMPLE_ROW_CAP + 5):
                 record_schema_drift_sample(
                     conn,
                     origin="codex-session",
