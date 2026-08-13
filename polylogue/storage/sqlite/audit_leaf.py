@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.storage.sqlite.connection_profile import descriptor_alias_path
+
 
 class AuditLeafError(RuntimeError):
     """The audit pathname cannot prove it is one archive-owned database file."""
@@ -24,11 +26,11 @@ class _AuditLeafIdentity:
 class VerifiedAuditLeaf:
     """Keep one archive directory descriptor and verify its ``audit.db`` leaf.
 
-    SQLite accepts a URI below ``/proc/self/fd/<directory-fd>``.  That binds
-    all database and sidecar opens to the directory we inspected, rather than
-    re-resolving the caller's mutable pathname.  The leaf is checked before
-    and immediately after SQLite opens it, so a replace between those steps
-    is rejected before any caller receives a connection.
+    SQLite accepts a URI below a validated ``/dev/fd`` or ``/proc/self/fd``
+    alias. That binds all database and sidecar opens to the directory we
+    inspected, rather than re-resolving the caller's mutable pathname. The
+    leaf is checked before and immediately after SQLite opens it, so a replace
+    between those steps is rejected before any caller receives a connection.
     """
 
     def __init__(self, archive_root: Path, *, filename: str = "audit.db") -> None:
@@ -44,6 +46,9 @@ class VerifiedAuditLeaf:
             self._directory_fd = os.open(self._archive_root, directory_flags | nofollow)
             self._validate(self._lstat_leaf_metadata())
             metadata = self._open_leaf_metadata()
+        except AuditLeafError:
+            self.close()
+            raise
         except OSError as exc:
             self.close()
             raise AuditLeafError(f"cannot safely open audit tier leaf: {self._archive_root / self._filename}") from exc
@@ -63,7 +68,10 @@ class VerifiedAuditLeaf:
 
         if self._directory_fd is None:
             raise RuntimeError("audit leaf descriptor is closed")
-        return Path(f"/proc/self/fd/{self._directory_fd}/{self._filename}")
+        alias = descriptor_alias_path(self._directory_fd)
+        if alias is None:
+            raise AuditLeafError(f"cannot access audit tier through a verified descriptor: {self._archive_root}")
+        return alias / self._filename
 
     def assert_unchanged(self) -> None:
         """Require the current directory entry to retain the inspected inode."""
@@ -102,6 +110,10 @@ class VerifiedAuditLeaf:
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise AuditLeafError(
                 f"audit tier must be an archive-owned regular file with one link: {self._archive_root / self._filename}"
+            )
+        if metadata.st_uid != os.geteuid():
+            raise AuditLeafError(
+                f"audit tier must be owned by the current effective user: {self._archive_root / self._filename}"
             )
         return _AuditLeafIdentity(metadata.st_dev, metadata.st_ino)
 

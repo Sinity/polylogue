@@ -20,6 +20,7 @@ from polylogue.operations.audit import (
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
+    AuthorizationMismatchError,
     CapabilityDeniedError,
     ConfirmationStrength,
     DestructiveClass,
@@ -36,6 +37,7 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.specs import OperationKind, OperationSpec
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.audit_leaf import AuditLeafError, VerifiedAuditLeaf
 
 
 @dataclass
@@ -104,6 +106,12 @@ class _TypedReceiptActuator(_Actuator):
 class _AlreadySatisfiedActuator(_Actuator):
     def apply(self, plan: MutationPlan, args: object) -> MutationReceipt:
         return replace(super().apply(plan, args), status="already_satisfied", affected_count=0)
+
+
+@dataclass
+class _FailedReceiptActuator(_Actuator):
+    def apply(self, plan: MutationPlan, args: object) -> MutationReceipt:
+        return replace(super().apply(plan, args), status="failed", affected_count=0)
 
 
 def _binding(
@@ -244,6 +252,54 @@ def test_audit_authority_rejects_a_hardlinked_audit_leaf_without_touching_its_ta
     assert external_audit.read_bytes() == before
 
 
+def test_audit_authority_rejects_a_foreign_owned_audit_leaf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authority leaf must belong to this effective archive owner.
+
+    Anti-vacuity: removing the uid comparison accepts the otherwise-valid
+    single-linked regular file and allows the authority check to proceed.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    before = audit_path.read_bytes()
+    monkeypatch.setattr("polylogue.storage.sqlite.audit_leaf.os.geteuid", lambda: audit_path.stat().st_uid + 1)
+
+    with pytest.raises(RuntimeError, match="current effective user"):
+        AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
+
+    assert audit_path.read_bytes() == before
+
+
+def test_audit_leaf_uses_dev_fd_alias_without_proc(tmp_path: Path) -> None:
+    """Descriptor-bound audit access remains available on macOS-style hosts.
+
+    Anti-vacuity: restoring the Linux-only alias makes this descriptor-bound
+    route expose ``/proc/self/fd`` instead of the portable ``/dev/fd`` path.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    with VerifiedAuditLeaf(tmp_path) as leaf:
+        assert str(leaf.anchored_path).startswith("/dev/fd/")
+
+
+def test_audit_leaf_closes_its_directory_descriptor_after_validation_failure(tmp_path: Path) -> None:
+    """Rejected leaves do not retain one descriptor per failed authority request.
+
+    Anti-vacuity: the old OSError-only cleanup leaves ``_directory_fd`` set
+    after this symlink validation error.
+    """
+
+    target = tmp_path.parent / "external-audit-leaf.db"
+    target.write_bytes(b"external")
+    (tmp_path / "audit.db").symlink_to(target)
+    leaf = VerifiedAuditLeaf(tmp_path)
+
+    with pytest.raises(AuditLeafError):
+        leaf.__enter__()
+
+    assert leaf._directory_fd is None
+
+
 def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -260,7 +316,7 @@ def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
     def replace_after_open(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
         nonlocal swapped
         connection = original_connect(database, *args, **kwargs)
-        if not swapped and "/proc/self/fd/" in str(database):
+        if not swapped and ("/dev/fd/" in str(database) or "/proc/self/fd/" in str(database)):
             swapped = True
             audit_path.unlink()
             replacement.replace(audit_path)
@@ -616,6 +672,66 @@ def test_already_satisfied_receipt_preserves_target_state_and_zero_affected_coun
             "completed",
             0,
         )
+
+
+def test_failed_receipt_marks_the_audit_attempt_failed(tmp_path: Path) -> None:
+    """A domain-declared failure cannot leave an applied attempt receipt.
+
+    Anti-vacuity: restoring the rejected-only attempt mapping makes the target
+    failed while this attempt row incorrectly returns applied.
+    """
+
+    audit = _audit(tmp_path)
+    actuator = _FailedReceiptActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "failed-receipt-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:failed-receipt",
+        archive_identity_digest="identity:failed-receipt",
+        parameter_digest="params:failed-receipt",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+    assert receipt.operation_id is not None
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT state FROM operation_attempts WHERE operation_id = ?", (receipt.operation_id,)
+        ).fetchone() == ("failed",)
+        assert conn.execute(
+            "SELECT status FROM operation_runs WHERE operation_id = ?", (receipt.operation_id,)
+        ).fetchone() == ("failed",)
+
+
+def test_tampered_preview_payload_refuses_before_audit_intent(tmp_path: Path) -> None:
+    """Execution cannot journal targets substituted into a reconstructed preview.
+
+    Anti-vacuity: deleting the typed hash validation consumes the token and
+    creates an audit run whose target set comes from the altered preview.
+    """
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "tampered-preview-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:tampered-preview",
+        archive_identity_digest="identity:tampered-preview",
+        parameter_digest="params:tampered-preview",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    tampered_preview = replace(preview, plan=replace(preview.plan, targets=()))
+
+    with pytest.raises(AuthorizationMismatchError, match="authority hash"):
+        executor.execute_bound(_binding(actuator), tampered_preview, authorization, object())
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM operation_runs").fetchone() == (0,)
+        assert conn.execute("SELECT state FROM operation_authorizations").fetchone() == ("active",)
 
 
 def test_blocked_finalization_rejects_targets_and_fails_parent_run(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from polylogue.operations.mutation_transaction import (
     MutationReceipt,
     MutationTarget,
     TokenExpiredError,
+    validate_mutation_plan_integrity,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from polylogue.storage.sqlite.audit_leaf import (
@@ -789,6 +790,7 @@ class AuditRepository:
         preview: MutationPreview,
         authorization: MutationAuthorization,
     ) -> str | None:
+        validate_mutation_plan_integrity(preview.plan)
         operation_id = cast(str, self._command_value("operation_id", f"operation:{secrets.token_urlsafe(18)}"))
         attempt_id = cast(str, self._command_value("attempt_id", f"attempt:{secrets.token_urlsafe(18)}"))
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
@@ -929,7 +931,11 @@ class AuditRepository:
             }.get(status, "applied"),
         )
         attempt_state = (
-            "unknown" if target_state == "unknown" else "failed" if target_state == "rejected" else "applied"
+            "unknown"
+            if target_state == "unknown"
+            else "failed"
+            if target_state in {"rejected", "failed"}
+            else "applied"
         )
         with self._connection() as conn:
             self._begin(conn)

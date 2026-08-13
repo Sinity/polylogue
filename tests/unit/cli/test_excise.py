@@ -290,6 +290,42 @@ class TestExciseMirrorPrimary:
             index_conn.close()
         assert count == 1
 
+    def test_replayed_primary_request_is_an_audited_noop(self, tmp_path: Path) -> None:
+        """The CLI route records the existing lifecycle assertion as idempotent.
+
+        Anti-vacuity: unconditionally applied actuator receipts make the
+        second completed audit run report one affected target instead of zero.
+        """
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="primary-replay")
+        command = [
+            "ops",
+            "excise",
+            "--session",
+            session_id,
+            "--reason",
+            "leak",
+            "--mode",
+            "primary",
+            "--yes",
+            "--json",
+        ]
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            first = runner.invoke(cli, command)
+            replay = runner.invoke(cli, command)
+
+        assert first.exit_code == replay.exit_code == 0
+        with sqlite3.connect(archive_root / "audit.db") as connection:
+            assert connection.execute("SELECT state FROM operation_targets ORDER BY rowid").fetchall() == [
+                ("applied",),
+                ("already_satisfied",),
+            ]
+            assert connection.execute(
+                "SELECT affected_count FROM operation_runs ORDER BY requested_at_ms, operation_id"
+            ).fetchall() == [(1,), (0,)]
+
     def test_primary_refuses_missing_audit_without_writing_a_lifecycle_request(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_session(archive_root, native_id="primary-missing-audit")

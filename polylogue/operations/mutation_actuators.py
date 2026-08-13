@@ -251,11 +251,11 @@ class SessionLifecycleRequestActuator:
         )
 
     def apply(self, plan: MutationPlan, args: SessionLifecycleRequestArgs) -> MutationReceipt:
-        from polylogue.security.lifecycle import submit_lifecycle_request
+        from polylogue.security.lifecycle import submit_lifecycle_request_with_outcome
 
         user_db = args.archive_root / "user.db"
         with sqlite3.connect(user_db) as connection:
-            assertion_id = submit_lifecycle_request(
+            submission = submit_lifecycle_request_with_outcome(
                 connection,
                 target_ref=make_target_ref("session", args.session_id),
                 mode=args.mode,
@@ -266,13 +266,13 @@ class SessionLifecycleRequestActuator:
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
-            status="applied",
+            status="applied" if submission.created else "already_satisfied",
             target_refs=plan.target_refs,
-            affected_count=1,
+            affected_count=1 if submission.created else 0,
             detail=None,
-            receipt_ref=assertion_id,
+            receipt_ref=submission.assertion_id,
             applied_at=plan.prepared_at,
-            domain_receipt={"assertion_id": assertion_id, "mode": args.mode},
+            domain_receipt={"assertion_id": submission.assertion_id, "mode": args.mode},
         )
 
 

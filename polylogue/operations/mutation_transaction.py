@@ -419,6 +419,28 @@ def build_typed_plan(
     )
 
 
+def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
+    """Reject a reconstructed preview whose typed authority fields were changed."""
+
+    target_refs = tuple(target.ref for target in plan.targets)
+    target_digest = compute_target_digest(plan.targets)
+    plan_hash = compute_typed_plan_hash(
+        operation=plan.operation,
+        operation_version=plan.operation_version,
+        archive_instance_id=plan.archive_instance_id,
+        archive_identity_digest=plan.archive_identity_digest,
+        parameter_digest=plan.parameter_digest,
+        target_digest=target_digest,
+        required_capabilities=plan.required_capabilities,
+        destructive_class=plan.destructive_class,
+        required_confirmation=plan.required_confirmation,
+        affected_tiers=plan.affected_tiers,
+        context=plan.context,
+    )
+    if plan.target_refs != target_refs or plan.target_digest != target_digest or plan.plan_hash != plan_hash:
+        raise AuthorizationMismatchError("preview plan payload does not match its authority hash")
+
+
 def build_plan(
     *,
     operation: str,
@@ -663,6 +685,7 @@ class OperationExecutor:
         """Issue a random one-time token bound to the persisted preview."""
 
         binding.validate()
+        validate_mutation_plan_integrity(preview.plan)
         plan = preview.plan
         required = set(plan.required_capabilities)
         if not required.issubset(principal.capabilities):
@@ -706,6 +729,7 @@ class OperationExecutor:
         """Consume a bound token, journal intent, apply, and finalize honestly."""
 
         binding.validate()
+        validate_mutation_plan_integrity(preview.plan)
         if authorization.preview_ref != preview.preview_ref or authorization.token is None:
             raise AuthorizationMismatchError("authorization is not bound to this preview")
         if (
@@ -965,4 +989,5 @@ __all__ = [
     "compute_target_digest",
     "compute_typed_plan_hash",
     "make_target_ref",
+    "validate_mutation_plan_integrity",
 ]
