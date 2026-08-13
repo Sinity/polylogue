@@ -52,7 +52,7 @@ new ones land), so an exact split is not durable; re-measure with
 ``frontier_clusters`` entries with ``len(beads) > 1`` rather than trusting a
 frozen number. The plain any-overlap graph (``_build_overlap_graph`` /
 ``_connected_components``) is kept as a general-purpose utility (also used
-by ``devtools workspace lane-brief`` and other footprint tooling) but is no
+by footprint and overlap tooling) but is no
 longer used to shape the FRONTIER-READY cluster output.
 
 Usage:

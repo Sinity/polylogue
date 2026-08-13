@@ -377,8 +377,10 @@ workflow, not optional conveniences — use them at the point named, every time:
 - **Before claiming a batch of ready beads**: `devtools workspace bead-cluster`
   — footprint/overlap/contention clustering so overlapping-file beads land on
   one branch instead of colliding across parallel lanes.
-- **When dispatching a worktree-isolated lane**: `devtools workspace lane-brief
-  <ids> --out <path>` for its dispatch prompt (footprint, prior art, hazards).
+- **When dispatching a worktree-isolated lane**: give the worker the current
+  Bead acceptance criteria, verified file ownership, relevant prior commits,
+  concrete non-goals, and exact verification commands directly. Do not insert
+  a generated Markdown packet between the current evidence and the worker.
 - **Before opening a non-draft PR for a Bead lane**: render the versioned
   carrier with `devtools workspace pr-scope render --input <scope.json>`, put
   it in the PR body beside the human whole-Bead disposition matrix, then run
