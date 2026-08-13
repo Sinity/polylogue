@@ -6,7 +6,7 @@ from types import ModuleType
 import pytest
 
 import devtools.__main__ as devtools_main
-from devtools.command_catalog import COMMANDS, CommandSpec, verification_lab_command_specs
+from devtools.command_catalog import COMMAND_SPECS, COMMANDS, CommandSpec, verification_lab_command_specs
 
 
 def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFixture[str]) -> None:
@@ -14,26 +14,16 @@ def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFix
     payload = json.loads(capsys.readouterr().out)
     commands = {entry["name"] for entry in payload["commands"]}
     assert payload["surfaces"]["verification_lab"] == [spec.name for spec in verification_lab_command_specs()]
-    assert "lab graph" in commands
-    assert "lab probe capture-regression" in commands
-    assert "lab probe cost-reconciliation" in commands
-    assert "render devtools-reference" in commands
-    assert "status" in commands
+    assert commands == {spec.name for spec in COMMAND_SPECS}
 
 
 def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands"]) == 0
     captured = capsys.readouterr()
     assert "lab check surface:" in captured.out
-    assert "lab smoke" in captured.out
-    assert "lab schema generate" in captured.out
-    assert "lab schema promote" in captured.out
-    assert "lab schema audit" in captured.out
     assert "generated surfaces:" in captured.out
-    assert "lab graph" in captured.out
-    assert "lab probe capture-regression" in captured.out
-    assert "lab probe cost-reconciliation" in captured.out
-    assert "render devtools-reference" in captured.out
+    for spec in COMMAND_SPECS:
+        assert spec.name in captured.out
 
 
 def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatch) -> None:

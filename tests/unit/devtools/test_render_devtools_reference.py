@@ -4,30 +4,35 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from devtools import render_devtools_reference
+from devtools.command_catalog import (
+    control_plane_command,
+    featured_command_specs,
+    grouped_command_specs,
+    verification_lab_command_specs,
+)
 from devtools.render_support import write_if_changed
 
 
 def test_build_command_catalog_includes_discovery_and_commands() -> None:
     rendered = render_devtools_reference.build_command_catalog()
 
-    assert "## Core Loop" in rendered
-    assert "## Executable Lab Checks" in rendered
-    assert "devtools --list-commands --json" in rendered
-    assert "devtools status --json" in rendered
-    assert "not a proof ledger or end-user archive workflow" in rendered
-    assert "| `devtools lab graph` | Render the runtime artifact and operation graph. |" in rendered
-    assert (
-        "| `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |"
-        in rendered
-    )
-    assert (
-        "| `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |"
-        in rendered
-    )
-    assert "### Lab Checks" in rendered
-    assert "| `devtools render all` |" in rendered
-    assert "| `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate" in rendered
-    assert "Common forms: `devtools status`" in rendered
+    assert rendered.startswith("<!-- BEGIN GENERATED: devtools-command-catalog -->")
+    assert rendered.endswith("<!-- END GENERATED: devtools-command-catalog -->")
+    for command in (
+        control_plane_command("--help"),
+        control_plane_command("--list-commands"),
+        control_plane_command("--list-commands", "--json"),
+        control_plane_command("status"),
+        control_plane_command("status", "--json"),
+    ):
+        assert command in rendered
+    for spec in verification_lab_command_specs():
+        assert f"| `{spec.invocation}` | {spec.use_when or spec.description} |" in rendered
+    for spec in featured_command_specs():
+        assert f"- `{spec.invocation}`: {spec.use_when or spec.description}" in rendered
+    for specs in grouped_command_specs().values():
+        for spec in specs:
+            assert f"| `{spec.invocation}` | {spec.description} |" in rendered
 
 
 def test_replace_marked_section_updates_catalog_block() -> None:
