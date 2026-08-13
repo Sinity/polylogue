@@ -309,8 +309,10 @@ static gates and then invokes pytest-testmon for affected-test selection from
 the current source, dependency, and Python-version state. The pytest step
 covers unit, property, fuzz, and integration tests while excluding the
 separately operated `tests/benchmarks` performance surface. It uses
-`--testmon-forceselect` for affected selection, with one parallel lane and one
-serial `load_sensitive`/`tui` lane over the same native environment. Use
+`--testmon-forceselect` for affected selection, with one parallel `not
+load_sensitive` lane and one serial `load_sensitive` lane over the same native
+environment. `tui` is a category marker and remains parallel unless a test is
+also explicitly `load_sensitive`. Use
 `devtools verify --all` for the complete correctness corpus; there is no
 manual seed or repair command.
 

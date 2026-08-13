@@ -50,6 +50,10 @@ _ENVIRONMENT_INPUTS = (
     "pytest.ini",
     "tox.ini",
     "setup.cfg",
+    # Keep the conventional repository-root hook as an absent-path sentinel:
+    # creating it changes collection even though it was not present when the
+    # previous environment was named.
+    "conftest.py",
     "devtools/checkout_guard.py",
     "devtools/testmon_bootstrap.py",
     "devtools/verify.py",
@@ -154,6 +158,7 @@ def _declared_pytest_plugin_names(root: Path) -> set[str]:
     """Read static local plugin declarations that pytest loads at collection."""
     names: set[str] = set()
     candidates = set(root.glob("tests/**/conftest.py"))
+    candidates.add(root / "conftest.py")
     for path in root.glob("tests/**/*.py"):
         try:
             source = path.read_text(encoding="utf-8")
@@ -263,6 +268,19 @@ def _is_docstring(node: ast.stmt, *, first: bool) -> bool:
     )
 
 
+def _is_type_checking_guard(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == "TYPE_CHECKING"
+        or (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "typing"
+            and node.attr == "TYPE_CHECKING"
+        )
+    )
+
+
 def _body_is_executable(body: list[ast.stmt]) -> bool:
     for index, node in enumerate(body):
         if _is_docstring(node, first=index == 0):
@@ -276,6 +294,12 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
         ):
             continue
         if isinstance(node, ast.AnnAssign) and node.value is None:
+            continue
+        if isinstance(node, ast.If) and _is_type_checking_guard(node.test):
+            # The guarded body is deliberately invisible at runtime. An else
+            # branch does execute and therefore retains ordinary classification.
+            if _body_is_executable(node.orelse):
+                return True
             continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.decorator_list or node.args.defaults or any(value is not None for value in node.args.kw_defaults):

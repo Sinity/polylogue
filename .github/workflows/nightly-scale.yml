@@ -1,6 +1,6 @@
 name: Nightly Scale
 
-# Runs the large-tier scale fixtures (issue #1183) outside the normal
+# Runs the explicit large benchmark nodes outside the normal
 # CI critical path, captures benchmark results as structured JSON, and
 # compares against the committed baseline to detect regressions (#1220).
 #
@@ -41,16 +41,18 @@ jobs:
           python-version: "3.14"
       - run: uv sync --extra dev --frozen
 
-      - name: Run large-tier scale tests
+      - name: Run large benchmark campaign
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
         run: |
-          uv run pytest -q --tb=short --ignore=tests/integration \
-            -m "scale_large" -p no:randomly -n 0 \
+          uv run pytest -q --tb=short -p no:randomly -n 0 \
             --benchmark-json=nightly-results.json \
             --benchmark-group-by=group \
-            tests/benchmarks
+            'tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[xxl-mega-session]' \
+            tests/benchmarks/test_daemon_convergence.py::test_convergence_huge_session_memory_bounded \
+            tests/benchmarks/test_scale_tiers.py::test_bench_50k_fts_search_returns_results \
+            tests/benchmarks/test_scale_tiers.py::test_bench_50k_list_sessions
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7

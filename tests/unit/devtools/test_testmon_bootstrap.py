@@ -29,6 +29,25 @@ def test_ast_classification_distinguishes_declarations_from_execution(tmp_path: 
     assert classify_source_ast(executable) == "executable"
 
 
+def test_ast_classification_treats_type_checking_guards_as_declarations(tmp_path: Path) -> None:
+    declarations = tmp_path / "protocols.py"
+    declarations.write_text(
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from polylogue.archive.models import Session\n\n"
+        "class SessionReader:\n"
+        "    session: 'Session'\n"
+        "    def read(self) -> 'Session': ...\n",
+        encoding="utf-8",
+    )
+
+    assert classify_source_ast(declarations) == "declaration-only"
+
+    declarations.write_text(declarations.read_text(encoding="utf-8") + "\nVALUE = build_runtime_value()\n")
+
+    assert classify_source_ast(declarations) == "executable"
+
+
 def test_executable_paths_require_current_runtime_modules_but_allow_deletion(tmp_path: Path) -> None:
     module = tmp_path / "polylogue" / "runtime.py"
     module.parent.mkdir()
@@ -72,6 +91,17 @@ def test_environment_digest_changes_with_collection_semantics(
         )
         == 5
     )
+
+
+def test_environment_digest_changes_when_root_conftest_is_added(tmp_path: Path) -> None:
+    initial = _testmon_environment_digest(tmp_path)
+
+    (tmp_path / "conftest.py").write_text(
+        "def pytest_collection_modifyitems(items):\n    items.reverse()\n",
+        encoding="utf-8",
+    )
+
+    assert _testmon_environment_digest(tmp_path) != initial
 
 
 def test_inactive_runtime_helper_does_not_force_fresh_environment(tmp_path: Path) -> None:
