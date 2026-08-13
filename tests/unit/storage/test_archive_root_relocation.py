@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,12 @@ from polylogue.operations.archive_root_relocation import (
     apply_archive_root_relocation,
     prepare_archive_root_relocation,
 )
+from polylogue.operations.archive_root_relocation import (
+    _sealed_receipt as _sealed_relocation_receipt,
+)
+from polylogue.operations.archive_root_relocation import (
+    _write_receipt as _write_relocation_receipt,
+)
 from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
     _assert_complete_source_semantic_delta,
@@ -27,7 +34,18 @@ from polylogue.operations.historical_source_continuity_recovery import (
     apply_historical_source_continuity_recovery,
     load_historical_source_continuity_recovery_plan,
 )
-from polylogue.storage.blob_ref_liveness import BlobRefLivenessCandidate
+from polylogue.operations.historical_source_continuity_recovery import (
+    _sealed_receipt as _sealed_continuity_receipt,
+)
+from polylogue.operations.historical_source_continuity_recovery import (
+    _write_receipt as _write_continuity_receipt,
+)
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+from polylogue.storage.blob_ref_liveness import (
+    BlobRefLivenessCandidate,
+    BlobRefLivenessCandidateDigest,
+    classify_blob_ref_liveness,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
@@ -36,6 +54,7 @@ from polylogue.storage.sqlite.durable_change_train import (
 )
 from polylogue.storage.sqlite.migration_runner import (
     apply_durable_change_train,
+    capture_durable_database_evidence,
     capture_durable_restart_convergence,
     prove_durable_change_train,
     record_durable_writer_release,
@@ -89,6 +108,73 @@ def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
     assert after == before
+
+
+def test_plan_rejects_mutated_manifest_and_stale_authenticated_receipt(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """The old-path HMAC cannot bypass manifest-byte or closed-package binding."""
+    old_root = workspace_env["archive_root"]
+    first = backup_archive(output_dir=tmp_path / "first", profile="full_evidence", verify=True)
+    second = backup_archive(output_dir=tmp_path / "second", profile="full_evidence", verify=True)
+    assert first.ok and first.output_path is not None
+    assert second.ok and second.output_path is not None
+    first_manifest = Path(first.output_path) / "manifest.json"
+    first_receipt = Path(first.output_path) / "verification-receipt.json"
+    second_receipt = Path(second.output_path) / "verification-receipt.json"
+    original_manifest = first_manifest.read_bytes()
+    original_receipt = first_receipt.read_bytes()
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+
+    first_manifest.write_bytes(original_manifest + b"\n")
+    with pytest.raises(ArchiveRootRelocationError, match="does not match manifest"):
+        prepare_archive_root_relocation(
+            old_root=old_root,
+            new_root=new_root,
+            backup_manifest=first_manifest,
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+    first_manifest.write_bytes(original_manifest)
+    first_receipt.write_bytes(second_receipt.read_bytes())
+    with pytest.raises(ArchiveRootRelocationError, match="does not match manifest"):
+        prepare_archive_root_relocation(
+            old_root=old_root,
+            new_root=new_root,
+            backup_manifest=first_manifest,
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+    first_receipt.write_bytes(original_receipt)
+    assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
+
+
+def test_plan_rejects_byte_identical_copied_archive_with_new_inodes(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Authenticated pre-move inode facts distinguish a move from copytree bytes."""
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch)
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    new_root = tmp_path / "copied"
+    shutil.copytree(old_root, new_root, symlinks=True)
+    assert (old_root / "source.db").read_bytes() == (new_root / "source.db").read_bytes()
+    assert (old_root / "source.db").stat().st_ino != (new_root / "source.db").stat().st_ino
+
+    with pytest.raises(ArchiveRootRelocationError, match="inode continuity"):
+        prepare_archive_root_relocation(
+            old_root=old_root,
+            new_root=new_root,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+    assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
 
 
 def test_rebind_rewrites_only_the_released_source_identity_fields(
@@ -153,7 +239,9 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
     )
 
 
-def _released_moved_source_train(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _released_moved_source_train(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *, include_orphan_blob_ref: bool = False
+) -> Path:
     """Build a real released source train over a temporary SQLite source tier."""
     from tests.unit.storage import test_durable_change_train as trains
 
@@ -181,12 +269,48 @@ def _released_moved_source_train(root: Path, monkeypatch: pytest.MonkeyPatch) ->
     )
     released = release_durable_change_train(train, evidence_ref="proof:released")
     assert released.apply_evidence is not None
+    assert released.proof is not None
+    source_post = released.apply_evidence.post
+    source_proof = released.proof
+    if include_orphan_blob_ref:
+        with sqlite3.connect(source) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT;
+                CREATE TABLE blob_refs (
+                    blob_hash BLOB NOT NULL,
+                    ref_type TEXT NOT NULL,
+                    ref_id TEXT NOT NULL,
+                    source_path TEXT,
+                    size_bytes INTEGER NOT NULL,
+                    acquired_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (blob_hash, ref_type, ref_id)
+                ) STRICT;
+                INSERT INTO blob_refs VALUES (X'02', 'attachment', 'deleted', NULL, 2, 2);
+                """
+            )
+            source_post = replace(
+                capture_durable_database_evidence(connection, ArchiveTier.SOURCE),
+                observed_at_ms=released.apply_evidence.post.observed_at_ms,
+            )
+        source_proof = replace(
+            released.proof,
+            fresh_ddl_parity=replace(
+                released.proof.fresh_ddl_parity,
+                migrated_inventory_sha256=source_post.schema_inventory_sha256,
+            ),
+            restart_convergence=replace(
+                released.proof.restart_convergence,
+                observed_schema_inventory_sha256=source_post.schema_inventory_sha256,
+            ),
+        )
     historical = replace(
         released,
         apply_evidence=replace(
             released.apply_evidence,
-            post=replace(released.apply_evidence.post, archive_identity_digest="b" * 64),
+            post=replace(source_post, archive_identity_digest="b" * 64),
         ),
+        proof=source_proof,
     )
     manifest_root = root / ".maintenance-state" / "durable-change-trains"
     (manifest_root / ".bootstrap").unlink()
@@ -196,30 +320,34 @@ def _released_moved_source_train(root: Path, monkeypatch: pytest.MonkeyPatch) ->
     return manifest
 
 
-def _legacy_zero_candidate_receipt(path: Path, *, old_root: Path, pre_manifest: Path) -> None:
+def _legacy_liveness_receipt(
+    path: Path,
+    *,
+    old_root: Path,
+    pre_manifest: Path,
+    candidates: tuple[BlobRefLivenessCandidate, ...],
+) -> None:
     """Encode the exact pre-#3868 shape: no backup digest or postcondition field."""
-    path.write_text(
-        json.dumps(
-            {
-                "kind": "blob_ref_liveness_reconciliation",
-                "phase": "prepared",
-                "source_db": str(old_root / "source.db"),
-                "backup_manifest": str(pre_manifest),
-                "candidate_count": 0,
-                "candidate_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-            }
-        )
-        + "\n"
-        + json.dumps(
-            {
-                "kind": "blob_ref_liveness_reconciliation",
-                "phase": "committed",
-                "deleted_count": 0,
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    digest = BlobRefLivenessCandidateDigest()
+    for candidate in candidates:
+        digest.update(candidate)
+    records = [
+        {
+            "kind": "blob_ref_liveness_reconciliation",
+            "phase": "prepared",
+            "source_db": str(old_root / "source.db"),
+            "backup_manifest": str(pre_manifest),
+            "candidate_count": len(candidates),
+            "candidate_digest": digest.hexdigest(),
+        },
+        *({"kind": "candidate", **candidate.to_dict()} for candidate in candidates),
+        {
+            "kind": "blob_ref_liveness_reconciliation",
+            "phase": "committed",
+            "deleted_count": len(candidates),
+        },
+    ]
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
 def _write_liveness_delta_database(path: Path, *, keep_body: str = "kept", include_candidate: bool = True) -> None:
@@ -291,11 +419,104 @@ def test_historical_source_delta_tags_sqlite_storage_classes_and_rejects_refresh
     target = tmp_path / "outside"
     target.mkdir()
     (state / "source-continuity-refreshes").symlink_to(target, target_is_directory=True)
-    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="not a real directory"):
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="unsafe"):
         _write_refresh_receipt(
             state / "source-continuity-refreshes" / ("a" * 64 + ".json"),
             {"refresh_sha256": "a" * 64},
         )
+    assert not tuple(target.iterdir())
+
+
+def test_receipt_directory_swap_cannot_redirect_either_operation_outside_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child swapped to a symlink after mkdir is rejected before external writes."""
+    root = tmp_path / "archive"
+    state = root / ".maintenance-state"
+    state.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = os.mkdir
+
+    def swapped_mkdir(path: str, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        real_mkdir(path, mode=mode, dir_fd=dir_fd)
+        os.rmdir(path, dir_fd=dir_fd)
+        os.symlink(outside, path, target_is_directory=True, dir_fd=dir_fd)
+
+    relocation = _sealed_relocation_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256="a" * 64,
+        authorization="a" * 64,
+        manifest_before_sha256=(),
+        manifest_after_sha256=(),
+        resume_command="resume relocation",
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "mkdir", swapped_mkdir)
+        with pytest.raises(ArchiveRootRelocationError, match="unsafe"):
+            _write_relocation_receipt(
+                state / "archive-root-relocations" / ("a" * 64 + ".json"),
+                relocation,
+                expected=None,
+            )
+    (state / "archive-root-relocations").unlink()
+
+    continuity = _sealed_continuity_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256="b" * 64,
+        authorization="b" * 64,
+        train_before_sha256="c" * 64,
+        train_after_sha256=None,
+        refresh_receipt_sha256="d" * 64,
+        resume_command="resume continuity",
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(os, "mkdir", swapped_mkdir)
+        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="unsafe"):
+            _write_continuity_receipt(
+                state / "historical-source-continuity-recoveries" / ("b" * 64 + ".json"),
+                continuity,
+                expected=None,
+            )
+
+    assert not tuple(outside.iterdir())
+
+
+def test_receipt_writers_never_create_through_a_symlinked_maintenance_state(tmp_path: Path) -> None:
+    """Missing receipt children cannot make ``mkdir`` traverse an external state target."""
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    relocation_root = tmp_path / "relocation-archive"
+    relocation_root.mkdir()
+    (relocation_root / ".maintenance-state").symlink_to(outside, target_is_directory=True)
+    relocation = _sealed_relocation_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256="e" * 64,
+        authorization="e" * 64,
+        manifest_before_sha256=(),
+        manifest_after_sha256=(),
+        resume_command="resume relocation",
+    )
+    with pytest.raises(ArchiveRootRelocationError, match="unsafe"):
+        _write_relocation_receipt(
+            relocation_root / ".maintenance-state" / "archive-root-relocations" / ("e" * 64 + ".json"),
+            relocation,
+            expected=None,
+        )
+
+    continuity_root = tmp_path / "continuity-archive"
+    continuity_root.mkdir()
+    (continuity_root / ".maintenance-state").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="unsafe"):
+        _write_refresh_receipt(
+            continuity_root / ".maintenance-state" / "source-continuity-refreshes" / ("f" * 64 + ".json"),
+            {"refresh_sha256": "f" * 64},
+        )
+
+    assert not tuple(outside.iterdir())
 
 
 def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
@@ -310,15 +531,28 @@ def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
     from polylogue.storage.sqlite import durable_change_train as trains
 
     old_root = workspace_env["archive_root"]
-    manifest = _released_moved_source_train(old_root, monkeypatch)
+    manifest = _released_moved_source_train(old_root, monkeypatch, include_orphan_blob_ref=True)
     pre_backup = backup_archive(output_dir=tmp_path / "pre", profile="rebuildable_cache_exclude", verify=True)
-    post_backup = backup_archive(output_dir=tmp_path / "post", profile="rebuildable_cache_exclude", verify=True)
     assert pre_backup.ok and pre_backup.output_path is not None
-    assert post_backup.ok and post_backup.output_path is not None
+    with sqlite3.connect(f"file:{old_root / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
+        prior = classify_blob_ref_liveness(connection)
+    assert prior.orphaned_count == 1
+    assert prior.candidates[0].ref_id == "deleted"
     pre_manifest = Path(pre_backup.output_path) / "manifest.json"
-    post_manifest = Path(post_backup.output_path) / "manifest.json"
     legacy_receipt = tmp_path / "legacy-liveness.jsonl"
-    _legacy_zero_candidate_receipt(legacy_receipt, old_root=old_root, pre_manifest=pre_manifest)
+    _legacy_liveness_receipt(
+        legacy_receipt,
+        old_root=old_root,
+        pre_manifest=pre_manifest,
+        candidates=prior.candidates,
+    )
+    with sqlite3.connect(old_root / "source.db") as connection:
+        connection.execute(
+            "DELETE FROM blob_refs WHERE blob_hash = X'02' AND ref_type = 'attachment' AND ref_id = 'deleted'"
+        )
+    post_backup = backup_archive(output_dir=tmp_path / "post", profile="rebuildable_cache_exclude", verify=True)
+    assert post_backup.ok and post_backup.output_path is not None
+    post_manifest = Path(post_backup.output_path) / "manifest.json"
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
     moved_manifest = new_root / manifest.relative_to(old_root)
@@ -356,7 +590,7 @@ def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
     plan = load_historical_source_continuity_recovery_plan(plan_path)
     with monkeypatch.context() as scoped:
         scoped.setattr(
-            "polylogue.operations.historical_source_continuity_recovery.running_daemon_pid",
+            "polylogue.maintenance.offline_guard.running_daemon_pid",
             lambda _config: 4242,
         )
         with pytest.raises(HistoricalSourceContinuityRecoveryError, match="daemon to be stopped"):
@@ -477,9 +711,27 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
         stopped_daemon_evidence_ref="proof:daemon-stopped",
         single_writer_evidence_ref="proof:archive-ownership-lock",
     )
+    assert plan.old_root_inode == plan.new_root_inode
+    assert all(item.old_inode == item.inode for item in plan.tiers)
     assert database_before == {
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
+    with OwnedArchiveLocation.acquire(ArchiveLocation.resolve(new_root), owner_id="held-by-another-operation"):
+        with pytest.raises(ArchiveRootRelocationError, match="exclusive archive ownership"):
+            apply_archive_root_relocation(
+                root=new_root,
+                plan=plan,
+                authorization=plan.plan_sha256,
+            )
+    with monkeypatch.context() as scoped:
+        scoped.setattr("polylogue.maintenance.offline_guard.running_daemon_pid", lambda _config: 4242)
+        with pytest.raises(ArchiveRootRelocationError, match="daemon to be stopped"):
+            apply_archive_root_relocation(
+                root=new_root,
+                plan=plan,
+                authorization=plan.plan_sha256,
+            )
+    assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
     with monkeypatch.context() as scoped:
         scoped.setattr(
             "polylogue.operations.archive_root_relocation.rebind_released_source_train_archive_identity",
@@ -490,15 +742,11 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
                 root=new_root,
                 plan=plan,
                 authorization=plan.plan_sha256,
-                stopped_daemon_evidence_ref="proof:daemon-stopped",
-                single_writer_evidence_ref="proof:archive-ownership-lock",
             )
     result = apply_archive_root_relocation(
         root=new_root,
         plan=plan,
         authorization=plan.plan_sha256,
-        stopped_daemon_evidence_ref="proof:daemon-stopped",
-        single_writer_evidence_ref="proof:archive-ownership-lock",
     )
     assert result.state == "committed"
     assert (
@@ -506,8 +754,6 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
             root=new_root,
             plan=plan,
             authorization=plan.plan_sha256,
-            stopped_daemon_evidence_ref="proof:daemon-stopped",
-            single_writer_evidence_ref="proof:archive-ownership-lock",
         ).state
         == "committed"
     )
