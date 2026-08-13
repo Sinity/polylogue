@@ -94,7 +94,7 @@ def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate
             for label, _command in verify.build_verify_steps(
                 quick=quick,
                 lab=lab,
-                skip_slow=True,
+                testmon_environment="env-digest" if not quick else "",
             )
         ]
         assert labels.count("lab policy schema-versioning") == 1
@@ -104,7 +104,6 @@ def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate
         for label, _command in verify.build_verify_steps(
             quick=True,
             lab=False,
-            skip_slow=True,
             commit=True,
         )
     ]

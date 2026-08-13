@@ -12,8 +12,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-import pytest
-
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 
@@ -26,7 +24,6 @@ def _measure(db_path: Path, record_limit: int | None) -> float:
     return (time.perf_counter() - start) * 1000
 
 
-@pytest.mark.scale_small
 def test_schema_check_completes_quickly(named_seeded_archive: Callable[[str], Path]) -> None:
     """Smoke: verify_raw_corpus finishes and returns a valid report."""
     db = named_seeded_archive("schema-small")
@@ -34,7 +31,6 @@ def test_schema_check_completes_quickly(named_seeded_archive: Callable[[str], Pa
     assert ms < 30_000, f"10-record corpus took {ms:.0f} ms; expected <30s"
 
 
-@pytest.mark.scale_medium
 def test_schema_check_linear_scaling(named_seeded_archive: Callable[[str], Path]) -> None:
     """Wall time must grow sub-quadratically across record limits.
 

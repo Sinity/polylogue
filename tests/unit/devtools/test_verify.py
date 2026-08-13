@@ -20,7 +20,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.testmon_bootstrap import executable_python_paths
-from devtools.verification_contracts import TerminalAuthorization, VerificationScope
+from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -86,7 +86,7 @@ def _pytest_marker_expr(command: list[str]) -> str:
 
 
 def test_quick_verify_omits_pytest() -> None:
-    steps = build_verify_steps(quick=True, lab=False, skip_slow=False)
+    steps = build_verify_steps(quick=True, lab=False)
 
     labels = [label for label, _command in steps]
     assert labels == [
@@ -117,7 +117,6 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
     steps = build_verify_steps(
         quick=False,
         lab=False,
-        skip_slow=False,
         testmon_mode=mode,
         testmon_environment="env-digest",
     )
@@ -141,29 +140,23 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
         assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
 
 
-def test_native_marker_policy_composes_slow_and_scale_tiers() -> None:
-    default_steps = build_verify_steps(
-        quick=False,
-        lab=False,
-        skip_slow=True,
-        testmon_environment="env-digest",
-    )
-    lab_steps = build_verify_steps(
+def test_native_marker_policy_only_excludes_benchmarks() -> None:
+    complete_steps = build_verify_steps(
         quick=False,
         lab=True,
-        skip_slow=False,
         testmon_environment="env-digest",
     )
 
-    default_expr = _pytest_marker_expr(next(command for label, command in default_steps if "parallel" in label))
-    lab_expr = _pytest_marker_expr(next(command for label, command in lab_steps if "parallel" in label))
-    assert all(term in default_expr for term in ("not benchmark", "not slow", "not scale_medium", "not scale_large"))
-    assert "not scale_medium" not in lab_expr
-    assert "not scale_large" in lab_expr
+    complete_command = next(command for label, command in complete_steps if "parallel" in label)
+    complete_expr = _pytest_marker_expr(complete_command)
+    assert "not benchmark" in complete_expr
+    assert "not slow" not in complete_expr
+    assert "--ignore=tests/benchmarks" in complete_command
+    assert "--ignore=tests/integration" not in complete_command
 
 
 def test_lab_verify_delegates_to_lab_smoke() -> None:
-    steps = build_verify_steps(quick=True, lab=True, skip_slow=False)
+    steps = build_verify_steps(quick=True, lab=True)
 
     labels = [label for label, _command in steps]
     assert "lab smoke" in labels
@@ -3527,7 +3520,7 @@ def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[
         rc = main(["--quick", "--json"])
 
     assert rc == 1
-    assert calls == [label for label, _command in build_verify_steps(quick=True, lab=False, skip_slow=False)]
+    assert calls == [label for label, _command in build_verify_steps(quick=True, lab=False)]
     payload = json.loads(capsys.readouterr().out)
     assert payload["exit_code"] == 1
     assert payload["verification_scope"] == "non-test"
@@ -3843,7 +3836,6 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     assert _release_baseline_allowed(
         selection_mode="bootstrap",
         verification_scope=VerificationScope.RELEASE_BASELINE,
-        terminal_authorization=None,
         exit_code=0,
         checkout_stable=True,
         aggregate=aggregate,
@@ -3851,23 +3843,6 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     assert not _release_baseline_allowed(
         selection_mode="affected",
         verification_scope=VerificationScope.AFFECTED,
-        terminal_authorization=None,
-        exit_code=0,
-        checkout_stable=True,
-        aggregate=aggregate,
-    )
-    assert not _release_baseline_allowed(
-        selection_mode="full",
-        verification_scope=VerificationScope.NARROW_TERMINAL,
-        terminal_authorization=None,
-        exit_code=0,
-        checkout_stable=True,
-        aggregate=aggregate,
-    )
-    assert _release_baseline_allowed(
-        selection_mode="full",
-        verification_scope=VerificationScope.NARROW_TERMINAL,
-        terminal_authorization=TerminalAuthorization.NARROW_TERMINAL.value,
         exit_code=0,
         checkout_stable=True,
         aggregate=aggregate,
@@ -3882,73 +3857,10 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         assert not _release_baseline_allowed(
             selection_mode="full",
             verification_scope=VerificationScope.RELEASE_BASELINE,
-            terminal_authorization=None,
             exit_code=0,
             checkout_stable=True,
             aggregate=broken,
         )
-
-
-@pytest.mark.parametrize(
-    ("authorization", "expected_release"),
-    [(None, False), ("narrow-terminal", True)],
-)
-def test_skip_slow_command_requires_typed_narrow_terminal_authorization(
-    authorization: str | None,
-    expected_release: bool,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class _StableMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
-        def finish(self) -> CheckoutMutationObservation:
-            return CheckoutMutationObservation(changed=False, unavailable=False)
-
-    preparation = SimpleNamespace(
-        environment_name="env",
-        selection_mode="bootstrap",
-        removed_paths=(),
-        copied_from=None,
-    )
-    native_state = SimpleNamespace(
-        valid=True,
-        status="valid",
-        reason="current",
-        environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
-        missing_executable_paths=(),
-    )
-    aggregate = {
-        "complete_corpus_covered": True,
-        "terminal_green": True,
-        "cleanup": {"complete": True},
-        "containment": {"complete": True},
-        "deadline": {"met": True},
-    }
-    argv = ["--all", "--skip-slow", "--json"]
-    if authorization is not None:
-        argv.extend(("--terminal-authorization", authorization))
-
-    with (
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
-        patch("devtools.verify.prepare_native_testmon_environment", return_value=preparation),
-        patch("devtools.verify._native_environment_after_run", return_value=native_state),
-        patch("devtools.verify.build_verify_steps", return_value=[]),
-        patch("devtools.verify.aggregate_native_testmon_run", return_value=aggregate),
-        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-    ):
-        assert main(argv) == 0
-
-    assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is expected_release
 
 
 def test_collection_failure_still_persists_native_run_aggregate(

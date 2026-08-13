@@ -20,10 +20,9 @@ devtools test tests/unit/pipeline -x
 POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # override workers
 
 # Raw pytest still works for ad-hoc needs the wrapper does not cover:
-pytest -x --ignore=tests/integration
-pytest tests/unit/storage/test_hybrid_laws.py
+pytest -x tests/unit/storage/test_hybrid_laws.py
 
-# Explicit full non-integration pytest diagnostic
+# Complete correctness corpus (unit/property/fuzz/integration; benchmarks excluded)
 devtools verify --all
 
 # Full Nix/CI parity
@@ -67,12 +66,12 @@ checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
 the affected-test selector and runs the selected default lane with an adaptive
 worker pool (up to 12, override with `POLYLOGUE_PYTEST_WORKERS`) so
 a stale or genuinely broad affected set cannot spend the full timeout in one
-multi-GiB Python process. Because the default gate also applies marker filters
-for scale tiers, it passes `--testmon-forceselect` so pytest-testmon still
-selects affected tests instead of letting pytest marker selection expand the
-run. Bootstrap and full diagnostic runs use the same policy, which budgets roughly
-768 MiB per worker, reserves host and tmpfs headroom, and reduces concurrency
-when memory pressure is elevated.
+multi-GiB Python process. It passes `--testmon-forceselect` so pytest-testmon
+selects affected tests within the two semantic lanes. Bootstrap and full runs
+cover unit, property, fuzz, and integration correctness tests while excluding
+the separately operated `tests/benchmarks` performance surface. They budget
+roughly 768 MiB per worker, reserve host and tmpfs headroom, and reduce
+concurrency when memory pressure is elevated.
 
 Every native run has exactly two semantic lanes over one environment and one
 database: a parallel lane for tests that are neither `load_sensitive` nor

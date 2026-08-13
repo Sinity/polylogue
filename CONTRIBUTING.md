@@ -294,7 +294,7 @@ local pytest selection is accelerated by pytest-testmon.
 
 ```bash
 devtools verify            # static/generated gates + pytest-testmon affected tests
-devtools verify --all      # explicit full non-integration pytest diagnostic
+devtools verify --all      # complete correctness corpus; benchmarks excluded
 devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
@@ -306,12 +306,13 @@ environment when collection semantics change.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
-the current source, dependency, and Python-version state. The default pytest
-step combines marker filters with `--testmon-forceselect` so scale-tier
-deselection does not silently expand the run back to the whole suite. It uses
-one parallel lane and one serial `load_sensitive`/`tui` lane over the same
-native environment. Use `devtools verify --all` for an explicit full
-diagnostic; there is no manual seed or repair command.
+the current source, dependency, and Python-version state. The pytest step
+covers unit, property, fuzz, and integration tests while excluding the
+separately operated `tests/benchmarks` performance surface. It uses
+`--testmon-forceselect` for affected selection, with one parallel lane and one
+serial `load_sensitive`/`tui` lane over the same native environment. Use
+`devtools verify --all` for the complete correctness corpus; there is no
+manual seed or repair command.
 
 Add `devtools release build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)

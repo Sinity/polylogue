@@ -75,7 +75,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
-from devtools.verification_contracts import TerminalAuthorization, VerificationScope
+from devtools.verification_contracts import VerificationScope
 from devtools.verify_runs import VERIFICATION_INVOCATION_ID_ENV as VERIFICATION_INVOCATION_ID_ENV
 from devtools.verify_runs import VERIFICATION_RECEIPT_PATH_ENV as VERIFICATION_RECEIPT_PATH_ENV
 
@@ -86,7 +86,6 @@ _DEFAULT_POLL_INTERVAL_S = 20
 _MERGE_AUTHORIZING_VERIFICATION_SCOPES = frozenset(
     {
         VerificationScope.AFFECTED.value,
-        VerificationScope.NARROW_TERMINAL.value,
         VerificationScope.RELEASE_BASELINE.value,
     }
 )
@@ -227,11 +226,6 @@ def _invocation_receipt(
         return None
     if _verification_scope(payload) is None or _release_baseline_permission(payload) is None:
         return None
-    terminal_authorization = payload.get("terminal_authorization")
-    if terminal_authorization is not None and terminal_authorization not in {
-        authorization.value for authorization in TerminalAuthorization
-    }:
-        return None
     return payload
 
 
@@ -249,14 +243,6 @@ def _verification_scope(payload: Mapping[str, Any] | None) -> str | None:
         return None
     value = payload.get("verification_scope")
     return value if value in {scope.value for scope in VerificationScope} else None
-
-
-def _terminal_authorization(payload: Mapping[str, Any] | None) -> str | None:
-    """Read terminal authorization from an invocation-bound receipt."""
-    if payload is None:
-        return None
-    value = payload.get("terminal_authorization")
-    return value if value in {authorization.value for authorization in TerminalAuthorization} else None
 
 
 def _base_sha(info: dict[str, Any]) -> str | None:
@@ -370,7 +356,6 @@ def cmd_record(pr: int, command: str) -> int:
         "command": command,
         "verification_scope": _verification_scope(verification_receipt),
         "release_baseline_allowed": _release_baseline_permission(verification_receipt),
-        "terminal_authorization": _terminal_authorization(verification_receipt),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),

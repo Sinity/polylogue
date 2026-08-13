@@ -340,8 +340,9 @@ testmon-affected set.
   invalid local state, optionally copies a matching main-checkout database,
   and automatically runs the complete correctness corpus when no valid native
   environment exists. Never ask an operator or agent to seed or repair it.
-- Reserve `devtools verify --all` (full non-integration run) for
-  harness/dependency changes or a final pre-PR diagnostic.
+- Reserve `devtools verify --all` (complete unit/property/fuzz/integration
+  correctness corpus; performance benchmarks excluded) for harness/dependency
+  changes or a final pre-PR diagnostic.
 - `devtools verify --quick` = format + lint + mypy + `render all --check`
   (no tests); it runs on `git push` via the pre-push hook. It is a fast gate,
   not a substitute for the default baseline before a PR.

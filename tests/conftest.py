@@ -40,6 +40,7 @@ from devtools.verify_runs import (
     resolve_pytest_basetemp_root,
 )
 from devtools.verify_runs import pytest_basetemp_claim_path as _basetemp_claim_path
+from tests.infra.archive_templates import clone_archive_template
 
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
 # before test execution can import product modules: a shared/editable venv's
@@ -59,7 +60,6 @@ except CheckoutImportMismatchError as _checkout_exc:
 
 pytest_plugins = (
     "tests.infra.corpus_fixtures",
-    "tests.infra.scale_fixtures",
     "tests.infra.frozen_clock",
     "tests.infra.clock_guard",
 )
@@ -84,10 +84,6 @@ if TYPE_CHECKING:
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite import SQLiteBackend
     from tests.infra.storage_records import SessionBuilder
-
-# ---------------------------------------------------------------------------
-# Scale markers for data-gravity and long-haul validation (Workstream H)
-# ---------------------------------------------------------------------------
 
 
 def _set_managed_pytest_identity(identity: tuple[str, str] | None) -> None:
@@ -146,20 +142,6 @@ def pytest_configure(config: pytest.Config) -> None:
         # devtools/checkout_guard.py for the full hazard writeup).
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
-    config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
-    # Tiered scale markers (issue #1183); definitions also live in
-    # pyproject.toml `markers` so xfail_strict + filterwarnings agree.
-    config.addinivalue_line(
-        "markers", "scale_small: small-tier scale fixture (~100 convs / ~1k msgs); default verify gate (#1183)"
-    )
-    config.addinivalue_line(
-        "markers", "scale_medium: medium-tier scale fixture (~1k convs / ~10k msgs); verify --lab gate (#1183)"
-    )
-    config.addinivalue_line(
-        "markers",
-        "scale_large: large-tier scale fixture (~10k convs / ~100k msgs); nightly CI / campaigns only (#1183)",
-    )
-
     if config.option.basetemp is not None:
         configured_basetemp = str(config.option.basetemp)
         run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
@@ -874,7 +856,7 @@ def workspace_env(
     # contract strictness. Keep validation deterministic and opt-in per test.
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    _clone_archive_template(empty_archive_template, archive_root)
+    clone_archive_template(empty_archive_template, archive_root)
 
     return {
         "archive_root": archive_root,
@@ -956,7 +938,7 @@ def cli_workspace(
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
 
-    _clone_archive_template(empty_archive_template, archive_root)
+    clone_archive_template(empty_archive_template, archive_root)
 
     return {
         "archive_root": archive_root,
@@ -966,28 +948,6 @@ def cli_workspace(
         "render_root": render_root,
         "db_path": db_path,
     }
-
-
-def _clone_archive_template(source: Path, destination: Path) -> None:
-    """Clone one immutable empty archive into a test-private workspace."""
-    destination.mkdir(parents=True, exist_ok=True)
-    try:
-        subprocess.run(
-            ["cp", "-a", "--reflink=auto", f"{source}/.", str(destination)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        shutil.copytree(source, destination, dirs_exist_ok=True)
-
-    bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    if bootstrap_marker.is_file():
-        from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-        bootstrap_marker.unlink()
-        _record_fresh_durable_bootstrap(destination)
 
 
 @pytest.fixture(scope="session")

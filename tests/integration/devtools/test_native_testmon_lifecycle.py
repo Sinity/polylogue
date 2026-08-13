@@ -22,16 +22,13 @@ from devtools.testmon_bootstrap import (
 from devtools.testmon_bootstrap import (
     testmon_environment_digest as _testmon_environment_digest,
 )
-from devtools.verify_runs import (
-    PYTEST_CANONICAL_REPORT_NAME,
-    VerifyRun,
-    aggregate_native_testmon_run,
-    aggregate_pytest_statistics,
-    append_verify_history,
-)
+from devtools.verify_runs import PYTEST_CANONICAL_REPORT_NAME
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-pytestmark = pytest.mark.uses_real_clock("coordinates real pytest subprocesses and an interrupt deadline")
+pytestmark = [
+    pytest.mark.uses_real_clock("coordinates real pytest subprocesses and an interrupt deadline"),
+    pytest.mark.timeout(90),
+]
 
 
 @dataclass(frozen=True)
@@ -66,7 +63,6 @@ cache_dir = ".cache/pytest"
 markers = [
   "load_sensitive: serial native-testmon lane",
   "tui: serial native-testmon lane",
-  "scale_large: excluded from the ordinary correctness corpus",
 ]
 """.lstrip(),
         encoding="utf-8",
@@ -311,7 +307,9 @@ def test_production_plain_verify_owns_bootstrap_warm_selection_deadline_and_hist
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "app.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
-    (repo / "tests" / "test_app.py").write_text(
+    integration_dir = repo / "tests" / "integration"
+    integration_dir.mkdir()
+    (integration_dir / "test_app.py").write_text(
         """
 import pytest
 
@@ -582,77 +580,61 @@ def test_removed_environment_or_dependency_edge_invalidates_native_state(tmp_pat
     assert missing.missing_executable_paths == ("app.py",)
 
 
-def test_two_real_lanes_form_one_run_aggregate_and_one_budget(tmp_path: Path) -> None:
+def test_environment_and_plugin_identity_changes_start_real_fresh_bootstraps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
-    (repo / "tests" / "test_lanes.py").write_text(
-        """
-import pytest
+    test_file = repo / "tests" / "test_identity.py"
+    test_file.write_text("def test_initial():\n    assert True\n", encoding="utf-8")
+    _commit_all(repo, "fixture")
 
-def test_parallel():
-    assert True
+    initial = prepare_native_testmon_environment(repo)
+    assert initial.selection_mode == "bootstrap"
+    assert [
+        result.completed.returncode
+        for result in _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=initial.environment_name)
+    ] == [0, 0]
 
-@pytest.mark.load_sensitive
-def test_serial():
-    assert True
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-ra")
+    environment_changed = prepare_native_testmon_environment(repo)
+    assert environment_changed.selection_mode == "bootstrap"
+    assert environment_changed.environment_name != initial.environment_name
+    assert [
+        result.completed.returncode
+        for result in _run_plain_verify_corpus(
+            repo, mode="bootstrap", environment_name=environment_changed.environment_name
+        )
+    ] == [0, 0]
 
-@pytest.mark.scale_large
-def test_excluded_from_correctness_corpus():
-    assert True
-""".lstrip(),
+    plugin = repo / "pytest_native_identity.py"
+    plugin.write_text(
+        "import pytest\n\n@pytest.fixture\ndef native_identity():\n    return 'v1'\n",
         encoding="utf-8",
     )
-    _commit_all(repo, "fixture")
-    preparation = prepare_native_testmon_environment(repo)
-    started = time.monotonic()
-    results = _run_plain_verify_corpus(
-        repo,
-        mode="bootstrap",
-        environment_name=preparation.environment_name,
-        base_marker="not scale_large",
+    test_file.write_text(
+        "def test_initial():\n    assert True\n\ndef test_plugin(native_identity):\n    assert native_identity == 'v1'\n",
+        encoding="utf-8",
     )
-    elapsed = time.monotonic() - started
-    state = inspect_native_testmon_environment(
-        repo / TESTMON_DATA_RELPATH, environment_name=preparation.environment_name
-    )
-    assert state.environment is not None
-    steps: list[dict[str, object]] = []
-    for lane, result in zip(("parallel", "serial"), results, strict=True):
-        statistics = aggregate_pytest_statistics(result.artifact_dir)
-        steps.append(
-            {
-                "semantic_lane": lane,
-                "exit": result.completed.returncode,
-                "duration_s": elapsed,
-                "artifact_dir": str(result.artifact_dir.relative_to(repo)),
-                "selected_count": result.selection["selected_count"],
-                "collection_duration_s": result.selection.get("collection_duration_s"),
-                "statistics": statistics,
-            }
-        )
-    aggregate = aggregate_native_testmon_run(
-        repo,
-        steps=steps,
-        environment_name=preparation.environment_name,
-        corpus_nodeids=state.environment.nodeids,
-        selection_mode="bootstrap",
-        invocation_duration_s=elapsed,
-        budget_s=3600,
-    )
-    run = VerifyRun(tier="testmon", argv=[], git_head="head", root=repo)
-    run.finish(exit_code=0, duration_s=elapsed, pytest_aggregate=aggregate)
-    durable = json.loads((run.run_dir / "run.json").read_text(encoding="utf-8"))
-    history_path = repo / "xdg-state" / "polylogue" / "devtools" / "verify-history.jsonl"
-    append_verify_history({"run_id": run.run_id, "pytest_aggregate": aggregate}, path=history_path)
-    history = json.loads(history_path.read_text(encoding="utf-8"))
+    monkeypatch.setenv("PYTEST_PLUGINS", "pytest_native_identity")
+    plugin_changed = prepare_native_testmon_environment(repo)
+    assert plugin_changed.selection_mode == "bootstrap"
+    assert plugin_changed.environment_name != environment_changed.environment_name
+    plugin_results = _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=plugin_changed.environment_name)
+    assert [result.completed.returncode for result in plugin_results] == [0, 0]
+    assert "tests/test_identity.py::test_plugin" in _selected(*plugin_results)
 
-    assert aggregate["corpus"]["count"] == 2
-    assert aggregate["environment"]["native_corpus_count"] == 3
-    assert aggregate["terminal_union_count"] == 2
-    assert [lane["lane"] for lane in aggregate["lanes"]] == ["parallel", "serial"]
-    assert aggregate["complete_corpus_covered"] is True
-    assert aggregate["terminal_green"] is True
-    assert aggregate["deadline"] == {"budget_s": 3600, "met": True}
-    assert durable["pytest_aggregate"] == aggregate
-    assert history["pytest_aggregate"] == aggregate
+    plugin.write_text(
+        "import pytest\n\n@pytest.fixture\ndef native_identity():\n    return 'v2'\n",
+        encoding="utf-8",
+    )
+    test_file.write_text(test_file.read_text(encoding="utf-8").replace("'v1'", "'v2'"), encoding="utf-8")
+    plugin_mutated = prepare_native_testmon_environment(repo)
+    assert plugin_mutated.selection_mode == "bootstrap"
+    assert plugin_mutated.environment_name != plugin_changed.environment_name
+    assert [
+        result.completed.returncode
+        for result in _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=plugin_mutated.environment_name)
+    ] == [0, 0]

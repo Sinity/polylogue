@@ -8,8 +8,8 @@ Tiers:
   --quick    Pre-push tier: all non-pytest gates (~15s warm).
   (default)  Baseline with pytest-testmon affected tests.
   --all/--full
-             Explicit full non-integration pytest diagnostic in the current
-             native testmon environment.
+             Complete pytest correctness corpus in the current native
+             testmon environment (performance benchmarks excluded).
   --lab      Default testmon baseline plus lab smoke and SLO checks.
 
 Output formats:
@@ -66,7 +66,7 @@ from devtools.testmon_bootstrap import (
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
 )
-from devtools.verification_contracts import TerminalAuthorization, VerificationScope
+from devtools.verification_contracts import VerificationScope
 from devtools.verify_runs import (
     CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
@@ -1663,7 +1663,6 @@ def _run(
                 "diagnosis": "pytest_resource_preflight_failed",
                 "error": str(exc),
                 "termination_reason": "pytest resource preflight refused basetemp admission",
-                "verification_scope": "narrow-terminal",
                 "release_baseline_allowed": False,
             }
             if run is not None and artifacts is not None:
@@ -2090,7 +2089,6 @@ def build_verify_steps(
     *,
     quick: bool,
     lab: bool,
-    skip_slow: bool,
     commit: bool = False,
     testmon_mode: str = "affected",
     testmon_environment: str = "",
@@ -2139,18 +2137,12 @@ def build_verify_steps(
         _report_dir = PYTEST_JUNIT_REPORT_DIR
         _report_dir.mkdir(parents=True, exist_ok=True)
         PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        # Scale-tier policy (issue #1183): default verify includes
-        # ``scale_small`` but excludes ``scale_medium`` / ``scale_large``.
-        # ``--lab`` lets the medium tier in; the large tier is reserved
-        # for nightly CI's direct pytest-benchmark execution.
-        scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
         pytest_cmd = [
             sys.executable,
             "-m",
             "pytest",
             "-q",
             "--tb=short",
-            "--ignore=tests/integration",
             # Benchmark files are an explicit campaign surface.  A number of
             # them are correctness-shaped and lack the benchmark marker, so a
             # marker expression alone cannot keep performance probes out of
@@ -2166,12 +2158,10 @@ def build_verify_steps(
         ]
         # Benchmark cases are an explicit campaign surface, not part of the
         # correctness corpus. Keeping them out here is important: a
-        # benchmark marker is not necessarily paired with ``slow`` or a scale
-        # marker, and the serial lane would otherwise spend minutes executing a
-        # performance probe before it can checkpoint any correctness nodes.
-        base_marker = f"not benchmark and {scale_marker_expr}"
-        if skip_slow:
-            base_marker = f"not slow and {base_marker}"
+        # benchmark marker is not necessarily present, and the serial lane
+        # would otherwise spend minutes executing a performance probe before
+        # it can checkpoint any correctness nodes.
+        base_marker = "not benchmark"
         if testmon_mode not in {"affected", "bootstrap", "full"}:
             raise ValueError(f"unknown native testmon mode: {testmon_mode}")
         if not testmon_environment:
@@ -2394,12 +2384,12 @@ def _planned_verification_scope(
     if args.quick or args.commit:
         return VerificationScope.NON_TEST
     if testmon_mode in {"bootstrap", "full"}:
-        return VerificationScope.NARROW_TERMINAL if args.skip_slow else VerificationScope.RELEASE_BASELINE
+        return VerificationScope.RELEASE_BASELINE
     return VerificationScope.AFFECTED
 
 
-def _pytest_profile(*, skip_slow: bool, lab: bool) -> str:
-    return f"slow={'exclude' if skip_slow else 'include'};scale={'medium' if lab else 'small'}"
+def _pytest_profile() -> str:
+    return "correctness=complete"
 
 
 def _remaining_invocation_budget(started_at: float) -> float:
@@ -2422,18 +2412,13 @@ def _release_baseline_allowed(
     *,
     selection_mode: str | None,
     verification_scope: VerificationScope,
-    terminal_authorization: str | None,
     exit_code: int,
     checkout_stable: bool,
     aggregate: Mapping[str, Any] | None,
 ) -> bool:
     if selection_mode not in {"bootstrap", "full"} or exit_code != 0 or not checkout_stable or aggregate is None:
         return False
-    scope_authorized = verification_scope == VerificationScope.RELEASE_BASELINE or (
-        verification_scope == VerificationScope.NARROW_TERMINAL
-        and terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
-    )
-    if not scope_authorized:
+    if verification_scope != VerificationScope.RELEASE_BASELINE:
         return False
     cleanup = aggregate.get("cleanup")
     containment = aggregate.get("containment")
@@ -2458,18 +2443,10 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Run the complete non-integration corpus in the current native testmon environment.",
+        help="Run the complete pytest correctness corpus (excluding performance benchmarks).",
     )
     parser.add_argument("--full", action="store_true", help="Alias for --all.")
     parser.add_argument("--commit", action="store_true", help="Pre-commit tier: format + lint + mypy only.")
-    parser.add_argument(
-        "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."
-    )
-    parser.add_argument(
-        "--terminal-authorization",
-        choices=[TerminalAuthorization.NARROW_TERMINAL.value],
-        help="Typed authorization for a narrow terminal verification that skips slow tests.",
-    )
     parser.add_argument(
         "--lab",
         action="store_true",
@@ -2494,9 +2471,6 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     full_requested = bool(args.all or args.full)
-    if args.terminal_authorization is not None and not (full_requested and args.skip_slow):
-        parser.error("--terminal-authorization requires --all or --full with --skip-slow")
-
     use_json = args.json if args.json is not None else not sys.stdout.isatty()
     tier = (
         "commit"
@@ -2529,7 +2503,7 @@ def _main(argv: list[str] | None = None) -> int:
             preparation = prepare_native_testmon_environment(
                 ROOT,
                 required_executable_paths=required_executable_paths,
-                pytest_profile=_pytest_profile(skip_slow=bool(args.skip_slow), lab=bool(args.lab)),
+                pytest_profile=_pytest_profile(),
             )
         except (NativeTestmonRepairError, PytestResourceError) as exc:
             sys.stderr.write(f"verify: native pytest-testmon preparation failed: {exc}\n")
@@ -2570,7 +2544,6 @@ def _main(argv: list[str] | None = None) -> int:
             quick=bool(args.quick),
             commit=bool(args.commit),
             lab=bool(args.lab),
-            skip_slow=bool(args.skip_slow),
             testmon_mode=testmon_mode or "affected",
             testmon_environment=preparation.environment_name if preparation is not None else "",
         )
@@ -2756,7 +2729,6 @@ def _main(argv: list[str] | None = None) -> int:
     release_baseline_allowed = _release_baseline_allowed(
         selection_mode=testmon_mode,
         verification_scope=planned_scope,
-        terminal_authorization=args.terminal_authorization,
         exit_code=exit_code,
         checkout_stable=checkout_stable,
         aggregate=pytest_aggregate,
@@ -2798,7 +2770,6 @@ def _main(argv: list[str] | None = None) -> int:
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": release_baseline_allowed,
-        "terminal_authorization": args.terminal_authorization,
     }
     if preparation is not None:
         history_entry["testmon_environment"] = {
@@ -2818,7 +2789,6 @@ def _main(argv: list[str] | None = None) -> int:
         diagnosis=run_diagnosis,
         verification_scope=verification_scope.value,
         release_baseline_allowed=release_baseline_allowed,
-        terminal_authorization=args.terminal_authorization,
         final_worktree_fingerprint=final_checkout_fingerprint,
         checkout_mutation_path=mutation_observation.observed_path,
         checkout_diagnosis=checkout_diagnosis,

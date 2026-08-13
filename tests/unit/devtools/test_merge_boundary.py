@@ -137,7 +137,6 @@ def _fake_run(
                         "exit_code": local_exit,
                         "verification_scope": "affected",
                         "release_baseline_allowed": False,
-                        "terminal_authorization": None,
                     }
                 )
             )
@@ -156,7 +155,6 @@ def _write_terminal_receipt(
     head: str = "merged-master",
     scope: str = "release-baseline",
     release_allowed: bool = True,
-    terminal_authorization: str | None = None,
 ) -> None:
     env = kwargs["env"]
     assert isinstance(env, dict)
@@ -170,7 +168,6 @@ def _write_terminal_receipt(
                 "exit_code": 0,
                 "verification_scope": scope,
                 "release_baseline_allowed": release_allowed,
-                "terminal_authorization": terminal_authorization,
             }
         )
     )
@@ -1009,47 +1006,6 @@ def test_record_full_verify_rejects_success_without_structured_release_permissio
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
-
-
-def test_record_full_verify_rejects_skip_slow_without_typed_authorization(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    merge_boundary._append_merge_entry(1, "sha1", "some title")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda _cmd, **_kwargs: MagicMock(
-            returncode=0,
-            stdout=json.dumps({"verification_scope": "narrow-terminal", "release_baseline_allowed": False}),
-            stderr="",
-        ),
-    )
-
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 1
-    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
-    assert merge_boundary.cmd_train_status(as_json=False) == 1
-
-
-def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    merge_boundary._append_merge_entry(1, "sha1", "some title")
-
-    def run(_cmd: list[str], **kwargs: Any) -> MagicMock:
-        _write_terminal_receipt(
-            kwargs,
-            scope="narrow-terminal",
-            terminal_authorization="narrow-terminal",
-        )
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 0
-    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is True
-    assert merge_boundary.cmd_train_status(as_json=False) == 0
 
 
 def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(

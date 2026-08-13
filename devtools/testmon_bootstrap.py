@@ -119,6 +119,7 @@ def _environment_input_paths(root: Path) -> tuple[str, ...]:
     paths = set(_ENVIRONMENT_INPUTS)
     patterns = (
         "devtools/pytest*.py",
+        "pytest*.py",
         "tests/**/conftest.py",
         "tests/infra/**/*.py",
     )

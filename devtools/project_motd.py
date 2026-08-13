@@ -158,7 +158,7 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> StatusSnaps
             "render_all_check": control_plane_command("render all", "--check"),
             "verify_quick": control_plane_command("verify", "--quick"),
             "build_package": control_plane_command("release build-package"),
-            "test_baseline": "pytest -q --ignore=tests/integration",
+            "test_baseline": control_plane_command("verify"),
         },
         "local_state": {
             "cache": ".cache/",

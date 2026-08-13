@@ -1606,7 +1606,6 @@ class VerifyRun:
         diagnosis: str | None = None,
         verification_scope: str | None = None,
         release_baseline_allowed: bool | None = None,
-        terminal_authorization: str | None = None,
         final_worktree_fingerprint: str | None = None,
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
@@ -1629,7 +1628,6 @@ class VerifyRun:
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed
-            self._payload["terminal_authorization"] = terminal_authorization
         self.write()
         return dict(self._payload)
 

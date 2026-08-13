@@ -126,7 +126,6 @@ def _fake_run(
                         "exit_code": local_exit,
                         "verification_scope": "affected",
                         "release_baseline_allowed": False,
-                        "terminal_authorization": None,
                     }
                 )
             )
@@ -227,7 +226,7 @@ def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.M
     assert receipt["exit_code"] == 0
 
 
-@pytest.mark.parametrize("command", ["devtools verify", "devtools verify --lab", "devtools verify --json --skip-slow"])
+@pytest.mark.parametrize("command", ["devtools verify", "devtools verify --lab", "devtools verify --json"])
 def test_check_accepts_affected_receipt_without_release_baseline_permission(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:
@@ -297,7 +296,6 @@ def test_record_rejects_stale_plausible_stdout_without_bound_receipt(
                     "exit_code": 0,
                     "verification_scope": "release-baseline",
                     "release_baseline_allowed": True,
-                    "terminal_authorization": None,
                 }
             ),
             stderr="",
@@ -317,9 +315,8 @@ def test_record_consumes_receipt_after_streamed_verifier_progress(
     pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
     base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
     payload = {
-        "verification_scope": "narrow-terminal",
+        "verification_scope": "affected",
         "release_baseline_allowed": False,
-        "terminal_authorization": "narrow-terminal",
     }
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -344,9 +341,8 @@ def test_record_consumes_receipt_after_streamed_verifier_progress(
     monkeypatch.setattr(subprocess, "run", _run)
     assert merge_gate.cmd_record(42, "devtools test tests/unit/foo.py") == 0
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
-    assert receipt["verification_scope"] == "narrow-terminal"
+    assert receipt["verification_scope"] == "affected"
     assert receipt["release_baseline_allowed"] is False
-    assert receipt["terminal_authorization"] == "narrow-terminal"
 
 
 def test_record_consumes_exact_invocation_receipt_when_verifier_writes_only_stderr(
@@ -373,7 +369,6 @@ def test_record_consumes_exact_invocation_receipt_when_verifier_writes_only_stde
                     "exit_code": 0,
                     "verification_scope": "affected",
                     "release_baseline_allowed": False,
-                    "terminal_authorization": None,
                 }
             )
         )
