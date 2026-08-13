@@ -3211,9 +3211,23 @@ def validate_archive_verification_registry(
         ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
         ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE,
     }
+    seen_names: set[str] = set()
+    seen_invariant_ids: set[str] = set()
     for spec in ARCHIVE_VERIFICATION_CHECKS:
+        if spec.name in seen_names:
+            errors.append(f"{spec.name}: duplicate check identity")
+        seen_names.add(spec.name)
         if spec.incident is None or not spec.incident.bead_id or not spec.incident.invariant_id:
             errors.append(f"{spec.name}: missing incident identity")
+        elif spec.incident.invariant_id != spec.name:
+            errors.append(
+                f"{spec.name}: incident invariant identity {spec.incident.invariant_id!r} "
+                "does not match the check identity"
+            )
+        elif spec.incident.invariant_id in seen_invariant_ids:
+            errors.append(f"{spec.name}: duplicate incident invariant identity {spec.incident.invariant_id!r}")
+        if spec.incident is not None and spec.incident.invariant_id:
+            seen_invariant_ids.add(spec.incident.invariant_id)
         if spec.ground_truth_universe is None or not spec.ground_truth_universe.tables:
             errors.append(f"{spec.name}: missing ground-truth universe")
         if not spec.execution_phases:

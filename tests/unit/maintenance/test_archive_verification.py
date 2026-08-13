@@ -2037,6 +2037,52 @@ def test_registry_rejects_closed_or_unknown_waiver_beads() -> None:
     validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "open"})
 
 
+def test_registry_rejects_duplicate_check_and_incident_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One embedded registry cannot silently acquire a duplicate mapping."""
+    from polylogue.maintenance import archive_verification as module
+
+    tier_schema = module.ARCHIVE_VERIFICATION_CHECKS[0]
+    source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
+    assert tier_schema.incident is not None
+    duplicate = replace(
+        source_coverage,
+        name=tier_schema.name,
+        incident=replace(source_coverage.incident, invariant_id=tier_schema.incident.invariant_id),
+    )
+    monkeypatch.setattr(
+        module,
+        "ARCHIVE_VERIFICATION_CHECKS",
+        tuple(
+            duplicate if spec.name == "source-index-coverage" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicate check identity"):
+        module.validate_archive_verification_registry()
+
+
+def test_registry_rejects_incident_identity_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check cannot point at a second, differently named incident concept."""
+    from polylogue.maintenance import archive_verification as module
+
+    source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
+    assert source_coverage.incident is not None
+    malformed = replace(
+        source_coverage,
+        incident=replace(source_coverage.incident, invariant_id="different-concept"),
+    )
+    monkeypatch.setattr(
+        module,
+        "ARCHIVE_VERIFICATION_CHECKS",
+        tuple(
+            malformed if spec.name == "source-index-coverage" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not match the check identity"):
+        module.validate_archive_verification_registry()
+
+
 def test_registry_execution_phase_projections_do_not_keep_handwritten_membership_lists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
