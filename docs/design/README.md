@@ -21,6 +21,7 @@ domain models rather than plans:
 | [Agent-first MCP](agent-first-mcp.md) | MCP surface doctrine (polylogue-t46.8, polylogue-rsad) |
 | [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements feeding horizon beads |
 | [Query-action workflows](../product/workflows.md) | Standing selection, cardinality, and executable-evidence guide |
+| [Incident 14:32 proof world](incident-1432-proof-world.md) | Shared deterministic adversarial corpus for the still-open proof-world work (polylogue-212.11) |
 | [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6) |
 | [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
 

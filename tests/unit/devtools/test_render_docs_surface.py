@@ -58,6 +58,18 @@ def test_render_outputs_rejects_an_unregistered_doc(tmp_path: Path) -> None:
         )
 
 
+def test_documentation_index_makes_linked_children_reachable(tmp_path: Path) -> None:
+    docs_root = tmp_path / "docs"
+    records = docs_root / "records"
+    records.mkdir(parents=True)
+    index = records / "README.md"
+    index.write_text("# Records\n\n- [Incident](incident.md)\n", encoding="utf-8")
+    (records / "incident.md").write_text("# Incident\n", encoding="utf-8")
+    entries = (DocsEntry("Records", "docs/records/README.md", "Investigation records.", "archive"),)
+
+    assert render_docs_surface.undocumented_paths(entries, docs_root=docs_root) == set()
+
+
 def test_render_outputs_rejects_duplicate_document_registration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

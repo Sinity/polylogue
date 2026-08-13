@@ -322,6 +322,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("Time Machine", "design/time-machine.md", "Vision note for reconstructing work over time.", "design"),
     _entry("Whole Product", "design/whole-product.md", "Product vision and system relationships.", "design"),
     # Historical and generated material
+    _entry("Audit Record Index", "audits/README.md", "Index of retained investigation records.", "archive"),
     _entry(
         "1498 Cascade Retrospective",
         "retro/2026-05-24-1498-cascade.md",

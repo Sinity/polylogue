@@ -113,6 +113,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 
 | Document | Description |
 |----------|-------------|
+| [Audit Record Index](audits/README.md) | Index of retained investigation records. |
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
 
