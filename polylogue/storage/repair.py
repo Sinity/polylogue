@@ -6487,6 +6487,7 @@ def _repair_raw_materialization(
             try:
                 census_historical_revision_evidence(
                     archive_root,
+                    active_index_path=index_db,
                     selected_raw_ids=[seed],
                     max_payload_bytes=max_payload_bytes,
                     ingest_workers=ingest_workers,
@@ -7009,6 +7010,7 @@ def _repair_raw_materialization(
         try:
             part = backfill_historical_revision_evidence(
                 archive_root,
+                active_index_path=index_db,
                 selected_raw_ids=[raw_id],
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
