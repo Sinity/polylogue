@@ -139,16 +139,16 @@ def pytest_configure(config: pytest.Config) -> None:
             os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
         try:
             root, label = _managed_pytest_temp_root()
+            basetemp = root / f"pytest-polylogue-{checkout}-{run_id}"
+            if not hasattr(config, "workerinput"):
+                _mark_basetemp_owner(basetemp)
         except PytestResourceError as exc:
             # Fail loudly and early: refuse before pytest starts collecting,
             # rather than crashing an unrelated command later with a bare
             # OSError once the chosen basetemp fills up.
             raise pytest.UsageError(f"pytest: {exc}") from exc
-        basetemp = root / f"pytest-polylogue-{checkout}-{run_id}"
         config.option.basetemp = str(basetemp)
         os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
-        if not hasattr(config, "workerinput"):
-            _mark_basetemp_owner(basetemp)
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
 
 
@@ -184,15 +184,15 @@ def _mark_basetemp_owner(basetemp: Path) -> None:
     """Claim a managed tree outside pytest's replaceable basetemp directory."""
     handle = _acquire_basetemp_claim_lock(basetemp, blocking=False)
     if handle is None:
-        # A nested raw pytest can inherit the controller's run id and its
-        # exact basetemp. That controller still owns the durable claim; do
-        # not block the nested process on a lock it cannot usefully replace.
-        return
+        raise PytestResourceError(f"managed pytest basetemp is already claimed: {basetemp}")
     pid = os.getpid()
     start_ticks = _process_start_ticks(pid)
     identity = f"{pid}:{start_ticks}" if start_ticks is not None else str(pid)
-    with contextlib.suppress(OSError):
+    try:
         _basetemp_claim_path(basetemp, kind="managed").write_text(identity, encoding="utf-8")
+    except OSError as exc:
+        _release_basetemp_claim_lock(basetemp)
+        raise PytestResourceError(f"cannot record managed pytest basetemp claim: {basetemp}") from exc
 
 
 def _mark_caller_owned_basetemp(basetemp: Path) -> None:
@@ -389,7 +389,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     try:
         if str(basetemp_path) == os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"):
             shutil.rmtree(basetemp_path, ignore_errors=True)
-            clear_managed_pytest_basetemp_claim(basetemp_path)
+            if not basetemp_path.exists():
+                clear_managed_pytest_basetemp_claim(basetemp_path)
     finally:
         _release_basetemp_claim_lock(basetemp_path)
 

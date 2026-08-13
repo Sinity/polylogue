@@ -875,8 +875,17 @@ def clear_managed_pytest_basetemp_claim(basetemp: Path) -> None:
     """Remove the durable claim after a managed run's tree is reclaimed."""
     with contextlib.suppress(OSError):
         pytest_basetemp_claim_path(basetemp, kind="managed").unlink()
-    with contextlib.suppress(OSError):
-        pytest_basetemp_claim_path(basetemp, kind="lock").unlink()
+
+
+def pytest_tmpfs_budget_exceeded(sample: Mapping[str, Any], *, budget_kb: int) -> bool:
+    """Return whether a sampled basetemp exceeds its tmpfs allocation cap.
+
+    ``st_size`` remains forensic evidence because sparse files can expose a
+    large logical extent. Tmpfs capacity is consumed by allocated blocks, so
+    the admission limit must use that physical measure.
+    """
+    allocated_kb = sample.get("basetemp_allocated_kb")
+    return isinstance(allocated_kb, int) and allocated_kb > budget_kb
 
 
 def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:

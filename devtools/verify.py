@@ -98,6 +98,7 @@ from devtools.verify_runs import (
     latest_event_from_paths,
     normalize_pytest_basetemp_env,
     pytest_basetemp_path,
+    pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     utc_now,
     xdist_uninterruptible_stall_reason,
@@ -1446,15 +1447,14 @@ def _run_pytest_with_heartbeat(
                 and sample_now - last_resource_sample >= resource_interval_s
             ):
                 resource_sample = sampler.sample(event="sample")
-                basetemp_size_kb = resource_sample.get("basetemp_size_kb")
                 if (
                     termination_reason is None
                     and tmpfs_budget_kb is not None
-                    and isinstance(basetemp_size_kb, int)
-                    and basetemp_size_kb > tmpfs_budget_kb
+                    and pytest_tmpfs_budget_exceeded(resource_sample, budget_kb=tmpfs_budget_kb)
                 ):
+                    basetemp_allocated_kb = int(resource_sample["basetemp_allocated_kb"])
                     termination_reason = (
-                        f"pytest tmpfs budget exceeded: {basetemp_size_kb / 1024:.1f} MiB "
+                        f"pytest tmpfs budget exceeded: {basetemp_allocated_kb / 1024:.1f} MiB allocated "
                         f"> {tmpfs_budget_kb / 1024:.0f} MiB"
                     )
                 if resource_sample.get("all_xdist_workers_uninterruptible") is True:
@@ -1629,13 +1629,15 @@ def _run(
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
     interrupted = False
     pytest_containment_quiescent = True
+    containment_error: str | None = None
     if is_pytest:
         try:
             try:
                 result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
-            except PytestContainmentError:
+            except PytestContainmentError as exc:
                 pytest_containment_quiescent = False
-                raise
+                containment_error = str(exc)
+                result = subprocess.CompletedProcess(args=cmd, returncode=125, stdout="", stderr=str(exc))
             except KeyboardInterrupt:
                 interrupted = True
                 result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
@@ -1658,6 +1660,9 @@ def _run(
         metadata["run_id"] = run.run_id if run is not None else None
         metadata["artifact_dir"] = str(artifacts.step_dir.relative_to(Path.cwd()))
     if is_pytest:
+        if containment_error is not None:
+            metadata["diagnosis"] = "pytest_containment_unproven"
+            metadata["termination_reason"] = f"pytest containment did not quiesce: {containment_error}"
         metadata.update(_pytest_command_metadata(cmd))
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s()
@@ -1753,6 +1758,7 @@ def _run(
             peak_swap_pss: int | None = None
             peak_process_count = 0
             peak_basetemp_size_kb: int | None = None
+            peak_basetemp_allocated_kb: int | None = None
             with artifacts.resources_path.open(encoding="utf-8") as resource_handle:
                 for line in resource_handle:
                     if not line.strip():
@@ -1781,6 +1787,11 @@ def _run(
                         peak_basetemp_size_kb = max(
                             peak_basetemp_size_kb or 0,
                             int(row["basetemp_size_kb"]),
+                        )
+                    if row.get("basetemp_allocated_kb") is not None:
+                        peak_basetemp_allocated_kb = max(
+                            peak_basetemp_allocated_kb or 0,
+                            int(row["basetemp_allocated_kb"]),
                         )
             if sample_count:
                 resource_summary = {
@@ -1820,6 +1831,10 @@ def _run(
                     "peak_basetemp_size_mb": (
                         round(peak_basetemp_size_kb / 1024, 1) if peak_basetemp_size_kb is not None else None
                     ),
+                    "peak_basetemp_allocated_kb": peak_basetemp_allocated_kb,
+                    "peak_basetemp_allocated_mb": (
+                        round(peak_basetemp_allocated_kb / 1024, 1) if peak_basetemp_allocated_kb is not None else None
+                    ),
                 }
                 metadata.update(resource_summary)
         diagnosis = classify_pytest_result(
@@ -1831,6 +1846,8 @@ def _run(
             summary=summary if isinstance(summary, dict) else None,
             progress_event=metadata.get("progress_event") if isinstance(metadata.get("progress_event"), str) else None,
         )
+        if containment_error is not None:
+            diagnosis = "pytest_containment_unproven"
         if interrupted:
             diagnosis = "pytest_interrupted"
             metadata["termination_reason"] = "operator_interrupt"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -359,6 +360,71 @@ def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_p
     assert verify_runs.pytest_basetemp_claim_path(explicit, kind="caller-owned").is_file()
 
 
+def test_claim_lock_inode_stays_contended_after_managed_claim_clear(tmp_path: Path) -> None:
+    """A second process cannot lock a replacement inode for this basetemp."""
+    basetemp = tmp_path / "pytest-polylogue-lock-inode"
+    conftest._mark_caller_owned_basetemp(basetemp)
+    lock_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="lock")
+    try:
+        verify_runs.clear_managed_pytest_basetemp_claim(basetemp)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import fcntl, sys\n"
+                    "with open(sys.argv[1], 'a+', encoding='utf-8') as handle:\n"
+                    "    try:\n"
+                    "        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                    "    except BlockingIOError:\n"
+                    "        raise SystemExit(0)\n"
+                    "raise SystemExit(1)\n"
+                ),
+                str(lock_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        conftest._release_basetemp_claim_lock(basetemp)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert lock_path.is_file()
+
+
+def test_managed_basetemp_claim_collision_is_rejected_across_processes(tmp_path: Path) -> None:
+    basetemp = tmp_path / "pytest-polylogue-managed-collision"
+    conftest._mark_basetemp_owner(basetemp)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path\n"
+                    "import sys\n"
+                    "import tests.conftest as conftest\n"
+                    "from devtools.verify_runs import PytestResourceError\n"
+                    "try:\n"
+                    "    conftest._mark_basetemp_owner(Path(sys.argv[1]))\n"
+                    "except PytestResourceError:\n"
+                    "    raise SystemExit(0)\n"
+                    "raise SystemExit(1)\n"
+                ),
+                str(basetemp),
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    finally:
+        conftest._release_basetemp_claim_lock(basetemp)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_stale_sweep_and_explicit_claim_are_atomic_for_one_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -556,6 +622,26 @@ def test_sessionfinish_reclaims_only_its_managed_basetemp(
     conftest.pytest_sessionfinish(cast("pytest.Session", session), 1)
 
     assert not basetemp.exists()
+
+
+def test_sessionfinish_retains_managed_claim_after_failed_rmtree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    basetemp = tmp_path / "pytest-polylogue-rmtree-failure"
+    basetemp.mkdir()
+    managed_claim = verify_runs.pytest_basetemp_claim_path(basetemp, kind="managed")
+    managed_claim.write_text("999999999", encoding="utf-8")
+    session = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(basetemp), numprocesses=0)))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "run-123")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(basetemp))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(shutil, "rmtree", lambda _path, **_kwargs: None)
+
+    conftest.pytest_sessionfinish(cast("pytest.Session", session), 1)
+
+    assert basetemp.exists()
+    assert managed_claim.is_file()
 
 
 def test_sessionfinish_retains_explicit_diagnostic_basetemp(

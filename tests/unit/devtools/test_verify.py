@@ -88,6 +88,7 @@ from devtools.verify_runs import (
     cleanup_managed_pytest_basetemp,
     pytest_basetemp_known_roots,
     pytest_basetemp_path,
+    pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     resolve_pytest_basetemp_root,
     xdist_uninterruptible_stall_reason,
@@ -1302,7 +1303,7 @@ def test_run_cleans_and_finalizes_only_after_contained_interrupt(tmp_path: Path)
     assert order == ["contained", "cleanup", "finalize"]
 
 
-def test_run_leaves_basetemp_and_step_open_when_containment_fails(tmp_path: Path) -> None:
+def test_run_terminalizes_containment_failure_without_cleaning_basetemp(tmp_path: Path) -> None:
     run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
 
     with (
@@ -1311,12 +1312,50 @@ def test_run_leaves_basetemp_and_step_open_when_containment_fails(tmp_path: Path
             side_effect=verify.PytestContainmentError("still running"),
         ),
         patch("devtools.verify.cleanup_managed_pytest_basetemp") as cleanup,
-        pytest.raises(verify.PytestContainmentError, match="still running"),
     ):
-        _run("pytest focused", ["pytest", "-n", "0"], run=run)
+        rc, _elapsed, metadata = _run("pytest focused", ["pytest", "-n", "0"], run=run)
 
     cleanup.assert_not_called()
-    assert run._payload["steps"][0]["status"] == "running"
+    assert rc == 125
+    assert metadata["diagnosis"] == "pytest_containment_unproven"
+    assert run._payload["steps"][0]["status"] == "failed"
+    assert run._payload["steps"][0]["termination_reason"].startswith("pytest containment did not quiesce")
+
+
+def test_verify_main_records_containment_failure_as_terminal_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    history_path = tmp_path / "verify-history.jsonl"
+    monkeypatch.setattr(verify, "HISTORY_PATH", history_path)
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest containment", ["pytest", "-n", "0"])]),
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
+        patch(
+            "devtools.verify._run_pytest_with_heartbeat",
+            side_effect=verify.PytestContainmentError("owned child still running"),
+        ),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp") as cleanup,
+        patch("devtools.verify._notify"),
+    ):
+        rc = main(["--json"])
+
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    run_json = next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json"))
+    run_payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 125
+    cleanup.assert_not_called()
+    assert payload["diagnosis"] == "pytest_containment_unproven"
+    assert history["exit_code"] == 125
+    assert history["diagnosis"] == "pytest_containment_unproven"
+    assert run_payload["status"] == "failed"
+    assert run_payload["steps"][0]["status"] == "failed"
 
 
 def test_print_history_accepts_verify_and_focused_run_records(
@@ -2376,6 +2415,33 @@ def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypat
     assert first["basetemp_allocated_kb"] == 2
     assert second["basetemp_size_kb"] == 1
     assert calls == 1
+
+
+def test_sparse_basetemp_enforces_allocated_tmpfs_bytes_and_retains_logical_evidence(tmp_path: Path) -> None:
+    env = {
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path),
+        "POLYLOGUE_PYTEST_TMPFS": "1",
+        "POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S": "1",
+    }
+    run_id = "sparse-physical-accounting"
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id=run_id, env=env)
+    basetemp.mkdir(parents=True)
+    with (basetemp / "sparse.bin").open("wb") as handle:
+        handle.seek(64 * 1024 * 1024)
+        handle.write(b"x")
+    sampler = ResourceSampler(
+        root_pid=os.getpid(), run_id=run_id, root=tmp_path, env=env, output_path=tmp_path / "resources.jsonl"
+    )
+
+    sample = sampler.sample(event="sample")
+    logical_kb = sample["basetemp_size_kb"]
+    allocated_kb = sample["basetemp_allocated_kb"]
+
+    assert isinstance(logical_kb, int)
+    assert isinstance(allocated_kb, int)
+    assert logical_kb > allocated_kb
+    assert not pytest_tmpfs_budget_exceeded(sample, budget_kb=allocated_kb + 1)
+    assert pytest_tmpfs_budget_exceeded(sample, budget_kb=allocated_kb - 1)
 
 
 def test_pytest_basetemp_path_tracks_tmpfs_opt_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
