@@ -27,6 +27,7 @@ def _configured_pytest(config: Any) -> Generator[None, None, None]:
     try:
         yield
     finally:
+        conftest.pytest_unconfigure(cast("pytest.Config", config))
         conftest._release_basetemp_claim_lock(basetemp)
 
 
@@ -349,6 +350,7 @@ def test_explicit_basetemp_clears_stale_managed_identity_from_prior_in_process_r
         addinivalue_line=lambda *args, **kwargs: None,
         rootpath=tmp_path,
     )
+    monkeypatch.setattr(conftest, "_ACTIVE_MANAGED_PYTEST_IDENTITIES", [])
     monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "prior-run")
     monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(explicit))
 
@@ -358,6 +360,52 @@ def test_explicit_basetemp_clears_stale_managed_identity_from_prior_in_process_r
         explicit.mkdir(exist_ok=True)
 
     assert explicit.exists()
+
+
+def test_nested_explicit_basetemp_restores_active_outer_managed_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ambient_identity = (
+        os.environ.get("POLYLOGUE_PYTEST_RUN_ID"),
+        os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"),
+    )
+    assert all(ambient_identity)
+    _shm, _scratch = _make_real_candidates(monkeypatch, tmp_path)
+    for name in (
+        "POLYLOGUE_VERIFY_RUN_ID",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_CHECKOUT",
+        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    outer = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    explicit = tmp_path / "nested-diagnostic"
+    nested = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(explicit)),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    with _configured_pytest(outer):
+        outer_identity = (
+            os.environ["POLYLOGUE_PYTEST_RUN_ID"],
+            os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"],
+        )
+        with _configured_pytest(nested):
+            assert "POLYLOGUE_PYTEST_RUN_ID" not in os.environ
+            assert "POLYLOGUE_PYTEST_MANAGED_BASETEMP" not in os.environ
+        assert os.environ["POLYLOGUE_PYTEST_RUN_ID"] == outer_identity[0]
+        assert os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] == outer_identity[1]
+
+    assert os.environ.get("POLYLOGUE_PYTEST_RUN_ID") == ambient_identity[0]
+    assert os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP") == ambient_identity[1]
 
 
 def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_path: Path) -> None:

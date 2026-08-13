@@ -69,6 +69,15 @@ pytest_plugins = (
     "tests.infra.clock_guard",
 )
 
+# Pytest supports nested in-process ``pytest.main()`` calls. Keep the active
+# controller identity process-local so an explicit nested basetemp can suspend
+# and later restore the outer run's managed ownership markers. A completed
+# earlier invocation is not active and therefore cannot authorize restoration
+# of stale environment values.
+_ACTIVE_MANAGED_PYTEST_IDENTITIES: list[tuple[str, str]] = []
+_MANAGED_IDENTITY_ATTR = "_polylogue_managed_pytest_identity"
+_SUSPENDED_IDENTITY_ATTR = "_polylogue_suspended_managed_pytest_identity"
+
 if TYPE_CHECKING:
     from click.testing import CliRunner
 
@@ -106,17 +115,37 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
     if config.option.basetemp is not None:
+        configured_basetemp = str(config.option.basetemp)
+        run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
+        managed_basetemp = os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP")
+        supervised_managed = (
+            run_id is not None
+            and os.environ.get("POLYLOGUE_VERIFY_RUN_ID") == run_id
+            and managed_basetemp == configured_basetemp
+        )
+        if supervised_managed and not hasattr(config, "workerinput"):
+            assert run_id is not None
+            identity = (run_id, configured_basetemp)
+            _ACTIVE_MANAGED_PYTEST_IDENTITIES.append(identity)
+            setattr(config, _MANAGED_IDENTITY_ATTR, identity)
+            return
         # A second in-process pytest.main() inherits os.environ from the first
         # run. Explicit basetemp ownership is per invocation, so stale managed
         # markers must not turn the caller-owned diagnostic tree into cleanup
         # fodder at session finish.
         if not hasattr(config, "workerinput"):
+            if _ACTIVE_MANAGED_PYTEST_IDENTITIES:
+                setattr(config, _SUSPENDED_IDENTITY_ATTR, _ACTIVE_MANAGED_PYTEST_IDENTITIES[-1])
             os.environ.pop("POLYLOGUE_PYTEST_RUN_ID", None)
             os.environ.pop("POLYLOGUE_PYTEST_MANAGED_BASETEMP", None)
-            _mark_caller_owned_basetemp(Path(str(config.option.basetemp)))
+            _mark_caller_owned_basetemp(Path(configured_basetemp))
         return
 
     if config.option.basetemp is None:
+        if not hasattr(config, "workerinput") and _ACTIVE_MANAGED_PYTEST_IDENTITIES:
+            setattr(config, _SUSPENDED_IDENTITY_ATTR, _ACTIVE_MANAGED_PYTEST_IDENTITIES[-1])
+            os.environ.pop("POLYLOGUE_PYTEST_RUN_ID", None)
+            os.environ.pop("POLYLOGUE_PYTEST_MANAGED_BASETEMP", None)
         normalized_basetemp_env = normalize_pytest_basetemp_env(os.environ)
         configured_root = normalized_basetemp_env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
         unmanaged_tmpfs_root = configured_root is not None and verify_runs._is_beneath(
@@ -150,7 +179,33 @@ def pytest_configure(config: pytest.Config) -> None:
             raise pytest.UsageError(f"pytest: {exc}") from exc
         config.option.basetemp = str(basetemp)
         os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
+        if not hasattr(config, "workerinput"):
+            identity = (run_id, str(basetemp))
+            _ACTIVE_MANAGED_PYTEST_IDENTITIES.append(identity)
+            setattr(config, _MANAGED_IDENTITY_ATTR, identity)
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Restore or retire process-local managed ownership after one invocation."""
+    suspended = getattr(config, _SUSPENDED_IDENTITY_ATTR, None)
+    if isinstance(suspended, tuple) and len(suspended) == 2:
+        run_id, basetemp = suspended
+        os.environ["POLYLOGUE_PYTEST_RUN_ID"] = str(run_id)
+        os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
+
+    managed = getattr(config, _MANAGED_IDENTITY_ATTR, None)
+    if not (isinstance(managed, tuple) and len(managed) == 2):
+        return
+    for index in range(len(_ACTIVE_MANAGED_PYTEST_IDENTITIES) - 1, -1, -1):
+        if _ACTIVE_MANAGED_PYTEST_IDENTITIES[index] == managed:
+            del _ACTIVE_MANAGED_PYTEST_IDENTITIES[index]
+            break
+    run_id, basetemp = managed
+    if os.environ.get("POLYLOGUE_PYTEST_RUN_ID") == run_id:
+        os.environ.pop("POLYLOGUE_PYTEST_RUN_ID", None)
+    if os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP") == basetemp:
+        os.environ.pop("POLYLOGUE_PYTEST_MANAGED_BASETEMP", None)
 
 
 # Per-run basetemps are freed on sessionfinish. A run killed before
@@ -474,6 +529,7 @@ _MANAGED_VERIFY_ENV = frozenset(
         "POLYLOGUE_VERIFY_RUN_ID",
         "POLYLOGUE_PYTEST_EVENTS_DIR",
         "POLYLOGUE_PYTEST_EVENTS_PATH",
+        "POLYLOGUE_PYTEST_RUN_ID",
         "POLYLOGUE_PYTEST_SELECTION_PATH",
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
         "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",

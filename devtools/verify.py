@@ -3778,11 +3778,21 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     final_checkout_fingerprint = worktree_fingerprint()
-    if (
-        checkout_fingerprint != "unavailable"
-        and final_checkout_fingerprint != "unavailable"
-        and final_checkout_fingerprint != checkout_fingerprint
-    ):
+    if "unavailable" in {checkout_fingerprint, final_checkout_fingerprint}:
+        step_results.append(
+            {
+                "name": "checkout stability",
+                "duration_s": 0.0,
+                "exit": 125,
+                "diagnosis": "checkout_fingerprint_unavailable",
+                "initial_worktree_fingerprint": checkout_fingerprint,
+                "final_worktree_fingerprint": final_checkout_fingerprint,
+            }
+        )
+        if exit_code == 0:
+            exit_code = 125
+        sys.stderr.write("verify: checkout fingerprint unavailable; evidence is not exact-head.\n")
+    elif final_checkout_fingerprint != checkout_fingerprint:
         step_results.append(
             {
                 "name": "checkout stability",

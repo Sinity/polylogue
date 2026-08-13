@@ -62,6 +62,8 @@ _PATH_VALUE_OPTIONS = frozenset(
         "--basetemp",
         "--confcutdir",
         "--ignore",
+        "--ignore-glob",
+        "--junit-xml",
         "--junitxml",
         "--rootdir",
     }
@@ -235,11 +237,12 @@ def main(argv: list[str] | None = None) -> int:
             metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
             run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
         final_worktree_fingerprint = worktree_fingerprint(ROOT)
-        if (
-            initial_worktree_fingerprint != "unavailable"
-            and final_worktree_fingerprint != "unavailable"
-            and final_worktree_fingerprint != initial_worktree_fingerprint
-        ):
+        if "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}:
+            metadata["diagnosis"] = "checkout_fingerprint_unavailable"
+            if rc == 0:
+                rc = 125
+            sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
+        elif final_worktree_fingerprint != initial_worktree_fingerprint:
             metadata["diagnosis"] = "checkout_changed_during_focused_test"
             if rc == 0:
                 rc = 125

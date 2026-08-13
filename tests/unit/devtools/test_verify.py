@@ -4310,6 +4310,30 @@ def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[
     assert payload["release_baseline_allowed"] is False
 
 
+@pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
+def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
+    capsys: pytest.CaptureFixture[str],
+    fingerprints: tuple[str, str],
+) -> None:
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 125
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code"] == 125
+    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert checkout_step["diagnosis"] == "checkout_fingerprint_unavailable"
+    assert checkout_step["initial_worktree_fingerprint"] == fingerprints[0]
+    assert checkout_step["final_worktree_fingerprint"] == fingerprints[1]
+
+
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[str] = []
 

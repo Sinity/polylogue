@@ -160,12 +160,30 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     monkeypatch.setattr(run_tests, "_run", _fake_run)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
 
-    assert run_tests.main(["-k", "proof", "--basetemp=diagnostic", "--rootdir", ".", "--ignore", "fixtures"]) == 0
+    assert (
+        run_tests.main(
+            [
+                "-k",
+                "proof",
+                "--basetemp=diagnostic",
+                "--rootdir",
+                ".",
+                "--ignore",
+                "fixtures",
+                "--ignore-glob=fixtures/*.json",
+                "--junit-xml",
+                "reports/results.xml",
+            ]
+        )
+        == 0
+    )
 
     command = cast(list[str], captured["cmd"])
     assert f"--basetemp={invocation / 'diagnostic'}" in command
     assert command[command.index("--rootdir") + 1] == str(invocation)
     assert command[command.index("--ignore") + 1] == str(invocation / "fixtures")
+    assert f"--ignore-glob={invocation / 'fixtures' / '*.json'}" in command
+    assert command[command.index("--junit-xml") + 1] == str(invocation / "reports" / "results.xml")
 
 
 def test_main_withholds_success_when_checkout_changes_during_pytest(
@@ -185,6 +203,27 @@ def test_main_withholds_success_when_checkout_changes_during_pytest(
     assert captured["diagnosis"] == "checkout_changed_during_focused_test"
     assert captured["worktree_fingerprint"] == "initial"
     assert captured["final_worktree_fingerprint"] == "changed"
+
+
+@pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
+def test_main_withholds_success_when_checkout_fingerprint_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    fingerprints: tuple[str, str],
+) -> None:
+    captured: dict[str, Any] = {}
+    fingerprint_values = iter(fingerprints)
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprint_values))
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 125
+    assert captured["status"] == "failed"
+    assert captured["diagnosis"] == "checkout_fingerprint_unavailable"
+    assert captured["worktree_fingerprint"] == fingerprints[0]
+    assert captured["final_worktree_fingerprint"] == fingerprints[1]
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
