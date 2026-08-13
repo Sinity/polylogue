@@ -926,7 +926,10 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
             FROM raw_sessions AS r
             {materialized_join}
             WHERE (r.source_path = ? OR r.source_path LIKE ?)
-              AND COALESCE(r.validation_status, '') != 'failed'
+              AND NOT (
+                COALESCE(r.validation_status, '') = 'failed'
+                AND r.parsed_at_ms IS NULL
+              )
               AND (
                 (
                   r.parsed_at_ms IS NULL

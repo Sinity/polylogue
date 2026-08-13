@@ -331,6 +331,9 @@ def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_pa
             provider=Provider.CHATGPT,
             error=RawCASFrontierError("frontier changed after parsing completed"),
         )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET validation_status = 'failed' WHERE raw_id = ?", (raw_id,))
+        conn.commit()
 
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
 

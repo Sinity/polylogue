@@ -464,6 +464,12 @@ class LiveWatcher:
                     await self._drain_hook_spool()
                     if not any(directory.glob("*.json")):
                         return
+            except sqlite3.OperationalError:
+                # The normal periodic catch-up route retries transient source
+                # tier contention.  A just-created shard must get the same
+                # treatment instead of letting this narrow event-ordering
+                # recovery task die before its envelope is acknowledged.
+                pass
             except OSError:
                 return
             await asyncio.sleep(delay_s)
@@ -1598,13 +1604,24 @@ class LiveWatcher:
         return path.parent.name
 
     def _source_accepts(self, path: Path) -> bool:
-        resolved = path.resolve()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        matches: list[tuple[int, WatchSource]] = []
         for source in self._sources:
             try:
-                if resolved.is_relative_to(source.root.resolve()):
-                    return source.accepts(path)
+                source_root = source.root.resolve()
+                if resolved.is_relative_to(source_root):
+                    matches.append((len(source_root.parts), source))
             except OSError:
                 continue
+        if matches:
+            # Default roots deliberately overlap (~/.codex contains its
+            # sessions subroot).  The deepest root owns a path, independent
+            # of declaration order or whether the roots were supplied by the
+            # defaults or explicit configuration.
+            return max(matches, key=lambda match: match[0])[1].accepts(path)
         return False
 
     def _is_hook_spool_path(self, path: Path) -> bool:

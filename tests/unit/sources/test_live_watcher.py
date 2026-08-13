@@ -3535,6 +3535,56 @@ def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
     assert src.accepts(tmp_path / "README.md") is False
 
 
+def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
+    """A nested explicit root owns its files regardless of source order."""
+    root = tmp_path / "codex"
+    sessions = root / "sessions"
+    sessions.mkdir(parents=True)
+    path = sessions / "session.jsonl"
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (
+            WatchSource(name="codex-state", root=root, suffixes=(".sqlite",)),
+            WatchSource(name="codex", root=sessions, suffixes=(".jsonl",)),
+        ),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+
+    try:
+        assert watcher._source_accepts(path) is True
+    finally:
+        watcher._parse_stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_hook_spool_directory_retry_retries_sqlite_operational_error(tmp_path: Path) -> None:
+    """A transient spool-drain lock follows the normal delayed retry path."""
+    shard = tmp_path / "pending" / "2026-08-13"
+    shard.mkdir(parents=True)
+    (shard / "event.json").write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    calls = 0
+
+    async def drain() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        (shard / "event.json").unlink()
+
+    watcher._drain_hook_spool = drain  # type: ignore[method-assign]
+    try:
+        await watcher._retry_hook_spool_directory_until_populated(shard)
+    finally:
+        watcher._parse_stage.shutdown()
+
+    assert calls == 2
+
+
 def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     """#1683: inbox must accept .zip (GDPR exports), .json, .jsonl, .ndjson."""
     from polylogue.sources.live.watcher import default_sources

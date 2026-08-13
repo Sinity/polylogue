@@ -1666,10 +1666,30 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
         placeholders = ", ".join("?" for _ in batch)
         rows = conn.execute(
             f"""
-            WITH terminal_artifacts AS (
+            WITH newest_per_coordinate AS (
+                SELECT raw_id, source_path, origin, source_index, parse_error, validation_status, parsed_at_ms
+                FROM (
+                    SELECT
+                        raw_id,
+                        source_path,
+                        origin,
+                        source_index,
+                        parse_error,
+                        validation_status,
+                        parsed_at_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY source_path, origin, source_index
+                            ORDER BY acquired_at_ms DESC, rowid DESC
+                        ) AS coordinate_rank
+                    FROM raw_sessions
+                    WHERE source_path IN ({placeholders})
+                )
+                WHERE coordinate_rank = 1
+            ),
+            terminal_artifacts AS (
                 SELECT artifact.raw_id
                 FROM raw_artifacts AS artifact
-                JOIN raw_sessions AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
+                JOIN newest_per_coordinate AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
                 WHERE artifact.parse_as_session = 0
                   AND (
                       artifact.artifact_kind NOT IN ({raw_failure_placeholders})
@@ -1687,38 +1707,19 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
             )
             SELECT DISTINCT terminal_raw.source_path
             FROM terminal_artifacts AS artifact
-            JOIN raw_sessions AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
-            WHERE terminal_raw.source_path IN ({placeholders})
-              AND terminal_raw.raw_id = (
-                  SELECT newest.raw_id
-                  FROM raw_sessions AS newest
-                  WHERE newest.source_path = terminal_raw.source_path
-                    AND newest.origin = terminal_raw.origin
-                    AND newest.source_index = terminal_raw.source_index
-                  ORDER BY newest.acquired_at_ms DESC, newest.rowid DESC
-                  LIMIT 1
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM raw_sessions AS coordinate
-                  WHERE coordinate.source_path = terminal_raw.source_path
-                    AND coordinate.raw_id = (
-                        SELECT newest.raw_id
-                        FROM raw_sessions AS newest
-                        WHERE newest.source_path = coordinate.source_path
-                          AND newest.origin = coordinate.origin
-                          AND newest.source_index = coordinate.source_index
-                        ORDER BY newest.acquired_at_ms DESC, newest.rowid DESC
-                        LIMIT 1
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM terminal_artifacts AS current_artifact
-                        WHERE current_artifact.raw_id = coordinate.raw_id
-                    )
-              )
+            JOIN newest_per_coordinate AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM newest_per_coordinate AS coordinate
+                WHERE coordinate.source_path = terminal_raw.source_path
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM terminal_artifacts AS current_artifact
+                      WHERE current_artifact.raw_id = coordinate.raw_id
+                  )
+            )
             """,
-            (*raw_failure_kinds, *terminal_raw_failure_kinds, *batch),
+            (*batch, *raw_failure_kinds, *terminal_raw_failure_kinds),
         ).fetchall()
         result.update(str(row[0]) for row in rows)
     return result
