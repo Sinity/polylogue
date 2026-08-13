@@ -317,6 +317,10 @@ class LiveWatcher:
     def catch_up_complete(self) -> asyncio.Event:
         return self._catch_up_complete
 
+    def _existing_source_roots(self) -> list[Path]:
+        """Return configured roots that exist at the instant of a scan."""
+        return [source.root for source in self._sources if source.exists()]
+
     async def run(self) -> None:
         # Hook commands create their first pending envelope lazily.  Ensure the
         # nested root exists before ``awatch`` snapshots its roots, otherwise a
@@ -324,7 +328,7 @@ class LiveWatcher:
         for source in self._sources:
             if source.name == "hooks":
                 source.root.mkdir(parents=True, exist_ok=True)
-        roots = [s.root for s in self._sources if s.exists()]
+        roots = self._existing_source_roots()
         if not roots:
             logger.warning("live.watcher: no source roots exist; nothing to watch")
             self._catch_up_complete.set()
@@ -406,14 +410,16 @@ class LiveWatcher:
         self._cancel_periodic_catch_up()
         self._cancel_hook_spool_directory_retries()
 
-    async def _periodic_catch_up(self, roots: list[Path]) -> None:
+    async def _periodic_catch_up(self, _initial_roots: list[Path]) -> None:
         delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
         while not self._stop.is_set():
             await asyncio.sleep(delay_s)
             if self._stop.is_set():
                 return
             try:
-                await self._catch_up(roots)
+                roots = self._existing_source_roots()
+                if roots:
+                    await self._catch_up(roots)
             except sqlite3.OperationalError as exc:
                 if not _is_database_locked(exc):
                     raise

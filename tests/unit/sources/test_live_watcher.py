@@ -3920,6 +3920,42 @@ def test_periodic_catch_up_drains_missed_browser_capture_event(
     asyncio.run(_drive())
 
 
+def test_periodic_catch_up_adds_configured_nested_root_created_after_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A late nested root remains recoverable after its add event is missed."""
+    outer = tmp_path / "sources"
+    nested = outer / "late-codex"
+    outer.mkdir()
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        outer,
+        sources=(
+            WatchSource(name="outer", root=outer, suffixes=(".jsonl",)),
+            WatchSource(name="nested", root=nested, suffixes=(".jsonl",)),
+        ),
+    )
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.02)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(watcher._periodic_catch_up([outer]))
+        await asyncio.sleep(0.03)
+        nested.mkdir()
+        (nested / "missed.jsonl").write_text('{"type":"session_meta","payload":{"id":"late"}}\n')
+        for _ in range(60):
+            if parse_sources.await_count >= 1:
+                break
+            await asyncio.sleep(0.05)
+        watcher.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert parse_sources.await_count >= 1
+
+    asyncio.run(_drive())
+
+
 def test_periodic_catch_up_backs_off_after_each_reconciliation_pass(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

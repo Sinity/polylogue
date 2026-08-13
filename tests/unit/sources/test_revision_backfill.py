@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import ijson
 import pytest
 
 from polylogue.archive.ingest_flags import (
@@ -310,6 +311,78 @@ def test_unknown_retained_document_scans_past_oversized_leading_value(tmp_path: 
         assert conn.execute("SELECT session_id FROM sessions").fetchall() == [("chatgpt-export:large-document",)]
 
 
+def test_unknown_retained_document_caps_oversized_scalar_before_structural_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The retained-document route never hands a whole giant scalar to ijson."""
+    initialize_active_archive_root(tmp_path)
+    payload = json.dumps({"padding": "x" * 128_000, "metadata": {"shape": "unknown"}}).encode()
+    observed_string_bytes: list[int] = []
+    original_parse = ijson.parse
+
+    def guarded_parse(*args: object, **kwargs: object) -> Any:
+        for prefix, event, value in original_parse(*args, **kwargs):
+            if event == "string":
+                observed_string_bytes.append(len(str(value).encode()))
+                assert observed_string_bytes[-1] <= revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
+            yield prefix, event, value
+
+    monkeypatch.setattr(ijson, "parse", guarded_parse)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="export/unknown-document.json",
+            acquired_at_ms=1,
+        )
+
+        def reject_eager_material(_raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+            raise AssertionError("unclassified document must not use eager payload materialization")
+
+        monkeypatch.setattr(archive, "raw_revision_material", reject_eager_material)
+        with pytest.raises(ValueError, match="remained unresolved after bounded scan"):
+            revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+
+    assert max(observed_string_bytes) == revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
+
+
+def test_unknown_retained_array_ignores_fragment_only_mapping_before_real_provider(tmp_path: Path) -> None:
+    """An unrelated mapping fragment cannot claim a whole document sequence."""
+    initialize_active_archive_root(tmp_path)
+    payload = json.dumps(
+        [
+            {"mapping": {"foreign-node": {"message": None}}, "metadata": "not a conversation"},
+            {
+                "uuid": "later-claude-provider",
+                "name": "Later Claude provider",
+                "chat_messages": [
+                    {
+                        "uuid": "claude-message",
+                        "sender": "human",
+                        "text": "real provider evidence",
+                        "created_at": "2026-08-13T00:00:00Z",
+                    }
+                ],
+            },
+        ]
+    ).encode()
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="export/unknown-array.json",
+            acquired_at_ms=1,
+        )
+
+    backfill_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchall() == [
+            ("claude-ai-export:later-claude-provider",)
+        ]
+
+
 def test_parsed_session_spill_uses_the_pinned_active_index_directory(tmp_path: Path) -> None:
     """Repair spill churn follows the generation being repaired, not a shadow index."""
     archive_root = tmp_path / "archive"
@@ -607,6 +680,29 @@ def _codex_thread_state_snapshot_bytes(tmp_path: Path, title: str) -> bytes:
         )
         conn.commit()
     return state_path.read_bytes()
+
+
+def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path: Path) -> None:
+    """A bounded census defers a state snapshot before it can write evidence."""
+    initialize_active_archive_root(tmp_path)
+    payload = _codex_thread_state_snapshot_bytes(tmp_path, "oversized state")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
+            acquired_at_ms=1,
+        )
+
+    with pytest.raises(revision_backfill.RawRevisionReplayResourceBlockedError) as blocked:
+        census_historical_revision_evidence(tmp_path, max_payload_bytes=1)
+
+    assert blocked.value.raw_ids == (raw_id,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (None, None)
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (0,)
 
 
 def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) -> None:

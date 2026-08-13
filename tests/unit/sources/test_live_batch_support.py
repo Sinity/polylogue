@@ -53,7 +53,10 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import (
+    backfill_historical_revision_evidence,
+    validate_frozen_source_authority,
+)
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.storage.blob_store import BlobStore
@@ -1055,7 +1058,7 @@ def _write_codex_thread_state_db(path: Path) -> None:
 
 
 def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_path: Path) -> None:
-    """Removing the replay effect leaves the durable state raw pending and title-less."""
+    """Frozen validation admits state as non-session before mutable replay."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     initialize_active_archive_root(tmp_path)
@@ -1075,6 +1078,10 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
         assert processor._ingest_full_paths_sync([state_db], source_name="codex").succeeded == [state_db]
     finally:
         clear_degraded()
+
+    source_before = sha256((tmp_path / "source.db").read_bytes()).hexdigest()
+    validate_frozen_source_authority(tmp_path)
+    assert sha256((tmp_path / "source.db").read_bytes()).hexdigest() == source_before
 
     replay = backfill_historical_revision_evidence(tmp_path)
 

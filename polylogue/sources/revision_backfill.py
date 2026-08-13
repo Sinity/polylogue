@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -166,6 +166,95 @@ def _document_probe_value(key: str, event: str, value: object) -> object | None:
     return None
 
 
+class _ScalarBoundedJSONReader:
+    """Stream JSON while capping every scalar token before ijson sees it."""
+
+    def __init__(self, payload: BinaryIO) -> None:
+        self._payload = payload
+        self._output = bytearray()
+        self._eof = False
+        self._in_string = False
+        self._string_bytes = 0
+        self._escape = bytearray()
+        self._escape_target = 0
+        self._utf8_remaining = 0
+        self._emit_utf8 = False
+        self._in_number = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        if size < 0:
+            chunks: list[bytes] = []
+            while chunk := self.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        while len(self._output) < size and not self._eof:
+            chunk = self._payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES)
+            if not chunk:
+                self._eof = True
+                break
+            self._filter(chunk)
+        result = bytes(self._output[:size])
+        del self._output[:size]
+        return result
+
+    def _filter(self, chunk: bytes) -> None:
+        for byte in chunk:
+            if self._in_string:
+                self._filter_string_byte(byte)
+                continue
+            if self._in_number:
+                if byte in b"0123456789.eE+-":
+                    continue
+                self._in_number = False
+            if byte == ord('"'):
+                self._output.append(byte)
+                self._in_string = True
+                self._string_bytes = 0
+            elif byte in b"-0123456789":
+                self._output.extend(b"0")
+                self._in_number = True
+            else:
+                self._output.append(byte)
+
+    def _filter_string_byte(self, byte: int) -> None:
+        if self._escape:
+            self._escape.append(byte)
+            if len(self._escape) == 2:
+                self._escape_target = 6 if byte == ord("u") else 2
+            if len(self._escape) == self._escape_target:
+                if self._string_bytes + len(self._escape) <= _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES:
+                    self._output.extend(self._escape)
+                    self._string_bytes += len(self._escape)
+                self._escape.clear()
+                self._escape_target = 0
+            return
+        if self._utf8_remaining:
+            if self._emit_utf8:
+                self._output.append(byte)
+            self._utf8_remaining -= 1
+            return
+        if byte == ord("\\"):
+            self._escape.append(byte)
+            return
+        if byte == ord('"'):
+            self._output.append(byte)
+            self._in_string = False
+            return
+        if byte < 0x80:
+            if self._string_bytes < _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES:
+                self._output.append(byte)
+                self._string_bytes += 1
+            return
+        utf8_bytes = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4 if byte < 0xF8 else 1
+        self._utf8_remaining = utf8_bytes - 1
+        self._emit_utf8 = self._string_bytes + utf8_bytes <= _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
+        if self._emit_utf8:
+            self._output.append(byte)
+            self._string_bytes += utf8_bytes
+
+
 @dataclass(slots=True)
 class _StreamingDocumentProviderProbe:
     """Bounded structural summary for one object in a JSON document.
@@ -297,9 +386,9 @@ class _StreamingDocumentProviderProbe:
                 self.conversation_item_has_conversation and self.conversation_item_has_responses
             )
 
-    def classify(self) -> tuple[Provider, str]:
+    def classify(self, *, sequence_item: bool = False) -> tuple[Provider, str]:
         if self.mapping_seen and self.mapping_valid:
-            self.payload["mapping"] = {"bounded-node": {"message": None}}
+            self.payload["mapping"] = {"bounded-node": {"id": "bounded-node", "message": None}}
         if self.chat_message_matched:
             self.payload["chat_messages"] = [{"role": "present", "text": "present"}]
         if self.first_message_complete:
@@ -312,7 +401,8 @@ class _StreamingDocumentProviderProbe:
                 self.payload["chunks"] = [chunk]
         if self.conversation_matched:
             self.payload["conversations"] = [{"conversation": {}, "responses": []}]
-        provider, evidence = detect_provider_evidence(self.payload)
+        candidate: object = [self.payload] if sequence_item else self.payload
+        provider, evidence = detect_provider_evidence(candidate)
         if provider is None:
             return Provider.UNKNOWN, evidence
         return provider, f"bounded streaming JSON structure: {evidence}"
@@ -321,11 +411,12 @@ class _StreamingDocumentProviderProbe:
 def _detect_provider_from_bounded_document(payload: BinaryIO) -> tuple[Provider, str]:
     """Scan every document object while retaining fixed structural evidence."""
     payload.seek(0)
+    bounded_payload = _ScalarBoundedJSONReader(payload)
     probe: _StreamingDocumentProviderProbe | None = None
     root_is_array = False
     last_evidence = "no bounded document structure identified a provider; used fallback_provider"
     try:
-        for prefix, event, value in ijson.parse(payload, use_float=True):
+        for prefix, event, value in ijson.parse(bounded_payload, use_float=True):
             if prefix == "" and event == "start_array":
                 root_is_array = True
                 continue
@@ -336,7 +427,7 @@ def _detect_provider_from_bounded_document(payload: BinaryIO) -> tuple[Provider,
                 if probe is None:
                     continue
                 if prefix == "item" and event == "end_map":
-                    provider, last_evidence = probe.classify()
+                    provider, last_evidence = probe.classify(sequence_item=True)
                     if provider is not Provider.UNKNOWN:
                         return provider, last_evidence
                     probe = None
@@ -589,6 +680,7 @@ class _RevisionCensusState:
     censused: set[str]
     membership_candidates: dict[str, set[str]]
     provisional_full_raw_ids: dict[str, set[str]]
+    transient_non_session_raw_ids: set[str]
 
 
 @dataclass(slots=True)
@@ -992,7 +1084,7 @@ def _census_historical_revision_evidence(
     replay) still independently re-derives byte-provenness from raw bytes for
     every raw.
     """
-    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set())
     batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
     batched = batch_size is not None
     pending_commits = 0
@@ -1178,6 +1270,21 @@ def _census_historical_revision_evidence(
             census_selection = initial_selection
             while True:
                 rows = archive.raw_membership_census_rows(census_selection)
+                if max_payload_bytes is not None:
+                    payload_sizes = archive.raw_payload_sizes(
+                        [
+                            raw_id
+                            for raw_id, _source_index, terminal_non_session, _raw_rowid in rows
+                            if raw_id not in state.censused and not terminal_non_session
+                        ]
+                    )
+                    total_payload_bytes = sum(payload_sizes.values())
+                    oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
+                    if oversized or total_payload_bytes > max_payload_bytes:
+                        blocked_ids = oversized or list(payload_sizes)
+                        raise RawRevisionReplayResourceBlockedError(
+                            sorted(blocked_ids), max_payload_bytes, total_payload_bytes
+                        )
                 for raw_id, _source_index, _terminal_non_session, _raw_rowid in sorted(
                     rows,
                     key=lambda row: archive.raw_revision_observation_order(row[0]),
@@ -1186,6 +1293,7 @@ def _census_historical_revision_evidence(
                         continue
                     state.scanned += 1
                     state.censused.add(raw_id)
+                    state.transient_non_session_raw_ids.add(raw_id)
                     commit_unit()
                 terminal_raw_ids = {
                     raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if terminal_non_session
@@ -1198,15 +1306,6 @@ def _census_historical_revision_evidence(
                     for raw_id, source_index, terminal_non_session, _raw_rowid in rows
                     if raw_id not in state.censused and not terminal_non_session
                 ]
-                if max_payload_bytes is not None:
-                    payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in pending_rows])
-                    total_payload_bytes = sum(payload_sizes.values())
-                    oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
-                    if oversized or total_payload_bytes > max_payload_bytes:
-                        blocked_ids = oversized or list(payload_sizes)
-                        raise RawRevisionReplayResourceBlockedError(
-                            sorted(blocked_ids), max_payload_bytes, total_payload_bytes
-                        )
                 # Parse is read-only blob->ParsedSession decode and authority-neutral;
                 # spread it across a process pool when there is more than one raw to
                 # parse. Archive writes below stay in fixed `pending_rows` order
@@ -1282,10 +1381,6 @@ def _load_frozen_revision_evidence(
     expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
     if selected_raw_ids is not None:
         expanded_raw_ids = _expand_frozen_revision_link_selection(archive.archive_root, expanded_raw_ids)
-    recorded_logical_keys = require_current_parser_source_census(
-        archive.archive_root,
-        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
-    )
     rows = archive.raw_membership_census_rows(expanded_raw_ids if selected_raw_ids is not None else None)
     if max_payload_bytes is not None:
         payload_sizes = archive.raw_payload_sizes(
@@ -1297,10 +1392,20 @@ def _load_frozen_revision_evidence(
             raise RawRevisionReplayResourceBlockedError(
                 sorted(oversized or payload_sizes), max_payload_bytes, total_payload_bytes
             )
+    frozen_codex_state_raw_ids = frozenset(
+        raw_id
+        for raw_id, _source_index, terminal_non_session, _raw_rowid in rows
+        if not terminal_non_session and _retained_codex_state_descriptor(archive, raw_id) is not None
+    )
+    recorded_logical_keys = require_current_parser_source_census(
+        archive.archive_root,
+        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
+        transient_non_session_raw_ids=frozen_codex_state_raw_ids,
+    )
     parseable_raw_ids = [
         raw_id
         for raw_id, source_index, terminal_non_session, _raw_rowid in rows
-        if source_index >= 0 and not terminal_non_session
+        if source_index >= 0 and not terminal_non_session and raw_id not in frozen_codex_state_raw_ids
     ]
     parsed_outcomes = _parse_retained_raws(
         archive,
@@ -1308,11 +1413,11 @@ def _load_frozen_revision_evidence(
         ingest_workers=ingest_workers,
         prefetch_cache=prefetch_cache,
     )
-    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set(frozen_codex_state_raw_ids))
     for raw_id, source_index, terminal_non_session, _raw_rowid in rows:
         state.scanned += 1
         state.censused.add(raw_id)
-        if terminal_non_session:
+        if terminal_non_session or raw_id in frozen_codex_state_raw_ids:
             continue
         if source_index < 0:
             state.quarantined += 1
@@ -1353,6 +1458,7 @@ def require_current_parser_source_census(
     archive_root: Path,
     *,
     selected_raw_ids: Sequence[str] | None = None,
+    transient_non_session_raw_ids: Set[str] = frozenset(),
 ) -> dict[str, tuple[str, ...]]:
     """Require phase-2 parser receipts before allocating an index candidate."""
     stale_raw_ids: list[str] = []
@@ -1380,6 +1486,9 @@ def require_current_parser_source_census(
             )
             for raw_id_value, fingerprint, status, logical_keys_json in rows:
                 raw_id = str(raw_id_value)
+                if raw_id in transient_non_session_raw_ids:
+                    recorded_logical_keys[raw_id] = ()
+                    continue
                 if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
                     stale_raw_ids.append(raw_id)
                     continue
@@ -1415,6 +1524,7 @@ def require_current_parser_source_census(
             )
             for raw_id_value, typed_key, revision_kind, membership_key, typed_non_session in rows:
                 raw_id = str(raw_id_value)
+                typed_non_session = bool(typed_non_session) or raw_id in transient_non_session_raw_ids
                 existing_typed, existing_kind, memberships, existing_non_session = durable_bindings.get(
                     raw_id, (typed_key, revision_kind, [], bool(typed_non_session))
                 )
@@ -1589,6 +1699,7 @@ def require_current_parser_source_census(
                     """,
                     authority_params,
                 )
+                if str(row[0]) not in transient_non_session_raw_ids
             )
     if unresolved_raw_ids:
         sample = ", ".join(unresolved_raw_ids[:5])
@@ -1597,6 +1708,27 @@ def require_current_parser_source_census(
             f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
         )
     return recorded_logical_keys
+
+
+def _logical_keys_for_raw_ids(archive: ArchiveStore, raw_ids: Set[str]) -> set[str]:
+    """Read typed logical keys for an arbitrary-size raw selection."""
+    keys: set[str] = set()
+    ordered_raw_ids = sorted(raw_ids)
+    conn = archive._ensure_source_conn()
+    for offset in range(0, len(ordered_raw_ids), 500):
+        chunk = ordered_raw_ids[offset : offset + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        keys.update(
+            str(row[0])
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT logical_source_key FROM raw_sessions
+                WHERE raw_id IN ({placeholders}) AND logical_source_key IS NOT NULL
+                """,
+                chunk,
+            )
+        )
+    return keys
 
 
 def validate_frozen_source_authority(
@@ -1629,11 +1761,15 @@ def validate_frozen_source_authority(
             prefetch_cache=prefetch_cache,
         )
         _unclassified, logical_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        transient_non_session_keys = _logical_keys_for_raw_ids(
+            archive,
+            census.transient_non_session_raw_ids,
+        )
         _membership_raw_ids, persisted_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         membership_keys = {*persisted_membership_keys, *census.membership_candidates}
         byte_replayed_keys: set[str] = set()
 
-        for logical_key in sorted(logical_keys):
+        for logical_key in sorted(set(logical_keys) - transient_non_session_keys):
             plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
             if not plan.accepted_raw_ids:
                 convertible = archive.convertible_full_revision_raw_ids(logical_key)
@@ -2864,6 +3000,20 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     )
 
 
+def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tuple[Path, str, str] | None:
+    """Identify one immutable retained Codex state snapshot without mutating it."""
+    provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if provider is not Provider.CODEX:
+        return None
+    state_path = archive.blob_path_for_hash(blob_hash)
+    if state_path is None:
+        return None
+    state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
+    if state_kind not in codex_state.IN_SCOPE_KINDS:
+        return None
+    return state_path, source_path, state_kind
+
+
 def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) -> bool:
     """Apply a retained, in-scope Codex state snapshot without minting a session.
 
@@ -2872,15 +3022,10 @@ def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) ->
     recognized retained snapshot may become thread evidence.  The parser
     reads the immutable blob path, never the original mutable state DB.
     """
-    provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
-    if provider is not Provider.CODEX:
+    descriptor = _retained_codex_state_descriptor(archive, raw_id)
+    if descriptor is None:
         return False
-    state_path = archive.blob_path_for_hash(blob_hash)
-    if state_path is None:
-        return False
-    state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
-    if state_kind not in codex_state.IN_SCOPE_KINDS:
-        return False
+    state_path, source_path, state_kind = descriptor
     if state_kind == "thread_state":
         write_codex_thread_state_evidence(
             archive,
