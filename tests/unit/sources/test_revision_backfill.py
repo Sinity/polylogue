@@ -189,6 +189,30 @@ def test_unknown_retained_stream_replay_detects_from_prefix_without_eager_payloa
     assert [session.provider_session_id for session in sessions] == ["unknown-stream"]
 
 
+def test_unknown_retained_document_replays_after_complete_payload_detection(tmp_path: Path) -> None:
+    """A complete ChatGPT document must retry UNKNOWN prefix detection.
+
+    The raw is intentionally a source-only UNKNOWN ``conversations.json``
+    whose first complete array item is larger than the replay detection
+    prefix.  This drives the historical replay chokepoint against a real
+    archive, rather than testing the detector in isolation.
+    """
+    initialize_active_archive_root(tmp_path)
+    payload = _bundle(_chatgpt_session("large-document", "x" * 9_000))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="export/conversations.json",
+            acquired_at_ms=1,
+        )
+
+    backfill_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchall() == [("chatgpt-export:large-document",)]
+
+
 def test_parsed_session_spill_uses_the_pinned_active_index_directory(tmp_path: Path) -> None:
     """Repair spill churn follows the generation being repaired, not a shadow index."""
     archive_root = tmp_path / "archive"
@@ -272,6 +296,37 @@ def test_parse_stream_recovery_accepts_session_evidence_at_a_declared_fact_path(
 
     assert len(sessions) == 1
     assert [message.text for message in sessions[0].messages] == ["recover me", "recovered"]
+
+
+def test_backfill_scans_declared_stream_past_non_session_prefix(tmp_path: Path) -> None:
+    """Later Claude records outrank an arbitrarily long fact-artifact prefix.
+
+    The production backfill route must not turn the first 64 non-session
+    records into permanent artifact authority when later records prove a
+    session.  The archive assertion fails if replay rejects that bounded
+    prefix before parsing the rest of the retained JSONL.
+    """
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
+    payload = _relationship_index_jsonl_bytes(64) + (
+        b'{"parentUuid":null,"type":"user","sessionId":"late-session","message":{"role":"user","content":"late evidence"},'
+        b'"uuid":"late-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"late-user","type":"assistant","sessionId":"late-session","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"late reply"}]},"uuid":"late-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+
+    backfill_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchall() == [("claude-code-session:late-session",)]
 
 
 def _relationship_index_jsonl_bytes(count: int = 8) -> bytes:
@@ -432,6 +487,94 @@ def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
 
     assert result.scanned == 1
     assert result.replayed_logical_sources == 1
+
+
+def _codex_thread_state_snapshot_bytes(tmp_path: Path, title: str) -> bytes:
+    state_path = tmp_path / f"{title}.sqlite"
+    with sqlite3.connect(state_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, title TEXT, cwd TEXT, created_at_ms INTEGER,
+                updated_at_ms INTEGER, source TEXT, model TEXT, agent_nickname TEXT,
+                agent_role TEXT, archived INTEGER
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT, child_thread_id TEXT, status TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("codex-state-thread", title, "/work", 1, 1, "cli", None, None, None, 0),
+        )
+        conn.commit()
+    return state_path.read_bytes()
+
+
+def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) -> None:
+    """A retained A -> B -> A state sequence leaves A's title current.
+
+    Reacquiring A reuses its content-derived raw id, so this proves replay
+    orders its snapshot application by the latest durable raw-payload receipt,
+    not ``raw_sessions.acquired_at_ms`` from A's first observation.
+    """
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / "codex" / "state_5.sqlite")
+    snapshot_a = _codex_thread_state_snapshot_bytes(tmp_path, "title A")
+    snapshot_b = _codex_thread_state_snapshot_bytes(tmp_path, "title B")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX, payload=snapshot_a, source_path=source_path, acquired_at_ms=1
+        )
+        archive.write_raw_payload(
+            provider=Provider.CODEX, payload=snapshot_b, source_path=source_path, acquired_at_ms=2
+        )
+        archive.write_raw_payload(
+            provider=Provider.CODEX, payload=snapshot_a, source_path=source_path, acquired_at_ms=3
+        )
+
+    census_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        payload_json = conn.execute(
+            "SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'codex-thread-title:codex-state-thread'"
+        ).fetchone()
+    assert payload_json is not None
+    assert json.loads(str(payload_json[0]))["title"] == "title A"
+
+
+def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> None:
+    """Replay turns a decoded fact-sidecar raw into terminal source authority.
+
+    This exercises the same retained-raw replay path as recovery: the
+    source-only raw starts pending, the parser confirms it is a workflow
+    artifact, and the source tier must retain both typed artifact evidence and
+    a successful parse receipt so it is not selected forever.
+    """
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"contentKey":"workflow-artifact","agentId":"agent"}\n',
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+
+    backfill_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1,)
+        assert conn.execute("SELECT parse_as_session FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "non_session",
+        )
+        assert conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("complete", "[]")
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:

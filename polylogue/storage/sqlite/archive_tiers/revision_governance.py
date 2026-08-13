@@ -2192,6 +2192,28 @@ def raw_revision_acquired_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -
     return int(row[0])
 
 
+def raw_revision_observed_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -> int:
+    """Return the latest durable observation receipt for a retained raw.
+
+    ``raw_sessions.acquired_at_ms`` is deliberately immutable because the raw
+    id is content-derived.  Re-observing identical bytes refreshes the
+    ``blob_refs`` raw-payload receipt instead, which is the ordering authority
+    for replaying mutable state snapshots.
+    """
+    conn = store._ensure_source_conn()
+    row = conn.execute(
+        """
+        SELECT MAX(acquired_at_ms)
+        FROM blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
+        """,
+        (raw_id,),
+    ).fetchone()
+    if row is not None and row[0] is not None:
+        return int(row[0])
+    return raw_revision_acquired_at_ms(store, raw_id)
+
+
 def raw_membership_rebuild_raw_ids(store: RawRevisionGovernanceHost, logical_source_key: str) -> tuple[str, ...]:
     """Return census candidates excluding quarantined full rows with another authority key."""
     rows = (

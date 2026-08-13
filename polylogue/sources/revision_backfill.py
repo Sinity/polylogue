@@ -14,7 +14,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from io import BytesIO
-from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Final, Literal, cast
@@ -59,6 +58,7 @@ from polylogue.sources.parsers import antigravity, codex_state, hermes_state, he
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -68,9 +68,14 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     FrozenSourceRemediationRequiredError,
+    _raw_parse_success_state,
     record_current_parser_source_census,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import apply_source_raw_state_update
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    apply_source_raw_state_update,
+    upsert_raw_artifact,
+)
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -674,6 +679,15 @@ def _census_historical_revision_evidence(
                 state=RawSessionStateUpdate(payload_provider=Provider.from_string(sessions[0].source_name)),
                 manage_transaction=not batched,
             )
+        if not sessions:
+            _persist_terminal_non_session_artifact(
+                archive,
+                raw_id,
+                provider=stored_provider,
+                source_path=_source_path,
+                source_index=source_index,
+                manage_transaction=not batched,
+            )
         state.classified += int(len(sessions) == 1)
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
         if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
@@ -750,7 +764,7 @@ def _census_historical_revision_evidence(
                 rows = archive.raw_membership_census_rows(census_selection)
                 for raw_id, _source_index, _terminal_non_session in sorted(
                     rows,
-                    key=lambda row: (archive.raw_revision_acquired_at_ms(row[0]), row[1], row[0]),
+                    key=lambda row: (archive.raw_revision_observed_at_ms(row[0]), row[1], row[0]),
                 ):
                     if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
                         continue
@@ -1977,6 +1991,12 @@ def census_parse_worker(
                     )
                 return raw_id, sessions, None
             payload = publisher.read_all(blob_hash)
+            if provider is Provider.UNKNOWN:
+                provider, _evidence = detect_provider_from_raw_bytes_evidence(
+                    payload,
+                    Path(source_path).name,
+                    provider,
+                )
             payload_path = None
             if provider is Provider.HERMES:
                 candidate_path = publisher.blob_path(blob_hash)
@@ -2412,6 +2432,12 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
                 return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+        if provider is Provider.UNKNOWN:
+            provider, _evidence = detect_provider_from_raw_bytes_evidence(
+                eager_payload,
+                Path(source_path).name,
+                provider,
+            )
         payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
         return _parse_one(
             provider,
@@ -2458,7 +2484,7 @@ def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) ->
             archive,
             codex_state.parse_codex_state_db(state_path, immutable=True),
             source_path=source_path,
-            acquired_at_ms=archive.raw_revision_acquired_at_ms(raw_id),
+            acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
         )
     archive.replace_raw_membership_census(
         raw_id,
@@ -3212,6 +3238,64 @@ def _declared_non_session_artifact_classification(
     return classification if not classification.parse_as_session else None
 
 
+def _persist_terminal_non_session_artifact(
+    archive: ArchiveStore,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    manage_transaction: bool,
+) -> None:
+    """Record replay-confirmed source-only artifact authority once.
+
+    A declared JSONL fact path can contain a real session, so it receives a
+    full rolling eligibility scan before replay may terminalize it.  A
+    non-session result then follows the same typed artifact row and parse
+    lifecycle used by live acquisition instead of remaining pending forever.
+    """
+    if provider is Provider.UNKNOWN:
+        return
+    classification = _declared_non_session_artifact_classification(provider, source_path)
+    if classification is None:
+        return
+    if is_jsonl_source_path(source_path):
+        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+
+        with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
+            if jsonl_session_artifact(payload, provider=provider) is not None:
+                return
+    origin = origin_from_provider(provider)
+    observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
+    upsert_raw_artifact(
+        archive._ensure_source_conn(),
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=origin.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=classification.cohort,
+            classification_reason=classification.reason,
+            parse_as_session=False,
+            schema_eligible=classification.schema_eligible,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+    apply_source_raw_state_update(
+        archive._ensure_source_conn(),
+        raw_id,
+        state=_raw_parse_success_state(provider),
+        manage_transaction=manage_transaction,
+    )
+
+
 def _is_declared_non_session_artifact(
     provider: Provider,
     source_path: str,
@@ -3376,21 +3460,9 @@ def _parse_stream_raw(
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
     stream = _iter_json_stream(payload, source_name)
-    # Multi-GiB Claude Code JSONL must stay memory-bounded (module docstring:
-    # "a memory-bounded streaming path exists for multi-GiB Claude Code
-    # JSONL"), so only the first 64 records -- the same sample bound the live
-    # ingest gate uses -- are materialized for content classification; the
-    # rest of the stream is chained back on unread.
-    sample = list(islice(stream, 64))
-    sample_sessions = parse_stream_payload(provider, sample, fallback_id, source_path=source_path)
-    sample_has_session_evidence = bool(
-        require_positive_conversational_evidence(sample_sessions, provider=provider, source_path=source_path)
-    )
-    if not sample_has_session_evidence and _is_declared_non_session_artifact(provider, source_path, sample=sample):
-        return []
     return parse_stream_payload(
         provider,
-        chain(sample, stream),
+        stream,
         fallback_id,
         source_path=source_path,
     )

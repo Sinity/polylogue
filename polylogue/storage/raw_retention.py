@@ -12,7 +12,7 @@ from typing import Literal
 
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
-from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -1184,7 +1184,10 @@ def raw_frontier_integrity_projection(
         raw_materialization_readiness,
         sample_limit=sample_limit,
     )
-    index_db_path = resolve_active_index_path(archive_root)
+    try:
+        index_db_path = resolve_active_index_path(archive_root)
+    except ArchiveLocationError as exc:
+        return unknown_raw_frontier_integrity_projection(f"active index pointer unavailable: {exc}")
     source_db_path = archive_root / "source.db"
     ops_db_path = archive_root / "ops.db"
     snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unavailable: {source_db_path}")

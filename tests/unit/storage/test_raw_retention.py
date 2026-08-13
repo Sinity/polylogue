@@ -2476,6 +2476,22 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
     assert projection.available is True
 
 
+def test_raw_frontier_integrity_projection_reports_malformed_active_pointer(tmp_path: Path) -> None:
+    """Status reads degrade to an unavailable projection when a pointer is invalid."""
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0},
+    )
+
+    assert projection.available is False
+    assert projection.overall_status == "unknown"
+    assert "active index pointer" in projection.broken_head_reason
+
+
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])
 def test_raw_frontier_integrity_snapshot_unavailable_index_tier_is_unknown_never_healthy(
     tmp_path: Path,
