@@ -261,6 +261,7 @@ class CheckoutMutationMonitor:
         self._tracked_paths: frozenset[Path] = frozenset()
         self._ignored_roots: frozenset[Path] = frozenset()
         self._git_index_path: Path | None = None
+        self._git_authority_paths: dict[Path, str] = {}
 
     def start(self) -> None:
         """Start and prove the portable interval watcher before verification."""
@@ -359,8 +360,12 @@ class CheckoutMutationMonitor:
             ]
             directories.append(current_path)
         self._git_index_path = self._resolve_git_index_path()
-        if self._git_index_path is not None and self._git_index_path.parent not in directories:
-            directories.append(self._git_index_path.parent)
+        if self._git_index_path is not None:
+            self._git_authority_paths[self._git_index_path] = ".git/index"
+        self._git_authority_paths.update(self._resolve_git_head_paths())
+        for authority_path in self._git_authority_paths:
+            if authority_path.parent not in directories:
+                directories.append(authority_path.parent)
         return directories
 
     def _git_tracked_paths(self) -> frozenset[Path]:
@@ -382,7 +387,41 @@ class CheckoutMutationMonitor:
             return None
         return Path(raw_path)
 
-    def _git_command(self, args: list[str]) -> subprocess.CompletedProcess[bytes] | None:
+    def _resolve_git_head_paths(self) -> dict[Path, str]:
+        """Resolve the worktree HEAD file and its current symbolic ref."""
+        paths: dict[Path, str] = {}
+        head_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", "HEAD"])
+        symbolic_result = self._git_command(
+            ["symbolic-ref", "--quiet", "HEAD"],
+            allowed_returncodes=frozenset({0, 1}),
+        )
+        if head_result is None or symbolic_result is None:
+            return paths
+        raw_head_path = os.fsdecode(head_result.stdout).strip()
+        symbolic_ref = os.fsdecode(symbolic_result.stdout).strip()
+        if not raw_head_path or (symbolic_result.returncode == 0 and not symbolic_ref):
+            with self._state_lock:
+                self._unavailable = True
+            return paths
+        paths[Path(raw_head_path)] = ".git/HEAD"
+        if symbolic_result.returncode == 0:
+            ref_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", symbolic_ref])
+            if ref_result is None:
+                return paths
+            raw_ref_path = os.fsdecode(ref_result.stdout).strip()
+            if not raw_ref_path:
+                with self._state_lock:
+                    self._unavailable = True
+                return paths
+            paths[Path(raw_ref_path)] = f".git/{symbolic_ref}"
+        return paths
+
+    def _git_command(
+        self,
+        args: list[str],
+        *,
+        allowed_returncodes: frozenset[int] = frozenset({0}),
+    ) -> subprocess.CompletedProcess[bytes] | None:
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -396,7 +435,7 @@ class CheckoutMutationMonitor:
             with self._state_lock:
                 self._unavailable = True
             return None
-        if result.returncode != 0 or result.stderr.strip():
+        if result.returncode not in allowed_returncodes or result.stderr.strip():
             with self._state_lock:
                 self._unavailable = True
             return None
@@ -423,16 +462,18 @@ class CheckoutMutationMonitor:
     def _record_change(self, candidate: Path) -> None:
         if not candidate.is_absolute():
             candidate = self.root / candidate
-        if self._git_index_path is not None and candidate.parent == self._git_index_path.parent:
-            if candidate.name == f"{self._git_index_path.name}.lock":
+        for authority_path, label in self._git_authority_paths.items():
+            if candidate.parent != authority_path.parent:
+                continue
+            if candidate.name == f"{authority_path.name}.lock":
                 # An uncommitted lock is not yet checkout authority. A
                 # completed transaction is witnessed when the lock replaces
-                # the index itself.
+                # its authority file.
                 return
-            if candidate.name == self._git_index_path.name:
+            if candidate.name == authority_path.name:
                 with self._state_lock:
                     self._changed = True
-                    self._observed_path = ".git/index"
+                    self._observed_path = label
                 return
         try:
             relative = candidate.relative_to(self.root)

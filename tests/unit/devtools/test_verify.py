@@ -1875,6 +1875,40 @@ def test_changed_paths_include_untracked_executable_files(
     assert verify._changed_executable_paths(head, head) == ("devtools/new_command.py",)
 
 
+def test_changed_paths_include_executable_rename_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "example.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/example.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    subprocess.run(["git", "mv", "polylogue/example.py", "docs/example.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "move module"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    assert verify._changed_executable_paths(base, head) == ("polylogue/example.py",)
+
+
+def test_git_head_uses_bounded_authoritative_probe() -> None:
+    with patch("devtools.verify._git_commit", return_value="resolved-head") as resolve:
+        assert verify._git_head() == "resolved-head"
+
+    resolve.assert_called_once_with("HEAD")
+
+
 def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_final_fingerprint(
     tmp_path: Path,
 ) -> None:
@@ -1980,7 +2014,11 @@ def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux
     assert event_emitted.wait(timeout=1)
     observation = monitor.finish()
 
-    assert calls["paths"] == (tmp_path.resolve(), (tmp_path / ".git").resolve())
+    assert calls["paths"] == (
+        tmp_path.resolve(),
+        (tmp_path / ".git").resolve(),
+        (tmp_path / ".git" / "refs" / "heads").resolve(),
+    )
     assert calls["kwargs"] == {
         "watch_filter": None,
         "debounce": 0,
@@ -2073,8 +2111,9 @@ def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_sour
     watched = {Path(path) for path in raw_paths}
     assert tmp_path.resolve() in watched
     assert source in watched
+    git_dir = (tmp_path / ".git").resolve()
     assert all(
-        path == (tmp_path / ".git").resolve() or not any(part in {".venv", ".git", ".cache"} for part in path.parts)
+        path.is_relative_to(git_dir) or not any(part in {".venv", ".git", ".cache"} for part in path.parts)
         for path in watched
     )
     assert all("node_modules" not in path.parts for path in watched)
@@ -2116,6 +2155,40 @@ def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
+
+
+@pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a branch-ref replacement")
+def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "first"], cwd=tmp_path, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "second"], cwd=tmp_path, check=True)
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    subprocess.run(["git", "update-ref", branch, first], cwd=tmp_path, check=True)
+    subprocess.run(["git", "update-ref", branch, second], cwd=tmp_path, check=True)
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=f".git/{branch}",
+    )
 
 
 def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: Path) -> None:
@@ -5187,6 +5260,37 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
     assert pytest_step["diagnosis"] == "zero_testmon_selection_for_executable_change"
     assert pytest_step["zero_selection_changed_paths"] == ["polylogue/example.py"]
     changed_executable_paths.assert_called_once_with("pinned-base", "head")
+
+
+def test_verify_finalizes_and_discards_graph_when_post_pytest_path_authority_fails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monitor = MagicMock()
+    monitor.finish.return_value = CheckoutMutationObservation(changed=False, unavailable=False)
+    discard = MagicMock()
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {"selected_count": 1})),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
+        patch("devtools.verify._changed_executable_paths", side_effect=PytestResourceError("git unavailable")),
+        patch("devtools.verify._discard_testmon_dependency_authority", discard),
+        patch("devtools.verify.CheckoutMutationMonitor", return_value=monitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+    ):
+        rc = main(["--json"])
+
+    assert rc == 125
+    monitor.finish.assert_called_once_with()
+    discard.assert_called_once_with()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["diagnosis"] == "testmon_changed_path_authority_unavailable"
 
 
 def test_verify_accepts_zero_testmon_selection_after_matching_coverage(

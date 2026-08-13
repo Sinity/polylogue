@@ -2353,14 +2353,8 @@ def _print_json(result: dict[str, Any]) -> None:
 
 
 def _git_head() -> str | None:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return None
+    """Resolve HEAD through the bounded authority-sensitive Git probe."""
+    return _git_commit("HEAD")
 
 
 def _git_committed_tree() -> str | None:
@@ -2472,8 +2466,8 @@ def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
     """Return changes between immutable start-time Git authorities."""
     changed: set[str] = set()
     commands = (
-        ["git", "diff", "--name-only", head_commit, "--"],
-        ["git", "diff", "--name-only", f"{base_commit}...{head_commit}", "--"],
+        ["git", "diff", "--no-renames", "--name-only", head_commit, "--"],
+        ["git", "diff", "--no-renames", "--name-only", f"{base_commit}...{head_commit}", "--"],
         ["git", "ls-files", "--others", "--exclude-standard", "--"],
     )
     for command in commands:
@@ -3687,6 +3681,7 @@ def main(argv: list[str] | None = None) -> int:
     pending_affected_coverage: tuple[tuple[str, ...], int] | None = None
     pending_selection_refresh: tuple[dict[str, Any], int] | None = None
     testmon_graph_touched = False
+    changed_path_authority_failed = False
     mutation_monitor = CheckoutMutationMonitor(ROOT)
     mutation_monitor.start()
 
@@ -3712,7 +3707,19 @@ def main(argv: list[str] | None = None) -> int:
                     pending_testmon_stamp = refreshed_stamp
             assert testmon_base_commit is not None
             assert testmon_head_commit is not None
-            executable_paths = _changed_executable_paths(testmon_base_commit, testmon_head_commit)
+            try:
+                executable_paths = _changed_executable_paths(testmon_base_commit, testmon_head_commit)
+            except PytestResourceError as exc:
+                changed_path_authority_failed = True
+                executable_paths = ()
+                rc = 125
+                metadata["diagnosis"] = "testmon_changed_path_authority_unavailable"
+                metadata["error"] = str(exc)
+                pending_testmon_stamp = None
+                sys.stderr.write(
+                    "verify: changed-path authority became unavailable after pytest; "
+                    "discarding the affected dependency graph.\n"
+                )
             selected_count = metadata.get("selected_count")
             if selected_count == 0 and executable_paths:
                 coverage = _matching_testmon_coverage(executable_paths)
@@ -3832,7 +3839,8 @@ def main(argv: list[str] | None = None) -> int:
     mutation_observation = mutation_monitor.finish()
     checkout_stable = True
     if (
-        head is None
+        changed_path_authority_failed
+        or head is None
         or final_head is None
         or "unavailable" in {checkout_fingerprint, final_checkout_fingerprint}
         or mutation_observation.unavailable
@@ -3843,7 +3851,11 @@ def main(argv: list[str] | None = None) -> int:
                 "name": "checkout stability",
                 "duration_s": 0.0,
                 "exit": 125,
-                "diagnosis": "checkout_fingerprint_unavailable",
+                "diagnosis": (
+                    "testmon_changed_path_authority_unavailable"
+                    if changed_path_authority_failed
+                    else "checkout_fingerprint_unavailable"
+                ),
                 "initial_git_head": head,
                 "final_git_head": final_head,
                 "initial_worktree_fingerprint": checkout_fingerprint,
