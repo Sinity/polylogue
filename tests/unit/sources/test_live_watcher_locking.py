@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import selectors
 import sqlite3
 import subprocess
 import sys
@@ -105,21 +107,35 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             # termination. A non-daemon bridge thread would pin this
             # subprocess after the loop closes.
             watcher.stop()
+            print("ready-for-interpreter-exit", flush=True)
 
         asyncio.run(main())
         """
     )
 
-    completed = subprocess.run(
+    process = subprocess.Popen(
         [sys.executable, "-c", script],
         cwd=Path(__file__).parents[3],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=6.0,
-        check=False,
     )
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        assert selector.select(timeout=30.0), "writer subprocess did not reach its exit boundary"
+        assert process.stdout.readline().strip() == "ready-for-interpreter-exit"
+        stdout, stderr = process.communicate(timeout=2.0)
+    except BaseException:
+        process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=2.0)
+        raise
+    finally:
+        selector.close()
 
-    assert completed.returncode == 0, completed.stderr
+    assert process.returncode == 0, stdout + stderr
 
 
 @pytest.mark.asyncio
