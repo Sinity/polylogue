@@ -2262,6 +2262,8 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
                 raise click.ClickException(f"daemon refused delete cancellation ({exc.status}): {exc.detail}") from exc
             if cancellation is None:
                 raise click.ClickException("daemon became unavailable before it cancelled the delete preview")
+            if cancellation.get("status") != "cancelled" or cancellation.get("preview_ref") != preview_ref:
+                raise click.ClickException("daemon returned an invalid delete cancellation acknowledgement")
             click.echo(
                 MutationResultPayload(
                     status="aborted", operation="delete", session_count=count, affected_count=0

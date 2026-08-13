@@ -879,6 +879,32 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert payload["session_count"] == 2
         assert payload["affected_count"] == 0
 
+    @pytest.mark.parametrize(
+        "acknowledgement",
+        [
+            {"status": "prepared", "preview_ref": "preview:delete"},
+            {"status": "cancelled", "preview_ref": "preview:other"},
+            {"status": "cancelled"},
+        ],
+    )
+    def test_interactive_delete_refuses_unbound_cancellation_acknowledgement(
+        self, acknowledgement: dict[str, object]
+    ) -> None:
+        env = self._env(plain=False)
+        env.ui.confirm.return_value = False
+
+        with (
+            patch(
+                "polylogue.cli.archive_query._submit_daemon_mutation",
+                side_effect=[
+                    {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]},
+                    acknowledgement,
+                ],
+            ),
+            pytest.raises(click.ClickException, match="invalid delete cancellation acknowledgement"),
+        ):
+            _emit_delete(env, ("s1",), params={"force": False, "dry_run": False})
+
     def test_dry_run_evidence_lists_matched_sessions(self, capsys: pytest.CaptureFixture[str]) -> None:
         spec = self._delete_spec()
         assert "explicit_dry_run_evidence" in spec.safety_guards
