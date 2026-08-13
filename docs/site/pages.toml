@@ -104,6 +104,11 @@ title = "Demos and Proofs"
 source = "docs/demos.md"
 
 [[pages]]
+path = "/findings/claim-vs-evidence/"
+title = "Finding: Structured Failure Follow-Up"
+source = "docs/findings/claim-vs-evidence.md"
+
+[[pages]]
 path = "/architecture/sinex/"
 title = "Polylogue on Sinex"
 source = "docs/sinex-interop.md"

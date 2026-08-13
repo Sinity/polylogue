@@ -196,6 +196,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
+| `devtools workspace claim-vs-evidence` | Analyze structured failures and the assistant behavior that followed. |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |

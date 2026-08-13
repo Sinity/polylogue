@@ -223,6 +223,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Structured Failure Follow-Up",
+        "findings/claim-vs-evidence.md",
+        "Bounded finding with a structural oracle, sample frame, calibration, and caveats.",
+        "evidence",
+    ),
+    _entry(
         "Polylogue on Sinex",
         "sinex-interop.md",
         "Current bridge, target authority split, and rebuild proof.",

@@ -1173,6 +1173,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace claim-vs-evidence",
+        "workspace",
+        "Analyze structured failures and the assistant behavior that followed.",
+        "devtools.claim_vs_evidence",
+        use_when=(
+            "Measure bounded, origin-stratified follow-up behavior from structural tool-result failures; "
+            "the report preserves ambiguous outcomes, calibration, sensitivity windows, and separate "
+            "usage/cost lanes instead of treating prose as the failure oracle."
+        ),
+        examples=(
+            "devtools workspace claim-vs-evidence --json",
+            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .local/evidence/claim-vs-evidence",
+        ),
+    ),
+    CommandSpec(
         "workspace degraded-archive-proof",
         "workspace",
         "Build a degraded archive self-healing proof artifact.",
