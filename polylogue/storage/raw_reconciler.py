@@ -1194,7 +1194,7 @@ def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
 def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...], int, int]:
     root = _archive_root(config)
     source_db = root / "source.db"
-    index_db = root / "index.db"
+    index_db = config.current_db_path()
     if not source_db.is_file() or not index_db.is_file():
         raise RuntimeError("raw authority frontier census requires initialized source and index tiers")
     with closing(sqlite3.connect(source_db)) as conn, conn:
@@ -1352,7 +1352,7 @@ def _apply_strategy(
 
     root = _archive_root(config)
     source_db = root / "source.db"
-    index_db = root / "index.db"
+    index_db = config.current_db_path()
 
     if item.actuator is RawAuthorityActuator.RESOLVE_CONFLICT:
         conflict = item.strategy_witness.get("conflict")

@@ -423,7 +423,8 @@ def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
     finally:
         conn.close()
     index_digest_before = hashlib.sha256(index_db.read_bytes()).hexdigest()
-    (tmp_path / ".index-active-pointer").write_bytes(b"\xff")
+    pointer = tmp_path / ".index-active-pointer"
+    pointer.write_bytes(b"\xff")
 
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -439,17 +440,66 @@ def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
         )
     )
     try:
-        result = processor._ingest_full_paths_sync([path], source_name="codex")
+        metrics = asyncio.run(processor.ingest_files([path], emit_event=False))
     finally:
         clear_degraded()
 
-    assert result.succeeded == [path], f"failed={result.failed}"
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 0
     parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
     assert parsed_at_ms is None
     assert parse_error is None
     assert hashlib.sha256(index_db.read_bytes()).hexdigest() == index_digest_before, (
         "the stale index tier must never be opened for write during acquire-only ingest"
     )
+    assert pointer.read_bytes() == b"\xff"
+
+
+def test_live_raw_compaction_holds_generation_lease_through_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The protected set and destructive cleanup observe one unpromotable generation."""
+
+    from polylogue.storage import raw_retention
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "ops.db"),
+        parser_fingerprint="test-parser",
+    )
+    phases: list[str] = []
+
+    def assert_promotion_excluded(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        with pytest.raises(RebuildLeaseUnavailableError):
+            with RebuildLease(tmp_path):
+                pass
+        phases.append("authority")
+        return SimpleNamespace(protected_raw_ids=frozenset(), eligible_raw_ids=frozenset())
+
+    def assert_delete_excluded(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        with pytest.raises(RebuildLeaseUnavailableError):
+            with RebuildLease(tmp_path):
+                pass
+        phases.append("delete")
+        return SimpleNamespace(errors=())
+
+    monkeypatch.setattr(raw_retention, "active_raw_retention_authority", assert_promotion_excluded)
+    monkeypatch.setattr(raw_retention, "compact_paths_superseded_raw_snapshots", assert_delete_excluded)
+
+    processor._compact_superseded_raw_snapshots([path])
+
+    assert phases == ["authority", "delete"]
+    with RebuildLease(tmp_path):
+        pass
 
 
 def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(

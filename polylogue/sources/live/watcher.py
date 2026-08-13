@@ -706,6 +706,8 @@ class LiveWatcher:
                 ]
                 for filename in filenames:
                     path = Path(directory) / filename
+                    if deepest_source_for_path(path, self._sources) is not source:
+                        continue
                     if not source.accepts(path):
                         # Unclaimed-file sweep (mission item 2): a file this
                         # source's own root walk reached but whose suffix no
@@ -1672,16 +1674,14 @@ class LiveWatcher:
     def _source_for_directory(self, path: Path) -> WatchSource | None:
         """Return the watched source owning a non-ignored directory."""
 
-        resolved = path.resolve()
-        for source in self._sources:
-            try:
-                relative = resolved.relative_to(source.root.resolve())
-            except (OSError, ValueError):
-                continue
-            if any(source.ignores_directory(Path(part)) for part in relative.parts):
-                return None
-            return source
-        return None
+        source = deepest_source_for_path(path, self._sources)
+        if source is None:
+            return None
+        try:
+            relative = path.resolve().relative_to(source.root.resolve())
+        except (OSError, ValueError):
+            return None
+        return None if any(source.ignores_directory(Path(part)) for part in relative.parts) else source
 
     def _enqueue_added_directory(self, directory: Path) -> None:
         """Cover files created before a recursive watcher installs its new sub-watch."""
