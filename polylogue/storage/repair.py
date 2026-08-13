@@ -1228,6 +1228,8 @@ def _cas_refine_quarantined_accepted_raw(
 def inspect_quarantined_accepted_raws(
     config: Config,
     raw_ids_with_keys: list[tuple[str, str]],
+    *,
+    index_db_path: Path | None = None,
 ) -> tuple[QuarantinedAcceptedRawRepairItem, ...]:
     """Return exact typed quarantine-refinement proofs without mutation.
 
@@ -1246,7 +1248,7 @@ def inspect_quarantined_accepted_raws(
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
@@ -2995,6 +2997,8 @@ def _inspect_browser_capture_origin_strategy(
 def inspect_browser_capture_origin_mismatches(
     config: Config,
     raw_ids: list[str],
+    *,
+    index_db_path: Path | None = None,
 ) -> tuple[BrowserCaptureOriginRepairItem, ...]:
     """Return the exact admitted browser-origin strategy for each raw.
 
@@ -3010,7 +3014,7 @@ def inspect_browser_capture_origin_mismatches(
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
@@ -3241,7 +3245,10 @@ def _browser_canonical_authority_conflict_witness(
 
 
 def inspect_browser_canonical_authority_conflicts(
-    config: Config, raw_ids: list[str]
+    config: Config,
+    raw_ids: list[str],
+    *,
+    index_db_path: Path | None = None,
 ) -> BrowserCanonicalAuthorityConflictReport:
     """Build read-only evidence packets for browser-capture raws a safe rekey refuses.
 
@@ -3268,7 +3275,7 @@ def inspect_browser_canonical_authority_conflicts(
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
 
@@ -4375,12 +4382,13 @@ def _raw_materialization_ordered_components(
     candidates: RawMaterializationCandidates,
     *,
     archive_root: Path,
+    index_db_path: Path | None = None,
 ) -> list[tuple[str, ...]]:
     """Order complete components fairly without splitting authority cohorts."""
     candidate_ids = set(candidates.raw_ids)
     source_components = candidates.authority_components or tuple((raw_id,) for raw_id in candidates.raw_ids)
     components = [component for component in source_components if candidate_ids.intersection(component)]
-    plans = build_raw_replay_plans(archive_root, components)
+    plans = build_raw_replay_plans(archive_root, components, index_db_path=index_db_path)
     plan_ids = {plan.input_raw_ids: plan.plan_id for plan in plans}
     last_attempts = raw_replay_plan_last_attempts(archive_root)
 
@@ -4547,10 +4555,15 @@ def _raw_authority_postflight_snapshot(
     candidates: RawMaterializationCandidates,
     *,
     max_payload_bytes: int,
+    index_db_path: Path | None = None,
 ) -> tuple[tuple[RawReplayPlan, ...], dict[str, object]]:
     """Build the complete post-pass plan inventory and typed residual debt."""
-    components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
-    plans = build_raw_replay_plans(archive_root, components)
+    components = _raw_materialization_ordered_components(
+        candidates,
+        archive_root=archive_root,
+        index_db_path=index_db_path,
+    )
+    plans = build_raw_replay_plans(archive_root, components, index_db_path=index_db_path)
     blocked_plan_ids = tuple(
         sorted(
             plan.plan_id
@@ -6363,6 +6376,7 @@ def _repair_raw_materialization(
         return max_pass_seconds is not None and (time.monotonic() - pass_started_monotonic) >= max_pass_seconds
 
     archive_root = _raw_materialization_archive_root(config)
+    index_db = _raw_materialization_index_path(config, archive_root)
     recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
     for recovered_census_id, recovered_scope in recovered_censuses:
         recovered_envelope = recovered_scope.get("max_payload_bytes")
@@ -6374,6 +6388,7 @@ def _repair_raw_materialization(
             archive_root,
             recovered_candidates,
             max_payload_bytes=recovered_max_payload_bytes,
+            index_db_path=index_db,
         )
         finalize_raw_authority_census(
             archive_root,
@@ -6429,7 +6444,11 @@ def _repair_raw_materialization(
         raise ValueError("raw_artifact_limit must be positive")
     census_components_attempted = 0
     if uncensused_raw_ids:
-        preliminary_components = _raw_materialization_ordered_components(census_candidates, archive_root=archive_root)
+        preliminary_components = _raw_materialization_ordered_components(
+            census_candidates,
+            archive_root=archive_root,
+            index_db_path=index_db,
+        )
         for component in preliminary_components:
             if not uncensused_raw_ids.intersection(component):
                 continue
@@ -6576,8 +6595,12 @@ def _repair_raw_materialization(
             census_receipt=census_receipt,
         )
     candidate_raw_ids = candidates.raw_ids
-    ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
-    plans = build_raw_replay_plans(archive_root, ordered_components)
+    ordered_components = _raw_materialization_ordered_components(
+        candidates,
+        archive_root=archive_root,
+        index_db_path=index_db,
+    )
+    plans = build_raw_replay_plans(archive_root, ordered_components, index_db_path=index_db)
     plan_by_component = {plan.input_raw_ids: plan for plan in plans}
     all_blocked_components = [
         component
@@ -6844,7 +6867,7 @@ def _repair_raw_materialization(
     stale_outcomes: list[RawReplayPlanOutcome] = []
     validated_plans: list[RawReplayPlan] = []
     for plan in executable_plans:
-        valid, observed = validate_raw_replay_plan(archive_root, plan)
+        valid, observed = validate_raw_replay_plan(archive_root, plan, index_db_path=index_db)
         if valid:
             validated_plans.append(plan)
         else:
@@ -6873,6 +6896,7 @@ def _repair_raw_materialization(
             archive_root,
             stale_candidates,
             max_payload_bytes=max_payload_bytes,
+            index_db_path=index_db,
         )
         census_receipt = finalize_raw_authority_census(
             archive_root,
@@ -6913,7 +6937,6 @@ def _repair_raw_materialization(
     # writer-hot table before this bounded live pass; this is the same
     # planner invariant seeded for a fresh index bootstrap, without turning
     # raw materialization into a full rebuild.
-    index_db = _raw_materialization_index_path(config, archive_root)
     with closing(sqlite3.connect(index_db, timeout=60)) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
         # A freshly reset index uses representative bootstrap statistics.
@@ -7026,7 +7049,11 @@ def _repair_raw_materialization(
                 )
                 record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
             else:
-                plan_still_valid, _ = validate_raw_replay_plan(archive_root, plan)
+                plan_still_valid, _ = validate_raw_replay_plan(
+                    archive_root,
+                    plan,
+                    index_db_path=index_db,
+                )
                 if plan_still_valid:
                     outcome = RawReplayPlanOutcome(
                         plan.plan_id,
@@ -7135,7 +7162,10 @@ def _repair_raw_materialization(
     )
     plan_outcomes = tuple(execution_outcomes) + blocked_plan_outcomes
     post_plans, post_residual = _raw_authority_postflight_snapshot(
-        archive_root, remaining, max_payload_bytes=max_payload_bytes
+        archive_root,
+        remaining,
+        max_payload_bytes=max_payload_bytes,
+        index_db_path=index_db,
     )
     census_receipt = finalize_raw_authority_census(
         archive_root,

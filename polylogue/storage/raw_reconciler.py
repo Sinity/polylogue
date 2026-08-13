@@ -783,6 +783,8 @@ def _classify_frontier(
 def _strategy_overrides(
     config: Config,
     rows: list[dict[str, object]],
+    *,
+    index_db_path: Path,
 ) -> dict[str, _StrategyOverride]:
     """Ask legacy incident inspectors for proofs, never for plan identity."""
     from polylogue.storage.repair import (
@@ -800,7 +802,11 @@ def _strategy_overrides(
         }
     )
     for browser_chunk in _chunks(browser_ids):
-        browser_items = inspect_browser_capture_origin_mismatches(config, browser_chunk)
+        browser_items = inspect_browser_capture_origin_mismatches(
+            config,
+            browser_chunk,
+            index_db_path=index_db_path,
+        )
         for browser_item in browser_items:
             if browser_item.status in {"eligible", "already_repaired"}:
                 overrides[browser_item.raw_id] = _StrategyOverride(
@@ -810,7 +816,11 @@ def _strategy_overrides(
                     witness=_browser_strategy_witness(browser_item),
                     input_raw_ids=_browser_strategy_raw_ids(browser_item),
                 )
-        conflicts = inspect_browser_canonical_authority_conflicts(config, browser_chunk)
+        conflicts = inspect_browser_canonical_authority_conflicts(
+            config,
+            browser_chunk,
+            index_db_path=index_db_path,
+        )
         for conflict_item in conflicts.items:
             if conflict_item.raw_id in overrides:
                 continue
@@ -861,7 +871,11 @@ def _strategy_overrides(
         }
     )
     for quarantine_chunk in _chunks(quarantine_pairs, size=100):
-        quarantine_items = inspect_quarantined_accepted_raws(config, quarantine_chunk)
+        quarantine_items = inspect_quarantined_accepted_raws(
+            config,
+            quarantine_chunk,
+            index_db_path=index_db_path,
+        )
         for (raw_id, logical_source_key), quarantine_item in zip(quarantine_chunk, quarantine_items, strict=True):
             if quarantine_item.status in {"eligible", "already_repaired"}:
                 overrides[_quarantine_override_key(raw_id, logical_source_key)] = _StrategyOverride(
@@ -1202,7 +1216,7 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         head_rows = _frontier_rows(conn)
-        overrides = _strategy_overrides(config, head_rows)
+        overrides = _strategy_overrides(config, head_rows, index_db_path=index_db)
 
         def _override_for(row: dict[str, object]) -> _StrategyOverride | None:
             raw_id = str(row["accepted_raw_id"])

@@ -942,6 +942,25 @@ def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_pa
     assert receipt["application_rows"] == []
 
 
+def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="active-plan", source_path="active-plan.jsonl", acquired_at_ms=1)
+    assert repair_raw_materialization(_config(tmp_path)).success is True
+    shadow_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    assert shadow_plan.index_preconditions["sessions"]
+
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+    active_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    valid, observed = validate_raw_replay_plan(tmp_path, shadow_plan)
+
+    assert active_plan.index_preconditions["sessions"] == []
+    assert valid is False
+    assert observed == active_plan.to_dict()
+
+
 def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     active_index = tmp_path / "generations" / "active" / "index.db"
