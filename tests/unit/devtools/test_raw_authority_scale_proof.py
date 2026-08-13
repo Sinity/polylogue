@@ -13,6 +13,8 @@ from devtools.raw_authority_scale_proof import (
     JULY_15_EXPANDED_MEMBERS,
     ProcessSample,
     RawAuthorityScaleScenario,
+    _ExpectedExceptionalComponent,
+    _outcome_matches_expected_exception,
     main,
     run_raw_authority_scale_proof,
 )
@@ -20,6 +22,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.storage import repair
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -161,6 +164,37 @@ def test_raw_authority_scale_proof_rejects_every_unsuccessful_production_pass(
         run_raw_authority_scale_proof(
             tmp_path, components=1, raws=1, max_io_full_avg10=None, max_memory_full_avg10=None
         )
+
+
+def test_exceptional_outcome_rejects_a_swapped_component_receipt() -> None:
+    expected = _ExpectedExceptionalComponent(
+        status=RawReplayPlanStatus.TERMINAL,
+        application_decision="ambiguous",
+        exceptional_raw_ids=frozenset({"raw-a-terminal"}),
+    )
+    swapped = RawReplayPlanOutcome(
+        plan_id="plan-a",
+        input_raw_ids=("raw-a-direct", "raw-a-terminal"),
+        status=RawReplayPlanStatus.TERMINAL,
+        reason="synthetic terminal",
+        next_action="none",
+        application_receipt={
+            "application_rows": [{"raw_id": "raw-b-terminal", "decision": "ambiguous"}],
+        },
+    )
+    exact = RawReplayPlanOutcome(
+        plan_id="plan-a",
+        input_raw_ids=("raw-a-direct", "raw-a-terminal"),
+        status=RawReplayPlanStatus.TERMINAL,
+        reason="synthetic terminal",
+        next_action="none",
+        application_receipt={
+            "application_rows": [{"raw_id": "raw-a-terminal", "decision": "ambiguous"}],
+        },
+    )
+
+    assert _outcome_matches_expected_exception(swapped, expected) is False
+    assert _outcome_matches_expected_exception(exact, expected) is True
 
 
 def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_identity(tmp_path: Path) -> None:

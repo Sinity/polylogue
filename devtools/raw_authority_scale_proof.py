@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TextIO, cast
@@ -66,6 +66,13 @@ class RawAuthorityScalePass:
     cpu_ms: int | None
     read_io_bytes: int | None
     write_io_bytes: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedExceptionalComponent:
+    status: RawReplayPlanStatus
+    application_decision: str
+    exceptional_raw_ids: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,11 +251,22 @@ class RawAuthorityScaleScenario:
         )
 
 
-def _outcome_has_application_decision(outcome: RawReplayPlanOutcome, expected: str) -> bool:
-    if outcome.application_receipt is None:
+def _outcome_matches_expected_exception(
+    outcome: RawReplayPlanOutcome,
+    expected: _ExpectedExceptionalComponent,
+) -> bool:
+    """Bind a typed exceptional outcome to the exact seeded raw identities."""
+    if outcome.status is not expected.status or outcome.application_receipt is None:
         return False
     rows = outcome.application_receipt.get("application_rows")
-    return isinstance(rows, list) and any(isinstance(row, dict) and row.get("decision") == expected for row in rows)
+    if not isinstance(rows, list):
+        return False
+    decided_raw_ids = {
+        str(row.get("raw_id"))
+        for row in rows
+        if isinstance(row, dict) and row.get("decision") == expected.application_decision
+    }
+    return decided_raw_ids == expected.exceptional_raw_ids
 
 
 def _payload_header(native_id: str, revision: int, *, first: bool) -> bytes:
@@ -659,7 +677,8 @@ def _record_repair_pass(
     pass_limit: int,
     max_payload_bytes: int,
     check_admission: Callable[[], None],
-    expected_application_decision: str | None = None,
+    expected_exception_components: Mapping[frozenset[str], _ExpectedExceptionalComponent] | None = None,
+    observed_exception_components: set[frozenset[str]] | None = None,
 ) -> tuple[RawAuthorityScalePass, str]:
     """Run one real repair/census pass and reject incomplete evidence."""
     check_admission()
@@ -706,31 +725,37 @@ def _record_repair_pass(
         status.value: sum(outcome.status is status for outcome in result.plan_outcomes)
         for status in RawReplayPlanStatus
     }
+    exceptional_outcomes = tuple(
+        outcome
+        for outcome in result.plan_outcomes
+        if outcome.status not in {RawReplayPlanStatus.EXECUTED, RawReplayPlanStatus.CARRIED_FORWARD}
+    )
+    expected_outcomes = not exceptional_outcomes
+    if exceptional_outcomes:
+        expected_outcomes = expected_exception_components is not None
+        pass_components: set[frozenset[str]] = set()
+        for outcome in exceptional_outcomes:
+            component_id = frozenset(outcome.input_raw_ids)
+            expected = expected_exception_components.get(component_id) if expected_exception_components else None
+            if (
+                expected is None
+                or not _outcome_matches_expected_exception(outcome, expected)
+                or component_id in pass_components
+                or (observed_exception_components is not None and component_id in observed_exception_components)
+            ):
+                expected_outcomes = False
+                continue
+            pass_components.add(component_id)
+        if not expected_outcomes:
+            raise RuntimeError(
+                "raw-authority scale proof repair pass failed: observed an unbound exceptional repair outcome"
+            )
+        if observed_exception_components is not None:
+            observed_exception_components.update(pass_components)
     if not result.success:
         # RepairResult.success is archive health. This fault/scale proof may
         # deliberately create typed terminal debt, but it must never mistake
         # an unrelated failed pass for successful proof execution.
-        expected_status = (
-            {
-                "ambiguous": RawReplayPlanStatus.TERMINAL,
-                "deferred": RawReplayPlanStatus.DEFERRED,
-            }.get(expected_application_decision)
-            if expected_application_decision is not None
-            else None
-        )
-        exceptional_outcomes = tuple(
-            outcome
-            for outcome in result.plan_outcomes
-            if outcome.status not in {RawReplayPlanStatus.EXECUTED, RawReplayPlanStatus.CARRIED_FORWARD}
-        )
-        expected_outcomes = bool(exceptional_outcomes) and expected_status is not None
-        for outcome in exceptional_outcomes:
-            expected_outcomes = (
-                expected_outcomes
-                and outcome.status is expected_status
-                and expected_application_decision is not None
-                and _outcome_has_application_decision(outcome, expected_application_decision)
-            )
         blockers = (
             metrics.get("raw_materialization_plan_conservation_error_count", 0),
             metrics.get("raw_materialization_unresolved_blocker_count", 0),
@@ -741,7 +766,9 @@ def _record_repair_pass(
         )
         remaining = metrics.get("raw_materialization_remaining_candidate_count", 0)
         bounded_progress = mode == "apply" and result.repaired_count > 0 and remaining > 0 and not exceptional_outcomes
-        expected_terminal_classification = mode == "apply" and result.repaired_count > 0 and expected_outcomes
+        expected_terminal_classification = (
+            mode == "apply" and result.repaired_count > 0 and bool(exceptional_outcomes) and expected_outcomes
+        )
         if any(blockers) or not (bounded_progress or expected_terminal_classification):
             raise RuntimeError(f"raw-authority scale proof repair pass failed: {result.detail}")
     return (
@@ -839,10 +866,11 @@ def run_raw_authority_scale_proof(
         shutil.rmtree(root)
     initialize_active_archive_root(root)
     component_shape = _component_authority_shape(scenario)
-    expected_application_decision = (
-        ("ambiguous" if scenario.terminal_sibling_outcome == "terminal" else "deferred")
-        if scenario.expanded_candidates != scenario.direct_candidates
-        else None
+    expected_application_decision = "ambiguous" if scenario.terminal_sibling_outcome == "terminal" else "deferred"
+    expected_exception_status = (
+        RawReplayPlanStatus.TERMINAL
+        if scenario.terminal_sibling_outcome == "terminal"
+        else RawReplayPlanStatus.DEFERRED
     )
     component_sizes = _row_sizes(
         scenario,
@@ -855,6 +883,8 @@ def run_raw_authority_scale_proof(
             raise RuntimeError("raw-authority scale proof requires a writable blob publisher")
         source_conn = archive._ensure_source_conn()
         generated_archive_id = _GeneratedArchiveId()
+        component_raw_ids = [set[str]() for _ in range(scenario.components)]
+        exceptional_raw_ids = [set[str]() for _ in range(scenario.components)]
         pending_rows: list[tuple[str, str, str, int, bool, int]] = []
         generated_payload_bytes = 0
         acquired_at_ms = 0
@@ -919,7 +949,9 @@ def run_raw_authority_scale_proof(
                                 blob_publication_receipt_id=publisher.receipt_id(row_hash),
                                 manage_transaction=False,
                             )
+                            component_raw_ids[row_component].add(raw_id)
                             if terminalized:
+                                exceptional_raw_ids[row_component].add(raw_id)
                                 with sqlite3.connect(root / "index.db") as index_conn:
                                     index_conn.execute(
                                         """
@@ -973,7 +1005,9 @@ def run_raw_authority_scale_proof(
                             blob_publication_receipt_id=publisher.receipt_id(row_hash),
                             manage_transaction=False,
                         )
+                        component_raw_ids[row_component].add(raw_id)
                         if terminalized:
+                            exceptional_raw_ids[row_component].add(raw_id)
                             with sqlite3.connect(root / "index.db") as index_conn:
                                 index_conn.execute(
                                     """
@@ -995,6 +1029,17 @@ def run_raw_authority_scale_proof(
                         acquired_at_ms += 1
                 check_generation_pressure()
         staging.rmdir()
+    expected_exception_components = {
+        frozenset(component_raw_ids[index]): _ExpectedExceptionalComponent(
+            status=expected_exception_status,
+            application_decision=expected_application_decision,
+            exceptional_raw_ids=frozenset(exceptional_raw_ids[index]),
+        )
+        for index in range(scenario.components)
+        if exceptional_raw_ids[index]
+    }
+    if any(not component for component in component_raw_ids):
+        raise RuntimeError("raw-authority scale proof generated an empty authority component")
     archive_id = generated_archive_id.value()
     config = Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
     check_replay_pressure()
@@ -1030,6 +1075,7 @@ def run_raw_authority_scale_proof(
         maximum_passes=(scenario.components * 3) + 4,
     )
     pass_receipts: list[RawAuthorityScalePass] = []
+    observed_exception_components: set[frozenset[str]] = set()
     for number in range(1, (scenario.components * 3) + 4):
         pass_receipt, _digest = _record_repair_pass(
             number=number,
@@ -1038,7 +1084,8 @@ def run_raw_authority_scale_proof(
             pass_limit=pass_limit,
             max_payload_bytes=max_payload_bytes,
             check_admission=check_replay_pressure,
-            expected_application_decision=expected_application_decision,
+            expected_exception_components=expected_exception_components,
+            observed_exception_components=observed_exception_components,
         )
         pass_receipts.append(pass_receipt)
         if pass_receipt.candidate_count == 0:
@@ -1047,6 +1094,19 @@ def run_raw_authority_scale_proof(
             raise RuntimeError("raw-authority scale proof left unexecuted candidate work after bounded replay")
     else:
         raise RuntimeError("raw-authority scale proof did not drain bounded apply passes")
+    if observed_exception_components != set(expected_exception_components):
+        missing = sorted(
+            (sorted(component) for component in set(expected_exception_components) - observed_exception_components),
+            key=str,
+        )
+        unexpected = sorted(
+            (sorted(component) for component in observed_exception_components - set(expected_exception_components)),
+            key=str,
+        )
+        raise RuntimeError(
+            "raw-authority scale proof did not receipt every exact exceptional authority component: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
     fixed_point_digests: list[str] = []
     for _ in range(2):
         pass_receipt, digest = _record_repair_pass(
@@ -1056,7 +1116,8 @@ def run_raw_authority_scale_proof(
             pass_limit=pass_limit,
             max_payload_bytes=max_payload_bytes,
             check_admission=check_replay_pressure,
-            expected_application_decision=expected_application_decision,
+            expected_exception_components=expected_exception_components,
+            observed_exception_components=observed_exception_components,
         )
         if pass_receipt.candidate_count != 0:
             raise RuntimeError("raw-authority scale proof lost quiescence during fixed-point confirmation")
@@ -1064,11 +1125,6 @@ def run_raw_authority_scale_proof(
         fixed_point_digests.append(digest)
     if fixed_point_digests[0] != fixed_point_digests[1] or not pass_receipts[-1].fixed_point:
         raise RuntimeError("raw-authority scale proof did not reach two matching quiescent fixed-point censuses")
-    expected_exception_status = (
-        RawReplayPlanStatus.TERMINAL
-        if scenario.terminal_sibling_outcome == "terminal"
-        else RawReplayPlanStatus.DEFERRED
-    )
     expected_exception_count = sum(sibling_count > 0 for _direct_count, sibling_count in component_shape)
     observed_exception_count = sum(item.plan_status_counts[expected_exception_status.value] for item in pass_receipts)
     other_exception_status = (
