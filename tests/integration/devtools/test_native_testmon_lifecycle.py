@@ -10,6 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -53,6 +54,10 @@ def _git(repo: Path, *args: str) -> str:
 
 def _init_repo(root: Path, *, conftest: str = "") -> None:
     (root / "tests").mkdir(parents=True)
+    (root / ".gitignore").write_text(
+        ".artifacts/\n.benchmarks/\n.cache/\n.coverage*\n.pytest_cache/\n__pycache__/\n",
+        encoding="utf-8",
+    )
     (root / "pyproject.toml").write_text(
         """
 [tool.pytest.ini_options]
@@ -158,6 +163,89 @@ def _run_plain_verify_corpus(
     return parallel, serial
 
 
+def _run_production_verify(repo: Path, *args: str) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    """Run the production verifier orchestration against a tiny fixture corpus.
+
+    The subprocess keeps the real native preparation, two-lane runner,
+    containment, deadline, aggregate, invocation receipt, and XDG history.
+    Only unrelated static gates are filtered so this fixture need not copy the
+    entire Polylogue source tree.
+    """
+    state_root = repo.parent / f"{repo.name}-verify-state"
+    receipt = state_root / "receipts" / f"{uuid.uuid4().hex}.json"
+    invocation_id = uuid.uuid4().hex
+    driver = """
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import devtools.verify as verify
+
+root = Path(sys.argv[1]).resolve()
+real_build = verify.build_verify_steps
+
+def native_steps_only(**kwargs):
+    return [step for step in real_build(**kwargs) if step[0].startswith("pytest native")]
+
+verify.ROOT = root
+verify.build_verify_steps = native_steps_only
+verify.assert_polylogue_matches_checkout = lambda *_args, **_kwargs: SimpleNamespace(
+    polylogue_import_path=root / "polylogue" / "__init__.py",
+    as_dict=lambda: {"checkout_root": str(root), "test_fixture": True},
+)
+os.chdir(root)
+raise SystemExit(verify.main(sys.argv[2:]))
+"""
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONPATH": str(PROJECT_ROOT),
+            "XDG_STATE_HOME": str(state_root / "xdg-state"),
+            "POLYLOGUE_PYTEST_WORKERS": "1",
+            "POLYLOGUE_VERIFICATION_INVOCATION_ID": invocation_id,
+            "POLYLOGUE_VERIFICATION_RECEIPT_PATH": str(receipt),
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", driver, str(repo), *args, "--json"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout_value: object = exc.stdout
+        stderr_value: object = exc.stderr
+        stdout = (
+            stdout_value.decode(errors="replace")
+            if isinstance(stdout_value, bytes)
+            else stdout_value
+            if isinstance(stdout_value, str)
+            else ""
+        )
+        stderr = (
+            stderr_value.decode(errors="replace")
+            if isinstance(stderr_value, bytes)
+            else stderr_value
+            if isinstance(stderr_value, str)
+            else ""
+        )
+        pytest.fail(f"production verify fixture timed out\nstdout:\n{stdout}\nstderr:\n{stderr}")
+    if not receipt.exists():
+        pytest.fail(
+            f"production verify wrote no invocation receipt\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    payload = json.loads(completed.stdout)
+    persisted = json.loads(receipt.read_text(encoding="utf-8"))
+    assert persisted["invocation_id"] == invocation_id
+    assert persisted["pytest_aggregate"] == payload["pytest_aggregate"]
+    return completed, payload
+
+
 def _selected(*results: LaneResult) -> set[str]:
     selected: set[str] = set()
     for result in results:
@@ -212,6 +300,75 @@ def test_serial_owner():
     second = _run_plain_verify_corpus(repo, mode="affected", environment_name=warm.environment_name)
     assert [result.completed.returncode for result in second] == [0, 0]
     assert _selected(*second) == set()
+
+
+def test_production_plain_verify_owns_bootstrap_warm_selection_deadline_and_history(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (repo / "tests" / "test_app.py").write_text(
+        """
+import pytest
+
+def test_parallel_owner():
+    from polylogue.app import answer
+    assert answer() == 42
+
+@pytest.mark.load_sensitive
+def test_serial_owner():
+    from polylogue.app import answer
+    assert answer() == 42
+""".lstrip(),
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    first, bootstrap = _run_production_verify(repo)
+
+    assert first.returncode == 0, f"{first.stderr}\n{json.dumps(bootstrap, indent=2, sort_keys=True)}"
+    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+    aggregate = bootstrap["pytest_aggregate"]
+    assert aggregate["complete_corpus_covered"] is True
+    assert aggregate["terminal_green"] is True
+    assert aggregate["cleanup"] == {"complete": True}
+    assert aggregate["containment"] == {"complete": True}
+    assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
+    lane_steps = [step for step in bootstrap["steps"] if step.get("semantic_lane")]
+    assert [step["semantic_lane"] for step in lane_steps] == ["parallel", "serial"]
+    environments = {
+        arg for step in lane_steps for arg in step["cmd"] if isinstance(arg, str) and arg.startswith("--testmon-env=")
+    }
+    assert environments == {f"--testmon-env={bootstrap['testmon_environment']['name']}"}
+    lane_timeouts = [step["timeout_s"] for step in lane_steps]
+    assert 0 < lane_timeouts[1] < lane_timeouts[0] <= 3600
+    history_path = repo.parent / "repo-verify-state" / "xdg-state" / "polylogue" / "devtools" / "verify-history.jsonl"
+    history = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    assert history[-1]["pytest_aggregate"] == aggregate
+
+    second, warm = _run_production_verify(repo)
+
+    assert second.returncode == 0, second.stderr
+    assert warm["testmon_environment"]["selection_mode"] == "affected"
+    assert warm["release_baseline_allowed"] is False
+    assert warm["pytest_aggregate"]["selected_union_count"] == 0
+
+    (package / "app.py").write_text("def answer() -> int:\n    return 0\n", encoding="utf-8")
+    third, mutated = _run_production_verify(repo)
+
+    assert third.returncode == 1
+    assert mutated["testmon_environment"]["selection_mode"] == "affected"
+    assert mutated["pytest_aggregate"]["terminal_union_count"] == 2
+    assert mutated["release_baseline_allowed"] is False
+    assert "assert 0 == 42" in third.stderr
 
 
 def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -> None:

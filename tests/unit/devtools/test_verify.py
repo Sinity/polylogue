@@ -20,6 +20,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.testmon_bootstrap import executable_python_paths
+from devtools.verification_contracts import TerminalAuthorization, VerificationScope
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -724,6 +725,49 @@ def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path
 
     rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
     assert sorted(row["sequence"] for row in rows) == list(range(64))
+    assert all(row["history_schema_version"] == 1 for row in rows)
+    assert all(isinstance(row["timestamp"], str) for row in rows)
+    assert all(row["pytest_aggregate"]["selection_mode"] == "none" for row in rows)
+
+
+def test_verify_history_normalizes_focused_and_quick_runs_to_one_aggregate_schema(tmp_path: Path) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+    finished_at = "2026-08-13T17:30:00+00:00"
+    focused = {
+        "tier": "focused-test",
+        "finished_at": finished_at,
+        "duration_s": 1.25,
+        "exit_code": 0,
+        "steps": [
+            {
+                "name": "pytest focused",
+                "exit": 0,
+                "duration_s": 1.0,
+                "selected_count": 2,
+                "collection_duration_s": 0.1,
+                "containment_mode": "systemd-scope",
+                "statistics": {
+                    "node_count": 2,
+                    "outcomes": {"passed": 2},
+                    "cleanup": {"complete": True},
+                    "resources": {"peak_tree_rss_kb": 512, "tree_read_bytes_delta": 64},
+                },
+            }
+        ],
+    }
+    quick = {"tier": "quick", "timestamp": "2026-08-13T17:31:00+00:00", "exit_code": 0, "steps": []}
+
+    append_verify_history(focused, path=history)
+    append_verify_history(quick, path=history)
+
+    focused_row, quick_row = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert focused_row["timestamp"] == finished_at
+    assert focused_row["total_duration_s"] == 1.25
+    assert focused_row["pytest_aggregate"]["selection_mode"] == "focused"
+    assert focused_row["pytest_aggregate"]["outcomes"] == {"passed": 2}
+    assert focused_row["pytest_aggregate"]["resources"]["peak_tree_rss_kb"] == 512
+    assert quick_row["pytest_aggregate"]["selection_mode"] == "none"
+    assert quick_row["pytest_aggregate"]["lanes"] == []
 
 
 def test_verify_history_repairs_or_frames_an_incomplete_trailing_record(tmp_path: Path) -> None:
@@ -737,7 +781,9 @@ def test_verify_history_repairs_or_frames_an_incomplete_trailing_record(tmp_path
     append_verify_history({"sequence": 2}, path=history)
 
     rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
-    assert rows == [{"sequence": 0}, {"sequence": 1}, {"sequence": 2}]
+    assert rows[0] == {"sequence": 0}
+    assert [row["sequence"] for row in rows[1:]] == [1, 2]
+    assert all(row["history_schema_version"] == 1 for row in rows[1:])
 
 
 def test_verify_history_append_reads_only_the_trailing_record(
@@ -761,7 +807,9 @@ def test_verify_history_append_reads_only_the_trailing_record(
     append_verify_history({"sequence": 1}, path=history)
 
     assert bytes_read < 128 * 1024
-    assert json.loads(history.read_text(encoding="utf-8").splitlines()[-1]) == {"sequence": 1}
+    row = json.loads(history.read_text(encoding="utf-8").splitlines()[-1])
+    assert row["sequence"] == 1
+    assert row["history_schema_version"] == 1
 
 
 def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1454,7 +1502,7 @@ def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
-def test_checkout_mutation_monitor_treats_every_ready_index_event_as_authority_change(
+def test_checkout_mutation_monitor_ignores_semantically_unchanged_index_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1465,6 +1513,9 @@ def test_checkout_mutation_monitor_treats_every_ready_index_event_as_authority_c
 
     def portable_watch(*_paths: Path, **_kwargs: object) -> object:
         yield set()
+        replacement = index.with_suffix(".replacement")
+        replacement.write_bytes(index.read_bytes())
+        replacement.replace(index)
         yield {(watchfiles.Change.modified, str(index))}
         stop_event = _kwargs["stop_event"]
         assert isinstance(stop_event, threading.Event)
@@ -1475,7 +1526,7 @@ def test_checkout_mutation_monitor_treats_every_ready_index_event_as_authority_c
     monitor.start()
     observation = monitor.finish()
 
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
 def test_checkout_mutation_monitor_rejects_partial_git_enumeration(
@@ -3782,12 +3833,32 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
 
     assert _release_baseline_allowed(
         selection_mode="bootstrap",
+        verification_scope=VerificationScope.RELEASE_BASELINE,
+        terminal_authorization=None,
         exit_code=0,
         checkout_stable=True,
         aggregate=aggregate,
     )
     assert not _release_baseline_allowed(
         selection_mode="affected",
+        verification_scope=VerificationScope.AFFECTED,
+        terminal_authorization=None,
+        exit_code=0,
+        checkout_stable=True,
+        aggregate=aggregate,
+    )
+    assert not _release_baseline_allowed(
+        selection_mode="full",
+        verification_scope=VerificationScope.NARROW_TERMINAL,
+        terminal_authorization=None,
+        exit_code=0,
+        checkout_stable=True,
+        aggregate=aggregate,
+    )
+    assert _release_baseline_allowed(
+        selection_mode="full",
+        verification_scope=VerificationScope.NARROW_TERMINAL,
+        terminal_authorization=TerminalAuthorization.NARROW_TERMINAL.value,
         exit_code=0,
         checkout_stable=True,
         aggregate=aggregate,
@@ -3801,10 +3872,183 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     ):
         assert not _release_baseline_allowed(
             selection_mode="full",
+            verification_scope=VerificationScope.RELEASE_BASELINE,
+            terminal_authorization=None,
             exit_code=0,
             checkout_stable=True,
             aggregate=broken,
         )
+
+
+@pytest.mark.parametrize(
+    ("authorization", "expected_release"),
+    [(None, False), ("narrow-terminal", True)],
+)
+def test_skip_slow_command_requires_typed_narrow_terminal_authorization(
+    authorization: str | None,
+    expected_release: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    preparation = SimpleNamespace(
+        environment_name="env",
+        selection_mode="bootstrap",
+        removed_paths=(),
+        copied_from=None,
+    )
+    native_state = SimpleNamespace(
+        valid=True,
+        status="valid",
+        reason="current",
+        environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
+        missing_executable_paths=(),
+    )
+    aggregate = {
+        "complete_corpus_covered": True,
+        "terminal_green": True,
+        "cleanup": {"complete": True},
+        "containment": {"complete": True},
+        "deadline": {"met": True},
+    }
+    argv = ["--all", "--skip-slow", "--json"]
+    if authorization is not None:
+        argv.extend(("--terminal-authorization", authorization))
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch("devtools.verify.prepare_native_testmon_environment", return_value=preparation),
+        patch("devtools.verify._native_environment_after_run", return_value=native_state),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify.aggregate_native_testmon_run", return_value=aggregate),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(argv) == 0
+
+    assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is expected_release
+
+
+def test_collection_failure_still_persists_native_run_aggregate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    preparation = SimpleNamespace(
+        environment_name="env",
+        selection_mode="bootstrap",
+        removed_paths=(),
+        copied_from=None,
+    )
+    invalid_state = SimpleNamespace(
+        valid=False,
+        status="invalid",
+        reason="native environment has no unique collected corpus",
+        environment=None,
+        missing_executable_paths=(),
+    )
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch("devtools.verify.prepare_native_testmon_environment", return_value=preparation),
+        patch("devtools.verify._native_environment_after_run", return_value=invalid_state),
+        patch(
+            "devtools.verify.build_verify_steps",
+            return_value=[("pytest native parallel (bootstrap)", ["pytest"])],
+        ),
+        patch(
+            "devtools.verify._run",
+            return_value=(2, 0.01, {"diagnosis": "pytest_collection_failed"}),
+        ),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    aggregate = payload["pytest_aggregate"]
+    assert aggregate["environment"]["status"] == "invalid"
+    assert aggregate["environment"]["native_corpus_count"] == 0
+    assert aggregate["lanes"][0]["lane"] == "parallel"
+    assert aggregate["cleanup"]["complete"] is False
+    assert aggregate["containment"]["complete"] is False
+
+
+def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    preparation = SimpleNamespace(
+        environment_name="env",
+        selection_mode="bootstrap",
+        removed_paths=(),
+        copied_from=None,
+    )
+    native_state = SimpleNamespace(
+        valid=True,
+        status="valid",
+        reason="current",
+        environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
+        missing_executable_paths=(),
+    )
+    clock = iter((100.0, 3701.0, 3701.0, 3701.0))
+
+    def prepare(*_args: object, **_kwargs: object) -> object:
+        assert time.monotonic() == 3701.0
+        return preparation
+
+    with (
+        patch("devtools.verify.time.monotonic", side_effect=lambda: next(clock)),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch("devtools.verify.prepare_native_testmon_environment", side_effect=prepare),
+        patch("devtools.verify._native_environment_after_run", return_value=native_state),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 124
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_duration_s"] == 3601.0
+    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": False}
+    assert any(step["diagnosis"] == "verify_invocation_deadline_exceeded" for step in payload["steps"])
 
 
 def test_completion_notification_uses_pytest_count() -> None:

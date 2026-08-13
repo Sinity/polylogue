@@ -2421,11 +2421,19 @@ def _native_environment_after_run(
 def _release_baseline_allowed(
     *,
     selection_mode: str | None,
+    verification_scope: VerificationScope,
+    terminal_authorization: str | None,
     exit_code: int,
     checkout_stable: bool,
     aggregate: Mapping[str, Any] | None,
 ) -> bool:
     if selection_mode not in {"bootstrap", "full"} or exit_code != 0 or not checkout_stable or aggregate is None:
+        return False
+    scope_authorized = verification_scope == VerificationScope.RELEASE_BASELINE or (
+        verification_scope == VerificationScope.NARROW_TERMINAL
+        and terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
+    )
+    if not scope_authorized:
         return False
     cleanup = aggregate.get("cleanup")
     containment = aggregate.get("containment")
@@ -2444,6 +2452,7 @@ def _release_baseline_allowed(
 
 def _main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
+    started_at = time.monotonic()
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument(
@@ -2507,7 +2516,6 @@ def _main(argv: list[str] | None = None) -> int:
         sys.stderr.write("verify: cannot resolve immutable Git refs for native affected-test authority.\n")
         return 125
 
-    started_at = time.monotonic()
     relevant_paths: tuple[str, ...] = ()
     required_executable_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
@@ -2691,21 +2699,64 @@ def _main(argv: list[str] | None = None) -> int:
                 )
 
     total_duration = round(time.monotonic() - started_at, 2)
+    deadline_recorded = any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in step_results)
+    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
+        step_results.append(
+            {
+                "name": "verify invocation deadline",
+                "duration_s": 0.0,
+                "exit": 124,
+                "diagnosis": "verify_invocation_deadline_exceeded",
+                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
+            }
+        )
+        exit_code = 124
+        deadline_recorded = True
     pytest_aggregate: dict[str, Any] | None = None
     native_environment = native_state.environment if native_state is not None else None
-    if preparation is not None and native_environment is not None:
+    if preparation is not None:
         pytest_aggregate = aggregate_native_testmon_run(
             ROOT,
             steps=step_results,
             environment_name=preparation.environment_name,
-            corpus_nodeids=native_environment.nodeids,
+            corpus_nodeids=native_environment.nodeids if native_environment is not None else (),
+            environment_status=native_state.status if native_state is not None else "unavailable",
+            environment_reason=native_state.reason if native_state is not None else "post-run inspection unavailable",
             selection_mode=testmon_mode or "affected",
             invocation_duration_s=total_duration,
             budget_s=VERIFY_INVOCATION_BUDGET_S,
         )
 
+    # Aggregation and final graph inspection are part of the same invocation
+    # deadline as collection and execution. Recompute once after aggregation
+    # so a run cannot gain release authority by crossing the budget during
+    # finalization rather than during a pytest lane.
+    finalized_duration = round(time.monotonic() - started_at, 2)
+    if finalized_duration > total_duration:
+        total_duration = finalized_duration
+    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
+        step_results.append(
+            {
+                "name": "verify invocation deadline",
+                "duration_s": 0.0,
+                "exit": 124,
+                "diagnosis": "verify_invocation_deadline_exceeded",
+                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
+            }
+        )
+        exit_code = 124
+        deadline_recorded = True
+    if pytest_aggregate is not None:
+        pytest_aggregate["wall_s"] = total_duration
+        pytest_aggregate["deadline"] = {
+            "budget_s": VERIFY_INVOCATION_BUDGET_S,
+            "met": total_duration <= VERIFY_INVOCATION_BUDGET_S,
+        }
+
     release_baseline_allowed = _release_baseline_allowed(
         selection_mode=testmon_mode,
+        verification_scope=planned_scope,
+        terminal_authorization=args.terminal_authorization,
         exit_code=exit_code,
         checkout_stable=checkout_stable,
         aggregate=pytest_aggregate,

@@ -100,6 +100,144 @@ def _trailing_history_record(descriptor: int, *, end: int) -> tuple[int, bytes]:
     return 0, b"".join(reversed(suffix))
 
 
+def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
+    existing = entry.get("pytest_aggregate")
+    if isinstance(existing, Mapping):
+        return dict(existing)
+
+    def optional_int(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def max_optional(current: int | None, value: object) -> int | None:
+        candidate = optional_int(value)
+        if candidate is None:
+            return current
+        return candidate if current is None else max(current, candidate)
+
+    pytest_steps = [
+        step
+        for step in entry.get("steps", ())
+        if isinstance(step, Mapping) and str(step.get("name", "")).startswith("pytest")
+    ]
+    outcomes: dict[str, int] = {}
+    lanes: list[dict[str, Any]] = []
+    selected_count = 0
+    terminal_count = 0
+    collection_wall_s = 0.0
+    cleanup_complete = True
+    containment_complete = True
+    peak_rss: int | None = None
+    peak_pss: int | None = None
+    peak_swap: int | None = None
+    peak_storage: int | None = None
+    read_bytes = 0
+    write_bytes = 0
+    for step in pytest_steps:
+        statistics = step.get("statistics")
+        stats = statistics if isinstance(statistics, Mapping) else {}
+        raw_outcomes = stats.get("outcomes")
+        if isinstance(raw_outcomes, Mapping):
+            for outcome, count in raw_outcomes.items():
+                if isinstance(count, int):
+                    outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + count
+        raw_node_count = stats.get("node_count")
+        if not isinstance(raw_node_count, int):
+            raw_node_count = step.get("count")
+        node_count = raw_node_count if isinstance(raw_node_count, int) else 0
+        raw_selected = step.get("selected_count")
+        selected = raw_selected if isinstance(raw_selected, int) else node_count
+        selected_count += selected
+        terminal_count += node_count
+        collection_duration = step.get("collection_duration_s")
+        if isinstance(collection_duration, int | float):
+            collection_wall_s += float(collection_duration)
+        cleanup = stats.get("cleanup")
+        step_cleanup = cleanup.get("complete") if isinstance(cleanup, Mapping) else None
+        cleanup_complete = cleanup_complete and step_cleanup is True
+        containment_complete = containment_complete and isinstance(step.get("containment_mode"), str)
+        resources = stats.get("resources")
+        resource_values = resources if isinstance(resources, Mapping) else {}
+        peak_rss = max_optional(peak_rss, resource_values.get("peak_tree_rss_kb"))
+        peak_pss = max_optional(peak_pss, resource_values.get("peak_tree_pss_kb"))
+        peak_swap = max_optional(peak_swap, resource_values.get("peak_tree_swap_pss_kb"))
+        storage = stats.get("storage")
+        storage_values = storage if isinstance(storage, Mapping) else {}
+        peak_storage = max_optional(peak_storage, storage_values.get("basetemp_allocated_bytes_max"))
+        read_bytes += optional_int(resource_values.get("tree_read_bytes_delta")) or 0
+        write_bytes += optional_int(resource_values.get("tree_write_bytes_delta")) or 0
+        lanes.append(
+            {
+                "lane": "focused" if entry.get("tier") == "focused-test" else "pytest",
+                "exit_code": step.get("exit"),
+                "duration_s": step.get("duration_s"),
+                "selected_count": selected,
+                "terminal_count": node_count,
+                "collection_duration_s": collection_duration,
+                "cleanup_complete": step_cleanup,
+                "containment_complete": isinstance(step.get("containment_mode"), str),
+                "containment_mode": step.get("containment_mode"),
+            }
+        )
+
+    no_pytest = not pytest_steps
+    corpus_digest = hashlib.sha256(b"").hexdigest()
+    exit_code = entry.get("exit_code")
+    return {
+        "schema_version": 1,
+        "environment": {
+            "name": None,
+            "digest": None,
+            "status": "not-applicable",
+            "reason": "run did not use the native pytest-testmon lifecycle",
+            "native_corpus_count": 0,
+            "native_corpus_digest": corpus_digest,
+        },
+        "corpus": {"count": terminal_count, "digest": corpus_digest},
+        "selection_mode": "focused" if entry.get("tier") == "focused-test" else "none",
+        "lanes": lanes,
+        "selected_union_count": selected_count,
+        "terminal_union_count": terminal_count,
+        "duplicate_outcome_count": 0,
+        "outcomes": outcomes,
+        "missing_terminal_count": 0,
+        "missing_terminal_sample": [],
+        "non_green_count": sum(count for outcome, count in outcomes.items() if outcome not in {"passed", "skipped"}),
+        "non_green_sample": [],
+        "complete_corpus_covered": False,
+        "terminal_green": bool(pytest_steps) and exit_code == 0,
+        "collection_wall_s": round(collection_wall_s, 4),
+        "resources": {
+            "peak_tree_rss_kb": peak_rss,
+            "peak_tree_pss_kb": peak_pss,
+            "peak_tree_swap_pss_kb": peak_swap,
+            "peak_storage_bytes": peak_storage,
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+        },
+        "cleanup": {"complete": True if no_pytest else cleanup_complete},
+        "containment": {"complete": True if no_pytest else containment_complete},
+        "deadline": {"budget_s": None, "met": True},
+        "wall_s": entry.get("total_duration_s", entry.get("duration_s", 0.0)),
+    }
+
+
+def normalize_verify_history_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the single timestamped history schema shared by every run kind."""
+    normalized = dict(entry)
+    normalized["history_schema_version"] = 1
+    normalized["timestamp"] = next(
+        (
+            value
+            for key in ("timestamp", "finished_at", "started_at")
+            if isinstance((value := normalized.get(key)), str) and value
+        ),
+        datetime.now(UTC).isoformat(),
+    )
+    normalized.setdefault("total_duration_s", normalized.get("duration_s", 0.0))
+    normalized["pytest_aggregate"] = _history_pytest_aggregate(normalized)
+    return normalized
+
+
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
     """Append one complete invocation to the cross-worktree run history.
 
@@ -109,7 +247,7 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     durable index used to find and compare them.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
+    payload = (json.dumps(normalize_verify_history_entry(entry), ensure_ascii=False) + "\n").encode()
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -287,6 +425,7 @@ class CheckoutMutationMonitor:
         self._git_current_ref_path: Path | None = None
         self._git_current_ref_was_loose: bool | None = None
         self._git_authority_paths: dict[Path, str] = {}
+        self._git_authority_signatures: dict[Path, str | None] = {}
         self._directory_topology_fingerprint: frozenset[str] | None = None
 
     def start(self) -> None:
@@ -425,6 +564,7 @@ class CheckoutMutationMonitor:
         if self._git_index_path is not None:
             self._git_authority_paths[self._git_index_path] = ".git/index"
         self._git_authority_paths.update(self._resolve_git_head_paths())
+        self._git_authority_signatures = {path: self._authority_signature(path) for path in self._git_authority_paths}
         for authority_path in self._git_authority_paths:
             watched_parent = authority_path.parent
             while not watched_parent.exists() and watched_parent != watched_parent.parent:
@@ -433,6 +573,14 @@ class CheckoutMutationMonitor:
                 directories.append(watched_parent)
         self._directory_topology_fingerprint = self._directory_topology(directories)
         return directories
+
+    @staticmethod
+    def _authority_signature(path: Path) -> str | None:
+        """Identify authority semantics while ignoring byte-identical rewrites."""
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
 
     def _directory_topology(self, directories: Sequence[Path]) -> frozenset[str]:
         """Fingerprint source directory membership without trusting pre-watch state."""
@@ -561,6 +709,20 @@ class CheckoutMutationMonitor:
     def _record_change(self, candidate: Path) -> None:
         if not candidate.is_absolute():
             candidate = self.root / candidate
+        nested_authorities = [
+            (authority_path, label)
+            for authority_path, label in self._git_authority_paths.items()
+            if candidate != authority_path and authority_path.is_relative_to(candidate)
+            and not (label == ".git/packed-refs" and self._git_current_ref_was_loose is True)
+        ]
+        if nested_authorities:
+            for authority_path, label in nested_authorities:
+                if self._authority_signature(authority_path) != self._git_authority_signatures.get(authority_path):
+                    with self._state_lock:
+                        self._changed = True
+                        self._observed_path = label
+                    return
+            return
         for authority_path, label in self._git_authority_paths.items():
             if label == ".git/packed-refs" and self._git_current_ref_was_loose is True:
                 # packed-refs is shared by linked worktrees. When this
@@ -570,11 +732,6 @@ class CheckoutMutationMonitor:
                 # is removed or replaced. Preserve the startup state so a
                 # packed-to-loose transition cannot hide its own first event.
                 continue
-            if candidate != authority_path and authority_path.is_relative_to(candidate):
-                with self._state_lock:
-                    self._changed = True
-                    self._observed_path = label
-                return
             if candidate.parent != authority_path.parent:
                 continue
             if candidate.name == f"{authority_path.name}.lock":
@@ -583,6 +740,8 @@ class CheckoutMutationMonitor:
                 # its authority file.
                 return
             if candidate.name == authority_path.name:
+                if self._authority_signature(authority_path) == self._git_authority_signatures.get(authority_path):
+                    return
                 with self._state_lock:
                     self._changed = True
                     self._observed_path = label
@@ -1074,6 +1233,8 @@ def aggregate_native_testmon_run(
     steps: Sequence[Mapping[str, Any]],
     environment_name: str,
     corpus_nodeids: Sequence[str],
+    environment_status: str = "valid",
+    environment_reason: str | None = None,
     selection_mode: str,
     invocation_duration_s: float,
     budget_s: float,
@@ -1185,11 +1346,15 @@ def aggregate_native_testmon_run(
         sorted(nodeid for nodeid in corpus if outcome_by_node.get(nodeid) not in _GREEN_TERMINAL_OUTCOMES)
     )
     terminal_green = complete_corpus_covered and not missing_terminal and not non_green
+    cleanup_complete = bool(lanes) and cleanup_complete
+    containment_complete = bool(lanes) and containment_complete
     return {
         "schema_version": 1,
         "environment": {
             "name": environment_name,
             "digest": environment_name.removeprefix("polylogue-"),
+            "status": environment_status,
+            "reason": environment_reason,
             "native_corpus_count": len(native_corpus),
             "native_corpus_digest": hashlib.sha256("\n".join(native_corpus).encode()).hexdigest(),
         },
@@ -1230,7 +1395,14 @@ def aggregate_native_testmon_run(
 
 def git_dirty(cwd: Path | None = None) -> bool:
     try:
-        result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5, cwd=cwd)
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+            env=_read_only_git_env(),
+        )
     except (OSError, subprocess.TimeoutExpired):
         return True
     return bool(result.stdout.strip())
@@ -1250,6 +1422,7 @@ def git_head(cwd: Path | None = None) -> str | None:
             text=True,
             timeout=5,
             cwd=cwd,
+            env=_read_only_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
