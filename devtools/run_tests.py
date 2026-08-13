@@ -51,8 +51,11 @@ from devtools.verify_runs import (
     CheckoutMutationMonitor,
     VerifyRun,
     append_verify_history,
+    finalize_checkout_mutation_monitors,
+    finish_checkout_mutation_monitor,
     git_head,
     pytest_command_worker_request,
+    start_checkout_mutation_monitor,
     worktree_fingerprint,
 )
 
@@ -235,6 +238,7 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
             handle.truncate()
 
 
+@finalize_checkout_mutation_monitors
 def main(argv: list[str] | None = None) -> int:
     invocation_directory = Path.cwd()
     selection = list(sys.argv[1:] if argv is None else argv)
@@ -267,9 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
-        initial_worktree_fingerprint = worktree_fingerprint(ROOT)
         mutation_monitor = CheckoutMutationMonitor(ROOT)
-        mutation_monitor.start()
+        start_checkout_mutation_monitor(mutation_monitor)
+        initial_worktree_fingerprint = worktree_fingerprint(ROOT)
         run = VerifyRun(
             tier="focused-test",
             argv=selection,
@@ -287,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
             run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
         final_worktree_fingerprint = worktree_fingerprint(ROOT)
-        mutation_observation = mutation_monitor.finish()
+        mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
         if (
             "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
             or mutation_observation.unavailable

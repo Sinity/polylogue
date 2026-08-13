@@ -1967,6 +1967,29 @@ def test_checkout_mutation_monitor_ignores_nested_disposable_cache_writes(tmp_pa
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
+def test_checkout_mutation_monitor_observes_tracked_file_inside_disposable_cache(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "package" / "__pycache__" / "authority.py"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "package/__pycache__/authority.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed tracked cache path"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    tracked.write_text("during\n", encoding="utf-8")
+    tracked.write_text("before\n", encoding="utf-8")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path="package/__pycache__/authority.py",
+    )
+
+
 def test_checkout_mutation_monitor_uses_gitignore_for_verifier_task_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5326,6 +5349,31 @@ def test_verify_starts_checkout_monitor_before_broad_change_classification(
 
     assert events == ["monitor-started", "classified", "monitor-finished"]
     assert json.loads(capsys.readouterr().out)["exit_code"] == 0
+
+
+def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> None:
+    events: list[str] = []
+
+    class _ExceptionalExitMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    with (
+        patch("devtools.verify.CheckoutMutationMonitor", _ExceptionalExitMonitor),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify.worktree_fingerprint", side_effect=RuntimeError("fingerprint failed")),
+    ):
+        with pytest.raises(RuntimeError, match="fingerprint failed"):
+            main(["--quick", "--json"])
+
+    assert events == ["monitor-started", "monitor-finished"]
 
 
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -20,11 +21,11 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
@@ -279,6 +280,7 @@ class CheckoutMutationMonitor:
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
         self._tracked_paths: frozenset[Path] = frozenset()
+        self._tracked_directories: frozenset[Path] = frozenset()
         self._ignored_roots: frozenset[Path] = frozenset()
         self._git_index_path: Path | None = None
         self._git_authority_paths: dict[Path, str] = {}
@@ -362,6 +364,9 @@ class CheckoutMutationMonitor:
     def _watched_directories(self) -> list[Path]:
         """Watch existing source directories shallowly and omit disposable trees."""
         self._tracked_paths = self._git_tracked_paths()
+        self._tracked_directories = frozenset(
+            parent for tracked_path in self._tracked_paths for parent in tracked_path.parents if parent != Path(".")
+        )
         self._ignored_roots = self._ignored_directory_roots()
         directories: list[Path] = []
 
@@ -372,12 +377,17 @@ class CheckoutMutationMonitor:
         for current, child_directories, _files in os.walk(self.root, onerror=walk_error):
             current_path = Path(current)
             relative_current = current_path.relative_to(self.root)
-            child_directories[:] = [
-                child
-                for child in child_directories
-                if child not in self._IGNORED_TOP_LEVEL
-                and not self._is_within_ignored_root(relative_current / child, self._ignored_roots)
-            ]
+            retained_children: list[str] = []
+            for child in child_directories:
+                relative_child = relative_current / child
+                disposable = child in self._IGNORED_TOP_LEVEL or self._is_within_ignored_root(
+                    relative_child,
+                    self._ignored_roots,
+                )
+                if disposable and relative_child not in self._tracked_directories:
+                    continue
+                retained_children.append(child)
+            child_directories[:] = retained_children
             directories.append(current_path)
         self._git_index_path = self._resolve_git_index_path()
         if self._git_index_path is not None:
@@ -549,6 +559,61 @@ class CheckoutMutationMonitor:
         with self._state_lock:
             self._unavailable = True
         return True
+
+
+_MonitorParams = ParamSpec("_MonitorParams")
+_MonitorResult = TypeVar("_MonitorResult")
+_MONITOR_STATE = threading.local()
+
+
+def _checkout_monitor_stack() -> list[CheckoutMutationMonitor]:
+    stack = getattr(_MONITOR_STATE, "stack", None)
+    if stack is None:
+        stack = []
+        _MONITOR_STATE.stack = stack
+    return stack
+
+
+def start_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> None:
+    """Start a runner-owned monitor and register it for exceptional cleanup."""
+    stack = _checkout_monitor_stack()
+    stack.append(monitor)
+    try:
+        monitor.start()
+    except BaseException:
+        with contextlib.suppress(Exception):
+            finish_checkout_mutation_monitor(monitor)
+        raise
+
+
+def finish_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> CheckoutMutationObservation:
+    """Finish one monitor and retire its runner cleanup obligation."""
+    stack = _checkout_monitor_stack()
+    try:
+        return monitor.finish()
+    finally:
+        for index in range(len(stack) - 1, -1, -1):
+            if stack[index] is monitor:
+                del stack[index]
+                break
+
+
+def finalize_checkout_mutation_monitors(
+    function: Callable[_MonitorParams, _MonitorResult],
+) -> Callable[_MonitorParams, _MonitorResult]:
+    """Guarantee that monitors started by a runner finish on every exit."""
+
+    @functools.wraps(function)
+    def wrapped(*args: _MonitorParams.args, **kwargs: _MonitorParams.kwargs) -> _MonitorResult:
+        stack = _checkout_monitor_stack()
+        baseline_depth = len(stack)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            while len(stack) > baseline_depth:
+                finish_checkout_mutation_monitor(stack[-1])
+
+    return wrapped
 
 
 @dataclass(frozen=True)

@@ -100,6 +100,8 @@ from devtools.verify_runs import (
     cleanup_managed_pytest_basetemp,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
+    finalize_checkout_mutation_monitors,
+    finish_checkout_mutation_monitor,
     force_managed_pytest_scratch,
     latest_event_from_paths,
     normalize_pytest_basetemp_env,
@@ -107,6 +109,7 @@ from devtools.verify_runs import (
     pytest_command_worker_request,
     pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
+    start_checkout_mutation_monitor,
     utc_now,
     worktree_fingerprint,
     xdist_uninterruptible_stall_reason,
@@ -3510,6 +3513,7 @@ def _discard_testmon_dependency_authority() -> None:
 # ── main ────────────────────────────────────────────────────────────
 
 
+@finalize_checkout_mutation_monitors
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
@@ -3604,7 +3608,7 @@ def main(argv: list[str] | None = None) -> int:
 
     t0 = time.monotonic()
     mutation_monitor = CheckoutMutationMonitor(ROOT)
-    mutation_monitor.start()
+    start_checkout_mutation_monitor(mutation_monitor)
     checkout_fingerprint = worktree_fingerprint(ROOT)
     verify_run = VerifyRun(
         tier=tier,
@@ -3627,7 +3631,7 @@ def main(argv: list[str] | None = None) -> int:
                 terminal_authorization=args.terminal_authorization,
             )
         except RuntimeError as exc:
-            mutation_monitor.finish()
+            finish_checkout_mutation_monitor(mutation_monitor)
             sys.stderr.write(f"verify: {exc}\n")
             early_payload = verify_run.finish(
                 exit_code=125,
@@ -3669,7 +3673,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     except PytestResourceError as exc:
-        mutation_monitor.finish()
+        finish_checkout_mutation_monitor(mutation_monitor)
         sys.stderr.write(f"verify: {exc}\n")
         early_payload = verify_run.finish(
             exit_code=125,
@@ -3836,7 +3840,7 @@ def main(argv: list[str] | None = None) -> int:
 
     final_head = _git_head()
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
-    mutation_observation = mutation_monitor.finish()
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
     checkout_stable = True
     if (
         changed_path_authority_failed

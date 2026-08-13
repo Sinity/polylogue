@@ -301,6 +301,65 @@ def test_main_withholds_success_when_checkout_changes_during_pytest(
     assert captured["final_worktree_fingerprint"] == "changed"
 
 
+def test_main_starts_checkout_monitor_before_initial_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _OrderingMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    def fingerprint(_root: Path) -> str:
+        assert events[0] == "monitor-started"
+        events.append("fingerprinted")
+        return "stable"
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", fingerprint)
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _OrderingMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["tests/unit/example.py"]) == 0
+    assert events == ["monitor-started", "fingerprinted", "fingerprinted", "monitor-finished"]
+
+
+def test_main_finalizes_checkout_monitor_when_initial_fingerprint_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _ExceptionalExitMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _ExceptionalExitMonitor)
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_tests.main(["tests/unit/example.py"])
+
+    assert events == ["monitor-started", "monitor-finished"]
+
+
 @pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
 def test_main_withholds_success_when_checkout_fingerprint_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
