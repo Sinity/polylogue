@@ -86,12 +86,13 @@ class PullRequestMetadata:
     head_sha: str
     base_sha: str
     is_draft: bool
-    base_ref: str = "master"
-    number: int = 0
-    state: str = ""
     author_login: str | None = None
     author_type: str | None = None
     changed_files: tuple[str, ...] = ()
+
+
+class NoOpenPullRequestError(ValueError):
+    """CI checked a commit that has no open pull request to validate."""
 
 
 def _canonical_json(value: object) -> str:
@@ -307,32 +308,6 @@ def changed_bead_ids(*, base_sha: str, head_sha: str) -> list[str]:
     return sorted(bead_id for bead_id in set(before) | set(after) if before.get(bead_id) != after.get(bead_id))
 
 
-def changed_paths_at_revisions(*, base_sha: str, head_sha: str) -> tuple[str, ...]:
-    """Return every path endpoint changed by one immutable candidate revision.
-
-    Rename detection is deliberately disabled: a rename is represented as a
-    deletion plus an addition, so an allowlist must admit both the source and
-    destination paths.  This is also independent of GitHub's mutable PR-files
-    endpoint; the trusted workflow has already fetched ``head_sha`` as data.
-    """
-    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha) or not _GIT_OBJECT_PATTERN.fullmatch(head_sha):
-        raise ValueError("base and head revisions must be hexadecimal Git object names")
-    _ensure_local_commit(base_sha)
-    _ensure_local_commit(head_sha)
-    merge_base = _merge_base(base_sha, head_sha)
-    result = subprocess.run(
-        ["git", "diff", "--no-renames", "--name-only", "-z", merge_base, head_sha, "--"],
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0 or result.stderr.strip():
-        raise ValueError("cannot resolve candidate changed-file scope from immutable Git revisions")
-    paths = tuple(sorted(os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw))
-    if not paths:
-        raise ValueError("candidate changed-file scope is empty")
-    return paths
-
-
 def _validate_dispositions(
     dispositions: object,
     *,
@@ -419,7 +394,6 @@ def validate_carrier(
     is_draft: bool,
     beads_path: Path = _BEADS_PATH,
     base_sha: str | None = None,
-    bead_revision: str | None = None,
 ) -> ScopeVerdict:
     reasons: list[str] = []
     version = carrier.get("version")
@@ -461,16 +435,14 @@ def validate_carrier(
 
     candidate_records: dict[str, dict[str, Any]] = {}
     try:
-        candidate_records = (
-            _bead_records_at(bead_revision) if bead_revision is not None else load_bead_records(beads_path)
-        )
+        candidate_records = load_bead_records(beads_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         reasons.append(f"cannot resolve candidate Bead records: {exc}")
 
     actual_mutations: list[str] = []
     if base_sha is not None:
         try:
-            actual_mutations = changed_bead_ids(base_sha=base_sha, head_sha=bead_revision or head_sha)
+            actual_mutations = changed_bead_ids(base_sha=base_sha, head_sha=head_sha)
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
             reasons.append(f"cannot resolve Bead mutation scope: {exc}")
         else:
@@ -533,7 +505,6 @@ def validate_pr_body(
     is_draft: bool,
     beads_path: Path = _BEADS_PATH,
     base_sha: str | None = None,
-    bead_revision: str | None = None,
 ) -> ScopeVerdict:
     carrier, reasons = extract_carrier(body)
     if carrier is None:
@@ -544,7 +515,6 @@ def validate_pr_body(
         is_draft=is_draft,
         beads_path=beads_path,
         base_sha=base_sha,
-        bead_revision=bead_revision,
     )
 
 
@@ -701,10 +671,8 @@ def _pr_metadata_from_payload(payload: object) -> PullRequestMetadata:
     base = payload.get("base")
     if not isinstance(head, dict) or not isinstance(head.get("sha"), str):
         raise ValueError("GitHub PR response is missing head.sha")
-    if not isinstance(base, dict) or not isinstance(base.get("sha"), str) or not isinstance(base.get("ref"), str):
-        raise ValueError("GitHub PR response is missing base.sha or base.ref")
-    if type(payload.get("number")) is not int or not isinstance(payload.get("state"), str):
-        raise ValueError("GitHub PR response is missing number or state")
+    if not isinstance(base, dict) or not isinstance(base.get("sha"), str):
+        raise ValueError("GitHub PR response is missing base.sha")
     user = payload.get("user")
     author_login = user.get("login") if isinstance(user, dict) and isinstance(user.get("login"), str) else None
     author_type = user.get("type") if isinstance(user, dict) and isinstance(user.get("type"), str) else None
@@ -714,10 +682,7 @@ def _pr_metadata_from_payload(payload: object) -> PullRequestMetadata:
         body=payload.get("body") or "",
         head_sha=head["sha"],
         base_sha=base["sha"],
-        base_ref=base["ref"],
         is_draft=bool(payload.get("draft")),
-        number=payload["number"],
-        state=payload["state"],
         author_login=author_login,
         author_type=author_type,
         changed_files=changed_files,
@@ -742,22 +707,11 @@ def fetch_pr_files(pr: int, *, repository: str) -> tuple[str, ...]:
     return names
 
 
-def fetch_pr_authority_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
-    """Fetch only PR identity and body fields needed by the trusted workflow.
-
-    Candidate file scope is derived from the event-bound Git objects.  Keeping
-    this read separate prevents the authority path from depending on GitHub's
-    independently mutable and paginated PR-files response.
-    """
+def fetch_pr_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
     raw = _github_request_bytes(f"repos/{repository}/pulls/{pr}")
     if raw is None:
         raise RuntimeError(f"GitHub API returned no metadata for PR #{pr}")
-    return _pr_metadata_from_payload(json.loads(raw))
-
-
-def fetch_pr_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
-    """Fetch PR metadata for candidate-checkout and legacy CI validation."""
-    metadata = fetch_pr_authority_metadata(pr, repository=repository)
+    metadata = _pr_metadata_from_payload(json.loads(raw))
     if metadata.author_login == "dependabot[bot]" and metadata.author_type == "Bot":
         metadata = PullRequestMetadata(
             **{**asdict(metadata), "changed_files": fetch_pr_files(pr, repository=repository)}
@@ -797,6 +751,31 @@ def automated_dependency_scope_allowed(
     )
 
 
+def fetch_pr_for_head(*, repository: str, head_sha: str) -> tuple[int, PullRequestMetadata]:
+    raw = _github_request_bytes(f"repos/{repository}/commits/{head_sha}/pulls")
+    if raw is None:
+        raise RuntimeError(f"GitHub API returned no PR metadata for head {head_sha[:8]}")
+    payload = json.loads(raw)
+    if not isinstance(payload, list):
+        raise ValueError("GitHub commit-pulls response must be a list")
+    candidates: list[tuple[int, PullRequestMetadata]] = []
+    for item in payload:
+        if not isinstance(item, dict) or item.get("state") != "open" or not isinstance(item.get("number"), int):
+            continue
+        metadata = _pr_metadata_from_payload(item)
+        if metadata.head_sha == head_sha:
+            if metadata.author_login == "dependabot[bot]" and metadata.author_type == "Bot":
+                metadata = PullRequestMetadata(
+                    **{**asdict(metadata), "changed_files": fetch_pr_files(item["number"], repository=repository)}
+                )
+            candidates.append((item["number"], metadata))
+    if not candidates:
+        raise NoOpenPullRequestError(f"no open PR found for head {head_sha[:8]}")
+    if len(candidates) != 1:
+        raise ValueError(f"expected one open PR for head {head_sha[:8]}, found {len(candidates)}")
+    return candidates[0]
+
+
 def fetch_base_validator_source(*, repository: str, base_sha: str) -> bytes | None:
     local = subprocess.run(
         ["git", "show", f"{base_sha}:devtools/pr_scope.py"],
@@ -819,75 +798,6 @@ def _emit_verdict(verdict: ScopeVerdict, *, head_sha: str, as_json: bool) -> int
         for reason in verdict.reasons:
             print(f"  - {reason}")
     return 0 if verdict.ok else 1
-
-
-def _require_full_sha(value: str, *, label: str) -> None:
-    if not re.fullmatch(r"[0-9a-f]{40}", value):
-        raise ValueError(f"{label} must be a full lowercase Git SHA")
-
-
-def validate_authority_event(
-    metadata: PullRequestMetadata,
-    *,
-    event_pr: int,
-    event_head_sha: str,
-    event_base_sha: str,
-) -> None:
-    """Bind trusted workflow event fields to the GitHub PR resource exactly."""
-    if event_pr < 1:
-        raise ValueError("event PR number must be positive")
-    _require_full_sha(event_head_sha, label="event head SHA")
-    _require_full_sha(event_base_sha, label="event base SHA")
-    _require_full_sha(metadata.head_sha, label="GitHub API head SHA")
-    _require_full_sha(metadata.base_sha, label="GitHub API base SHA")
-    if metadata.number != event_pr:
-        raise ValueError("GitHub API PR number does not match the workflow event PR number")
-    if metadata.state != "open":
-        raise ValueError(f"GitHub API PR state is {metadata.state!r}, not 'open'")
-    if metadata.is_draft:
-        raise ValueError("PR is draft; publish it before authority validation")
-    if metadata.base_ref != "master":
-        raise ValueError(f"GitHub API PR base ref is {metadata.base_ref!r}, not 'master'")
-    if metadata.head_sha != event_head_sha:
-        raise ValueError("GitHub API PR head SHA does not match the workflow event head SHA")
-
-
-def check_authority_metadata(
-    metadata: PullRequestMetadata,
-    *,
-    event_pr: int,
-    event_head_sha: str,
-    event_base_sha: str,
-) -> int:
-    """Validate a PR solely from trusted base code and candidate Git objects."""
-    try:
-        validate_authority_event(
-            metadata,
-            event_pr=event_pr,
-            event_head_sha=event_head_sha,
-            event_base_sha=event_base_sha,
-        )
-        _ensure_local_commit(event_base_sha)
-        _ensure_local_commit(metadata.head_sha)
-        candidate_paths = changed_paths_at_revisions(
-            base_sha=event_base_sha,
-            head_sha=metadata.head_sha,
-        )
-        authority_metadata = PullRequestMetadata(**{**asdict(metadata), "changed_files": candidate_paths})
-        if _automated_dependency_scope_allowed(authority_metadata):
-            print(f"pr-scope authority OK: typed automated-dependency disposition (files={','.join(candidate_paths)})")
-            return 0
-        verdict = validate_pr_body(
-            metadata.body,
-            head_sha=metadata.head_sha,
-            is_draft=metadata.is_draft,
-            base_sha=event_base_sha,
-            bead_revision=metadata.head_sha,
-        )
-    except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
-        print(f"REFUSING authority pr-scope check: {exc}", file=sys.stderr)
-        return 2
-    return _emit_verdict(verdict, head_sha=metadata.head_sha, as_json=False)
 
 
 def _run_validator_source(
@@ -1009,17 +919,11 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
     check.add_argument("--json", action="store_true", dest="as_json")
 
-    check_ci = sub.add_parser("check-ci", help="legacy Circle bootstrap validation")
-    check_ci.add_argument("--pr", type=int, required=True, help="GitHub PR number supplied by CircleCI")
+    check_ci = sub.add_parser("check-ci", help="validate with the PR base revision's authoritative checker")
+    check_ci.add_argument("--pr", type=int, help="GitHub PR number (default: resolve from --expected-head-sha)")
     check_ci.add_argument("--repo", required=True, help="GitHub OWNER/REPO from CI metadata")
     check_ci.add_argument("--expected-head-sha", default=os.environ.get("CIRCLE_SHA1"))
     check_ci.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
-
-    check_authority = sub.add_parser("check-authority", help="validate an explicit pull_request_target event")
-    check_authority.add_argument("--pr", type=int, required=True, help="pull_request event number")
-    check_authority.add_argument("--repo", required=True, help="GitHub OWNER/REPO from the trusted workflow")
-    check_authority.add_argument("--event-head-sha", required=True, help="pull_request event head SHA")
-    check_authority.add_argument("--event-base-sha", required=True, help="pull_request event base SHA")
 
     sync = sub.add_parser("sync", help="report the current mutable attestation for a stable PR carrier")
     sync.add_argument("--pr", type=int, required=True, help="GitHub PR number to inspect")
@@ -1042,7 +946,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "check-ci":
         try:
             repository = resolve_repository(args.repo)
-            metadata = fetch_pr_metadata(args.pr, repository=repository)
+            if args.pr is not None:
+                pr_number = args.pr
+                metadata = fetch_pr_metadata(args.pr, repository=repository)
+            else:
+                if not args.expected_head_sha:
+                    raise ValueError("--pr or --expected-head-sha is required")
+                pr_number, metadata = fetch_pr_for_head(repository=repository, head_sha=args.expected_head_sha)
+                print(f"pr-scope CI metadata: resolved PR #{pr_number} from head {args.expected_head_sha[:8]}")
             checkout_head_sha = _git_head_sha()
             return check_ci_metadata(
                 metadata,
@@ -1051,22 +962,11 @@ def main(argv: list[str] | None = None) -> int:
                 checkout_head_sha=checkout_head_sha,
                 expected_head_sha=args.expected_head_sha,
             )
+        except NoOpenPullRequestError as exc:
+            print(f"pr-scope CI skip: {exc}", file=sys.stderr)
+            return 0
         except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
             print(f"REFUSING CI pr-scope check: {exc}", file=sys.stderr)
-            return 2
-
-    if args.action == "check-authority":
-        try:
-            repository = resolve_repository(args.repo)
-            metadata = fetch_pr_authority_metadata(args.pr, repository=repository)
-            return check_authority_metadata(
-                metadata,
-                event_pr=args.pr,
-                event_head_sha=args.event_head_sha,
-                event_base_sha=args.event_base_sha,
-            )
-        except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
-            print(f"REFUSING authority pr-scope check: {exc}", file=sys.stderr)
             return 2
 
     if args.action == "sync":

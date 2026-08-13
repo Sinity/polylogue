@@ -473,22 +473,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace pr-scope",
         "workspace",
-        "Render stable PR scope intent, inspect its attestation, and validate trusted event authority.",
+        "Render stable PR scope intent and inspect its mutable merge attestation.",
         "devtools.pr_scope",
         use_when=(
             "Before publishing a non-draft PR, render the machine-readable v2 intent from assigned and mutated "
             "Beads plus typed dispositions. The PR body stays stable across commits; `sync --pr` reports the "
-            "current head- and Bead-bound attestation consumed by merge-gate. The trusted GitHub "
-            "pull_request_target authority workflow validates its event number and revisions from base code, reads "
-            "candidate Beads through Git objects, and must be installed as an exact required-workflow ruleset; "
-            "CircleCI remains a Phase A bootstrap check. The authority workflow deliberately publishes no commit "
-            "status because candidate workflows can spoof named statuses. The command never interprets acceptance prose."
+            "current head- and Bead-bound attestation consumed by merge-gate. CircleCI quick-gate and "
+            "`workspace merge` run the same validator; the command never interprets acceptance prose."
         ),
         examples=(
             "devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md",
             "devtools workspace pr-scope check --pr 3517",
             "devtools workspace pr-scope sync --pr 3517",
-            "devtools workspace pr-scope check-authority --pr 3517 --repo Sinity/polylogue --event-head-sha <event-head> --event-base-sha <event-base>",
             "devtools workspace pr-scope check-ci --pr 3517 --repo Sinity/polylogue --expected-head-sha $(git rev-parse HEAD)",
             "devtools workspace pr-scope check --body-file pr-body.md --head-sha $(git rev-parse HEAD) --base-sha $(git rev-parse origin/master)",
         ),

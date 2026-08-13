@@ -207,7 +207,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local verification + resolved review threads. |
-| `devtools workspace pr-scope` | Render stable PR scope intent, inspect its attestation, and validate trusted event authority. |
+| `devtools workspace pr-scope` | Render stable PR scope intent and inspect its mutable merge attestation. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-artifact-census` | Census quarantined raws into five authority buckets; apply pages raw_artifacts upserts and records durable receipts. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |

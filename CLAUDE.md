@@ -396,16 +396,9 @@ workflow, not optional conveniences — use them at the point named, every time:
   PR body after every commit. `mutated_beads` must name every Bead record this
   PR changes. A self-contained PR uses the typed `self_contained` scope with
   empty Bead lists.
-  GitHub Actions `pr-scope-authority.yml` uses `pull_request_target` on master,
-  checks out the event base SHA, confirms the explicit event PR and head with
-  the GitHub PR API, then fetches the candidate only as Git data. It reads
-  candidate Beads and changed paths from those immutable Git objects. Install
-  this exact workflow as a required-workflow ruleset on `master`; a named
-  commit status is not sufficient authority because another repository
-  workflow can publish the same context. Per-PR concurrency cancels stale body
-  validation after edits. CircleCI's `pr-scope check-ci` remains only as the
-  Phase A bootstrap check; it no longer discovers a PR from a commit or
-  classifies branch names.
+  CircleCI uses `pr-scope check-ci`, resolves PR metadata through public GitHub
+  REST when `CIRCLE_PULL_REQUEST` is absent, and executes the validator from
+  the PR base revision so a PR cannot weaken its own scope gate.
 - **Immediately after spawning a worktree-isolated lane, not after it reports
   back**: `devtools workspace verify-worktree <path> --expect-branch
   <branch>` — confirms the worktree is real and isolated before the lane has
