@@ -31,7 +31,7 @@ def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "4"])
     # No injected -n when the caller already chose one.
     assert cmd.count("-n") == 1
-    assert cmd[-2:] == ["-n", "4"]
+    assert cmd[-3:] == ["-n", "4", "--dist=loadgroup"]
 
 
 @pytest.mark.parametrize(
@@ -60,7 +60,20 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
 def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
     cmd = run_tests.build_pytest_cmd(["tests/unit"])
-    assert cmd[-2:] == ["-n", "8"]
+    assert cmd[-3:] == ["-n", "8", "--dist=loadgroup"]
+
+
+def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "4", "--dist=worksteal"])
+
+    assert cmd.count("--dist=worksteal") == 1
+    assert "--dist=loadgroup" not in cmd
+
+
+def test_build_pytest_cmd_does_not_add_distribution_for_serial_run() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "0"])
+
+    assert not any(arg.startswith("--dist") for arg in cmd)
 
 
 def test_subprocess_env_anchors_pytest_artifacts_to_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,12 +131,15 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
 
 
-def test_main_anchors_and_refreshes_root_artifacts_from_a_subdirectory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("invocation_location", ["inside", "external"])
+def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, invocation_location: str
 ) -> None:
     root = tmp_path / "checkout"
     subdirectory = root / "devtools"
+    external_directory = tmp_path / "unrelated"
     subdirectory.mkdir(parents=True)
+    external_directory.mkdir()
     stale_report = root / verify.PYTEST_REPORT_PATH
     stale_statistics = root / verify.CURRENT_STATISTICS_PATH
     stale_report.parent.mkdir(parents=True)
@@ -148,14 +164,15 @@ def test_main_anchors_and_refreshes_root_artifacts_from_a_subdirectory(
     monkeypatch.setattr(run_tests, "_run", fake_run)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.chdir(subdirectory)
+    invocation_directory = subdirectory if invocation_location == "inside" else external_directory
+    monkeypatch.chdir(invocation_directory)
 
     assert run_tests.main(["tests/unit/example.py"]) == 0
 
     assert captured["cwd"] == str(root)
     assert stale_report.read_text() == '{"fresh": true}'
     assert not stale_statistics.exists()
-    assert not (subdirectory / ".cache").exists()
+    assert not (invocation_directory / ".cache").exists()
 
 
 def test_git_head_records_checkout_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

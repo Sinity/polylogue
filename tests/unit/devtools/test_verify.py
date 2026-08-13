@@ -98,6 +98,8 @@ from devtools.verify_runs import (
     xdist_uninterruptible_stall_reason,
 )
 
+pytestmark = pytest.mark.xdist_group("checkout-testmon")
+
 
 @pytest.fixture(autouse=True)
 def _isolate_verify_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

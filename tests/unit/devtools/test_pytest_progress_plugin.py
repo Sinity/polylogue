@@ -14,6 +14,8 @@ import pytest
 from devtools import pytest_progress_plugin
 from devtools.verify_runs import aggregate_pytest_statistics
 
+pytestmark = pytest.mark.xdist_group("checkout-testmon")
+
 
 @pytest.fixture(autouse=True)
 def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
@@ -24,6 +26,7 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
         "POLYLOGUE_PYTEST_EVENTS_PATH",
         "POLYLOGUE_PYTEST_SELECTION_PATH",
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
+        "PYTEST_XDIST_WORKER",
     ):
         monkeypatch.delenv(name, raising=False)
     selected_count = pytest_progress_plugin._SELECTED_COUNT
