@@ -3585,6 +3585,68 @@ async def test_hook_spool_directory_retry_retries_sqlite_operational_error(tmp_p
     assert calls == 2
 
 
+@pytest.mark.asyncio
+async def test_hook_spool_directory_retry_rejects_non_lock_sqlite_error(tmp_path: Path) -> None:
+    """A corrupt or incompatible spool database is not misclassified as contention."""
+
+    shard = tmp_path / "pending" / "2026-08-13"
+    shard.mkdir(parents=True)
+    (shard / "event.json").write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+
+    async def drain() -> None:
+        raise sqlite3.OperationalError("no such table: hook_events")
+
+    watcher._drain_hook_spool = drain  # type: ignore[method-assign]
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            await watcher._retry_hook_spool_directory_until_populated(shard)
+    finally:
+        watcher._parse_stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_hook_spool_retry_observes_and_logs_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed detached retry is retrieved and reported instead of becoming an unhandled task."""
+
+    shard = tmp_path / "pending" / "2026-08-13"
+    shard.mkdir(parents=True)
+    (shard / "event.json").write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    recorded_logger = MagicMock()
+    monkeypatch.setattr(live_watcher, "logger", recorded_logger)
+
+    async def drain() -> None:
+        raise sqlite3.OperationalError("database disk image is malformed")
+
+    watcher._drain_hook_spool = drain  # type: ignore[method-assign]
+    try:
+        watcher._schedule_hook_spool_directory_retry(shard)
+        task = watcher._hook_spool_directory_retry_tasks[shard.resolve()]
+        while not task.done():
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    finally:
+        watcher._parse_stage.shutdown()
+
+    assert watcher._hook_spool_directory_retry_tasks == {}
+    recorded_logger.exception.assert_called_once()
+    assert recorded_logger.exception.call_args.args == (
+        "live.watcher: hook spool directory retry failed for %s",
+        shard.resolve(),
+    )
+
+
 def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     """#1683: inbox must accept .zip (GDPR exports), .json, .jsonl, .ndjson."""
     from polylogue.sources.live.watcher import default_sources

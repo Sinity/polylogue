@@ -448,6 +448,12 @@ class LiveWatcher:
         def discard_completed_task(completed: asyncio.Task[None]) -> None:
             if self._hook_spool_directory_retry_tasks.get(directory) is completed:
                 self._hook_spool_directory_retry_tasks.pop(directory, None)
+            if completed.cancelled():
+                return
+            try:
+                completed.result()
+            except Exception:
+                logger.exception("live.watcher: hook spool directory retry failed for %s", directory)
 
         task.add_done_callback(discard_completed_task)
 
@@ -464,12 +470,14 @@ class LiveWatcher:
                     await self._drain_hook_spool()
                     if not any(directory.glob("*.json")):
                         return
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
                 # The normal periodic catch-up route retries transient source
                 # tier contention.  A just-created shard must get the same
                 # treatment instead of letting this narrow event-ordering
                 # recovery task die before its envelope is acknowledged.
-                pass
+                if not _is_database_locked(exc):
+                    raise
+                logger.warning("live.watcher: archive busy while draining new hook shard; will retry")
             except OSError:
                 return
             await asyncio.sleep(delay_s)
@@ -1867,7 +1875,14 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
 
 
 def _is_database_locked(exc: sqlite3.OperationalError) -> bool:
-    return "database is locked" in str(exc).lower()
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+        return True
+    message = str(exc).lower()
+    return any(
+        locked_message in message
+        for locked_message in ("database is locked", "database table is locked", "database schema is locked")
+    )
 
 
 def _cursor_age_exceeds(cursor: CursorRecord, min_age_s: float) -> bool:
