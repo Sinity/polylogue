@@ -664,6 +664,7 @@ class AuditRepository:
                             "target_digest": plan.target_digest,
                             "target_refs": list(plan.target_refs),
                             "affected_tiers": list(plan.affected_tiers),
+                            "context": dict(plan.context),
                         },
                         sort_keys=True,
                         separators=(",", ":"),

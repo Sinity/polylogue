@@ -255,7 +255,7 @@ def test_cli_delete_rejects_oversize_and_reads_slow_body_before_writer_gate() ->
     excessive = _handler(["api", "cli", "delete", "prepare"], excessive_timeline)
     excessive_body = json.dumps({"session_ids": [f"codex-session:{index}" for index in range(257)]}).encode()
     excessive.headers = {"Content-Length": str(len(excessive_body))}  # type: ignore[assignment]
-    excessive.rfile = BytesIO(excessive_body)  # type: ignore[assignment]
+    excessive.rfile = BytesIO(excessive_body)
     excessive._do_post_impl()
     assert excessive_timeline == ["error"]
 
@@ -270,7 +270,7 @@ def test_cli_delete_rejects_oversize_and_reads_slow_body_before_writer_gate() ->
     body = json.dumps({"session_ids": ["codex-session:slow"]}).encode()
     slow.headers = {"Content-Length": str(len(body))}  # type: ignore[assignment]
     slow.rfile = _SlowBody()  # type: ignore[assignment]
-    slow._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[method-assign]
+    slow._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[assignment]
     slow._send_json = lambda *_args: slow_timeline.append("response")  # type: ignore[method-assign]
     slow._do_post_impl()
     assert slow_timeline == ["body-read", "enter:http.cli.delete.prepare", "exit:http.cli.delete.prepare", "response"]

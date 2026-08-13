@@ -285,6 +285,21 @@ def _plan_from_row(
     targets: tuple[MutationTarget, ...],
     capabilities: tuple[str, ...],
 ) -> MutationPlan:
+    try:
+        document = json.loads(str(row["plan_json"]))
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise DeleteAuthorizationError("preview_plan_invalid") from exc
+    if not isinstance(document, dict):
+        raise DeleteAuthorizationError("preview_plan_invalid")
+    affected_tiers_value = document.get("affected_tiers")
+    context_value = document.get("context", {})
+    if (
+        not isinstance(affected_tiers_value, list)
+        or not all(isinstance(tier, str) for tier in affected_tiers_value)
+        or not isinstance(context_value, dict)
+        or not all(isinstance(key, str) for key in context_value)
+    ):
+        raise DeleteAuthorizationError("preview_plan_invalid")
     prepared_at_ms = int(row["created_at_ms"])
     return MutationPlan(
         operation=str(row["operation_name"]),
@@ -292,10 +307,11 @@ def _plan_from_row(
             Literal["additive", "reversible", "maintenance", "reset", "delete", "excise"], row["destructive_class"]
         ),
         target_refs=tuple(target.ref for target in targets),
-        affected_tiers=("index",),
+        affected_tiers=tuple(affected_tiers_value),
         reversible=False,
         prepared_at=datetime.fromtimestamp(prepared_at_ms / 1000, UTC).isoformat(),
         plan_hash=str(row["plan_hash"]),
+        context=context_value,
         operation_version=int(row["operation_version"]),
         archive_instance_id=str(row["archive_instance_id"]),
         archive_identity_digest=str(row["archive_identity_digest"]),

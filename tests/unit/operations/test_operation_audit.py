@@ -172,7 +172,7 @@ def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: P
     authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
     assert "raw-secret-token" not in (tmp_path / "audit.db").read_bytes().decode("utf-8", errors="ignore")
     digest_as_bearer = replace(authorization, token=f"sha256:{token_sha256('raw-secret-token')}")
-    with pytest.raises(ValueError, match="does not match preview"):
+    with pytest.raises(AuthorizationMismatchError, match="does not match preview"):
         audit.consume_authorization_and_start(preview, digest_as_bearer)
     receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
     assert receipt.operation_id is not None
@@ -901,7 +901,7 @@ def test_authorization_consumption_uses_durable_actor_and_capability_evidence(tm
         capabilities=("archive.substituted.write",),
     )
 
-    with pytest.raises(ValueError, match="principal mismatch"):
+    with pytest.raises(AuthorizationMismatchError, match="principal mismatch"):
         audit.consume_authorization_and_start(preview, forged)
 
     with sqlite3.connect(tmp_path / "audit.db") as conn:
@@ -1142,7 +1142,7 @@ def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path
 
 
 def test_new_authorization_revokes_every_older_token_for_preview(tmp_path: Path) -> None:
-    audit = AuditRepository(tmp_path / "audit.db")
+    audit = _audit(tmp_path)
     tokens = iter(("first-token", "second-token"))
     actuator = _Actuator()
     executor = OperationExecutor(audit=audit, token_factory=lambda: next(tokens))
