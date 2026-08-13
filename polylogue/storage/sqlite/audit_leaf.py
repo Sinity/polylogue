@@ -78,7 +78,11 @@ class VerifiedAuditLeaf:
 
     def sqlite_uri(self, *, readonly: bool = False) -> str:
         if readonly:
-            return f"{self.anchored_path.as_uri()}?mode=ro&immutable=1"
+            # ``immutable=1`` is unsafe for the live authority database: a
+            # committed head may still reside in WAL, and immutable readers
+            # deliberately ignore locking and change detection. ``mode=ro``
+            # preserves WAL visibility without granting write access.
+            return f"{self.anchored_path.as_uri()}?mode=ro"
         return f"{self.anchored_path.as_uri()}?mode=rw"
 
     @property
@@ -423,8 +427,8 @@ def open_verified_audit_connection(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def open_verified_audit_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
-    """Open one read-only audit connection without creating SQLite sidecars."""
+def open_verified_sqlite_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a read-only SQLite leaf through a no-follow directory descriptor."""
 
     with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
         connection = sqlite3.connect(leaf.sqlite_uri(readonly=True), uri=True)
@@ -434,6 +438,28 @@ def open_verified_audit_read_connection(path: Path) -> Iterator[sqlite3.Connecti
             leaf.assert_unchanged()
         finally:
             connection.close()
+
+
+@contextmanager
+def open_verified_sqlite_write_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open an existing writable SQLite leaf through a no-follow descriptor."""
+
+    with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
+        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True)
+        try:
+            leaf.assert_unchanged()
+            yield connection
+            leaf.assert_unchanged()
+        finally:
+            connection.close()
+
+
+@contextmanager
+def open_verified_audit_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open one live-WAL-aware, read-only audit connection."""
+
+    with open_verified_sqlite_read_connection(path) as connection:
+        yield connection
 
 
 def assert_verified_audit_leaf(path: Path) -> None:
@@ -449,4 +475,6 @@ __all__ = [
     "assert_verified_audit_leaf",
     "open_verified_audit_connection",
     "open_verified_audit_read_connection",
+    "open_verified_sqlite_read_connection",
+    "open_verified_sqlite_write_connection",
 ]

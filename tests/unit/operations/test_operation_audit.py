@@ -38,7 +38,12 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.specs import OperationKind, OperationSpec
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
-from polylogue.storage.sqlite.audit_leaf import AuditLeafError, VerifiedAuditLeaf, open_verified_audit_connection
+from polylogue.storage.sqlite.audit_leaf import (
+    AuditLeafError,
+    VerifiedAuditLeaf,
+    open_verified_audit_connection,
+    open_verified_audit_read_connection,
+)
 
 
 @dataclass
@@ -436,6 +441,27 @@ def test_verified_audit_writer_rejects_a_wal_replacement_before_first_applicatio
             replacement.write_bytes(wal_path.read_bytes())
             replacement.replace(wal_path)
             connection.execute("BEGIN IMMEDIATE")
+
+
+def test_verified_audit_reader_observes_a_committed_live_wal_head(tmp_path: Path) -> None:
+    """Read-only authority checks include commits still resident in the live WAL."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    archive_id = "archive:live-wal-read"
+
+    with open_verified_audit_connection(audit_path) as writer:
+        writer.execute(
+            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES (?, 1, 1)",
+            (archive_id,),
+        )
+        writer.commit()
+        assert audit_path.with_name("audit.db-wal").exists()
+
+        with open_verified_audit_read_connection(audit_path) as reader:
+            assert reader.execute(
+                "SELECT archive_instance_id FROM archive_authority WHERE archive_instance_id = ?", (archive_id,)
+            ).fetchone() == (archive_id,)
 
 
 def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:

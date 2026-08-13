@@ -147,6 +147,35 @@ def test_legitimate_one_sided_precontinuity_schema_window_stays_in_standby(
     assert not AuditContinuityCoordinator(tmp_path).is_available()
 
 
+@pytest.mark.parametrize(
+    ("path_name", "entry_kind"),
+    [
+        ("source.db", "external_symlink"),
+        ("audit.db", "directory"),
+        ("audit.db", "dangling_symlink"),
+    ],
+)
+def test_invalid_present_continuity_tier_never_enters_standby(tmp_path: Path, path_name: str, entry_kind: str) -> None:
+    """Only literal absence can disable continuity; invalid entries fail closed."""
+
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / path_name
+    if entry_kind == "external_symlink":
+        external = tmp_path.parent / "external-source.db"
+        external.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(external)
+    elif entry_kind == "directory":
+        path.unlink()
+        path.mkdir()
+    else:
+        path.unlink()
+        path.symlink_to(tmp_path / "missing-audit.db")
+
+    with pytest.raises(AuditContinuityError, match="regular file|safely"):
+        AuditContinuityCoordinator(tmp_path).is_available()
+
+
 def test_empty_fresh_archive_can_use_the_genesis_continuity_head(tmp_path: Path) -> None:
     """Genesis is valid only when it describes an empty freshly-created audit journal."""
 

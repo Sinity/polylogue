@@ -13,8 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Mapping
-from contextlib import closing
+import stat
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, cast
@@ -24,6 +25,8 @@ from polylogue.storage.sqlite.audit_leaf import (
     VerifiedAuditLeaf,
     open_verified_audit_connection,
     open_verified_audit_read_connection,
+    open_verified_sqlite_read_connection,
+    open_verified_sqlite_write_connection,
 )
 
 _FORMAT = "polylogue.audit-continuity-command.v1"
@@ -111,6 +114,34 @@ def audit_semantic_sha256(path: Path) -> str:
         raise AuditContinuityError("cannot hash audit content for continuity validation") from exc
 
 
+@contextmanager
+def _open_source_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    try:
+        with open_verified_sqlite_read_connection(path) as connection:
+            yield connection
+    except AuditLeafError as exc:
+        raise AuditContinuityError(f"cannot safely read source continuity tier: {path}") from exc
+
+
+@contextmanager
+def _open_source_write_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    try:
+        with open_verified_sqlite_write_connection(path) as connection:
+            yield connection
+    except AuditLeafError as exc:
+        raise AuditContinuityError(f"cannot safely write source continuity tier: {path}") from exc
+
+
+def _entry_is_absent(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        raise AuditContinuityError(f"cannot inspect audit continuity tier entry: {path}") from exc
+    return False
+
+
 def _audit_semantic_sha256_connection(connection: sqlite3.Connection) -> str:
     """Return the continuity-independent semantic digest for one open audit DB."""
 
@@ -194,11 +225,11 @@ class AuditContinuityCoordinator:
     def is_available(self) -> bool:
         """Return whether both schema halves needed for coordinated writes exist."""
 
-        if not self.source_path.is_file() or not self.audit_path.is_file():
+        if _entry_is_absent(self.source_path) or _entry_is_absent(self.audit_path):
             return False
         try:
             with (
-                closing(sqlite3.connect(self.source_path)) as source,
+                _open_source_read_connection(self.source_path) as source,
                 open_verified_audit_read_connection(self.audit_path) as audit,
             ):
                 source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
@@ -231,7 +262,7 @@ class AuditContinuityCoordinator:
         self._require_paths()
         try:
             with (
-                closing(sqlite3.connect(self.source_path)) as source,
+                _open_source_read_connection(self.source_path) as source,
                 open_verified_audit_read_connection(self.audit_path) as audit,
             ):
                 source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
@@ -327,7 +358,7 @@ class AuditContinuityCoordinator:
         self._require_paths()
         try:
             with (
-                closing(sqlite3.connect(self.source_path)) as source,
+                _open_source_read_connection(self.source_path) as source,
                 open_verified_audit_read_connection(self.audit_path) as audit,
             ):
                 source_row = source.execute(
@@ -367,7 +398,7 @@ class AuditContinuityCoordinator:
             self._apply_prepared(pending, lambda _conn, _mutation: None, allow_rebind=True)
             self._promote(pending)
             return True
-        with closing(sqlite3.connect(self.source_path)) as source:
+        with _open_source_read_connection(self.source_path) as source:
             row = source.execute(
                 "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
             ).fetchone()
@@ -393,7 +424,7 @@ class AuditContinuityCoordinator:
 
     def _prepare(self, mutation: AuditMutation) -> dict[str, object]:
         self._require_paths()
-        with closing(sqlite3.connect(self.source_path)) as conn, conn:
+        with _open_source_write_connection(self.source_path) as conn, conn:
             conn.row_factory = sqlite3.Row
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -420,7 +451,7 @@ class AuditContinuityCoordinator:
 
     def _pending(self) -> dict[str, object] | None:
         self._require_paths()
-        with closing(sqlite3.connect(self.source_path)) as conn:
+        with _open_source_read_connection(self.source_path) as conn:
             row = conn.execute(
                 "SELECT committed_generation, committed_head_sha256, pending_payload_json, pending_payload_sha256 FROM audit_continuity_control WHERE singleton = 1"
             ).fetchone()
@@ -494,7 +525,7 @@ class AuditContinuityCoordinator:
 
     def _promote(self, prepared: Mapping[str, object]) -> None:
         mutation = AuditMutation.from_command(prepared["command"])
-        with closing(sqlite3.connect(self.source_path)) as conn, conn:
+        with _open_source_write_connection(self.source_path) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """
@@ -535,7 +566,7 @@ class AuditContinuityCoordinator:
                 return
             if current[:2] != prior:
                 raise AuditContinuityError("cannot abort prepared command after an unrelated audit head change")
-            with closing(sqlite3.connect(self.source_path)) as source, source:
+            with _open_source_write_connection(self.source_path) as source, source:
                 source.execute("BEGIN IMMEDIATE")
                 cursor = source.execute(
                     """
@@ -591,7 +622,7 @@ class AuditContinuityCoordinator:
 
     def _assert_committed_head_matches_audit(self) -> None:
         with (
-            closing(sqlite3.connect(self.source_path)) as source,
+            _open_source_read_connection(self.source_path) as source,
             open_verified_audit_read_connection(self.audit_path) as audit,
         ):
             source_row = source.execute(
@@ -680,8 +711,15 @@ class AuditContinuityCoordinator:
             raise AuditContinuityError("pre-continuity audit journal differs from its authenticated migration evidence")
 
     def _require_paths(self) -> None:
-        if not self.source_path.is_file() or not self.audit_path.is_file():
-            raise AuditContinuityError("audit continuity requires initialized source.db and audit.db")
+        for path in (self.source_path, self.audit_path):
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError as exc:
+                raise AuditContinuityError("audit continuity requires initialized source.db and audit.db") from exc
+            except OSError as exc:
+                raise AuditContinuityError(f"cannot inspect audit continuity tier entry: {path}") from exc
+            if not stat.S_ISREG(metadata.st_mode):
+                raise AuditContinuityError(f"audit continuity tier entry is not an owned regular file: {path}")
 
 
 __all__ = [
