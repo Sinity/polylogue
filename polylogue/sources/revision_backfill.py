@@ -689,7 +689,17 @@ def _census_historical_revision_evidence(
             # A terminal artifact makes this raw ineligible for future census
             # work. Its artifact carrier, parse state, and both census receipts
             # must therefore become durable as one source-tier transaction.
-            with archive._ensure_source_conn():
+            # Batches retain that transaction until their existing commit
+            # boundary instead of forcing one SQLite commit per empty raw.
+            transaction = nullcontext() if batched else archive._ensure_source_conn()
+            with transaction:
+                if stored_provider is Provider.UNKNOWN and provider is not Provider.UNKNOWN:
+                    apply_source_raw_state_update(
+                        archive._ensure_source_conn(),
+                        raw_id,
+                        state=RawSessionStateUpdate(payload_provider=provider),
+                        manage_transaction=False,
+                    )
                 terminalized = _persist_terminal_non_session_artifact(
                     archive,
                     raw_id,
@@ -865,7 +875,7 @@ def _census_historical_revision_evidence(
                     break
                 census_selection = expanded
     except BaseException:
-        if batched and pending_commits > 0:
+        if batched:
             archive.rollback()
         raise
     if batched and pending_commits > 0:

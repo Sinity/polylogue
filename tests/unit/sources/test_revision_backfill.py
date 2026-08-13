@@ -607,6 +607,30 @@ def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: Path) -
         ).fetchone() == ("complete", "[]")
 
 
+def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp_path: Path) -> None:
+    """Provider detection survives even when a session path is not terminalized."""
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / ".claude" / "projects" / "proj" / "history-only-session.jsonl")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=(
+                b'{"type":"file-history-snapshot","messageId":"history-message",'
+                b'"sessionId":"history-only-session","snapshot":{"trackedFileBackups":{}}}\n'
+            ),
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT origin FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "claude-code-session",
+        )
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+
+
 def test_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed terminal census cannot expose only its artifact carrier."""
     initialize_active_archive_root(tmp_path)
@@ -631,6 +655,73 @@ def test_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypat
         assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (0,)
+
+
+def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Batched empty outcomes retain one transaction through their batch boundary."""
+    initialize_active_archive_root(tmp_path)
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2):
+            raw_ids.append(
+                archive.write_raw_payload(
+                    provider=Provider.CLAUDE_CODE,
+                    payload=f'{{"contentKey":"workflow-{index}","agentId":"agent"}}\n'.encode(),
+                    source_path=str(
+                        tmp_path
+                        / ".claude"
+                        / "projects"
+                        / "proj"
+                        / "subagents"
+                        / "workflows"
+                        / f"wf-{index}"
+                        / "journal.jsonl"
+                    ),
+                    acquired_at_ms=index + 1,
+                )
+            )
+
+    original_replace = ArchiveStore.replace_raw_membership_census
+    calls = 0
+
+    def fail_second_census(
+        self: ArchiveStore,
+        raw_id: str,
+        sessions: list[ParsedSession] | None,
+        *,
+        parser_fingerprint: str,
+        censused_at_ms: int,
+        detail: str = "",
+        retire_full_revision_governance: bool = False,
+        manage_transaction: bool = True,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected second terminal census failure")
+        original_replace(
+            self,
+            raw_id,
+            sessions,
+            parser_fingerprint=parser_fingerprint,
+            censused_at_ms=censused_at_ms,
+            detail=detail,
+            retire_full_revision_governance=retire_full_revision_governance,
+            manage_transaction=manage_transaction,
+        )
+
+    monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", fail_second_census)
+    with pytest.raises(RuntimeError, match="injected second terminal census failure"):
+        census_historical_revision_evidence(tmp_path, commit_batch_size=2)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        placeholders = ", ".join("?" for _ in raw_ids)
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM raw_artifacts WHERE raw_id IN ({placeholders})", raw_ids
+        ).fetchone() == (0,)
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})", raw_ids
         ).fetchone() == (0,)
 
 
@@ -659,6 +750,33 @@ def test_backfill_preserves_latest_terminal_artifact_observation(tmp_path: Path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT raw_id, last_observed_at_ms FROM raw_artifacts").fetchone() == (newer_raw_id, 2)
         assert older_raw_id > newer_raw_id
+
+
+def test_backfill_uses_raw_observation_order_for_equal_time_artifacts(tmp_path: Path) -> None:
+    """Equal observation times use the durable raw insertion order, not raw-id order."""
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        older_raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"contentKey":"workflow-artifact","agentId":"old"}\n',
+            source_path=source_path,
+            acquired_at_ms=1,
+            raw_id="a-older-artifact",
+        )
+        newer_raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"contentKey":"workflow-artifact","agentId":"new"}\n',
+            source_path=source_path,
+            acquired_at_ms=1,
+            raw_id="z-newer-artifact",
+        )
+
+    backfill_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT raw_id, last_observed_at_ms FROM raw_artifacts").fetchone() == (newer_raw_id, 1)
+        assert older_raw_id < newer_raw_id
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:
