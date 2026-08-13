@@ -1801,6 +1801,25 @@ def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> 
     assert before != after
 
 
+def test_worktree_fingerprint_rejects_partial_git_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    real_run = subprocess.run
+
+    def warning_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        result = cast(subprocess.CompletedProcess[bytes], real_run(*args, **kwargs))
+        command = args[0]
+        if isinstance(command, list) and command[:2] == ["git", "diff"]:
+            return subprocess.CompletedProcess(command, 0, result.stdout, b"warning: partial enumeration\n")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", warning_run)
+
+    assert _worktree_fingerprint(tmp_path) == "unavailable"
+
+
 def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_final_fingerprint(
     tmp_path: Path,
 ) -> None:
@@ -2011,6 +2030,20 @@ def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_sour
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="new_source")
 
 
+def test_checkout_mutation_monitor_remembers_deleted_ignored_root(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("browser-extension/node_modules/\n", encoding="utf-8")
+    ignored_root = tmp_path / "browser-extension" / "node_modules"
+    ignored_root.mkdir(parents=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    shutil.rmtree(ignored_root)
+    monitor._record_change(ignored_root)
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
 @pytest.mark.uses_real_clock("waits for the real filesystem watcher to witness an index replacement")
 def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -2024,38 +2057,27 @@ def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp
     hidden.parent.mkdir()
     hidden.write_text("secret authority\n", encoding="utf-8")
     subprocess.run(["git", "add", "-f", "ignored/hidden.py"], cwd=tmp_path, check=True)
-    deadline = time.monotonic() + 1
-    while not monitor._changed and time.monotonic() < deadline:
-        time.sleep(0.005)
     subprocess.run(["git", "reset", "-q", "--", "ignored/hidden.py"], cwd=tmp_path, check=True)
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
-def test_checkout_mutation_monitor_ignores_read_only_git_index_lock(tmp_path: Path) -> None:
+def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
     tracked = tmp_path / "tracked.py"
     tracked.write_text("value = 1\n", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
 
     monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    subprocess.run(
-        ["git", "describe", "--dirty", "--always", "--long", "--abbrev=40"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-    )
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git" / "index.lock")
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
-def test_checkout_mutation_monitor_ignores_stale_index_event(
+def test_checkout_mutation_monitor_treats_every_ready_index_event_as_authority_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2076,7 +2098,7 @@ def test_checkout_mutation_monitor_ignores_stale_index_event(
     monitor.start()
     observation = monitor.finish()
 
-    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
 def test_checkout_mutation_monitor_rejects_partial_git_enumeration(
@@ -4764,6 +4786,61 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
     for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
         assert durable_payload["diagnosis"] == "checkout_changed_during_verification"
         assert durable_payload["final_worktree_fingerprint"] == "stable"
+
+
+def test_transient_checkout_mutation_discards_testmon_graph_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _ChangedMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=True, unavailable=False, observed_path="polylogue/example.py")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", _ChangedMonitor)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_bytes(b"transient dependency graph")
+    TESTMON_SEED_STAMP.write_text("{}", encoding="utf-8")
+    affected_publish = MagicMock()
+    selection_publish = MagicMock()
+
+    with (
+        patch("devtools.verify._anchor_verification_paths"),
+        patch("devtools.verify.maybe_bootstrap_testmon_seed", return_value=None),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest", "--testmon"])]),
+        patch("devtools.verify._run", return_value=(0, 0.01, {"selected_count": 1})),
+        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+        patch("devtools.verify._record_testmon_affected_coverage", affected_publish),
+        patch("devtools.verify._refresh_testmon_selection_attempt", selection_publish),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
+        patch("devtools.verify._warn_low_memory"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        assert main(["--json"]) == 125
+
+    assert not TESTMON_DATA.exists()
+    assert not TESTMON_SEED_STAMP.exists()
+    affected_publish.assert_not_called()
+    selection_publish.assert_not_called()
+    assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_changed_during_verification"
 
 
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:

@@ -201,3 +201,39 @@ def test_static_gates_reject_a_run_whose_checkout_changed_mid_verification(
 
     assert gates["available"] is False
     assert all(gate["available"] is False for gate in gates["gates"])
+
+
+def test_static_gates_reject_transient_checkout_mutation_with_matching_endpoint_fingerprints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        json.dumps(
+            {
+                "checkout_root": str(tmp_path.resolve()),
+                "git_head": "current-head",
+                "worktree_fingerprint": "current-fingerprint",
+                "final_worktree_fingerprint": "current-fingerprint",
+                "diagnosis": "checkout_changed_during_verification",
+                "steps": [
+                    {"name": "ruff check", "exit": 0},
+                    {
+                        "name": "checkout stability",
+                        "exit": 125,
+                        "diagnosis": "checkout_changed_during_verification",
+                    },
+                ],
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(evidence_dashboard, "VERIFY_HISTORY_PATH", history)
+    monkeypatch.setattr(evidence_dashboard, "git_head", lambda _root: "current-head")
+    monkeypatch.setattr(evidence_dashboard, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(evidence_dashboard, "_worktree_fingerprint", lambda _root: "current-fingerprint")
+
+    gates = evidence_dashboard._static_gates(tmp_path, now=datetime(2026, 8, 12, tzinfo=timezone.utc))
+
+    assert gates["available"] is False
+    assert all(gate["available"] is False for gate in gates["gates"])

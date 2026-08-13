@@ -233,8 +233,14 @@ def _static_evidence_is_bound(
     worktree_fingerprint: str,
 ) -> bool:
     """Accept only evidence tied to the exact checkout contents being viewed."""
+    steps = entry.get("steps")
+    stability_failed = isinstance(steps, list) and any(
+        isinstance(step, dict) and step.get("name") == "checkout stability" and step.get("exit") != 0 for step in steps
+    )
     return (
-        entry.get("checkout_root") == checkout_root
+        not stability_failed
+        and entry.get("diagnosis") not in {"checkout_changed_during_verification", "checkout_fingerprint_unavailable"}
+        and entry.get("checkout_root") == checkout_root
         and entry.get("git_head") == checkout_head
         and entry.get("worktree_fingerprint") == worktree_fingerprint
         and entry.get("final_worktree_fingerprint") == worktree_fingerprint

@@ -174,7 +174,7 @@ def worktree_fingerprint(root: Path | None = None) -> str:
             )
         except (OSError, subprocess.TimeoutExpired):
             return "unavailable"
-        if result.returncode != 0:
+        if result.returncode != 0 or result.stderr.strip():
             return "unavailable"
         digest.update(result.stdout)
         digest.update(b"\0")
@@ -188,7 +188,7 @@ def worktree_fingerprint(root: Path | None = None) -> str:
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
-    if untracked.returncode != 0:
+    if untracked.returncode != 0 or untracked.stderr.strip():
         return "unavailable"
     for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
         try:
@@ -259,8 +259,8 @@ class CheckoutMutationMonitor:
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
         self._tracked_paths: frozenset[Path] = frozenset()
+        self._ignored_roots: frozenset[Path] = frozenset()
         self._git_index_path: Path | None = None
-        self._git_index_fingerprint: str | None = None
 
     def start(self) -> None:
         """Start and prove the portable interval watcher before verification."""
@@ -341,7 +341,7 @@ class CheckoutMutationMonitor:
     def _watched_directories(self) -> list[Path]:
         """Watch existing source directories shallowly and omit disposable trees."""
         self._tracked_paths = self._git_tracked_paths()
-        ignored_roots = self._ignored_directory_roots()
+        self._ignored_roots = self._ignored_directory_roots()
         directories: list[Path] = []
 
         def walk_error(_error: OSError) -> None:
@@ -355,14 +355,12 @@ class CheckoutMutationMonitor:
                 child
                 for child in child_directories
                 if child not in self._IGNORED_TOP_LEVEL
-                and not self._is_within_ignored_root(relative_current / child, ignored_roots)
+                and not self._is_within_ignored_root(relative_current / child, self._ignored_roots)
             ]
             directories.append(current_path)
         self._git_index_path = self._resolve_git_index_path()
-        if self._git_index_path is not None:
-            self._git_index_fingerprint = self._fingerprint_git_index()
-            if self._git_index_path.parent not in directories:
-                directories.append(self._git_index_path.parent)
+        if self._git_index_path is not None and self._git_index_path.parent not in directories:
+            directories.append(self._git_index_path.parent)
         return directories
 
     def _git_tracked_paths(self) -> frozenset[Path]:
@@ -418,19 +416,6 @@ class CheckoutMutationMonitor:
                 ignored.add(relative)
         return frozenset(ignored)
 
-    def _fingerprint_git_index(self) -> str | None:
-        """Hash index authority so a stale backend event is not a mutation."""
-        if self._git_index_path is None:
-            return None
-        try:
-            return hashlib.sha256(self._git_index_path.read_bytes()).hexdigest()
-        except FileNotFoundError:
-            return None
-        except OSError:
-            with self._state_lock:
-                self._unavailable = True
-            return None
-
     @staticmethod
     def _is_within_ignored_root(relative: Path, ignored_roots: frozenset[Path]) -> bool:
         return any(relative == root or relative.is_relative_to(root) for root in ignored_roots)
@@ -440,14 +425,11 @@ class CheckoutMutationMonitor:
             candidate = self.root / candidate
         if self._git_index_path is not None and candidate.parent == self._git_index_path.parent:
             if candidate.name == f"{self._git_index_path.name}.lock":
-                # Read-only commands such as ``git describe --dirty`` create
-                # and discard an optional index lock. Authority changes are
-                # witnessed when a completed lock replaces the index itself.
+                # An uncommitted lock is not yet checkout authority. A
+                # completed transaction is witnessed when the lock replaces
+                # the index itself.
                 return
             if candidate.name == self._git_index_path.name:
-                current_fingerprint = self._fingerprint_git_index()
-                if self._unavailable or current_fingerprint == self._git_index_fingerprint:
-                    return
                 with self._state_lock:
                     self._changed = True
                     self._observed_path = ".git/index"
@@ -466,6 +448,8 @@ class CheckoutMutationMonitor:
         if relative in self._tracked_paths:
             return False
         if any(part in self._IGNORED_TOP_LEVEL for part in relative.parts):
+            return True
+        if self._is_within_ignored_root(relative, self._ignored_roots):
             return True
         try:
             result = subprocess.run(

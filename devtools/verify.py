@@ -3470,6 +3470,19 @@ def _refresh_testmon_selection_attempt(
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
 
 
+def _discard_testmon_dependency_authority() -> None:
+    """Remove a dependency graph learned while checkout authority was unstable."""
+    for path in (
+        TESTMON_SEED_STAMP,
+        TESTMON_SEED_ATTEMPT,
+        TESTMON_DATA,
+        Path(f"{TESTMON_DATA}-wal"),
+        Path(f"{TESTMON_DATA}-shm"),
+        Path(f"{TESTMON_DATA}-journal"),
+    ):
+        path.unlink(missing_ok=True)
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 
@@ -3629,6 +3642,10 @@ def main(argv: list[str] | None = None) -> int:
         return 125
 
     step_results: list[dict[str, Any]] = []
+    pending_testmon_stamp: TestmonSeedStamp | None = None
+    pending_affected_coverage: tuple[tuple[str, ...], int] | None = None
+    pending_selection_refresh: tuple[dict[str, Any], int] | None = None
+    testmon_graph_touched = False
     mutation_monitor = CheckoutMutationMonitor(ROOT)
     mutation_monitor.start()
 
@@ -3636,6 +3653,8 @@ def main(argv: list[str] | None = None) -> int:
         if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step
         rc, elapsed, metadata = _run(label, cmd, run=verify_run)
+        if label in {"pytest testmon", "pytest testmon (broad)"} or label.startswith("pytest seed-testmon"):
+            testmon_graph_touched = True
         if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"}:
             raw_stamp = _read_json_artifact(TESTMON_SEED_STAMP)
             try:
@@ -3649,7 +3668,7 @@ def main(argv: list[str] | None = None) -> int:
             if current_stamp is not None:
                 refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
                 if refreshed_stamp is not None:
-                    _atomic_write_json(TESTMON_SEED_STAMP, refreshed_stamp.as_dict())
+                    pending_testmon_stamp = refreshed_stamp
             executable_paths = _changed_executable_paths()
             selected_count = metadata.get("selected_count")
             if selected_count == 0 and executable_paths:
@@ -3666,11 +3685,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     metadata["zero_selection_coverage"] = coverage
             elif isinstance(selected_count, int) and selected_count > 0:
-                _record_testmon_affected_coverage(
-                    executable_paths=executable_paths,
-                    selected_count=selected_count,
-                    run_id=verify_run.run_id,
-                )
+                pending_affected_coverage = (tuple(executable_paths), selected_count)
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
@@ -3763,29 +3778,17 @@ def main(argv: list[str] | None = None) -> int:
                         break
             continue
         if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
-            _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
+            pending_selection_refresh = (step_result, rc)
         if rc != 0:
             exit_code = rc
             if rc == 130 or _stop_after_failed_step(label):
                 break
 
-    seed_receipt: dict[str, Any] | None = None
-    if prepared_seed_attempt is not None:
-        seed_receipt = _finalize_testmon_seed_attempt(
-            prepared=prepared_seed_attempt,
-            step_results=step_results,
-            exit_code=exit_code,
-        )
-        if exit_code == 0 and seed_receipt["status"] != "complete":
-            exit_code = 5
-            sys.stderr.write(
-                "verify: pytest passed but the testmon dependency baseline is incomplete; "
-                f"inspect {TESTMON_SEED_ATTEMPT}.\n"
-            )
-
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
     mutation_observation = mutation_monitor.finish()
+    checkout_stable = True
     if "unavailable" in {checkout_fingerprint, final_checkout_fingerprint} or mutation_observation.unavailable:
+        checkout_stable = False
         step_results.append(
             {
                 "name": "checkout stability",
@@ -3800,6 +3803,7 @@ def main(argv: list[str] | None = None) -> int:
             exit_code = 125
         sys.stderr.write("verify: checkout fingerprint unavailable; evidence is not exact-head.\n")
     elif mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
+        checkout_stable = False
         step_results.append(
             {
                 "name": "checkout stability",
@@ -3815,6 +3819,47 @@ def main(argv: list[str] | None = None) -> int:
         if exit_code == 0:
             exit_code = 125
         sys.stderr.write("verify: checkout contents changed during verification; evidence is not exact-head.\n")
+
+    seed_receipt: dict[str, Any] | None = None
+    if checkout_stable:
+        if pending_testmon_stamp is not None:
+            _atomic_write_json(TESTMON_SEED_STAMP, pending_testmon_stamp.as_dict())
+        if pending_affected_coverage is not None:
+            executable_paths, selected_count = pending_affected_coverage
+            _record_testmon_affected_coverage(
+                executable_paths=executable_paths,
+                selected_count=selected_count,
+                run_id=verify_run.run_id,
+            )
+        if pending_selection_refresh is not None:
+            step_result, selection_exit_code = pending_selection_refresh
+            _refresh_testmon_selection_attempt(
+                step=step_result,
+                run=verify_run,
+                exit_code=selection_exit_code,
+            )
+        if prepared_seed_attempt is not None:
+            seed_receipt = _finalize_testmon_seed_attempt(
+                prepared=prepared_seed_attempt,
+                step_results=step_results,
+                exit_code=exit_code,
+            )
+            if exit_code == 0 and seed_receipt["status"] != "complete":
+                exit_code = 5
+                sys.stderr.write(
+                    "verify: pytest passed but the testmon dependency baseline is incomplete; "
+                    f"inspect {TESTMON_SEED_ATTEMPT}.\n"
+                )
+    elif testmon_graph_touched:
+        _discard_testmon_dependency_authority()
+        if prepared_seed_attempt is not None:
+            seed_receipt = {
+                "status": "discarded",
+                "outcome": SeedAttemptOutcome.INCOMPLETE.value,
+                "resume": False,
+                "expected_count": len(_testmon_seed_expected_nodeids(prepared_seed_attempt)),
+                "release_baseline_allowed": False,
+            }
 
     total_duration = round(time.monotonic() - t0, 2)
 
