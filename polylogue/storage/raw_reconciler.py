@@ -630,6 +630,7 @@ def _item(
 def _classify_frontier(
     conn: sqlite3.Connection,
     blob_store: BlobStore,
+    index_db: Path,
     row: dict[str, object],
     strategy_override: _StrategyOverride | None,
 ) -> RawAuthorityFrontierItem:
@@ -671,7 +672,7 @@ def _classify_frontier(
 
         if len(duplicate_siblings) != 1:
             raise RuntimeError(f"duplicate alias classification is not injective for {raw_id}")
-        with closing(sqlite3.connect(f"file:{blob_store.root.parent / 'index.db'}?mode=ro", uri=True)) as proof_conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
             proof_conn.row_factory = sqlite3.Row
             proof_conn.execute(
                 "ATTACH DATABASE ? AS source",
@@ -1216,7 +1217,9 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
         # through this same connection; the outer ``conn`` context manager commits
         # those writes on clean exit (or rolls back on exception), so a receipt is
         # never durably recorded for bytes this pass didn't finish inspecting.
-        head_items = [_classify_frontier(conn, BlobStore(root / "blob"), row, _override_for(row)) for row in head_rows]
+        head_items = [
+            _classify_frontier(conn, BlobStore(root / "blob"), index_db, row, _override_for(row)) for row in head_rows
+        ]
         superseded_items = _terminal_superseded_items(conn)
     all_items = _apply_judgment_dispositions(config, (*head_items, *superseded_items))
     return (

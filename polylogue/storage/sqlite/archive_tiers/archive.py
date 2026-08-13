@@ -2121,6 +2121,10 @@ class ArchiveStore:
         publication receipts; bulk cadence applies to the derived index.
         """
         self._require_writable("commit archive writes")
+        if self._source_tier_acquisition:
+            if self._source_conn is not None:
+                self._source_conn.commit()
+            return
         self._conn.commit()
         self._consume_index_blob_receipts()
         self._flush_pending_raw_parse_states()
@@ -2133,6 +2137,10 @@ class ArchiveStore:
         Used by a bulk caller to discard an uncommitted, half-applied batch when
         a write raises, before propagating the error.
         """
+        if self._source_tier_acquisition:
+            if self._source_conn is not None:
+                self._source_conn.rollback()
+            return
         self._conn.rollback()
         self._pending_index_blob_receipts.clear()
         self._pending_raw_parse_states.clear()
