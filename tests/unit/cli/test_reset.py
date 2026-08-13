@@ -12,7 +12,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
@@ -30,9 +31,9 @@ RESET_DELETION_CASES = [
 
 
 def _seed_archive_session(archive_root: Path, *, native_id: str, source_path: Path | None = None) -> str:
+    initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    index_db = ArchiveLocation.resolve(archive_root).active_index_path
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     session_id = f"codex-session:{native_id}"
     raw_id = f"raw-{native_id}"
@@ -414,6 +415,9 @@ class TestResetCommandDeletion:
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
+        active_index = tmp_path / "index-generation" / "index.db"
+        active_index.parent.mkdir()
+        (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
         session_id = _seed_archive_session(archive_root, native_id="reset-one")
 
         with patch("polylogue.cli.commands.reset.archive_root", return_value=archive_root):
@@ -423,8 +427,10 @@ class TestResetCommandDeletion:
         assert result.exit_code == 0
         assert "1 suppression" in result.output
         assert "1 archive row" in result.output
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        with sqlite3.connect(active_index) as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
         with sqlite3.connect(archive_root / "user.db") as conn:
             row = conn.execute(
                 "SELECT body_text, json_extract(value_json, '$.mode') FROM assertions WHERE kind = 'suppression' AND target_ref = ?",

@@ -3638,6 +3638,8 @@ def test_migrate_tier_cli_restores_adopted_audit_from_verified_full_evidence(
     assert restored.exit_code == 0, restored.output
     payload = json.loads(restored.stdout)
     assert payload["restore_receipt"].endswith(".committed.json")
+    backup_audit = Path(verified.output_path) / "audit.db"
+    assert all(not Path(f"{backup_audit}{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
     with sqlite3.connect(audit_path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT],)
         assert connection.execute("SELECT generation FROM audit_continuity_head").fetchone() == (2,)

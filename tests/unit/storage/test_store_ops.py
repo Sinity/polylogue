@@ -1782,14 +1782,21 @@ class TestRepositoryVectorAsyncBoundary:
 class TestInfraTagAssignment:
     """Property-based tests using the full TagAssignmentSpec strategy."""
 
-    @given(infra_tag_assignment_strategy(min_sessions=2, max_sessions=4))
+    @given(spec=infra_tag_assignment_strategy(min_sessions=2, max_sessions=4))
     @settings(max_examples=10, deadline=None)
-    async def test_tag_assignment_roundtrip_and_counts(self, spec: TagAssignmentSpec) -> None:
+    async def test_tag_assignment_roundtrip_and_counts(
+        self,
+        spec: TagAssignmentSpec,
+        empty_archive_template: Path,
+    ) -> None:
         """Strategy-generated tags are retrievable and counted consistently."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
+        from tests.conftest import _clone_archive_template
+        from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
 
-            db_path = Path(tmp_dir) / "index.db"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            archive_root = Path(tmp_dir) / "archive"
+            _clone_archive_template(empty_archive_template, archive_root)
+            db_path = archive_root / "index.db"
             seed_session_graph(db_path, spec.sessions)
 
             repo = archive_for_scenario_db(db_path)

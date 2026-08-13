@@ -21,7 +21,7 @@ from polylogue.core.enums import Provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.raw_reads import get_capture_mode_resolution
@@ -70,8 +70,7 @@ class TestRawSessionStorage:
             assert row[0] == 1
 
     async def test_repository_update_raw_state_uses_source_tier(self, tmp_path: Path) -> None:
-        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-        initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+        initialize_active_archive_root(tmp_path)
         source_backend = SQLiteBackend(db_path=tmp_path / "source.db")
         try:
             await source_backend.save_raw_session(
