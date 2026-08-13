@@ -96,6 +96,39 @@ def test_static_gates_withhold_evidence_for_dirty_checkout(monkeypatch: pytest.M
     assert all(gate["reason"] == "checkout has uncommitted changes" for gate in gates["gates"])
 
 
+@pytest.mark.parametrize(
+    ("checkout_head", "fingerprint"),
+    [(None, "unavailable"), ("current-head", "unavailable")],
+)
+def test_static_gates_withhold_evidence_when_git_identity_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    checkout_head: str | None,
+    fingerprint: str,
+) -> None:
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        json.dumps(
+            {
+                "checkout_root": str(tmp_path.resolve()),
+                "git_head": checkout_head,
+                "worktree_fingerprint": fingerprint,
+                "steps": [{"name": "ruff check", "exit": 0}],
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(evidence_dashboard, "VERIFY_HISTORY_PATH", history)
+    monkeypatch.setattr(evidence_dashboard, "git_head", lambda _root: checkout_head)
+    monkeypatch.setattr(evidence_dashboard, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(evidence_dashboard, "_worktree_fingerprint", lambda _root: fingerprint)
+
+    gates = evidence_dashboard._static_gates(tmp_path, now=datetime(2026, 8, 12, tzinfo=timezone.utc))
+
+    assert gates["available"] is False
+    assert all(gate["reason"] == "checkout Git identity is unavailable" for gate in gates["gates"])
+
+
 def test_static_gates_reject_wrong_checkout_fingerprint_and_legacy_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
