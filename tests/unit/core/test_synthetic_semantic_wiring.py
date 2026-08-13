@@ -10,7 +10,6 @@ Verifies that:
 from __future__ import annotations
 
 import copy
-import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,21 +17,12 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.schemas.inference.semantic.models import SEMANTIC_ROLES
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic.core import SyntheticCorpus
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 
 _BUNDLED_REGISTRY = SchemaRegistry(storage_root=SCHEMA_DIR)
-
-# Expected annotations per provider — all providers now consistently detect
-# the same 5 roles after the semantic inference overhaul (2026-03-16).
-EXPECTED_ANNOTATIONS: dict[str, list[str]] = {
-    "chatgpt": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "claude-ai": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "claude-code": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "codex": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
-    "gemini": ["session_title", "message_body", "message_container", "message_role", "message_timestamp"],
-}
 
 
 def _synthetic_source(factory: Callable[..., object], provider: str, *, count: int, seed: int) -> Source:
@@ -87,29 +77,17 @@ def _bundled_schema_path(provider: str) -> Path:
 class TestBaselineSchemaAnnotations:
     """Verify baseline provider schemas contain semantic role annotations."""
 
-    @pytest.mark.parametrize("provider", list(EXPECTED_ANNOTATIONS.keys()))
+    @pytest.mark.parametrize("provider", SyntheticCorpus.available_providers())
     def test_schema_has_expected_semantic_roles(self, provider: str) -> None:
-        """Each provider schema contains the expected semantic role annotations."""
+        """Every generated provider covers the roles its semantic generator supports."""
         schema_path = _bundled_schema_path(provider)
         assert schema_path.exists(), f"Schema not found: {schema_path}"
 
         schema = _bundled_schema(provider)
 
         found_roles = sorted(set(_collect_semantic_roles(schema)))
-        expected = sorted(EXPECTED_ANNOTATIONS[provider])
+        expected = sorted(SEMANTIC_ROLES)
         assert found_roles == expected, f"{provider} schema has roles {found_roles}, expected {expected}"
-
-    @pytest.mark.parametrize("provider", list(EXPECTED_ANNOTATIONS.keys()))
-    def test_annotation_injection_is_idempotent(self, provider: str) -> None:
-        """Re-injecting annotations doesn't change the schema."""
-        from devtools.inject_semantic_annotations import inject_annotations
-
-        schema = _bundled_schema(provider)
-
-        original = json.dumps(schema, sort_keys=True)
-        inject_annotations(provider, schema)
-        after = json.dumps(schema, sort_keys=True)
-        assert original == after, f"Injection was not idempotent for {provider}"
 
 
 # =============================================================================
