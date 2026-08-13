@@ -2466,16 +2466,15 @@ def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
     """Return changes between immutable start-time Git authorities."""
     changed: set[str] = set()
     commands = (
-        ["git", "diff", "--no-renames", "--name-only", head_commit, "--"],
-        ["git", "diff", "--no-renames", "--name-only", f"{base_commit}...{head_commit}", "--"],
-        ["git", "ls-files", "--others", "--exclude-standard", "--"],
+        ["git", "diff", "--no-renames", "--name-only", "-z", head_commit, "--"],
+        ["git", "diff", "--no-renames", "--name-only", "-z", f"{base_commit}...{head_commit}", "--"],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z", "--"],
     )
     for command in commands:
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
-                text=True,
                 timeout=5,
                 cwd=ROOT,
                 env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
@@ -2484,7 +2483,7 @@ def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
             raise PytestResourceError("testmon changed-path authority is unavailable") from exc
         if result.returncode != 0 or result.stderr.strip():
             raise PytestResourceError("testmon changed-path authority is unavailable")
-        changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+        changed.update(os.fsdecode(raw_path) for raw_path in result.stdout.split(b"\0") if raw_path)
     return changed
 
 
@@ -3604,6 +3603,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     t0 = time.monotonic()
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    mutation_monitor.start()
     checkout_fingerprint = worktree_fingerprint(ROOT)
     verify_run = VerifyRun(
         tier=tier,
@@ -3626,6 +3627,7 @@ def main(argv: list[str] | None = None) -> int:
                 terminal_authorization=args.terminal_authorization,
             )
         except RuntimeError as exc:
+            mutation_monitor.finish()
             sys.stderr.write(f"verify: {exc}\n")
             early_payload = verify_run.finish(
                 exit_code=125,
@@ -3667,6 +3669,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     except PytestResourceError as exc:
+        mutation_monitor.finish()
         sys.stderr.write(f"verify: {exc}\n")
         early_payload = verify_run.finish(
             exit_code=125,
@@ -3682,9 +3685,6 @@ def main(argv: list[str] | None = None) -> int:
     pending_selection_refresh: tuple[dict[str, Any], int] | None = None
     testmon_graph_touched = False
     changed_path_authority_failed = False
-    mutation_monitor = CheckoutMutationMonitor(ROOT)
-    mutation_monitor.start()
-
     for label, cmd in steps:
         if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step

@@ -1902,6 +1902,27 @@ def test_changed_paths_include_executable_rename_sources(
     assert verify._changed_executable_paths(base, head) == ("polylogue/example.py",)
 
 
+def test_changed_paths_parse_non_ascii_names_without_git_quoting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "café.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/café.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    source.write_text("value = 2\n", encoding="utf-8")
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    assert verify._changed_executable_paths(base, base) == ("polylogue/café.py",)
+
+
 def test_git_head_uses_bounded_authoritative_probe() -> None:
     with patch("devtools.verify._git_commit", return_value="resolved-head") as resolve:
         assert verify._git_head() == "resolved-head"
@@ -2189,6 +2210,50 @@ def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: 
         unavailable=False,
         observed_path=f".git/{branch}",
     )
+
+
+@pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a loose ref created from packed authority")
+def test_checkout_mutation_monitor_observes_packed_nested_branch_ref_change(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "first"], cwd=tmp_path, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-qc", "feature/nested"], cwd=tmp_path, check=True)
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "second"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--prune"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    subprocess.run(["git", "update-ref", "refs/heads/feature/nested", first], cwd=tmp_path, check=True)
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=".git/refs/heads/feature/nested",
+    )
+
+
+def test_worktree_fingerprint_rejects_assume_unchanged_tracked_content(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "hidden.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/hidden.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "update-index", "--assume-unchanged", "polylogue/hidden.py"], cwd=tmp_path, check=True)
+    source.write_text("value = 2\n", encoding="utf-8")
+
+    assert _worktree_fingerprint(tmp_path) == "unavailable"
 
 
 def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: Path) -> None:
@@ -3976,6 +4041,7 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     )
 
     with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
@@ -3998,6 +4064,7 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     cleaned = tmp_path / "pytest-polylogue-run-1"
 
     with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
         patch("devtools.verify.cleanup_managed_pytest_basetemp", return_value=cleaned) as cleanup,
@@ -5219,6 +5286,46 @@ def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.Ca
     run.assert_not_called()
     assert save_history.call_args.args[0]["diagnosis"] == "pytest_resource_preflight_failed"
     assert "only 0.50 GiB available" in capsys.readouterr().err
+
+
+def test_verify_starts_checkout_monitor_before_broad_change_classification(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+
+    class _OrderingMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    def classify(_base: str, _head: str) -> bool:
+        assert events == ["monitor-started"]
+        events.append("classified")
+        return False
+
+    with (
+        patch("devtools.verify.CheckoutMutationMonitor", _OrderingMonitor),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._default_testmon_is_broad_change", side_effect=classify),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 0
+
+    assert events == ["monitor-started", "classified", "monitor-finished"]
+    assert json.loads(capsys.readouterr().out)["exit_code"] == 0
 
 
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(

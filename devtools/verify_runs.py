@@ -160,6 +160,26 @@ def worktree_fingerprint(root: Path | None = None) -> str:
     """Fingerprint tracked changes plus exact non-ignored untracked content."""
     checkout_root = (root or Path.cwd()).resolve()
     digest = hashlib.sha256()
+    try:
+        tracked_flags = subprocess.run(
+            ["git", "ls-files", "-v", "-z"],
+            capture_output=True,
+            timeout=30,
+            cwd=checkout_root,
+            env=_read_only_git_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if tracked_flags.returncode != 0 or tracked_flags.stderr.strip():
+        return "unavailable"
+    for record in tracked_flags.stdout.split(b"\0"):
+        if not record:
+            continue
+        tag = record[:1]
+        if tag.islower() or tag == b"S":
+            # assume-unchanged and skip-worktree can hide worktree bytes from
+            # both status and diff, so Git cannot authorize exact evidence.
+            return "unavailable"
     for command in (
         ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         ["git", "diff", "--binary", "HEAD", "--"],
@@ -364,8 +384,11 @@ class CheckoutMutationMonitor:
             self._git_authority_paths[self._git_index_path] = ".git/index"
         self._git_authority_paths.update(self._resolve_git_head_paths())
         for authority_path in self._git_authority_paths:
-            if authority_path.parent not in directories:
-                directories.append(authority_path.parent)
+            watched_parent = authority_path.parent
+            while not watched_parent.exists() and watched_parent != watched_parent.parent:
+                watched_parent = watched_parent.parent
+            if watched_parent not in directories:
+                directories.append(watched_parent)
         return directories
 
     def _git_tracked_paths(self) -> frozenset[Path]:
@@ -404,6 +427,15 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
             return paths
         paths[Path(raw_head_path)] = ".git/HEAD"
+        packed_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", "packed-refs"])
+        if packed_result is None:
+            return paths
+        raw_packed_path = os.fsdecode(packed_result.stdout).strip()
+        if not raw_packed_path:
+            with self._state_lock:
+                self._unavailable = True
+            return paths
+        paths[Path(raw_packed_path)] = ".git/packed-refs"
         if symbolic_result.returncode == 0:
             ref_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", symbolic_ref])
             if ref_result is None:
@@ -463,6 +495,11 @@ class CheckoutMutationMonitor:
         if not candidate.is_absolute():
             candidate = self.root / candidate
         for authority_path, label in self._git_authority_paths.items():
+            if candidate != authority_path and authority_path.is_relative_to(candidate):
+                with self._state_lock:
+                    self._changed = True
+                    self._observed_path = label
+                return
             if candidate.parent != authority_path.parent:
                 continue
             if candidate.name == f"{authority_path.name}.lock":
