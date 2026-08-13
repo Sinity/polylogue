@@ -51,6 +51,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_index
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
@@ -148,8 +149,6 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
     stream_preserved_zip_entry_raw_data,
-    zip_member_raw_id,
-    zip_member_source_index,
 )
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (

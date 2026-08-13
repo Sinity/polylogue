@@ -1061,6 +1061,7 @@ def test_backfill_preserves_latest_terminal_artifact_observation(tmp_path: Path)
     backfill_historical_revision_evidence(tmp_path)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
         assert conn.execute("SELECT raw_id, last_observed_at_ms FROM raw_artifacts").fetchone() == (newer_raw_id, 2)
         assert older_raw_id > newer_raw_id
         assert conn.execute(
@@ -1073,7 +1074,7 @@ def test_backfill_preserves_latest_terminal_artifact_observation(tmp_path: Path)
 
 
 def test_backfill_uses_raw_observation_order_for_equal_time_artifacts(tmp_path: Path) -> None:
-    """Equal observation times use the durable raw insertion order, not raw-id order."""
+    """Legacy receipt-free observations use raw insertion order, not raw-id order."""
     initialize_active_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -1092,11 +1093,55 @@ def test_backfill_uses_raw_observation_order_for_equal_time_artifacts(tmp_path: 
             raw_id="z-newer-artifact",
         )
 
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        # Legacy rows can lack receipts entirely. The fallback must compare
+        # both observations through raw_sessions, never one rowid per table.
+        conn.execute("DELETE FROM blob_refs WHERE ref_id IN (?, ?)", (older_raw_id, newer_raw_id))
+        conn.commit()
+
     backfill_historical_revision_evidence(tmp_path)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
         assert conn.execute("SELECT raw_id, last_observed_at_ms FROM raw_artifacts").fetchone() == (newer_raw_id, 1)
         assert older_raw_id < newer_raw_id
+
+
+def test_backfill_preserves_latest_repeated_artifact_observation(tmp_path: Path) -> None:
+    """A -> B -> A reacquisition restores A as the coordinate authority."""
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
+    payload_a = b'{"contentKey":"workflow-artifact","agentId":"a"}\n'
+    payload_b = b'{"contentKey":"workflow-artifact","agentId":"b"}\n'
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_a = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=payload_a,
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+        raw_b = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=payload_b,
+            source_path=source_path,
+            acquired_at_ms=2,
+        )
+        assert (
+            archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=payload_a,
+                source_path=source_path,
+                acquired_at_ms=3,
+            )
+            == raw_a
+        )
+
+    backfill_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert conn.execute("SELECT raw_id, last_observed_at_ms FROM raw_artifacts").fetchone() == (raw_a, 3)
+        assert raw_a != raw_b
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:

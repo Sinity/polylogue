@@ -972,6 +972,10 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
     active_index = tmp_path / "generations" / "active" / "index.db"
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        shadow_applications_before = conn.execute(
+            "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
 
     replay = repair_mod.repair_raw_materialization(_config(tmp_path))
 
@@ -981,6 +985,10 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = ?", (raw_id,)).fetchone()
+            == shadow_applications_before
+        )
 
 
 @pytest.mark.parametrize("validation_offset", [0, 1])
@@ -1651,6 +1659,8 @@ def test_raw_materialization_skips_current_non_session_census(tmp_path: Path) ->
             source_path=str(tmp_path / "ordinary.jsonl"),
             acquired_at_ms=1,
         )
+
+    assert raw_id in repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids
 
     census_historical_revision_evidence(tmp_path)
 

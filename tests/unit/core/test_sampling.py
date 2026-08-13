@@ -358,7 +358,15 @@ class TestLoadSamplesFromDb:
         )
 
         assert result == []
-        assert outcomes[0]["reason"] == "source_validation_parse_order_ambiguous"
+        assert outcomes == [
+            {
+                "raw_id": raw_id,
+                "status": "quarantined",
+                "artifact_kind": None,
+                "source_path": "/tmp/equal-time.json",
+                "reason": "source_validation_parse_order_ambiguous",
+            }
+        ]
 
     def test_record_provider_sampling_streams_without_full_envelope(
         self,

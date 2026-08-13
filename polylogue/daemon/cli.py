@@ -1309,6 +1309,7 @@ def _drain_raw_materialization_once(
             "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
             auto_resolved,
         )
+    generation_pin_refused = False
     with contextlib.ExitStack() as lease_stack:
         try:
             index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
@@ -1317,6 +1318,7 @@ def _drain_raw_materialization_once(
             if refused_result is None:
                 raise
             result = refused_result
+            generation_pin_refused = True
         else:
             try:
                 result = raw_authority.repair_materialization(
@@ -1330,13 +1332,22 @@ def _drain_raw_materialization_once(
             finally:
                 _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
     _emit_raw_materialization_pass(result)
-    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
     metrics = dict(getattr(result, "metrics", {}))
     remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
     if remaining == 0:
         remaining = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
+    if generation_pin_refused:
+        return raw_authority.RawMaterializationCounts(
+            repaired_sessions=result.repaired_count,
+            executed_plans=0,
+            remaining_candidates=remaining,
+            censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
+            candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),
+            pending_blob_bytes=int(metrics.get("raw_materialization_total_blob_bytes", 0)),
+        )
+    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     return raw_authority.RawMaterializationCounts(
         repaired_sessions=result.repaired_count,
         executed_plans=frontier_repaired,

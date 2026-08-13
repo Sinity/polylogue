@@ -33,6 +33,7 @@ from polylogue.archive.zip_admission import (
 from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
+from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
@@ -1119,6 +1120,8 @@ def _current_raw_payload_bytes(
     source_path: str,
     source_index: int | None,
     *,
+    raw_id: str | None = None,
+    blob_hash: str | None = None,
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
 ) -> tuple[bytes | None, str | None]:
@@ -1129,14 +1132,36 @@ def _current_raw_payload_bytes(
         zip_path, member = split
         if not zip_path.exists():
             return None, "source_missing"
+        entry_ordinal: int | None = None
+        split_index = source_index
+        if raw_id is not None and blob_hash is not None and source_index is not None:
+            coordinate = zip_member_identity_coordinate(
+                raw_id=raw_id,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=blob_hash,
+            )
+            if coordinate is not None:
+                entry_ordinal, split_index = coordinate
+        cache_key = source_path if entry_ordinal is None else f"{source_path}\0{entry_ordinal}"
         try:
-            if source_bytes_cache is not None and source_path in source_bytes_cache:
-                member_bytes = source_bytes_cache[source_path]
+            if source_bytes_cache is not None and cache_key in source_bytes_cache:
+                member_bytes = source_bytes_cache[cache_key]
             else:
                 with zipfile.ZipFile(zip_path) as archive:
-                    matching = [info for info in archive.infolist() if info.filename == member]
+                    central_directory = archive.infolist()
+                    if entry_ordinal is None:
+                        matching = [info for info in central_directory if info.filename == member]
+                    elif entry_ordinal >= len(central_directory):
+                        return None, "container_coordinate_mismatch"
+                    else:
+                        coordinated = central_directory[entry_ordinal]
+                        matching = [coordinated] if coordinated.filename == member else []
                     if len(matching) != 1:
-                        return None, "ambiguous_container_member"
+                        reason = (
+                            "ambiguous_container_member" if entry_ordinal is None else "container_coordinate_mismatch"
+                        )
+                        return None, reason
                     admitted = list(
                         ZipAdmission(zip_path=zip_path).filter_entries(matching, allowed_suffixes=ZIP_JSON_SUFFIXES)
                     )
@@ -1145,32 +1170,34 @@ def _current_raw_payload_bytes(
                     with open_bounded_zip_entry(archive, admitted[0]) as handle:
                         member_bytes = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
                 if source_bytes_cache is not None:
-                    source_bytes_cache[source_path] = member_bytes
+                    source_bytes_cache[cache_key] = member_bytes
         except KeyError:
             return None, "source_missing"
         except ZipBombError:
             return None, "container_member_rejected"
-        if source_index is None:
+        if split_index is None:
             return None, "source_index_missing"
+        if blob_hash is not None and hashlib.sha256(member_bytes).hexdigest() == blob_hash:
+            return member_bytes, None
         try:
-            if decoded_payload_cache is not None and source_path in decoded_payload_cache:
-                decoded_payload = decoded_payload_cache[source_path]
+            if decoded_payload_cache is not None and cache_key in decoded_payload_cache:
+                decoded_payload = decoded_payload_cache[cache_key]
                 if isinstance(decoded_payload, list):
-                    payload = decoded_payload[int(source_index)]
-                elif int(source_index) == 0:
+                    payload = decoded_payload[int(split_index)]
+                elif int(split_index) == 0:
                     payload = decoded_payload
                 else:
                     raise IndexError("non-array JSON payload only supports source_index 0")
             else:
                 if member.endswith(".jsonl"):
-                    payload = _jsonl_payload_at_index(member_bytes, int(source_index))
+                    payload = _jsonl_payload_at_index(member_bytes, int(split_index))
                 else:
                     decoded_payload = json_loads(member_bytes)
                     if decoded_payload_cache is not None:
-                        decoded_payload_cache[source_path] = decoded_payload
+                        decoded_payload_cache[cache_key] = decoded_payload
                     if isinstance(decoded_payload, list):
-                        payload = decoded_payload[int(source_index)]
-                    elif int(source_index) == 0:
+                        payload = decoded_payload[int(split_index)]
+                    elif int(split_index) == 0:
                         payload = decoded_payload
                     else:
                         raise IndexError("non-array JSON payload only supports source_index 0")
@@ -1519,6 +1546,8 @@ def replace_raw_backed_blob_reference_debt_from_source(
             payload_bytes, reason = _current_raw_payload_bytes(
                 source_path,
                 int(row["source_index"]) if row.get("source_index") is not None else None,
+                raw_id=raw_id,
+                blob_hash=old_blob_hash,
                 source_bytes_cache=source_bytes_cache,
                 decoded_payload_cache=decoded_payload_cache,
             )
@@ -1611,6 +1640,8 @@ def replace_raw_backed_blob_reference_debt_from_source(
             payload_bytes, _reason = _current_raw_payload_bytes(
                 source_path,
                 int(row["source_index"]) if row.get("source_index") is not None else None,
+                raw_id=str(row["raw_id"]),
+                blob_hash=str(row.get("blob_hash") or ""),
                 source_bytes_cache=apply_source_bytes_cache,
                 decoded_payload_cache=apply_decoded_payload_cache,
             )

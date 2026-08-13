@@ -14,6 +14,7 @@ import pytest
 from polylogue.archive import zip_admission
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_index
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage import blob_integrity
 from polylogue.storage.blob_gc import run_blob_gc_report
@@ -1019,6 +1020,112 @@ def test_blob_recovery_rejects_duplicate_container_member_before_open(
 
     assert payload is None
     assert reason == "ambiguous_container_member"
+
+
+def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_path: Path) -> None:
+    """Durable live-ZIP identities reacquire the exact duplicate-name entry."""
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    zip_source = tmp_path / "duplicate-v2.zip"
+    member = "sessions/duplicate.json"
+    member_payloads = (
+        b'[{"member":"first-zero"},{"member":"first-one"}]',
+        b'[{"member":"second-zero"},{"member":"second-one"}]',
+    )
+    selected_payloads = (b'{"member":"first-one"}', b'{"member":"second-one"}')
+    split_index = 1
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr(member, member_payloads[0])
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            archive.writestr(member, member_payloads[1])
+
+    source_path = f"{zip_source}:{member}"
+    hashes = tuple(hashlib.sha256(payload).hexdigest() for payload in selected_payloads)
+    coordinates = tuple(
+        zip_member_source_index(entry_ordinal=ordinal, split_index=split_index)
+        for ordinal in range(len(member_payloads))
+    )
+    raw_ids = tuple(
+        zip_member_raw_id(
+            source_path=source_path,
+            entry_ordinal=ordinal,
+            split_index=split_index,
+            blob_hash=hashes[ordinal],
+        )
+        for ordinal in range(len(member_payloads))
+    )
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                source_index INTEGER,
+                blob_hash BLOB,
+                blob_size INTEGER NOT NULL,
+                acquired_at_ms INTEGER,
+                file_mtime_ms INTEGER
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, ref_type, ref_id)
+            );
+            CREATE TABLE blob_publication_reservations (
+                publication_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                publisher_id TEXT NOT NULL,
+                reserved_at_ms INTEGER NOT NULL
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, file_mtime_ms
+            ) VALUES (?, 'codex-session', NULL, ?, ?, ?, ?, 1, 1)
+            """,
+            [
+                (raw_id, source_path, source_index, bytes.fromhex(blob_hash), len(payload))
+                for raw_id, source_index, blob_hash, payload in zip(
+                    raw_ids, coordinates, hashes, selected_payloads, strict=True
+                )
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, 1)
+            """,
+            [
+                (bytes.fromhex(blob_hash), raw_id, source_path, len(payload))
+                for raw_id, blob_hash, payload in zip(raw_ids, hashes, selected_payloads, strict=True)
+            ],
+        )
+
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "duplicate-v2-replacement.jsonl",
+    )
+
+    assert report.replaced_rows == 2
+    assert report.written_blobs == 2
+    assert all(store.exists(blob_hash) for blob_hash in hashes)
+    assert tuple(store.read_all(blob_hash) for blob_hash in hashes) == selected_payloads
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute(
+            "SELECT raw_id, lower(hex(blob_hash)), source_index FROM raw_sessions ORDER BY source_index"
+        ).fetchall() == list(zip(raw_ids, hashes, coordinates, strict=True))
 
 
 def test_blob_recovery_rejects_oversized_container_member_before_open(

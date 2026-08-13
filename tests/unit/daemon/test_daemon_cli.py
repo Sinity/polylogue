@@ -1197,7 +1197,11 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
     monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", reject_repair)
     monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)
-    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, **_kwargs: 0)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_converge_raw_authority_frontier",
+        lambda _config, **_kwargs: pytest.fail("frontier convergence requires an acquired generation pin"),
+    )
     monkeypatch.setattr(
         daemon_cli,
         "_close_raw_materialization_fts",

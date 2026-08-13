@@ -6,7 +6,6 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from hashlib import sha256
 from pathlib import Path
 from typing import IO, TypeAlias
 
@@ -29,52 +28,10 @@ from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapsh
 
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
-_ZIP_MEMBER_RAW_ID_DOMAIN = b"polylogue:zip-member-raw:v2\0"
-
 AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
-
-
-def zip_member_source_index(*, entry_ordinal: int, split_index: int) -> int:
-    """Encode a ZIP entry/split coordinate into the persisted integer index.
-
-    Cantor pairing is collision-free for all non-negative integer pairs, so
-    duplicate central-directory names remain distinct while multiple sessions
-    split from one member retain their own independent coordinate axis.
-    """
-    if entry_ordinal < 0 or split_index < 0:
-        raise ValueError("ZIP entry ordinal and split index must be non-negative")
-    diagonal = entry_ordinal + split_index
-    return diagonal * (diagonal + 1) // 2 + split_index
-
-
-def zip_member_raw_id(
-    *,
-    source_path: str,
-    entry_ordinal: int,
-    split_index: int,
-    blob_hash: str,
-) -> str:
-    """Identify one ZIP coordinate without giving up blob-level deduplication.
-
-    ZIP exports legitimately contain duplicate member bytes.  The blob hash
-    remains their shared immutable storage address, while raw authority must
-    retain each admitted ``<zip>:<member>`` coordinate independently.
-    The central-directory ordinal distinguishes duplicate member names and the
-    independent split index distinguishes sessions decoded from one member.
-    """
-    digest = sha256()
-    digest.update(_ZIP_MEMBER_RAW_ID_DOMAIN)
-    digest.update(source_path.encode("utf-8", errors="surrogatepass"))
-    digest.update(b"\0")
-    digest.update(str(entry_ordinal).encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(str(split_index).encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(bytes.fromhex(blob_hash))
-    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

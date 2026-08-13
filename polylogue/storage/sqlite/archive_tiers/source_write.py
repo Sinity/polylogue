@@ -1292,9 +1292,8 @@ def upsert_raw_artifact(
     with conn if manage_transaction else nullcontext():
         existing = conn.execute(
             f"""
-            SELECT a.artifact_id, a.raw_id, a.first_observed_at_ms, a.last_observed_at_ms, r.rowid
+            SELECT a.artifact_id, a.raw_id
             FROM raw_artifacts AS a
-            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
             WHERE {coordinate_predicate}
             """,
             coordinate_params,
@@ -1303,7 +1302,7 @@ def upsert_raw_artifact(
             # One coordinate has one authority carrier. A delayed census of
             # stale retained bytes must not replace a carrier observed later.
             if str(existing[1]) != raw_id:
-                incoming_row = conn.execute(
+                incoming_receipt = conn.execute(
                     """
                     SELECT acquired_at_ms, rowid FROM blob_refs
                     WHERE ref_id = ? AND ref_type = 'raw_payload'
@@ -1311,13 +1310,7 @@ def upsert_raw_artifact(
                     """,
                     (raw_id,),
                 ).fetchone()
-                if incoming_row is None:
-                    incoming_row = conn.execute(
-                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-                    ).fetchone()
-                if incoming_row is None:
-                    raise KeyError(raw_id)
-                existing_observation = conn.execute(
+                existing_receipt = conn.execute(
                     """
                     SELECT acquired_at_ms, rowid FROM blob_refs
                     WHERE ref_id = ? AND ref_type = 'raw_payload'
@@ -1325,12 +1318,29 @@ def upsert_raw_artifact(
                     """,
                     (str(existing[1]),),
                 ).fetchone()
-                existing_order = (
-                    (int(existing_observation[0]), int(existing_observation[1]))
-                    if existing_observation is not None
-                    else (int(existing[3]), int(existing[4]))
-                )
-                if existing_order >= (int(incoming_row[0]), int(incoming_row[1])):
+                if (incoming_receipt is None) != (existing_receipt is None):
+                    raise RuntimeError(
+                        "cannot compare artifact observation order across incompatible raw-payload receipt coverage"
+                    )
+                if incoming_receipt is None:
+                    incoming_observation = conn.execute(
+                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
+                        (raw_id,),
+                    ).fetchone()
+                    existing_observation = conn.execute(
+                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
+                        (str(existing[1]),),
+                    ).fetchone()
+                else:
+                    incoming_observation = incoming_receipt
+                    existing_observation = existing_receipt
+                if incoming_observation is None:
+                    raise KeyError(raw_id)
+                if existing_observation is None:
+                    raise KeyError(str(existing[1]))
+                existing_order = (int(existing_observation[0]), int(existing_observation[1]))
+                incoming_order = (int(incoming_observation[0]), int(incoming_observation[1]))
+                if existing_order >= incoming_order:
                     conn.execute(
                         "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
                         (artifact.first_observed_at_ms, str(existing[0])),
