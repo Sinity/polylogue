@@ -664,7 +664,7 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
         return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
 
     monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", fake_repair)
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path: None)
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
     with pytest.raises(RuntimeError, match="source-selection gate blocked"):
@@ -1059,7 +1059,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
     active_index.touch()
     archive.mkdir()
     (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
-    closed: list[Path] = []
+    closed: list[tuple[Path, Path]] = []
 
     class FakeRestoreResult:
         restored_count = 0
@@ -1075,12 +1075,16 @@ def test_raw_materialization_closes_fts_on_cancellation(
         lambda *_args, **_kwargs: FakeRestoreResult(),
     )
     monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", cancel_repair)
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", closed.append)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_close_raw_materialization_fts",
+        lambda index_db, *, ops_db_path: closed.append((index_db, ops_db_path)),
+    )
 
     with pytest.raises(asyncio.CancelledError):
         daemon_cli._drain_raw_materialization_once()
 
-    assert closed == [active_index]
+    assert closed == [(active_index, archive / "ops.db")]
 
 
 @pytest.mark.parametrize("whale", [False, True])
@@ -1121,7 +1125,7 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
         detail="repaired",
         metrics={"raw_materialization_remaining_candidate_count": 0},
     )
-    closed: list[Path] = []
+    closed: list[tuple[Path, Path]] = []
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
@@ -1137,9 +1141,9 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
     monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, **_kwargs: 0)
 
-    def close_fts(index_db: Path) -> None:
+    def close_fts(index_db: Path, *, ops_db_path: Path) -> None:
         assert held == 1
-        closed.append(index_db)
+        closed.append((index_db, ops_db_path))
         lease_events.append("fts")
 
     monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", close_fts)
@@ -1152,7 +1156,7 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
     else:
         assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1
 
-    assert closed == [active_index]
+    assert closed == [(active_index, archive / "ops.db")]
     assert lease_events == ["acquire", "fts", "close"]
     assert held == 0
 
@@ -1163,13 +1167,16 @@ def test_raw_materialization_fts_failure_records_durable_debt(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    index_db = tmp_path / "index.db"
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
     index_db.touch()
     calls: list[tuple[str, str, str, str | None]] = []
 
     class FakeCursor:
-        def __init__(self, db: Path) -> None:
+        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
             assert db == index_db
+            assert ops_db_path == ops_db
 
         def clear_convergence_debt(self, **_kwargs: object) -> None:
             raise AssertionError("failed FTS repair must not clear debt")
@@ -1188,7 +1195,7 @@ def test_raw_materialization_fts_failure_records_durable_debt(
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: False)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
-    daemon_cli._close_raw_materialization_fts(index_db)
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
     assert calls == [
         (
@@ -1206,13 +1213,16 @@ def test_raw_materialization_fts_success_clears_prior_debt(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    index_db = tmp_path / "index.db"
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
     index_db.touch()
     cleared: list[dict[str, object]] = []
 
     class FakeCursor:
-        def __init__(self, db: Path) -> None:
+        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
             assert db == index_db
+            assert ops_db_path == ops_db
 
         def clear_convergence_debt(self, **kwargs: object) -> None:
             cleared.append(kwargs)
@@ -1224,7 +1234,7 @@ def test_raw_materialization_fts_success_clears_prior_debt(
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: True)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
-    daemon_cli._close_raw_materialization_fts(index_db)
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
     assert cleared == [{"subject_type": "fts_surface", "subject_id": "messages_fts", "stage": "fts"}]
 
@@ -1235,13 +1245,16 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    index_db = tmp_path / "index.db"
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
     index_db.touch()
     errors: list[str | None] = []
 
     class FakeCursor:
-        def __init__(self, db: Path) -> None:
+        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
             assert db == index_db
+            assert ops_db_path == ops_db
 
         def record_convergence_debt(self, *, error: str | None = None, **_kwargs: object) -> None:
             errors.append(error)
@@ -1253,7 +1266,7 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
     )
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
-    daemon_cli._close_raw_materialization_fts(index_db)
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
     assert errors == ["FTS repair failed after raw materialization: RuntimeError: injected FTS failure"]
 

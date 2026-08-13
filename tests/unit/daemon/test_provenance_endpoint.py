@@ -403,7 +403,7 @@ class TestProvenancePayload:
             raw_id=raw_id,
             source_path="/tmp/x.json",
             blob_size=2,
-            validated_at_ms=1_767_225_602_000,
+            validated_at_ms=1_767_225_601_000,
             validation_status="failed",
         )
 
@@ -414,6 +414,24 @@ class TestProvenancePayload:
         assert result["parsed_at"] is not None
         assert result["quarantined"] is False
         assert result["quarantine_reason"] is None
+
+    def test_equal_raw_transition_timestamps_surface_order_ambiguity(self, workspace_env: dict[str, Path]) -> None:
+        raw_id = _seed_raw_blob(b"{}")
+        session_id = _seed_archive_provenance(
+            session_id="c-ambiguous-validation",
+            raw_id=raw_id,
+            source_path="/tmp/x.json",
+            blob_size=2,
+            parsed_at_ms=1_767_225_602_000,
+            validated_at_ms=1_767_225_602_000,
+            validation_status="failed",
+        )
+
+        result = build_provenance_payload(session_id)
+
+        assert result is not None
+        assert result["quarantined"] is True
+        assert result["quarantine_reason"] == "validation_parse_order_ambiguous"
 
     def test_quarantine_surfaces_when_no_raw_artifact(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_archive_provenance(

@@ -46,6 +46,7 @@ from polylogue.pipeline.services.process_pool import (
 )
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
+    is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
@@ -3017,9 +3018,11 @@ def _declared_non_session_artifact_classification(
     these; this replay engine (used by ``polylogue ops reset --index`` /
     ``devtools`` rebuild-index) is a SEPARATE parse chokepoint that did not,
     and would silently recreate exactly the ``<agent>.meta`` phantom sessions
-    that fix is meant to eliminate on every future rebuild. Same check, same
-    rule table, so a declared fact artifact can never become a session
-    through either entry point.
+    that fix is meant to eliminate on every future rebuild. A positive JSONL
+    session proof is the one deliberate exception, matching the live route:
+    a source-only outage may retain bytes before it can inspect a path that
+    normally carries fact evidence, and recovery must not make that filename
+    permanently override later decoded session authority.
 
     polylogue-9ykn: a path-declared rule is only half of the live path's
     gate. ``pipeline/services/ingest_worker.py`` also runs every sampled
@@ -3044,7 +3047,7 @@ def _declared_non_session_artifact_classification(
     from polylogue.archive.artifact_taxonomy import classify_artifact
 
     rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None and rule.parse_policy != "session":
+    if rule is not None and rule.parse_policy != "session" and not sample:
         classification = classify_artifact([], provider=provider, source_path=source_path)
         if not classification.parse_as_session:
             return classification
@@ -3137,9 +3140,17 @@ def _parse_one_raw(
         return sessions
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
+    rule = artifact_rule_for_path(provider, source_path)
+    declared_path_session_evidence = False
+    if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):
+        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+
+        declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
     if is_stream_record_provider(source_path, str(provider)):
         records = list(_iter_json_stream(BytesIO(payload), source_name))
-        if _is_declared_non_session_artifact(provider, source_path, sample=records[:64]):
+        if not declared_path_session_evidence and _is_declared_non_session_artifact(
+            provider, source_path, sample=records[:64]
+        ):
             return []
         return parse_stream_payload(
             provider,
@@ -3147,7 +3158,10 @@ def _parse_one_raw(
             fallback_id,
             source_path=source_path,
         )
-    if _is_declared_non_session_artifact(provider, source_path):
+    records = list(_iter_json_stream(BytesIO(payload), source_name))
+    if not declared_path_session_evidence and _is_declared_non_session_artifact(
+        provider, source_path, sample=records[:64]
+    ):
         return []
     if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
@@ -3167,7 +3181,7 @@ def _parse_one_raw(
                 )
     return parse_payload(
         provider,
-        list(_iter_json_stream(BytesIO(payload), source_name)),
+        records,
         fallback_id,
         source_path=source_path,
     )

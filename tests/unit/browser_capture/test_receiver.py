@@ -803,7 +803,7 @@ def test_receiver_uses_active_index_and_ignores_historical_validation_failure(tm
         tmp_path,
         validation_status="failed",
         parsed_at_ms=1,
-        validated_at_ms=1,
+        validated_at_ms=0,
         message_count=0,
     )
     active_index = tmp_path / "generations" / "active" / "index.db"
@@ -842,6 +842,26 @@ def test_receiver_surfaces_validation_failure_newer_than_parse(tmp_path: Path) -
     assert state.state == "failed"
     assert state.latest_failure == "strict validation rejected current bytes"
     assert state.failure_source == "raw_validation"
+
+
+def test_receiver_surfaces_indeterminate_raw_state_order_without_choosing_validation(tmp_path: Path) -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(
+        tmp_path,
+        validation_status="failed",
+        parsed_at_ms=1,
+        validated_at_ms=1,
+        validation_error="equal-time failure",
+    )
+
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "failed"
+    assert state.latest_failure == "raw validation and parse timestamps are indeterminate"
+    assert state.failure_source == "raw_state_order"
 
 
 def test_receiver_echoes_safe_request_id_header(tmp_path: Path) -> None:

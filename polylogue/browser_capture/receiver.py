@@ -31,6 +31,7 @@ from polylogue.browser_capture.models import (
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import JSONDecodeError, dumps_bytes
 from polylogue.core.json import loads as json_loads
+from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
@@ -405,28 +406,26 @@ def _lookup_raw_archive_state(
         validation_status = (
             str(row["validation_status"]) if "validation_status" in row_keys and row["validation_status"] else None
         )
-        validation_is_current = (
-            "parsed_at_ms" not in row_keys
-            or row["parsed_at_ms"] is None
-            or (
-                "validated_at_ms" in row_keys
-                and row["validated_at_ms"] is not None
-                and row["validated_at_ms"] > row["parsed_at_ms"]
-            )
+        validation_authority = raw_state_authority(
+            row["parsed_at_ms"] if "parsed_at_ms" in row_keys else None,
+            row["validated_at_ms"] if "validated_at_ms" in row_keys else None,
         )
         if isinstance(parse_error, str) and parse_error:
             latest_failure = parse_error
             failure_source = "raw_parse"
-        elif validation_is_current and isinstance(validation_error, str) and validation_error:
+        elif validation_authority == "validation" and isinstance(validation_error, str) and validation_error:
             latest_failure = validation_error
             failure_source = "raw_validation"
         elif (
-            validation_is_current
+            validation_authority == "validation"
             and validation_status is not None
             and validation_status not in {"passed", "valid", "ok"}
         ):
             latest_failure = validation_status
             failure_source = "raw_validation"
+        elif validation_authority == "ambiguous" and validation_status not in {None, "passed", "valid", "ok"}:
+            latest_failure = "raw validation and parse timestamps are indeterminate"
+            failure_source = "raw_state_order"
         return _RawArchiveLookup(
             raw_row_exists=True,
             raw_id=str(row["raw_id"]) if "raw_id" in row_keys and row["raw_id"] is not None else None,

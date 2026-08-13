@@ -421,6 +421,28 @@ def _stream_preserved_zip_entry(
     *,
     provider_hint: Provider,
 ) -> RawSessionData:
+    return stream_preserved_zip_entry_raw_data(
+        zf,
+        context,
+        provider_hint=provider_hint,
+    )
+
+
+def stream_preserved_zip_entry_raw_data(
+    zf: zipfile.ZipFile,
+    context: ZipEntryReadContext,
+    *,
+    provider_hint: Provider,
+    source_index: int | None = None,
+) -> RawSessionData:
+    """Durably stream one admitted ZIP member without decoding its content.
+
+    The caller remains responsible for applying :class:`_ZipEntryValidator`
+    before this function.  Keeping the bounded entry reader here means a
+    source-tier-only outage retains the same ZIP-bomb protection as ordinary
+    acquisition while deliberately avoiding provider detection, JSON decoding,
+    and artifact classification.
+    """
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         blob_hash, blob_size = stream_fileobj_to_blob(
             context.blob_store,
@@ -446,6 +468,7 @@ def _stream_preserved_zip_entry(
         provider_hint=provider_hint,
         blob_hash=blob_hash,
         blob_size=blob_size,
+        source_index=source_index,
         blob_publication_receipt_id=publication_id,
     )
 
@@ -528,6 +551,7 @@ __all__ = [
     "observe_acquisition",
     "raw_data_record",
     "read_plain_source_file",
+    "stream_preserved_zip_entry_raw_data",
     "stream_fileobj_to_blob",
     "stream_path_to_blob",
 ]
