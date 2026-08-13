@@ -1784,7 +1784,11 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
     )
     declarations_by_id = {str(declaration.version): declaration for declaration in INDEX_DELTA_DECLARATIONS}
     unknown_deltas = sorted(
-        {review.authority_id for review in expected_reviews if review.authority_id not in declarations_by_id}
+        {
+            authority_id
+            for review in expected_reviews
+            if (authority_id := review.authority_id) is not None and authority_id not in declarations_by_id
+        }
     )
     if unknown_deltas:
         detail = ", ".join(f"unknown index delta {delta}" for delta in unknown_deltas)
