@@ -1709,13 +1709,14 @@ def raw_revision_rebuild_selection(
 
 def raw_membership_census_rows(
     store: RawRevisionGovernanceHost, raw_ids: Sequence[str] | None = None
-) -> tuple[tuple[str, int, bool], ...]:
+) -> tuple[tuple[str, int, bool, int], ...]:
     """Return retained raws and whether durable evidence says they are non-sessions."""
     conn = store._ensure_source_conn()
     columns = """
         r.raw_id,
         r.source_index,
-        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+        r.rowid
     """
     if raw_ids is None:
         rows = conn.execute(f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id").fetchall()
@@ -1727,7 +1728,7 @@ def raw_membership_census_rows(
         ).fetchall()
     else:
         rows = []
-    return tuple((str(row[0]), int(row[1]), bool(row[2])) for row in rows)
+    return tuple((str(row[0]), int(row[1]), bool(row[2]), int(row[3])) for row in rows)
 
 
 def raw_payload_sizes(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> dict[str, int]:

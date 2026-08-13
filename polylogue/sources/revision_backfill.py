@@ -793,9 +793,9 @@ def _census_historical_revision_evidence(
             census_selection = initial_selection
             while True:
                 rows = archive.raw_membership_census_rows(census_selection)
-                for raw_id, _source_index, _terminal_non_session in sorted(
+                for raw_id, _source_index, _terminal_non_session, _raw_rowid in sorted(
                     rows,
-                    key=lambda row: (archive.raw_revision_observed_at_ms(row[0]), row[1], row[0]),
+                    key=lambda row: (archive.raw_revision_observed_at_ms(row[0]), row[3]),
                 ):
                     if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
                         continue
@@ -803,14 +803,14 @@ def _census_historical_revision_evidence(
                     state.censused.add(raw_id)
                     commit_unit()
                 terminal_raw_ids = {
-                    raw_id for raw_id, _source_index, terminal_non_session in rows if terminal_non_session
+                    raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if terminal_non_session
                 }
                 for raw_id in terminal_raw_ids - state.censused:
                     state.scanned += 1
                     state.censused.add(raw_id)
                 pending_rows = [
                     (raw_id, source_index)
-                    for raw_id, source_index, terminal_non_session in rows
+                    for raw_id, source_index, terminal_non_session, _raw_rowid in rows
                     if raw_id not in state.censused and not terminal_non_session
                 ]
                 if max_payload_bytes is not None:
@@ -903,7 +903,7 @@ def _load_frozen_revision_evidence(
     rows = archive.raw_membership_census_rows(expanded_raw_ids if selected_raw_ids is not None else None)
     if max_payload_bytes is not None:
         payload_sizes = archive.raw_payload_sizes(
-            [raw_id for raw_id, _source_index, terminal_non_session in rows if not terminal_non_session]
+            [raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if not terminal_non_session]
         )
         total_payload_bytes = sum(payload_sizes.values())
         oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
@@ -912,7 +912,9 @@ def _load_frozen_revision_evidence(
                 sorted(oversized or payload_sizes), max_payload_bytes, total_payload_bytes
             )
     parseable_raw_ids = [
-        raw_id for raw_id, source_index, terminal_non_session in rows if source_index >= 0 and not terminal_non_session
+        raw_id
+        for raw_id, source_index, terminal_non_session, _raw_rowid in rows
+        if source_index >= 0 and not terminal_non_session
     ]
     parsed_outcomes = _parse_retained_raws(
         archive,
@@ -921,7 +923,7 @@ def _load_frozen_revision_evidence(
         prefetch_cache=prefetch_cache,
     )
     state = _RevisionCensusState(0, 0, 0, set(), {}, {})
-    for raw_id, source_index, terminal_non_session in rows:
+    for raw_id, source_index, terminal_non_session, _raw_rowid in rows:
         state.scanned += 1
         state.censused.add(raw_id)
         if terminal_non_session:

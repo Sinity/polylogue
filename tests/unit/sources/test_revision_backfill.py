@@ -544,6 +544,38 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
     assert json.loads(str(payload_json[0]))["title"] == "title A"
 
 
+def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_path: Path) -> None:
+    """Equal-time Codex snapshots retain the later raw insertion as authority."""
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / "codex" / "state_5.sqlite")
+    older_snapshot = _codex_thread_state_snapshot_bytes(tmp_path, "older title")
+    newer_snapshot = _codex_thread_state_snapshot_bytes(tmp_path, "newer title")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=older_snapshot,
+            source_path=source_path,
+            acquired_at_ms=1,
+            raw_id="z-older-state",
+        )
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=newer_snapshot,
+            source_path=source_path,
+            acquired_at_ms=1,
+            raw_id="a-newer-state",
+        )
+
+    census_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        payload_json = conn.execute(
+            "SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'codex-thread-title:codex-state-thread'"
+        ).fetchone()
+    assert payload_json is not None
+    assert json.loads(str(payload_json[0]))["title"] == "newer title"
+
+
 def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> None:
     """Replay turns a decoded fact-sidecar raw into terminal source authority.
 

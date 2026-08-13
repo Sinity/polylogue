@@ -1292,7 +1292,7 @@ def upsert_raw_artifact(
     with conn if manage_transaction else nullcontext():
         existing = conn.execute(
             f"""
-            SELECT a.artifact_id, a.first_observed_at_ms, a.last_observed_at_ms, r.rowid
+            SELECT a.artifact_id, a.raw_id, a.first_observed_at_ms, a.last_observed_at_ms, r.rowid
             FROM raw_artifacts AS a
             JOIN raw_sessions AS r ON r.raw_id = a.raw_id
             WHERE {coordinate_predicate}
@@ -1302,15 +1302,16 @@ def upsert_raw_artifact(
         if existing is not None:
             # One coordinate has one authority carrier. A delayed census of
             # stale retained bytes must not replace a carrier observed later.
-            incoming_row = conn.execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
-            if incoming_row is None:
-                raise KeyError(raw_id)
-            if (int(existing[2]), int(existing[3])) >= (artifact.last_observed_at_ms, int(incoming_row[0])):
-                conn.execute(
-                    "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
-                    (artifact.first_observed_at_ms, str(existing[0])),
-                )
-                return
+            if str(existing[1]) != raw_id:
+                incoming_row = conn.execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+                if incoming_row is None:
+                    raise KeyError(raw_id)
+                if (int(existing[3]), int(existing[4])) >= (artifact.last_observed_at_ms, int(incoming_row[0])):
+                    conn.execute(
+                        "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
+                        (artifact.first_observed_at_ms, str(existing[0])),
+                    )
+                    return
             artifact = replace(artifact, artifact_id=str(existing[0]))
         _insert_artifact(conn, raw_id, artifact)
 
