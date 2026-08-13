@@ -277,12 +277,15 @@ class CheckoutMutationMonitor:
         self._unavailable = False
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self._initialized = threading.Event()
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
         self._tracked_paths: frozenset[Path] = frozenset()
         self._tracked_directories: frozenset[Path] = frozenset()
         self._ignored_roots: frozenset[Path] = frozenset()
         self._git_index_path: Path | None = None
+        self._git_current_ref_path: Path | None = None
+        self._git_current_ref_was_loose: bool | None = None
         self._git_authority_paths: dict[Path, str] = {}
         self._directory_topology_fingerprint: frozenset[str] | None = None
 
@@ -292,6 +295,7 @@ class CheckoutMutationMonitor:
             with self._state_lock:
                 self._unavailable = True
             self._ready.set()
+            self._initialized.set()
             return
         # Repository enumeration and Git authority discovery are synchronous
         # preflight, not native watcher startup. Keeping them outside the
@@ -300,6 +304,7 @@ class CheckoutMutationMonitor:
         watched_directories = self._watched_directories()
         if self._unavailable:
             self._ready.set()
+            self._initialized.set()
             return
         self._thread = threading.Thread(
             target=self._watch,
@@ -313,6 +318,12 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
             self._stop.set()
             self._thread.join(timeout=self._WATCH_START_TIMEOUT_S)
+            return
+        # The one-second deadline proves only native backend startup. The
+        # protected topology recheck is ordinary repository discovery and may
+        # legitimately take longer on a cold CI checkout; complete it before
+        # the verification command can mutate the tree.
+        self._initialized.wait()
 
     def finish(self) -> CheckoutMutationObservation:
         """Stop monitoring only after the caller took its final fingerprint."""
@@ -349,14 +360,16 @@ class CheckoutMutationMonitor:
             ):
                 # An empty timeout batch proves the backend initialized before
                 # a verification command starts, closing the startup race. The
-                # active watcher protects the following topology recheck, so
-                # readiness need not wait for a second repository enumeration.
+                # active watcher protects the following topology recheck. The
+                # native-ready event has its own bounded startup deadline;
+                # ``start`` waits separately for repository discovery.
                 if not self._ready.is_set():
                     self._ready.set()
                     if not self._directory_topology_is_stable(watched_directories):
                         with self._state_lock:
                             self._unavailable = True
                         return
+                    self._initialized.set()
                 for _change, raw_path in changes:
                     self._record_change(Path(raw_path))
                     if self._changed or self._unavailable:
@@ -369,6 +382,7 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
         finally:
             self._ready.set()
+            self._initialized.set()
 
     @classmethod
     def _polling_backend_requested(cls) -> bool:
@@ -490,7 +504,10 @@ class CheckoutMutationMonitor:
                 with self._state_lock:
                     self._unavailable = True
                 return paths
-            paths[Path(raw_ref_path)] = f".git/{symbolic_ref}"
+            self._git_current_ref_path = Path(raw_ref_path)
+            if self._git_current_ref_was_loose is None:
+                self._git_current_ref_was_loose = self._git_current_ref_path.exists()
+            paths[self._git_current_ref_path] = f".git/{symbolic_ref}"
         return paths
 
     def _git_command(
@@ -540,6 +557,14 @@ class CheckoutMutationMonitor:
         if not candidate.is_absolute():
             candidate = self.root / candidate
         for authority_path, label in self._git_authority_paths.items():
+            if label == ".git/packed-refs" and self._git_current_ref_was_loose is True:
+                # packed-refs is shared by linked worktrees. When this
+                # worktree's current branch has a loose ref, unrelated fetch
+                # maintenance cannot change its HEAD through the packed file.
+                # A real pack transition remains visible when the loose ref
+                # is removed or replaced. Preserve the startup state so a
+                # packed-to-loose transition cannot hide its own first event.
+                continue
             if candidate != authority_path and authority_path.is_relative_to(candidate):
                 with self._state_lock:
                     self._changed = True

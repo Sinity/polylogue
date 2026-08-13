@@ -2288,6 +2288,61 @@ def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: 
     )
 
 
+def test_checkout_mutation_monitor_ignores_shared_packed_refs_when_current_ref_is_loose(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--no-prune"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git" / "packed-refs")
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_watches_packed_refs_when_current_ref_is_packed(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--prune"], cwd=tmp_path, check=True)
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    loose_ref = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-path", branch],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    assert not loose_ref.exists()
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git" / "packed-refs")
+
+    assert monitor.finish() == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=".git/packed-refs",
+    )
+
+
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a loose ref created from packed authority")
 def test_checkout_mutation_monitor_observes_packed_nested_branch_ref_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
