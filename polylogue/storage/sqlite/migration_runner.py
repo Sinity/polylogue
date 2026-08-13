@@ -844,6 +844,46 @@ def validate_migration_backup_live_fingerprint(
     return receipt_path
 
 
+def validate_full_evidence_backup_for_archive_root_relocation(
+    path: Path,
+    *,
+    old_archive_root: Path,
+) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
+    """Authenticate complete old-root backup evidence for a root relocation."""
+    manifest_path = _backup_manifest_path(path)
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
+        raise MigrationError("archive-root relocation requires a verified full_evidence backup")
+    expected_tiers = {f"{tier.value}.db" for tier in ArchiveTier}
+    if set(_json_str_list(manifest.get("included_tiers"))) != expected_tiers or _json_str_list(
+        manifest.get("omitted_tiers")
+    ):
+        raise MigrationError("archive-root relocation backup must contain the exact complete tier set")
+    receipt_path = _receipt_path(manifest_path)
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
+        raise MigrationError("archive-root relocation requires a successful verification receipt")
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
+        try:
+            verify_verification_receipt(receipt, tier=tier.value, live_tier_path=old_archive_root / f"{tier.value}.db")
+        except BackupAttestationError as exc:
+            raise MigrationError(f"archive-root relocation old-root authority failed for {tier.value}: {exc}") from exc
+    fingerprints = manifest.get("tier_source_fingerprints")
+    artifacts = receipt.get("tier_artifacts")
+    if not isinstance(fingerprints, dict) or not isinstance(artifacts, list):
+        raise MigrationError("archive-root relocation backup lacks complete tier evidence")
+    artifact_by_tier = {
+        item.get("tier"): item for item in artifacts if isinstance(item, dict) and isinstance(item.get("tier"), str)
+    }
+    if set(fingerprints) != expected_tiers or set(artifact_by_tier) != {tier.value for tier in ArchiveTier}:
+        raise MigrationError("archive-root relocation backup tier evidence is incomplete")
+    return manifest_path, receipt_path, manifest, receipt
+
+
 def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root: Path) -> tuple[Path, Path]:
     """Authorize creation of a missing audit tier in an established archive.
 

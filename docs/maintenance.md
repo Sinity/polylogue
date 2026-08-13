@@ -39,6 +39,17 @@ Restart health and runtime-consumer convergence are the final lifecycle proof
 and are recorded by the durable train lifecycle API, not inferred from this
 command's migration result alone.
 
+## Relocating an archive root
+
+Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. It requires the daemon to be stopped, archive ownership, and a successful verified `full_evidence` backup whose receipt is authenticated against the old root path. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation plan --old-root /old/archive/root --backup-manifest /path/to/manifest.json --output /safe/relocation-plan.json --output-format json
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation apply --plan /safe/relocation-plan.json --authorize PLAN_SHA256 --output-format json
+```
+
+If apply stops after recording a prepared receipt, daemon startup fails closed and names the exact apply command. Rerun that command with the same plan and authorization after restoring offline ownership. Do not use this operation for a copy, restore, new archive, migration, or live service move.
+
 ### Rebuild deployment-currency preflight
 
 Before a managed `rebuild-index`, confirm that the package selected for the

@@ -4104,6 +4104,50 @@ def test_run_daemon_services_checks_archive_identity_before_component_startup(tm
     configure.assert_not_called()
 
 
+def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary daemon startup preflight, not a test-only guard, blocks a prepared relocation."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.operations.archive_root_relocation import (
+        ArchiveRootRelocationError,
+        _sealed_receipt,
+        _write_receipt,
+    )
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    receipt = _sealed_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256="a" * 64,
+        authorization="a" * 64,
+        manifest_before_sha256=(),
+        manifest_after_sha256=(),
+        resume_command="polylogue ops maintenance archive-root-relocation apply --plan plan.json --authorize "
+        + "a" * 64,
+    )
+    _write_receipt(root / ".maintenance-state" / "archive-root-relocations" / "prepared.json", receipt, expected=None)
+    configure = Mock()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: root)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", configure)
+
+    with pytest.raises(ArchiveRootRelocationError, match="archive-root-relocation apply"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    configure.assert_not_called()
+
+
 def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

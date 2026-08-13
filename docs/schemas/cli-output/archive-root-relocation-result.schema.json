@@ -1,0 +1,56 @@
+{
+  "$id": "https://polylogue.dev/schemas/cli-output/archive-root-relocation-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Result from the offline archive-root relocation apply command.\n\nGenerated from `polylogue.operations.archive_root_relocation.ArchiveRootRelocationResult` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "changed_manifests": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Changed Manifests",
+      "type": "array"
+    },
+    "ok": {
+      "const": true,
+      "default": true,
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "plan_sha256": {
+      "title": "Plan Sha256",
+      "type": "string"
+    },
+    "receipt_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Receipt Path"
+    },
+    "state": {
+      "enum": [
+        "prepared",
+        "committed"
+      ],
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "state",
+    "plan_sha256",
+    "receipt_path",
+    "changed_manifests"
+  ],
+  "title": "Archive Root Relocation Result",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue ops maintenance archive-root-relocation apply --output-format json"
+  ],
+  "x-polylogue-source-model": "ArchiveRootRelocationResult"
+}

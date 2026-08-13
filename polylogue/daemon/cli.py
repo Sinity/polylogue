@@ -2262,6 +2262,11 @@ async def _run_daemon_services_under_active_writer_lease(
     # validation rather than making fresh service startup depend on a separate
     # bootstrap invocation.
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
+
+    # A prepared relocation is explicit operator work.  Check before runtime
+    # component registration so no daemon surface becomes observable first.
+    assert_no_prepared_archive_root_relocation(archive_root_path)
     from polylogue.storage.archive_identity import assert_writable_archive_identity
 
     # Identity precedes schema checks, pidfiles, HTTP startup, and every other

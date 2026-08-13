@@ -47,6 +47,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Apply additive migrations for one durable archive tier.",
     ),
     (
+        "archive-root-relocation",
+        "_archive_root_relocation",
+        "archive_root_relocation_command",
+        "Plan or apply one offline inode-preserving archive-root relocation.",
+    ),
+    (
         "run-preview",
         "_run_preview",
         "run_preview_command",

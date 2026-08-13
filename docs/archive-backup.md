@@ -37,6 +37,29 @@ When SQLite WAL files are present, either stop the daemon or run an explicit
 checkpoint before copying. Copying only `*.db` while an uncheckpointed `*-wal`
 contains recent writes creates an incomplete backup.
 
+## Offline archive-root relocation
+
+An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon, move the complete root without copying its database files, and retain the verified `full_evidence` backup made at the old root. Then point `POLYLOGUE_ARCHIVE_ROOT` at the destination and create the bound plan:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
+  polylogue ops maintenance archive-root-relocation plan \
+  --old-root /old/archive/root \
+  --backup-manifest /path/to/verified-full-evidence/manifest.json \
+  --output /safe/operator/location/relocation-plan.json --output-format json
+```
+
+Apply only the exact self-hash printed in that plan:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
+  polylogue ops maintenance archive-root-relocation apply \
+  --plan /safe/operator/location/relocation-plan.json \
+  --authorize PLAN_SHA256 --output-format json
+```
+
+The route reads every SQLite file immutably and refuses copied files, WAL sidecars, missing HMAC authority for the old path, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, source-continuity trains, or any non-released source train. It records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver, and the plan binds the resolved generation rather than a shadow index path. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises only released source train manifests and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. A prepared receipt blocks daemon startup and prints the exact resume command. Live application and post-move observation remain operator evidence, outside this code path.
+
 ## Restore Rules
 
 Restore into an isolated archive root first:

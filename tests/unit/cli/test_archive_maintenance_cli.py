@@ -91,6 +91,21 @@ def test_raw_authority_census_cli_resolves_receipt_handle(
     assert payload["census"]["census_id"] == receipt.census_id
 
 
+def test_archive_root_relocation_cli_help_exposes_only_plan_and_apply(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """Exercise the lazy production maintenance dispatcher for the offline route."""
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "archive-root-relocation", "--help"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "plan" in result.output
+    assert "apply" in result.output
+
+
 def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

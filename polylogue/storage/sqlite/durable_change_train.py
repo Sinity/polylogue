@@ -555,6 +555,30 @@ def _persist_train_transition(path: Path, train: DurableChangeTrain, *, expected
     return load_durable_change_train_manifest(path)
 
 
+def rebind_released_source_train_archive_identity(
+    train: DurableChangeTrain,
+    *,
+    archive_identity_digest: str,
+    proof_ref: str,
+) -> DurableChangeTrain:
+    """Return the one permitted root-relocation revision of a source train."""
+    if train.tier is not ArchiveTier.SOURCE or train.state is not DurableChangeTrainState.RELEASED:
+        raise DurableChangeTrainError("archive-root relocation requires a released source train")
+    if train.apply_evidence is None or train.source_continuity_evidence is not None:
+        raise DurableChangeTrainError("archive-root relocation does not support source continuity train shapes")
+    _migration_runner._validate_sha256(archive_identity_digest, label="relocated archive identity")
+    post = replace(train.apply_evidence.post, archive_identity_digest=archive_identity_digest)
+    evidence = replace(train.apply_evidence, post=post)
+    updated = replace(
+        train,
+        revision=train.revision + 1,
+        apply_evidence=evidence,
+        proof_refs=_migration_runner._append_proof_refs(train.proof_refs, proof_ref),
+    )
+    validate_durable_change_train_manifest(updated)
+    return updated
+
+
 def write_source_continuity_pending_intent(
     archive_root: Path,
     *,
@@ -2302,8 +2326,10 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
+    from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
     from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
 
+    assert_no_prepared_archive_root_relocation(archive_root)
     validate_audit_adoption_receipt(archive_root)
     deferred_tiers = _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
