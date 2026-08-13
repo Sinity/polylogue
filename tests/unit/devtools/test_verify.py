@@ -2858,7 +2858,7 @@ def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
 
-def test_explicit_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
+def test_configured_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
@@ -3352,26 +3352,6 @@ def test_explicit_tmpfs_basetemp_reports_adaptive_and_filesystem_refusals_togeth
     assert "safe tmpfs budget=1082 MiB" in message
     assert "available filesystem space=2048 MiB" in message
     assert "required filesystem headroom=2546 MiB" in message
-
-
-def test_configured_tmpfs_basetemp_refuses_declared_demand_above_adaptive_memory_cap(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
-    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=3072)
-    configured = shm / "pytest-polylogue-configured"
-    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 4 * 1024 * 1024)
-
-    with pytest.raises(PytestResourceError) as excinfo:
-        apply_managed_pytest_runtime_policy(
-            {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(configured)}, worker_count=0, full_suite=True
-        )
-
-    message = str(excinfo.value)
-    assert "configured pytest basetemp" in message
-    assert "declared demand=1522 MiB" in message
-    assert "safe tmpfs budget=1082 MiB" in message
 
 
 def test_supervisor_never_cleans_an_explicit_tmpfs_basetemp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

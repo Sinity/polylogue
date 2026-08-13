@@ -1127,10 +1127,10 @@ def apply_managed_pytest_runtime_policy(
             and effective_tmpfs_budget_kb is not None
             and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
-            if explicit_tmpfs or configured_tmpfs:
-                path = Path(explicit_basetemp or configured_root or PYTEST_TMPFS_ROOT)
+            if explicit_tmpfs:
+                path = Path(explicit_basetemp or PYTEST_TMPFS_ROOT)
                 raise _tmpfs_admission_refusal(
-                    kind="explicit" if explicit_tmpfs else "configured",
+                    kind="explicit",
                     path=path,
                     declared_demand_kb=required_basetemp_kb,
                     safe_budget_kb=effective_tmpfs_budget_kb,
