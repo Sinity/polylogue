@@ -81,6 +81,7 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
+    CURRENT_STATISTICS_PATH,
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
     PytestResourceError,
@@ -609,6 +610,7 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         CURRENT_RESOURCES_PATH,
         CURRENT_POSTMORTEM_PATH,
         CURRENT_CONTAINMENT_PATH,
+        CURRENT_STATISTICS_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
             if path.is_dir():
@@ -1593,7 +1595,7 @@ def _run(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
-    explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd)
+    explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
     pytest_tmpfs = False
@@ -1945,14 +1947,21 @@ def _run(
     return result.returncode, elapsed, metadata
 
 
-def _pytest_command_basetemp(cmd: Sequence[str], *, cwd: str | None) -> Path | None:
+def _pytest_command_basetemp(
+    cmd: Sequence[str], *, cwd: str | None, env: Mapping[str, str] | None = None
+) -> Path | None:
     """Return the effective explicit pytest basetemp, if the command has one."""
     raw_path: str | None = None
-    for index, argument in enumerate(cmd):
+    addopts: list[str] = []
+    if env is not None:
+        with contextlib.suppress(ValueError):
+            addopts = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    arguments = [*addopts, *cmd]
+    for index, argument in enumerate(arguments):
         if argument.startswith("--basetemp="):
             raw_path = argument.partition("=")[2]
-        elif argument == "--basetemp" and index + 1 < len(cmd):
-            raw_path = cmd[index + 1]
+        elif argument == "--basetemp" and index + 1 < len(arguments):
+            raw_path = arguments[index + 1]
     if not raw_path:
         return None
     path = Path(raw_path)

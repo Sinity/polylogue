@@ -2481,6 +2481,24 @@ def test_sparse_basetemp_enforces_allocated_tmpfs_bytes_and_retains_logical_evid
     assert pytest_tmpfs_budget_exceeded(sample, budget_kb=allocated_kb - 1)
 
 
+def test_resource_sampler_does_not_charge_symlink_targets_to_managed_basetemp(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    run_id = "symlink-accounting"
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id=run_id, env=env)
+    basetemp.mkdir(parents=True)
+    outside_target = tmp_path / "outside-target.bin"
+    outside_target.write_bytes(b"x" * (4 * 1024 * 1024))
+    (basetemp / "external-link").symlink_to(outside_target)
+    sampler = ResourceSampler(
+        root_pid=os.getpid(), run_id=run_id, root=tmp_path, env=env, output_path=tmp_path / "resources.jsonl"
+    )
+
+    sample = sampler.sample(event="sample")
+
+    assert sample["basetemp_size_kb"] < 512
+    assert sample["basetemp_allocated_kb"] < 512
+
+
 def test_pytest_basetemp_path_tracks_tmpfs_opt_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
     path = pytest_basetemp_path(root=tmp_path, run_id="run-1", env={"POLYLOGUE_PYTEST_TMPFS": "1"})
@@ -3492,6 +3510,42 @@ def test_run_propagates_explicit_basetemp_to_resource_policy(tmp_path: Path) -> 
 
     assert rc == 0
     assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
+
+
+def test_run_propagates_pytest_addopts_basetemp_to_resource_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    explicit = tmp_path / "diagnostic-basetemp"
+    captured: dict[str, str] = {}
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+    monkeypatch.setenv("PYTEST_ADDOPTS", f"--basetemp {explicit}")
+
+    def apply_policy(env: dict[str, str], **_kwargs: object) -> tuple[dict[str, str], None]:
+        captured.update(env)
+        return env, None
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", side_effect=apply_policy),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest"])
+
+    assert rc == 0
+    assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
+
+
+def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
+    stale_statistics = tmp_path / verify_runs.CURRENT_STATISTICS_PATH
+    stale_statistics.parent.mkdir(parents=True)
+    stale_statistics.write_text('{"node_count": 99}\n', encoding="utf-8")
+
+    with patch("devtools.verify._run_pytest_with_heartbeat", side_effect=KeyboardInterrupt):
+        rc, _elapsed, metadata = _run("pytest focused", ["pytest"])
+
+    assert rc == 130
+    assert metadata["diagnosis"] == "pytest_interrupted"
+    assert not stale_statistics.exists()
 
 
 def test_explicit_basetemp_policy_uses_actual_path_for_admission(

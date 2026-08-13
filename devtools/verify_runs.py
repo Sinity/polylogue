@@ -823,7 +823,7 @@ def _fs_usage(path: Path) -> dict[str, int] | None:
 
 
 def _dir_usage_kb(path: Path) -> tuple[int | None, int | None]:
-    """Measure apparent and allocated file bytes in one filesystem walk."""
+    """Measure apparent and allocated bytes owned by one basetemp tree."""
     if not path.exists():
         return None, None
     logical_total = 0
@@ -831,8 +831,8 @@ def _dir_usage_kb(path: Path) -> tuple[int | None, int | None]:
     try:
         for item in path.rglob("*"):
             with contextlib.suppress(OSError):
-                if item.is_file():
-                    item_stat = item.stat()
+                item_stat = item.lstat()
+                if not stat.S_ISDIR(item_stat.st_mode):
                     logical_total += item_stat.st_size
                     allocated_total += item_stat.st_blocks * 512
     except OSError:

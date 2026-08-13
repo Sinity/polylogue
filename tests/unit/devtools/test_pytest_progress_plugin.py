@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from devtools import pytest_progress_plugin
+from devtools.verify_runs import aggregate_pytest_statistics
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +52,7 @@ class _Report:
     duration: float = 0.0
     longrepr: str = ""
     worker_id: str | None = None
+    wasxfail: str | None = None
 
 
 def test_progress_plugin_records_call_and_setup_failures(
@@ -74,6 +76,28 @@ def test_progress_plugin_records_call_and_setup_failures(
     ]
     assert events[1]["duration_s"] == 0.25
     assert events[2]["longrepr"] == "fixture exploded"
+
+
+def test_progress_plugin_preserves_xfail_and_xpass_in_durable_statistics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    events_path = step / "events.jsonl"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    pytest_progress_plugin.pytest_sessionstart(object())
+
+    pytest_progress_plugin.pytest_runtest_logstart("test_xfailed", ("tests/a.py", 1, "test_xfailed"))
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_xfailed", "call", "skipped", wasxfail="known failure")
+    )
+    pytest_progress_plugin.pytest_runtest_logstart("test_xpassed", ("tests/a.py", 2, "test_xpassed"))
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test_xpassed", "call", "passed", wasxfail="known failure"))
+
+    statistics = aggregate_pytest_statistics(step)
+
+    assert statistics["outcomes"] == {"xfailed": 1, "xpassed": 1}
 
 
 def test_progress_plugin_skips_xdist_controller_forwarding_copy(
@@ -132,8 +156,19 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
     # resulting cache to leak into later tests.
     (checkout_root / ".cache" / "testmon").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
+    for name in (
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
+    ):
+        env.pop(name, None)
     env.update(
         {
+            # Keep the nested real pytest away from the host-only scratch
+            # fallback while preserving the scrubbed event/testmon scenario.
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path / "pytest-basetemp"),
+            "POLYLOGUE_PYTEST_TMPFS": "0",
             "POLYLOGUE_PYTEST_EVENTS_DIR": str(events_dir),
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),

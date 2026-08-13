@@ -173,6 +173,17 @@ def _remember_report(payload: dict[str, Any]) -> None:
     del _SLOWEST_REPORTS[_SLOW_REPORT_LIMIT:]
 
 
+def _durable_report_outcome(report: Any, outcome: str) -> str:
+    """Preserve pytest's xfail semantics in the append-only event ledger."""
+    if not getattr(report, "wasxfail", None):
+        return outcome
+    if outcome == "skipped":
+        return "xfailed"
+    if outcome == "passed":
+        return "xpassed"
+    return outcome
+
+
 @pytest.hookimpl
 def pytest_sessionstart(session: Any) -> None:
     """Reset per-session ledgers when tests invoke pytest in-process."""
@@ -281,7 +292,7 @@ def _record_phase_report(report: Any, *, write_event: bool = True) -> None:
     """Append one phase report so slow setup/call/teardown remains visible."""
     when = str(getattr(report, "when", ""))
     nodeid = str(getattr(report, "nodeid", ""))
-    outcome = str(getattr(report, "outcome", ""))
+    outcome = _durable_report_outcome(report, str(getattr(report, "outcome", "")))
     duration = float(getattr(report, "duration", 0.0) or 0.0)
     report_key = (id(report), when, nodeid, outcome, duration)
     if report_key in _RECORDED_REPORT_KEYS:
