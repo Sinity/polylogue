@@ -902,14 +902,26 @@ class TestEmitDeleteMachineModeNoPrompt:
 
         with patch(
             "polylogue.cli.archive_query._submit_daemon_mutation",
-            return_value={"status": "deleted", "affected_count": 2},
+            side_effect=[
+                {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+                {"status": "authorized", "authorization_token": "daemon-token"},
+                {"status": "deleted", "affected_count": 2},
+            ],
         ) as daemon_delete:
             _emit_delete(env, archive, ("s1", "s2"), params={"force": True, "dry_run": False})
 
         env.ui.confirm.assert_not_called()
         archive.delete_sessions.assert_not_called()
-        assert daemon_delete.call_args.args[1] == "/api/cli/delete"
-        assert daemon_delete.call_args.kwargs["body"] == {"session_ids": ["s1", "s2"]}
+        assert [call.args[1] for call in daemon_delete.call_args_list] == [
+            "/api/cli/delete/prepare",
+            "/api/cli/delete/authorize",
+            "/api/cli/delete",
+        ]
+        assert [call.kwargs["body"] for call in daemon_delete.call_args_list] == [
+            {"session_ids": ["s1", "s2"]},
+            {"preview_ref": "preview:delete"},
+            {"authorization_token": "daemon-token"},
+        ]
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "deleted"
         assert payload["affected_count"] == 2
@@ -974,8 +986,8 @@ class TestEmitDeleteMachineModeNoPrompt:
                 return {"ok": True}
 
             def request_mutation_json(self, method: str, path: str, body: dict[str, object]) -> dict[str, object]:
-                assert (method, path, body) == ("POST", "/api/cli/delete", {"session_ids": ["s1"]})
-                return {"status": "deleted", "affected_count": 1}
+                assert (method, path, body) == ("POST", "/api/cli/delete/prepare", {"session_ids": ["s1"]})
+                return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1"]}
 
         config = cast("Config", SimpleNamespace(archive_root=tmp_path, api_auth_token=None, api_allow_no_auth=True))
         monkeypatch.setattr(archive_query, "_daemon_disabled", lambda **_kwargs: False)
@@ -983,10 +995,15 @@ class TestEmitDeleteMachineModeNoPrompt:
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: tmp_path / "daemon.sock")
         monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
 
-        payload = archive_query._submit_daemon_mutation(config, "/api/cli/delete", body={"session_ids": ["s1"]})
+        payload = archive_query._submit_daemon_mutation(config, "/api/cli/delete/prepare", body={"session_ids": ["s1"]})
 
         assert initialized == [{"timeout_s": None, "auth_token": None}]
-        assert payload == {"status": "deleted", "affected_count": 1, "_daemon_elapsed_ms": 250}
+        assert payload == {
+            "status": "prepared",
+            "preview_ref": "preview:delete",
+            "session_ids": ["s1"],
+            "_daemon_elapsed_ms": 250,
+        }
 
     def test_interactive_forceless_delete_still_prompts(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Human interactive use (non-plain) must keep the confirmation prompt.
@@ -994,7 +1011,11 @@ class TestEmitDeleteMachineModeNoPrompt:
         env.ui.confirm.return_value = False
         archive = self._archive()
 
-        _emit_delete(env, archive, ("s1", "s2"), params={"force": False, "dry_run": False})
+        with patch(
+            "polylogue.cli.archive_query._submit_daemon_mutation",
+            return_value={"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+        ):
+            _emit_delete(env, archive, ("s1", "s2"), params={"force": False, "dry_run": False})
 
         env.ui.confirm.assert_called_once()
         archive.delete_sessions.assert_not_called()

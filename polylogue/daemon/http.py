@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.daemon.webui import WebUIAsset
+    from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
@@ -116,6 +117,9 @@ logger = get_logger(__name__)
 
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
 _COORDINATION_CACHE_TTL_S = 2.0
+_CLI_DELETE_SELECTION_MAX_BYTES = 65_536
+_CLI_DELETE_AUTHORIZATION_MAX_BYTES = 2_048
+_CLI_DELETE_MAX_TARGETS = 256
 
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
 
@@ -445,6 +449,16 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             "_handle_mcp_call_log",
         ),
         _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
+        _StaticPostRoute(
+            "/api/cli/delete/prepare",
+            ("api", "cli", "delete", "prepare"),
+            "_handle_cli_delete_prepare",
+        ),
+        _StaticPostRoute(
+            "/api/cli/delete/authorize",
+            ("api", "cli", "delete", "authorize"),
+            "_handle_cli_delete_authorize",
+        ),
         _StaticPostRoute("/api/cli/delete", ("api", "cli", "delete"), "_handle_cli_delete"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
@@ -1413,6 +1427,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return False
 
+    def _cli_delete_principal(self) -> MutationPrincipal:
+        """Derive, never accept, the audit principal for a CLI delete request."""
+
+        from polylogue.operations.mutation_transaction import MutationPrincipal
+
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            actor_ref = f"daemon:bearer:{hashlib.sha256(auth_header[7:].encode()).hexdigest()}"
+        else:
+            actor_ref = "daemon:unauthenticated-loopback"
+        return MutationPrincipal(
+            actor_ref=actor_ref,
+            capabilities=frozenset({"archive.delete_session"}),
+            surface="cli",
+            role_label="daemon-authenticated",
+        )
+
     def _check_host_admission(self, *, credential_request: bool = False) -> bool:
         """Reject requests whose Host header does not name this daemon.
 
@@ -1942,7 +1973,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             mutating_actor = {
                 "_handle_mcp_call_log": "http.telemetry.mcp-call",
                 "_handle_reset": "http.reset",
-                "_handle_cli_delete": "http.cli.delete",
                 "_handle_ingest": "http.ingest",
                 "_handle_maintenance_run": "http.maintenance.run",
             }.get(authenticated_route.handler_name)
@@ -5018,39 +5048,134 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._handle_list_sessions(params)
 
     @daemon_safe_handler
-    def _handle_cli_delete(self) -> None:
-        """Delete the CLI's resolved session set under daemon writer ownership."""
+    def _handle_cli_delete_prepare(self) -> None:
+        """Prepare a bounded canonical delete selection before writer admission."""
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        if content_length <= 0:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        session_ids = self._read_cli_delete_session_ids()
+        if session_ids is None:
             return
+        principal = self._cli_delete_principal()
+
+        async def _prepare(poly: Polylogue) -> dict[str, object]:
+            from polylogue.operations.delete_authorization import prepare_cli_delete
+
+            return prepare_cli_delete(poly.config.archive_root, session_ids, principal).to_dict()
+
         try:
-            body = json.loads(self.rfile.read(content_length))
-            raw_session_ids = body["session_ids"]
-            if not isinstance(raw_session_ids, list):
-                raise TypeError("session_ids must be a list")
-            session_ids = tuple(dict.fromkeys(str(value) for value in raw_session_ids))
-            if any(not session_id for session_id in session_ids):
-                raise ValueError("invalid session_ids")
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            with self._write_gate("http.cli.delete.prepare"):
+                payload = cast(dict[str, object], self._sync_run(_prepare))
+        except ValueError as exc:
+            self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return
+        self._send_json(HTTPStatus.OK, payload)
+
+    @daemon_safe_handler
+    def _handle_cli_delete_authorize(self) -> None:
+        """Issue an authenticated caller's one-time delete authorization."""
+
+        preview_ref = self._read_cli_delete_token_field("preview_ref")
+        if preview_ref is None:
+            return
+        principal = self._cli_delete_principal()
+
+        async def _authorize(poly: Polylogue) -> str:
+            from polylogue.operations.delete_authorization import authorize_cli_delete
+
+            return authorize_cli_delete(poly.config.archive_root, preview_ref, principal)
+
+        try:
+            with self._write_gate("http.cli.delete.authorize"):
+                token = cast(str, self._sync_run(_authorize))
+        except ValueError as exc:
+            self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
+            return
+        self._send_json(HTTPStatus.OK, {"status": "authorized", "authorization_token": token})
+
+    @daemon_safe_handler
+    def _handle_cli_delete(self) -> None:
+        """Consume one daemon-held authorization before deleting its exact targets."""
+
+        token = self._read_cli_delete_token_field("authorization_token")
+        if token is None:
+            return
+        principal = self._cli_delete_principal()
 
         async def _delete(poly: Polylogue) -> int:
-            result = await poly.delete_sessions_safe(session_ids, actor="user:cli")
-            return result.affected_count
+            from polylogue.operations.delete_authorization import consume_cli_delete
 
-        deleted = cast(int, self._sync_run(_delete))
+            receipt = consume_cli_delete(poly.config.archive_root, token, principal)
+            return receipt.affected_count
+
+        try:
+            with self._write_gate("http.cli.delete"):
+                deleted = cast(int, self._sync_run(_delete))
+        except ValueError as exc:
+            self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
+            return
         self._send_json(
             HTTPStatus.OK,
             MutationResultPayload(
                 status="deleted" if deleted else "ok",
                 operation="delete",
-                session_count=len(session_ids),
+                session_count=deleted,
                 affected_count=deleted,
             ).model_dump(exclude_none=True),
         )
+
+    def _read_cli_delete_session_ids(self) -> tuple[str, ...] | None:
+        body = self._read_bounded_json_body(_CLI_DELETE_SELECTION_MAX_BYTES)
+        if body is None:
+            return None
+        try:
+            if set(body) != {"session_ids"}:
+                raise ValueError("unexpected delete prepare fields")
+            raw_session_ids = body["session_ids"]
+            if (
+                not isinstance(raw_session_ids, list)
+                or not raw_session_ids
+                or len(raw_session_ids) > _CLI_DELETE_MAX_TARGETS
+            ):
+                raise ValueError("invalid session_ids")
+            if any(not isinstance(session_id, str) or not session_id for session_id in raw_session_ids):
+                raise ValueError("invalid session_ids")
+            session_ids = tuple(raw_session_ids)
+            if len(set(session_ids)) != len(session_ids):
+                raise ValueError("duplicate session_ids")
+            return session_ids
+        except (KeyError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+
+    def _read_cli_delete_token_field(self, field: str) -> str | None:
+        body = self._read_bounded_json_body(_CLI_DELETE_AUTHORIZATION_MAX_BYTES)
+        if body is None:
+            return None
+        value = body.get(field)
+        if set(body) != {field} or not isinstance(value, str) or not value:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        return value
+
+    def _read_bounded_json_body(self, max_bytes: int) -> dict[str, object] | None:
+        raw_content_length = self.headers.get("Content-Length")
+        try:
+            content_length = int(raw_content_length) if raw_content_length is not None else 0
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length <= 0 or content_length > max_bytes:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        try:
+            raw = self.rfile.read(content_length)
+            if len(raw) != content_length:
+                raise ValueError("interrupted request body")
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                raise TypeError("request body must be an object")
+            return cast(dict[str, object], body)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
 
     @daemon_safe_handler
     def _handle_reset(self) -> None:
