@@ -94,6 +94,8 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
     released = release_durable_change_train(train, evidence_ref="proof:released")
     assert released.apply_evidence is not None
     before = released
+    before_evidence = before.apply_evidence
+    assert before_evidence is not None
     updated = rebind_released_source_train_archive_identity(
         before,
         archive_identity_digest="a" * 64,
@@ -102,7 +104,7 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
 
     assert updated.revision == before.revision + 1
     assert updated.apply_evidence == replace(
-        before.apply_evidence,
-        post=replace(before.apply_evidence.post, archive_identity_digest="a" * 64),
+        before_evidence,
+        post=replace(before_evidence.post, archive_identity_digest="a" * 64),
     )
     assert updated.proof_refs == (*before.proof_refs, "proof:archive-root-relocation:receipt")
