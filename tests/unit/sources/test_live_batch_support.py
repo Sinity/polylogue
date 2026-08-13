@@ -29,7 +29,6 @@ from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
-from polylogue.sources.live import batch as live_batch
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
@@ -55,6 +54,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
@@ -706,7 +706,7 @@ def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-    original_stream = live_batch.stream_preserved_zip_entry_raw_data
+    original_stream = stream_preserved_zip_entry_raw_data
     calls = 0
 
     def fail_after_first_copy(*args: Any, **kwargs: Any) -> Any:
@@ -716,7 +716,10 @@ def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
             raise OSError("transient ZIP read failure")
         return original_stream(*args, **kwargs)
 
-    monkeypatch.setattr(live_batch, "stream_preserved_zip_entry_raw_data", fail_after_first_copy)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.stream_preserved_zip_entry_raw_data",
+        fail_after_first_copy,
+    )
     set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
     try:
         failed = asyncio.run(processor.ingest_files([bundle], emit_event=False))
