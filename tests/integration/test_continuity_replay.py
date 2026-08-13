@@ -88,11 +88,11 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
     assert 0 < cancellation_elapsed_ms < max_cancel_grace_ms
 
     # Every scenario whose first route step uses an archive-read-backed tool
-    # independently exercises and confirms its own cancellation in this
-    # stdio-transport replay -- one scenario passing is not proof the harness
-    # generalizes. "self-inspection" is the sole declared exception: its only
-    # step is "explain" (pure DSL grammar/capability introspection), which has
-    # no in-flight archive read to interrupt at all -- an honest
+    # carries the confirmed tool-route receipt. Equivalent scenarios reuse the
+    # same query/status transport proof; prompt wording cannot change the
+    # cancellation boundary. "self-inspection" is the sole declared exception:
+    # its only step is "explain" (pure DSL grammar/capability introspection),
+    # which has no in-flight archive read to interrupt at all -- an honest
     # not_applicable, not a simulated confirmation.
     for scenario_result in result_documents:
         scenario_budget = require_json_document(
@@ -104,7 +104,10 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
             assert scenario_budget["cancellation_exercised"] is False
             continue
         assert scenario_budget["cancellation_attempted"] is True, scenario_result["scenario"]
-        assert scenario_budget["cancellation_outcome"] == "cancelled_confirmed", scenario_result["scenario"]
+        assert scenario_budget["cancellation_outcome"] == "cancelled_confirmed", (
+            scenario_result["scenario"],
+            scenario_budget["cancellation_detail"],
+        )
         assert scenario_budget["cancellation_exercised"] is True, scenario_result["scenario"]
 
     receipts = json_document_list(incident["route_receipts"])
@@ -163,6 +166,7 @@ async def test_query_continuation_rejects_duplicate_row_with_advancing_offset(
 
     archive_root, catalog, _ = continuity_corpus
     first_page_item: JSONValue | None = None
+    first_page_identity: str | None = None
     observed_page_offsets: list[tuple[int, int]] = []
 
     def repeat_first_row_on_second_page(
@@ -172,7 +176,7 @@ async def test_query_continuation_rejects_duplicate_row_with_advancing_offset(
         response_text: str,
     ) -> str:
         del invocation
-        nonlocal first_page_item
+        nonlocal first_page_identity, first_page_item
         expression = arguments.get("expression")
         if not isinstance(expression, str):
             continuation = arguments.get("continuation")
@@ -193,6 +197,10 @@ async def test_query_continuation_rejects_duplicate_row_with_advancing_offset(
             items = payload.get("items")
             if isinstance(items, list) and items:
                 first_page_item = items[0]
+                if isinstance(first_page_item, dict):
+                    candidate_identity = first_page_item.get("message_id")
+                    if isinstance(candidate_identity, str):
+                        first_page_identity = candidate_identity
             return response_text
         if first_page_item is None:
             return response_text
@@ -216,7 +224,8 @@ async def test_query_continuation_rejects_duplicate_row_with_advancing_offset(
     assert diagnostic["kind"] == "duplicate_pagination_identity"
     assert diagnostic["failure_class"] == "execution"
     assert "page 2" in str(diagnostic["message"])
-    assert "codex-session:ext-continuity-incident-member-001:attempt" in str(diagnostic["message"])
+    assert first_page_identity is not None
+    assert first_page_identity in str(diagnostic["message"])
 
 
 @pytest.mark.asyncio

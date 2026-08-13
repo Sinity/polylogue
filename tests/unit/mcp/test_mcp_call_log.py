@@ -289,6 +289,21 @@ def test_call_log_enqueue_never_changes_tool_result(monkeypatch: pytest.MonkeyPa
     assert _safe_call("stats", lambda: '{"ok": true}') == '{"ok": true}'
 
 
+def test_explicit_no_daemon_mode_emits_no_call_log_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An offline read route never spools or posts through daemon telemetry."""
+
+    from polylogue.mcp import call_log
+    from polylogue.mcp.server_support import _safe_call
+
+    submitted: list[object] = []
+    monkeypatch.setenv("POLYLOGUE_DAEMON", "off")
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
+    monkeypatch.setattr(call_log._DISPATCHER, "submit", lambda _config, event: submitted.append(event))
+
+    assert _safe_call("status", lambda: '{"ok": true}') == '{"ok": true}'
+    assert submitted == []
+
+
 def test_daemon_outage_and_dispatcher_restart_drain_durable_outbox(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

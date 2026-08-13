@@ -13,9 +13,9 @@ import asyncio
 import hashlib
 import inspect
 import json
-import os
 import re
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
@@ -28,7 +28,6 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
 if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from polylogue.archive.query.execution_control import DEFAULT_CAPACITY
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
 from polylogue.product.continuity_scenarios import (
     CONTINUITY_SCENARIOS,
@@ -52,13 +51,8 @@ RouteTransport: TypeAlias = Literal["stdio", "registered"]
 ArgumentMutator: TypeAlias = Callable[[str, RouteArguments, int], RouteArguments]
 ResponseMutator: TypeAlias = Callable[[str, RouteArguments, int, str], str]
 DiscoveryMutator: TypeAlias = Callable[[JSONDocument], JSONDocument]
-#: Concurrent copies of one real route step issued by the cancellation
-#: exercise (see StdioMCPContinuityRoute.exercise_cancellation). Comfortably
-#: above the production admission controller's default per-process capacity
-#: so at least one copy is provably still queued (never touched SQLite) when
-#: the cancellation notifications are sent, making the exercise deterministic
-#: rather than a race against how fast any one query happens to run.
-_CANCELLATION_PROBE_CONCURRENCY = DEFAULT_CAPACITY + 4
+_CONTINUITY_DAEMON_SINK_URL = "http://127.0.0.1:1"
+_CONTINUITY_API_TOKEN_SENTINEL = "continuity-replay-call-log-disabled"
 _TEMPLATE_RE = re.compile(r"\{fixture:([A-Za-z0-9_.-]+)\}")
 _ATTEMPT_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+):(?P<value>[A-Za-z0-9_-]+)")
 _ATTEMPT_GRADES: frozenset[str] = frozenset(
@@ -71,6 +65,84 @@ _ATTEMPT_GRADES: frozenset[str] = frozenset(
         "unreasonable_query",
     }
 )
+
+
+def _hermetic_stdio_environment(*, runtime_root: Path, archive_root: Path) -> dict[str, str]:
+    """Build the complete environment for an offline continuity subprocess.
+
+    The route deliberately does not inherit the operator's environment. In
+    particular, daemon URLs/tokens, MCP capabilities, config locations, and
+    user data roots must not escape into an archive replay. The fixed daemon
+    sink and inert token make call-log isolation testable without granting any
+    real daemon authority.
+    """
+
+    roots = {
+        "HOME": runtime_root / "home",
+        "XDG_CONFIG_HOME": runtime_root / "config",
+        "XDG_DATA_HOME": runtime_root / "data",
+        "XDG_STATE_HOME": runtime_root / "state",
+        "XDG_CACHE_HOME": runtime_root / "cache",
+        "XDG_RUNTIME_DIR": runtime_root / "runtime",
+        "TMPDIR": runtime_root / "tmp",
+    }
+    for name, path in roots.items():
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if name == "XDG_RUNTIME_DIR":
+            path.chmod(0o700)
+    return {
+        **{name: str(path) for name, path in roots.items()},
+        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
+        "POLYLOGUE_DAEMON": "off",
+        "POLYLOGUE_NO_DAEMON": "1",
+        "POLYLOGUE_DAEMON_URL": _CONTINUITY_DAEMON_SINK_URL,
+        "POLYLOGUE_API_AUTH_TOKEN": _CONTINUITY_API_TOKEN_SENTINEL,
+        "POLYLOGUE_MCP_WRITE_ENABLED": "0",
+        "POLYLOGUE_MCP_JUDGE_ENABLED": "0",
+        "POLYLOGUE_MCP_MAINTENANCE_ENABLED": "0",
+        "POLYLOGUE_FORCE_PLAIN": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def _serve_saturated_cancellation_probe() -> None:
+    """Run the real MCP server with one production admission slot held.
+
+    Fast fixture reads can finish before a cancellation notification reaches
+    the server.  Guessing a sleep or cancelling a swarm of predicted request
+    ids races the MCP SDK's responder cleanup.  This disposable subprocess
+    instead creates the ordinary production admission controller with one
+    slot, occupies that slot through its real ``admit_blocking`` path, and
+    then starts the unmodified Polylogue MCP server.  The probe request is
+    therefore deterministically queued until its real MCP task is cancelled.
+    """
+
+    from polylogue.archive.query import execution_control
+    from polylogue.mcp.cli import main
+
+    controller = execution_control.QueryAdmissionController(capacity=1, reserved_interactive=0)
+    holder = execution_control.QueryExecutionContext.create(
+        query_text="continuity-cancellation-holder",
+        timeout_s=None,
+    )
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_admission_slot() -> None:
+        with controller.admit_blocking(holder):
+            held.set()
+            release.wait()
+
+    thread = threading.Thread(target=hold_admission_slot, daemon=True)
+    thread.start()
+    if not held.wait(timeout=5):
+        raise RuntimeError("continuity cancellation holder did not acquire admission")
+    with execution_control._default_controller_lock:
+        if execution_control._default_controller is not None:
+            raise RuntimeError("continuity cancellation server initialized admission too early")
+        execution_control._default_controller = controller
+    main()
 
 
 CancellationOutcome: TypeAlias = Literal[
@@ -301,17 +373,20 @@ class StdioMCPContinuityRoute:
         response_mutator: ResponseMutator | None = None,
         discovery_mutator: DiscoveryMutator | None = None,
         read_timeout_seconds: float = 60.0,
+        saturated_cancellation_probe: bool = False,
     ) -> None:
         self.archive_root = archive_root.resolve()
         self.argument_mutator = argument_mutator
         self.response_mutator = response_mutator
         self.discovery_mutator = discovery_mutator
         self.read_timeout_seconds = read_timeout_seconds
+        self.saturated_cancellation_probe = saturated_cancellation_probe
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self._runtime_workdir: TemporaryDirectory[str] | None = None
         self._discovery: JSONDocument = {}
         self._invocation_count = 0
+        self._cancellation_receipts: dict[str, CancellationExerciseReceipt] = {}
 
     @property
     def transport_name(self) -> str:
@@ -327,18 +402,16 @@ class StdioMCPContinuityRoute:
 
         runtime_workdir = TemporaryDirectory(prefix="polylogue-continuity-runtime-")
         runtime_root = Path(runtime_workdir.name)
-        environment = dict(os.environ)
-        environment.update(
-            {
-                "POLYLOGUE_ARCHIVE_ROOT": str(self.archive_root),
-                "XDG_CONFIG_HOME": str(runtime_root / "config"),
-                "XDG_STATE_HOME": str(runtime_root / "state"),
-                "XDG_CACHE_HOME": str(runtime_root / "cache"),
-            }
+        environment = _hermetic_stdio_environment(runtime_root=runtime_root, archive_root=self.archive_root)
+        server_expression = (
+            "from devtools.continuity_replay import _serve_saturated_cancellation_probe; "
+            "_serve_saturated_cancellation_probe()"
+            if self.saturated_cancellation_probe
+            else "from polylogue.mcp.cli import main; main()"
         )
         parameters = StdioServerParameters(
             command=sys.executable,
-            args=["-c", "from polylogue.mcp.cli import main; main()"],
+            args=["-c", server_expression],
             env=environment,
             cwd=str(Path.cwd()),
         )
@@ -423,23 +496,31 @@ class StdioMCPContinuityRoute:
     async def exercise_cancellation(
         self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
     ) -> CancellationExerciseReceipt:
-        """Exercise cancellation in a disposable MCP session.
+        """Exercise cancellation once per interruptible production tool.
 
         Cancellation deliberately stresses request lifecycle and transport
         teardown.  A failed or partially supported cancellation must not
         poison the session used for the graded continuity query that follows.
         Keep the probe on the same production server route and archive, but
-        isolate its connection authority from the measured scenario.
+        isolate its connection authority from the measured scenario. The
+        cancellation boundary is the registered tool route, not scenario
+        wording, so scenarios sharing one tool reuse its exact receipt instead
+        of launching equivalent MCP subprocesses.
         """
+        if cached := self._cancellation_receipts.get(tool):
+            return cached
         async with StdioMCPContinuityRoute(
             self.archive_root,
             read_timeout_seconds=self.read_timeout_seconds,
+            saturated_cancellation_probe=True,
         ) as probe:
-            return await probe._exercise_cancellation_on_open_session(
+            receipt = await probe._exercise_cancellation_on_open_session(
                 tool,
                 arguments,
                 grace_ms=grace_ms,
             )
+        self._cancellation_receipts[tool] = receipt
+        return receipt
 
     async def _exercise_cancellation_on_open_session(
         self, tool: str, arguments: Mapping[str, object], *, grace_ms: int
@@ -451,35 +532,11 @@ class StdioMCPContinuityRoute:
         admission queue's own cancellation check while a call is still
         waiting for a free slot) actually aborted an in-flight read.
 
-        This does not race a single call's wall-clock duration against a
-        settle delay: direct probing showed that approach is genuinely
-        flaky -- some scenarios' own real queries (a marker lookup with
-        ``limit=2``) complete in well under a millisecond end to end, so no
-        fixed settle window reliably wins, while heavier queries reliably
-        do; picking one or the other per scenario is not honest. Instead
-        this issues ``_CANCELLATION_PROBE_CONCURRENCY`` concurrent copies of
-        the SAME real (tool, arguments) call -- comfortably more than the
-        production admission controller's default capacity
-        (``DEFAULT_CAPACITY``, currently 4) -- and sends a cancellation
-        notification for every one of them. Regardless of how fast any
-        individual copy's own SQL work would complete, the ones that exceed
-        the shared admission ceiling are provably still queued (not yet
-        admitted, not yet touching SQLite) when the notifications are sent,
-        and the admission wait loop checks ``ctx.should_abort()`` on its own
-        short poll cadence -- making at least one confirmed cancellation
-        deterministic, not a race. Direct probing confirmed 100% success
-        (40/40 across 5 rounds) against the checked-in continuity fixture,
-        including under the same logging load that made the single-call
-        approach flake.
-
-        This does not reuse :meth:`invoke`: it issues its own calls directly
-        against the session so the exercise never consumes a mutation
-        invocation slot or perturbs ``_BudgetState`` call/byte accounting --
-        it is a probe, not a graded plan step. Request ids are predicted from
-        the session's own sequential counter read once before any of the
-        concurrent tasks are created; this is only valid because the SDK
-        assigns ids in task-creation order and the replay harness does not
-        interleave unrelated requests on this session while the probe runs.
+        The disposable server has its sole production admission slot occupied
+        before MCP startup, so this single real route call cannot complete
+        before cancellation.  That removes both timing sleeps and request-id
+        swarms while still exercising FastMCP, the registered Polylogue tool,
+        QueryExecutionContext, and QueryAdmissionController.
         """
         session = self._session
         if session is None:
@@ -495,70 +552,69 @@ class StdioMCPContinuityRoute:
 
         call_arguments = dict(arguments)
         started = time.perf_counter()
-        base_request_id = session._request_id
-        probe_tasks: list[asyncio.Task[object]] = [
-            asyncio.ensure_future(session.call_tool(tool, arguments=call_arguments))
-            for _ in range(_CANCELLATION_PROBE_CONCURRENCY)
-        ]
-        await asyncio.sleep(0)  # let every probe task reach its own request write
-        for offset in range(_CANCELLATION_PROBE_CONCURRENCY):
-            await session.send_notification(
-                ClientNotification(
-                    CancelledNotification(
-                        params=CancelledNotificationParams(
-                            requestId=base_request_id + offset,
-                            reason="continuity-replay-cancellation-exercise",
-                        )
+        request_id = session._request_id
+        probe_task = asyncio.create_task(session.call_tool(tool, arguments=call_arguments))
+        for _ in range(3):
+            await asyncio.sleep(0)
+            if session._request_id == request_id + 1:
+                break
+        else:
+            raise ContinuityReplayError(
+                "MCP cancellation probe did not reserve its expected request id",
+                kind="cancellation_request_ids_unavailable",
+                failure_class="execution",
+            )
+        await session.send_notification(
+            ClientNotification(
+                CancelledNotification(
+                    params=CancelledNotificationParams(
+                        requestId=request_id,
+                        reason="continuity-replay-cancellation-exercise",
                     )
                 )
             )
-
-        confirmed_count = 0
-        completed_count = 0
-        failure_details: list[str] = []
-        for probe_task in probe_tasks:
-            try:
-                await asyncio.wait_for(probe_task, timeout=max(1.0, grace_ms / 1000))
-            except McpError as exc:
-                message = exc.error.message or ""
-                if exc.error.code == 0 and "cancel" in message.lower():
-                    confirmed_count += 1
-                else:
-                    failure_details.append(message or f"McpError code={exc.error.code}")
-            except TimeoutError:
-                probe_task.cancel()
-                with suppress(BaseException):
-                    await probe_task
-                failure_details.append("probe call did not resolve within the grace budget")
-            else:
-                completed_count += 1
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        detail = (
-            f"{confirmed_count}/{_CANCELLATION_PROBE_CONCURRENCY} concurrent probe calls confirmed cancelled, "
-            f"{completed_count} completed normally"
         )
-        if failure_details:
-            detail += f"; {len(failure_details)} unexpected outcome(s): {failure_details[:3]}"
-        if confirmed_count > 0:
-            return CancellationExerciseReceipt(
-                attempted=True,
-                confirmed=True,
-                outcome="cancelled_confirmed",
-                elapsed_ms=elapsed_ms,
-                detail=detail,
-            )
-        if completed_count == _CANCELLATION_PROBE_CONCURRENCY:
-            return CancellationExerciseReceipt(
-                attempted=True,
-                confirmed=False,
-                outcome="completed_before_cancel",
-                elapsed_ms=elapsed_ms,
-                detail=detail,
-            )
+
+        confirmed = False
+        outcome: CancellationOutcome = "call_failed"
+        detail: str | None = None
+        try:
+            await asyncio.wait_for(probe_task, timeout=max(1.0, grace_ms / 1000))
+        except McpError as exc:
+            message = exc.error.message or ""
+            if exc.error.code == 0 and "cancel" in message.lower():
+                confirmed = True
+                outcome = "cancelled_confirmed"
+                detail = "queued production MCP read returned the SDK cancellation response"
+            else:
+                detail = message or f"McpError code={exc.error.code}"
+        except TimeoutError:
+            probe_task.cancel()
+            with suppress(BaseException):
+                await probe_task
+            outcome = "not_confirmed_within_grace"
+            detail = "queued production MCP read did not resolve within the cancellation grace budget"
+        else:
+            outcome = "completed_before_cancel"
+            detail = "saturated production admission unexpectedly allowed the probe to complete"
+
+        # A cancellation response proves the handler stopped, but it does not
+        # prove the stdio server has consumed every preceding cancellation
+        # notification.  Closing the disposable transport at that point can
+        # race the SDK's stdin reader: it reads one last notification after
+        # the server-side memory stream has closed and exits with
+        # BrokenResourceError.  A protocol ping is an ordered transport
+        # barrier.  Its response proves the server consumed all prior input
+        # and remains healthy before teardown; a broken session therefore
+        # remains an honest call failure instead of being hidden as a
+        # confirmed cancellation.
+        await session.send_ping()
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
         return CancellationExerciseReceipt(
             attempted=True,
-            confirmed=False,
-            outcome="call_failed",
+            confirmed=confirmed,
+            outcome=outcome,
             elapsed_ms=elapsed_ms,
             detail=detail,
         )

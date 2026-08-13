@@ -510,8 +510,11 @@ def _record_mcp_call_log(
         from polylogue.config import load_polylogue_config
         from polylogue.mcp.call_log import enqueue_mcp_call_log
 
+        config = load_polylogue_config()
+        if config.no_daemon or config.daemon_client_mode.strip().lower() == "off":
+            return
         enqueue_mcp_call_log(
-            load_polylogue_config(),
+            config,
             tool_name=fn_name,
             session_id=session_id,
             session_ids=session_ids,
