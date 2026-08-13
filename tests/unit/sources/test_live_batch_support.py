@@ -292,6 +292,25 @@ def test_live_append_acquires_with_unreadable_active_pointer(tmp_path: Path) -> 
 
     assert result.succeeded == [plan]
     assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        append_row = conn.execute(
+            """
+            SELECT logical_source_key, revision_kind, predecessor_raw_id,
+                   baseline_raw_id, append_start_offset, append_end_offset,
+                   revision_authority
+            FROM raw_sessions
+            WHERE source_index = -1
+            """
+        ).fetchone()
+    assert append_row is not None
+    assert append_row[:2] == ("codex:degraded-append", "append")
+    assert append_row[2] is not None
+    assert append_row[3] is not None
+    assert append_row[4:] == (
+        plan.start_offset,
+        plan.last_complete_newline,
+        "byte_proven",
+    )
 
 
 def test_derived_only_live_append_candidate_uses_source_acquisition(tmp_path: Path) -> None:

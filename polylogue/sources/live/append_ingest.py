@@ -191,22 +191,6 @@ def _ingest_append_plans_archive(
                         post_parse=True,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
-                    degraded = degraded_reason()
-                    if degraded is not None and degraded.derived_only:
-                        # polylogue-gbs02: the derived tier (index.db/
-                        # embeddings.db) is behind the running code, but
-                        # source.db just durably got this append range --
-                        # stop here, before parsing or touching the stale
-                        # derived tier. Treat as succeeded (not deferred):
-                        # the acquire itself genuinely completed, so the
-                        # cursor should advance normally rather than
-                        # re-reading the same bytes on every tick. The raw
-                        # row sits with parsed_at_ms=NULL exactly like any
-                        # other not-yet-materialized raw, and ordinary
-                        # convergence picks it up once the derived tier is
-                        # current again -- no special resolution needed.
-                        succeeded.append(plan)
-                        continue
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session
                     # identity over the bare filename stem. For Codex this is
@@ -283,6 +267,16 @@ def _ingest_append_plans_archive(
                             authority=authority,
                         ),
                     )
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        # Source-only acquisition must preserve the append
+                        # chain before it returns.  The delta usually has no
+                        # session_meta record of its own, so replay needs this
+                        # resolved session identity, predecessor, and byte
+                        # offsets instead of falling back to the filename
+                        # stem as a synthetic full revision.
+                        succeeded.append(plan)
+                        continue
                     if authority is RawRevisionAuthority.QUARANTINED:
                         deferred.append(plan)
                         continue
