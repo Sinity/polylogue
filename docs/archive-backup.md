@@ -164,8 +164,8 @@ sqlite3 <restored>/source.db "PRAGMA user_version; SELECT count(*) FROM raw_sess
 
 # Sane-lag comparison against the live archive (restored counts must be <=
 # live counts, and the gap should track the age of the chosen archive):
-sqlite3 /realm/db/polylogue/user.db "SELECT count(*) FROM assertions;"
-sqlite3 /realm/db/polylogue/source.db "SELECT count(*) FROM raw_sessions;"
+sqlite3 /realm/state/polylogue/user.db "SELECT count(*) FROM assertions;"
+sqlite3 /realm/state/polylogue/source.db "SELECT count(*) FROM raw_sessions;"
 ```
 
 **Negative control (deliberately corrupted restore must fail loudly)** —

@@ -574,9 +574,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "archive and never writes into polylogue/scenarios/ on its own."
         ),
         examples=(
-            "devtools demo real-slice-screen --archive-root /realm/db/polylogue "
+            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
             "--session claude-code-session:<id>:<agent> --out .agent/scratch/real-slice",
-            "devtools demo real-slice-screen --archive-root /realm/db/polylogue "
+            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
             "--refs-file refs.txt --out .agent/scratch/real-slice",
         ),
     ),
