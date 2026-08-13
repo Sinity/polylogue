@@ -492,7 +492,7 @@ def _archive_unidentified_artifact_count(conn: Any, *, configured_root: Path | N
     third-party sidecar under a watched directory nobody has seen before)
     show up in routine ``polylogue ops status`` output the week it appears,
     instead of sitting unnoticed for a year -- see
-    ``polylogue check --check-artifact-coverage --check-cohorts`` for the
+    ``polylogue ops doctor --artifact-coverage --cohorts`` for the
     full per-kind/per-provider breakdown this count summarizes.
     """
     return _archive_source_table_count(
@@ -2076,7 +2076,7 @@ def _show_direct_status(
         if unidentified:
             env.ui.console.print(
                 f"  Unidentified artifacts: [yellow]{unidentified:,}[/yellow] "
-                "(never became a session; see `polylogue check --check-artifact-coverage --check-cohorts`)"
+                "(never became a session; see `polylogue ops doctor --artifact-coverage --cohorts`)"
             )
         if fts:
             fts_pct = 100 * fts / msgs if msgs else 100

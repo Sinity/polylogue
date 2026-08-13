@@ -386,7 +386,7 @@ This is the section to read before you trust anything above it.
    oversight: composing the primitive into a named CLI/MCP surface is
    separate, tracked follow-up work.
 4. **The named Hermes forensics report does not exist yet.** There is no
-   `polylogue forensics hermes` command or `read --view forensics`. What
+   dedicated Hermes forensics command or `read --view forensics`. What
    exists today composes from generic, origin-agnostic primitives already
    documented elsewhere: session topology (`get_session_topology`), the
    postmortem bundle (`polylogue/insights/postmortem.py`,

@@ -10,11 +10,11 @@ inline references to three command surfaces:
 For ``polylogued`` and ``devtools`` the lint extracts the first non-flag
 token after the surface name and verifies it is a real subcommand.
 
-The ``polylogue`` CLI is query-first: any bare token after ``polylogue`` can
-be a valid FTS query. It is therefore validated only when a leading token
-resolves to a live command path. A recognized path has its long flags checked
-against the live Click tree. Free-text queries remain legal without a registry
-of commands that used to exist.
+The ``polylogue`` CLI is query-first but requires explicit query intent. Its
+examples are parsed through the live root parser, so ``find``, shell-quoted
+free text, and field syntax remain valid while an unknown bare root is rejected.
+Recognized command paths also have their long flags checked against the live
+Click tree.
 
 The lint only reads tokens that appear inside Markdown code surfaces
 (inline ``` `code` ``` spans and fenced ``` ```bash/sh/shell/console``` `` blocks);
@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -104,7 +105,9 @@ def _click_path_flags(root: click.Command) -> dict[tuple[str, ...], frozenset[st
 # Dated point-in-time records under these trees assert the command surface *as
 # of their date*, not the current one. Holding them to live-command accuracy
 # would force rewriting history, so they are excluded from the drift lint.
-_EXCLUDED_DOC_DIRS: tuple[str, ...] = ("docs/audits",)
+# Audits record past state and designs may describe proposed interfaces. Neither
+# is a contract for the currently installed command tree.
+_EXCLUDED_DOC_DIRS: tuple[str, ...] = ("docs/audits", "docs/design")
 
 
 def _doc_files(root: Path) -> list[Path]:
@@ -123,7 +126,7 @@ def _doc_files(root: Path) -> list[Path]:
 # neighbours such as ``polylogued.service`` (systemd unit) or
 # ``polylogue-mcp`` (sibling executable). The preceding ``(?<![\w-])``
 # rejects mid-word matches so ``run-polylogued-helper`` doesn't trip.
-_SURFACE_RE = re.compile(r"(?<![\w-])(polylogued|polylogue|devtools)(?![.\w-])([^\n`]*)")
+_SURFACE_RE = re.compile(r"(?<![\w-])(polylogued|polylogue|devtools)(?=\s|$)([^\n`]*)")
 _TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
@@ -180,18 +183,50 @@ def _real_tokens(rest: str) -> tuple[str, ...]:
 
 
 def _invocation_tokens(rest: str) -> list[str]:
-    """Ordered raw tokens (flags kept) up to a shell/pipeline boundary."""
+    """Shell tokens (flags kept) up to a shell/pipeline boundary."""
     stripped = rest.lstrip()
-    for stop in ("&&", "||", "|", ";", "#", "$(", "`"):
-        idx = stripped.find(stop)
-        if idx >= 0:
-            stripped = stripped[:idx]
+    if stripped.endswith("\\"):
+        stripped = stripped[:-1].rstrip()
+    lexer = shlex.shlex(stripped, posix=True, punctuation_chars="|;&")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
     tokens: list[str] = []
-    for part in stripped.split():
-        cleaned = part.strip(".,:;\"'`()[]<>")
+    for part in lexer:
+        if part in {"&&", "||", "|", ";"} or part.startswith(("$(", "`")):
+            break
+        cleaned = part.strip(".,:;`()[]<>")
         if cleaned:
             tokens.append(cleaned)
     return tokens
+
+
+def _polylogue_query_intent_errors(
+    rel: str,
+    line: int,
+    tokens: list[str],
+    *,
+    ctx: _ClickContext,
+) -> list[str]:
+    """Apply the product CLI's strict query-intent floor without executing it."""
+
+    from polylogue.cli.query_group import _split_query_mode_args, has_signalled_query_intent
+
+    if not isinstance(ctx.root, click.Group):
+        return []
+    try:
+        _, query_terms, has_subcommand, explicit_query = _split_query_mode_args(ctx.root, list(tokens))
+    except click.ClickException as exc:
+        return [f"{rel}:{line}: invalid 'polylogue' invocation: {exc.format_message()}"]
+
+    if has_subcommand:
+        return []
+    if has_signalled_query_intent(query_terms, explicit_query=explicit_query):
+        return []
+    invocation = " ".join(("polylogue", *tokens))
+    return [
+        f"{rel}:{line}: '{invocation}' does not signal query intent; "
+        "use `polylogue find ...`, quote the free-text expression, or use field syntax"
+    ]
 
 
 def _click_invocation_errors(
@@ -208,9 +243,14 @@ def _click_invocation_errors(
     query-first free text for ``polylogue`` while still checking strict daemon
     invocations after their command has been identified.
     """
-    tokens = _invocation_tokens(rest)
+    try:
+        tokens = _invocation_tokens(rest)
+    except ValueError as exc:
+        return [f"{rel}:{line}: invalid shell quoting after '{surface}': {exc}"]
     if not tokens:
         return []
+
+    errors = _polylogue_query_intent_errors(rel, line, tokens, ctx=ctx) if surface == "polylogue" else []
 
     # Command detection: the first bare token that is a known command.
     #    A token consumed as the value of a root value-flag (``--add-tag export``)
@@ -234,7 +274,7 @@ def _click_invocation_errors(
     if verb is None or start is None or "then" in tokens:
         # Unrecognized leading token (query-first) or a ``then`` chain whose
         # flags attribute to different verbs — leave it alone.
-        return []
+        return errors
 
     # 2. Resolve the full command path by descending on consecutive bare tokens
     #    that are children of the current path. Flags are skipped; the first bare
@@ -255,7 +295,6 @@ def _click_invocation_errors(
     for depth in range(1, len(path) + 1):
         valid |= ctx.path_flags.get(path[:depth], frozenset())
 
-    errors: list[str] = []
     label = surface + " " + " ".join(path)
     for tok in tokens:
         if tok == "--":  # end-of-options; remainder is positional
@@ -325,6 +364,7 @@ def _code_segments(text: str) -> list[tuple[int, str]]:
 
 @dataclass(frozen=True)
 class _ClickContext:
+    root: click.Command
     root_flags: frozenset[str]
     value_flags: frozenset[str]
     path_flags: dict[tuple[str, ...], frozenset[str]]
@@ -332,6 +372,7 @@ class _ClickContext:
 
 def _build_click_context(root: click.Command) -> _ClickContext:
     return _ClickContext(
+        root=root,
         root_flags=_long_opts(root),
         value_flags=_polylogue_root_value_flags(root),
         path_flags=_click_path_flags(root),

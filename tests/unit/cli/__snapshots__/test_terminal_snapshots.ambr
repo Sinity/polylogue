@@ -17,7 +17,7 @@
         Quoted query text is also accepted when followed by an action:
         `polylogue 'QUERY' then read`.
         Run `polylogue --help` to see the full subcommand list, or
-        `polylogue --diagnose <args>` to have the parser explain how it
+        `polylogue --diagnose find "migration"` to have the parser explain how it
         routed your invocation.
     Product roles:
         Search<PATH>:   find QUERY then read|select|mark|analyze|delete|cont
@@ -63,7 +63,7 @@
         polylogue tutorial                # first-run setup checklist
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
-        polylogue --diagnose <args>       # explain parser decisions
+        polylogue --diagnose find "migration" # explain parser decisions
   Options:
     --help-markdown                 Same content as `polylogue manual`; emit the
                                     full --help tree as Markdown and exit.
@@ -219,8 +219,8 @@
         `polylogue 'QUERY' then read`.
         Run `polylogue --help` to see the full subcommand list
   , or
-        `polylogue --diagnose <args>` to have the parser expla
-  in how it
+        `polylogue --diagnose find "migration"` to have the pa
+  rser explain how it
         routed your invocation.
     Product roles:
         Search<PATH>:   find QUERY then read|select|mark
@@ -278,8 +278,8 @@
   p
         polylogue <subcommand> --help     # per-subcommand hel
   p
-        polylogue --diagnose <args>       # explain parser dec
-  isions
+        polylogue --diagnose find "migration" # explain parser
+   decisions
   Options:
     --help-markdown                 Same content as
                                     `polylogue manual`; emit
@@ -506,7 +506,7 @@
         Quoted query text is also accepted when followed by an action:
         `polylogue 'QUERY' then read`.
         Run `polylogue --help` to see the full subcommand list, or
-        `polylogue --diagnose <args>` to have the parser explain how it
+        `polylogue --diagnose find "migration"` to have the parser explain how it
         routed your invocation.
     Product roles:
         Search<PATH>:   find QUERY then read|select|mark|analyze|delete|continue; facets
@@ -545,7 +545,7 @@
         polylogue tutorial                # first-run setup checklist
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
-        polylogue --diagnose <args>       # explain parser decisions
+        polylogue --diagnose find "migration" # explain parser decisions
   Options:
     --help-markdown                 Same content as `polylogue manual`; emit the
                                     full --help tree as Markdown and exit.

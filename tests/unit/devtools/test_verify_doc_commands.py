@@ -167,10 +167,35 @@ class TestPolylogueCommandRecognition:
         errors, _ = check_docs(root=tmp_path)
         assert any("--bogus-flag" in e for e in errors), errors
 
-    def test_free_text_query_passes(self, tmp_path: Path) -> None:
-        _write_docs(tmp_path, {"README.md": "```bash\npolylogue rate limiting retries\n```\n"})
+    def test_quoted_free_text_query_passes(self, tmp_path: Path) -> None:
+        _write_docs(tmp_path, {"README.md": '```bash\npolylogue "rate limiting retries"\n```\n'})
         errors, _ = check_docs(root=tmp_path)
         assert errors == [], errors
+
+    @pytest.mark.parametrize(
+        "invocation",
+        (
+            "polylogue find rate limiting retries",
+            "polylogue repo:polylogue",
+        ),
+    )
+    def test_explicit_query_intent_passes(self, tmp_path: Path, invocation: str) -> None:
+        _write_docs(tmp_path, {"README.md": f"```bash\n{invocation}\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors
+
+    @pytest.mark.parametrize(
+        "invocation",
+        (
+            "polylogue rate limiting retries",
+            "polylogue list",
+            "polylogue show abc",
+        ),
+    )
+    def test_unsignalled_query_root_fails(self, tmp_path: Path, invocation: str) -> None:
+        _write_docs(tmp_path, {"README.md": f"```bash\n{invocation}\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert any("does not signal query intent" in error for error in errors), errors
 
     def test_leaf_subcommand_flag_resolves(self, tmp_path: Path) -> None:
         # The flag lives on the ``analyze insights profiles`` leaf, not the

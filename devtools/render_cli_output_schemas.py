@@ -84,7 +84,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         model=SessionSummaryPayload,
         surfaces=(
             "polylogue analyze --format json (rows)",
-            "polylogue --format json <query> (hits[].session)",
+            "polylogue --format json find <query> (hits[].session)",
         ),
     ),
     CliOutputSchema(
@@ -118,8 +118,8 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=SessionSearchHitPayload,
         surfaces=(
-            "polylogue --format json <query>",
-            "polylogue --format ndjson <query>",
+            "polylogue --format json find <query>",
+            "polylogue --format ndjson find <query>",
         ),
     ),
     CliOutputSchema(
@@ -134,7 +134,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=SearchEnvelope,
         surfaces=(
-            "polylogue --format json <query>",
+            "polylogue --format json find <query>",
             "GET /api/sessions?query=...",
         ),
     ),
@@ -165,7 +165,7 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=QueryUnitAggregateEnvelope,
         surfaces=(
-            "polylogue --format json messages where ... | group by role | count",
+            'polylogue --format json find "messages where ... | group by role | count"',
             "Polylogue.query_units(...)",
             "MCP query_units",
             "GET /api/query-units?expression=...",
@@ -274,23 +274,19 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         name="machine-error",
         title="Machine Error Envelope",
         description=(
-            "Standard CLI machine-readable error envelope. Emitted by any "
-            "command that ran with `--machine` or otherwise opts into a "
-            "JSON error surface."
+            "Standard CLI machine-readable error envelope. Emitted when an invocation requests JSON output and fails."
         ),
         model=MachineErrorPayload,
-        surfaces=("polylogue * --machine (error path)",),
+        surfaces=("polylogue --format json find <query> (error path)",),
     ),
     CliOutputSchema(
         name="machine-success",
         title="Machine Success Envelope",
         description=(
-            "Standard CLI machine-readable success envelope. Emitted by "
-            "commands that ran with `--machine` and produced structured "
-            "output."
+            "Standard CLI machine-readable success envelope. Emitted by commands that produce structured JSON output."
         ),
         model=MachineSuccessPayload,
-        surfaces=("polylogue * --machine (success path)",),
+        surfaces=("polylogue analyze --format json (success path)",),
     ),
     CliOutputSchema(
         name="query-error",

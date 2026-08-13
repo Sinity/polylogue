@@ -73,7 +73,7 @@ def _show_usage_with_hint(exc: click.UsageError) -> None:
     exc.show()
     hint = actionable_hint_for_usage_error(exc.format_message())
     if hint is None:
-        hint = "Hint: run `polylogue --help` for usage, or `polylogue --diagnose <args>` to debug dispatch."
+        hint = 'Hint: run `polylogue --help` for usage, or `polylogue --diagnose find "migration"` to debug dispatch.'
     click.echo(hint, err=True)
 
 
