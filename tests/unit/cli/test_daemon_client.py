@@ -295,3 +295,34 @@ def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.Monk
         DaemonClient(socket_path, timeout_s=0.01).request_mutation_json(
             "POST", "/api/cli/delete", {"session_ids": ["s1"]}
         )
+
+
+def test_daemon_mutation_interrupt_after_connect_is_typed_indeterminate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl-C cannot turn an accepted mutation with no receipt into an ordinary abort."""
+
+    from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+
+    socket_path = tmp_path / "daemon.sock"
+    socket_path.touch()
+
+    class InterruptedConnection:
+        connected = True
+
+        def __init__(self, _socket_path: Path, _timeout: float | None) -> None:
+            pass
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def getresponse(self) -> object:
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", InterruptedConnection)
+
+    with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/cli/delete"):
+        DaemonClient(socket_path).request_mutation_json("POST", "/api/cli/delete", {"session_ids": ["s1"]})

@@ -186,28 +186,14 @@ def execute_delete_by_session_ids(
     resolved set the real delete acts on (the guard, preview, and deleted sets
     must be identical, #1873).
     """
-    config = load_effective_config(env)
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
     if dry_run:
-        with archive_read_context(
-            archive_root,
-            operation="cli.delete.resolve",
-            arguments={"session_ids": session_ids, "dry_run": True},
-            projection="delete-preview",
-        ) as archive:
-            _emit_delete(env, archive, tuple(session_ids), params=params)
+        _emit_delete(env, tuple(session_ids), params=params)
         return
-
-    with archive_read_context(
-        archive_root,
-        operation="cli.delete.resolve",
-        arguments={"session_ids": session_ids, "dry_run": False},
-        projection="delete-apply",
-    ) as archive:
-        _emit_delete(env, archive, tuple(session_ids), params=params)
+    # Cardinality resolution already produced an immutable ID tuple. Do not
+    # reopen a read transaction while the daemon executes the write: an old
+    # WAL reader would pin checkpoints for the full batch-delete duration.
+    _emit_delete(env, tuple(session_ids), params=params)
 
 
 def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
@@ -682,7 +668,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         )
                         return
                     if delete_matched:
-                        _emit_delete(env, archive, matched_session_ids, params=params)
+                        _emit_delete(env, matched_session_ids, params=params)
                         return
                     if params.get("open_result"):
                         if not page_hits:
@@ -739,7 +725,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     )
                     return
                 if delete_matched:
-                    _emit_delete(env, archive, (session_id,), params=params)
+                    _emit_delete(env, (session_id,), params=params)
                     return
                 if params.get("open_result"):
                     _open_session(env, session_id, output_format=output_format, print_url=bool(params.get("print_url")))
@@ -810,7 +796,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             if delete_matched:
                 session_ids = tuple(hit.session_id for hit in page_hits)
-                _emit_delete(env, archive, session_ids, params=params)
+                _emit_delete(env, session_ids, params=params)
                 return
             if params.get("open_result"):
                 if not page_hits:
@@ -879,7 +865,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         if delete_matched:
             session_ids = tuple(summary.session_id for summary in page_summaries)
-            _emit_delete(env, archive, session_ids, params=params)
+            _emit_delete(env, session_ids, params=params)
             return
         if params.get("open_result"):
             if not page_summaries:
@@ -1476,8 +1462,9 @@ def _submit_daemon_mutation(
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
+    mutation_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     client = DaemonClient(
-        daemon_socket_path(config.archive_root),
+        daemon_socket_path(mutation_root),
         timeout_s=_DAEMON_MUTATION_TIMEOUT_S,
         auth_token=resolve_api_auth_token(
             getattr(config, "api_auth_token", None),
@@ -1486,7 +1473,7 @@ def _submit_daemon_mutation(
     )
     if (
         client.probe(
-            archive_root=str(config.archive_root),
+            archive_root=str(mutation_root),
             index_schema_version=INDEX_SCHEMA_VERSION,
             daemon_version=POLYLOGUE_VERSION,
         )
@@ -2183,9 +2170,7 @@ def _emit_user_mutations(
     )
 
 
-def _emit_delete(
-    env: AppEnv, archive: ArchiveStore, session_ids: tuple[str, ...], *, params: dict[str, object]
-) -> None:
+def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str, object]) -> None:
     """Delete sessions through the shared OperationExecutor mutation authority.
 
     Every surface that can permanently delete a session (this CLI route and
