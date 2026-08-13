@@ -83,6 +83,21 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
             return MagicMock(returncode=0, stdout=" M dirty.py\n" if dirty else "", stderr="")
+        env = kwargs.get("env")
+        if isinstance(env, dict) and merge_gate.VERIFICATION_RECEIPT_PATH_ENV in env:
+            Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
+                json.dumps(
+                    {
+                        "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
+                        "git_head": local_head_sha,
+                        "checkout_root": str(Path.cwd()),
+                        "exit_code": local_exit,
+                        "verification_scope": "affected",
+                        "release_baseline_allowed": False,
+                        "terminal_authorization": None,
+                    }
+                )
+            )
         return MagicMock(
             returncode=local_exit,
             stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),
@@ -145,7 +160,9 @@ def test_check_blocks_full_receipt_without_release_baseline_permission(
     assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
 
 
-def test_record_consumes_structured_verify_release_permission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_record_rejects_stale_plausible_stdout_without_bound_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
     base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
@@ -157,14 +174,25 @@ def test_record_consumes_structured_verify_release_permission(monkeypatch: pytes
             return base(cmd, **kwargs)
         return MagicMock(
             returncode=0,
-            stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),
+            stdout=json.dumps(
+                {
+                    "invocation_id": "stale-invocation",
+                    "git_head": "abc123",
+                    "checkout_root": str(tmp_path),
+                    "exit_code": 0,
+                    "verification_scope": "release-baseline",
+                    "release_baseline_allowed": True,
+                    "terminal_authorization": None,
+                }
+            ),
             stderr="",
         )
 
     monkeypatch.setattr(subprocess, "run", _run)
     assert merge_gate.cmd_record(42, "devtools verify") == 0
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
-    assert receipt["release_baseline_allowed"] is False
+    assert receipt["verification_scope"] is None
+    assert receipt["release_baseline_allowed"] is None
 
 
 def test_record_consumes_receipt_after_streamed_verifier_progress(
@@ -184,6 +212,18 @@ def test_record_consumes_receipt_after_streamed_verifier_progress(
             return base(cmd, **kwargs)
         if cmd[:3] == ["gh", "pr", "view"]:
             return base(cmd, **kwargs)
+        env = cast(dict[str, str], kwargs["env"])
+        Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
+            json.dumps(
+                {
+                    **payload,
+                    "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
+                    "git_head": "abc123",
+                    "checkout_root": str(tmp_path),
+                    "exit_code": 0,
+                }
+            )
+        )
         return MagicMock(returncode=0, stdout=f"pytest progress\n{json.dumps(payload, indent=2)}\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", _run)

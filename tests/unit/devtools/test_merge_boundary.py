@@ -94,6 +94,23 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
             return MagicMock(returncode=0, stdout="", stderr="")
+        env = kwargs.get("env")
+        if isinstance(env, dict) and merge_gate.VERIFICATION_RECEIPT_PATH_ENV in env:
+            cwd = kwargs.get("cwd")
+            checkout_root = Path(cwd) if isinstance(cwd, str) else Path.cwd()
+            Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
+                json.dumps(
+                    {
+                        "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
+                        "git_head": local_head_sha,
+                        "checkout_root": str(checkout_root),
+                        "exit_code": local_exit,
+                        "verification_scope": "affected",
+                        "release_baseline_allowed": False,
+                        "terminal_authorization": None,
+                    }
+                )
+            )
         return MagicMock(
             returncode=local_exit,
             stdout=json.dumps({"verification_scope": "affected", "release_baseline_allowed": False}),

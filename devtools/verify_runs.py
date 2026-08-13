@@ -284,6 +284,7 @@ class CheckoutMutationMonitor:
         self._ignored_roots: frozenset[Path] = frozenset()
         self._git_index_path: Path | None = None
         self._git_authority_paths: dict[Path, str] = {}
+        self._directory_topology_fingerprint: frozenset[str] | None = None
 
     def start(self) -> None:
         """Start and prove the portable interval watcher before verification."""
@@ -338,6 +339,10 @@ class CheckoutMutationMonitor:
             ):
                 # An empty timeout batch proves the backend initialized before
                 # a verification command starts, closing the startup race.
+                if not self._ready.is_set() and not self._directory_topology_is_stable(watched_directories):
+                    with self._state_lock:
+                        self._unavailable = True
+                    return
                 self._ready.set()
                 for _change, raw_path in changes:
                     self._record_change(Path(raw_path))
@@ -399,7 +404,24 @@ class CheckoutMutationMonitor:
                 watched_parent = watched_parent.parent
             if watched_parent not in directories:
                 directories.append(watched_parent)
+        self._directory_topology_fingerprint = self._directory_topology(directories)
         return directories
+
+    def _directory_topology(self, directories: Sequence[Path]) -> frozenset[str]:
+        """Fingerprint source directory membership without trusting pre-watch state."""
+        return frozenset(
+            relative.as_posix()
+            for directory in directories
+            if directory.exists()
+            and (relative := directory.resolve(strict=False)).is_relative_to(self.root)
+            and (relative := relative.relative_to(self.root)) is not None
+        )
+
+    def _directory_topology_is_stable(self, initial_directories: Sequence[Path]) -> bool:
+        """Reject source directories that changed while the watcher initialized."""
+        initial = self._directory_topology_fingerprint or self._directory_topology(initial_directories)
+        current = self._directory_topology(self._watched_directories())
+        return not self._unavailable and current == initial
 
     def _git_tracked_paths(self) -> frozenset[Path]:
         """Snapshot index membership so tracked paths never inherit ignore rules."""
@@ -1088,8 +1110,14 @@ class VerifyRun:
         self.write()
         return next((dict(step) for step in self._payload["steps"] if step.get("step_id") == step_id), None)
 
-    def finish_interrupted_steps(self, *, exit_code: int, diagnosis: str) -> None:
-        """Close any open step when the outer runner receives Ctrl-C."""
+    def finish_interrupted_steps(
+        self,
+        *,
+        exit_code: int,
+        diagnosis: str,
+        termination_reason: str = "operator_interrupt",
+    ) -> None:
+        """Close every open step when the outer runner cannot continue."""
         for step in self._payload["steps"]:
             if step.get("status") == "running":
                 self.finish_step(
@@ -1098,7 +1126,7 @@ class VerifyRun:
                         "duration_s": None,
                         "exit": exit_code,
                         "diagnosis": diagnosis,
-                        "termination_reason": "operator_interrupt",
+                        "termination_reason": termination_reason,
                     },
                 )
 

@@ -815,13 +815,14 @@ def cmd_record_full_verify(
         print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
         return 2
     duration_s = round(time.time() - started, 2)
-    release_allowed = merge_gate._release_baseline_permission(result.stdout)
-    verification_scope = merge_gate._verification_scope(result.stdout)
-    terminal_authorization = merge_gate._terminal_authorization(result.stdout)
     try:
         structured = json.loads(result.stdout)
     except (TypeError, json.JSONDecodeError):
         structured = None
+    receipt = structured if isinstance(structured, dict) else None
+    release_allowed = merge_gate._release_baseline_permission(receipt)
+    verification_scope = merge_gate._verification_scope(receipt)
+    terminal_authorization = merge_gate._terminal_authorization(receipt)
     verified_head = structured.get("git_head") if isinstance(structured, dict) else None
     accepted = (
         result.returncode == 0

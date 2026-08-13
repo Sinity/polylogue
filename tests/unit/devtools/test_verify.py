@@ -2077,6 +2077,30 @@ def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="tracked.py")
 
 
+def test_checkout_mutation_monitor_rejects_source_topology_changed_during_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    source = tmp_path / "source" / "package"
+    source.mkdir(parents=True)
+    shutil.rmtree(source)
+
+    def portable_watch(*paths: Path, **_kwargs: object) -> object:
+        assert source not in paths
+        source.mkdir(parents=True)
+        yield set()
+        stop_event = _kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait(timeout=1)
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
 def test_checkout_mutation_monitor_rejects_forced_polling_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5374,6 +5398,41 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> 
             main(["--quick", "--json"])
 
     assert events == ["monitor-started", "monitor-finished"]
+
+
+def test_verify_finalizes_runner_exception_after_open_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(verify, "maybe_bootstrap_testmon_seed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "_git_head", lambda: "head")
+    monkeypatch.setattr(verify, "worktree_fingerprint", lambda _root: "stable")
+    monitor = MagicMock()
+    monitor.finish.return_value = CheckoutMutationObservation(changed=False, unavailable=False)
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", lambda _root: monitor)
+    monkeypatch.setattr(verify, "_save_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+
+    def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        run = kwargs["run"]
+        run.start_step(label="ruff check", cmd=command)
+        raise RuntimeError("verification runner exploded")
+
+    monkeypatch.setattr(verify, "_run", explode)
+
+    assert verify.main(["--quick", "--json"]) == 125
+    assert history["exit_code"] == 125
+    assert history["diagnosis"] == "verify_runner_exception"
+    assert history["steps"][0]["status"] == "failed"
+    assert history["steps"][0]["exit"] == 125
 
 
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(

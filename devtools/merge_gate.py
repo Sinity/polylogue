@@ -77,6 +77,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -236,24 +237,6 @@ def _command_skips_tests(command: str) -> bool:
     return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
 
 
-def _structured_verification_receipt(stdout: str) -> dict[str, Any] | None:
-    """Read a final JSON receipt even when the verifier streamed progress first."""
-
-    candidate_start = len(stdout)
-    while candidate_start:
-        candidate_start = stdout.rfind("\n{", 0, candidate_start)
-        start = candidate_start + 1 if candidate_start >= 0 else 0
-        candidate = stdout[start:].strip()
-        try:
-            payload = json.loads(candidate)
-        except (TypeError, json.JSONDecodeError):
-            if candidate_start < 0:
-                return None
-            continue
-        return payload if isinstance(payload, dict) else None
-    return None
-
-
 def _invocation_receipt(
     *,
     path: Path,
@@ -281,30 +264,34 @@ def _invocation_receipt(
         strict=False
     ):
         return None
+    if _verification_scope(payload) is None or _release_baseline_permission(payload) is None:
+        return None
+    terminal_authorization = payload.get("terminal_authorization")
+    if terminal_authorization is not None and terminal_authorization not in {
+        authorization.value for authorization in TerminalAuthorization
+    }:
+        return None
     return payload
 
 
-def _release_baseline_permission(stdout: str) -> bool | None:
-    """Read the structured verify decision when the command emitted one."""
-    payload = _structured_verification_receipt(stdout)
+def _release_baseline_permission(payload: Mapping[str, Any] | None) -> bool | None:
+    """Read the typed release decision from an invocation-bound receipt."""
     if payload is None:
         return None
     value = payload.get("release_baseline_allowed")
     return value if isinstance(value, bool) else None
 
 
-def _verification_scope(stdout: str) -> str | None:
-    """Read the typed verification scope from a structured verify receipt."""
-    payload = _structured_verification_receipt(stdout)
+def _verification_scope(payload: Mapping[str, Any] | None) -> str | None:
+    """Read the typed verification scope from an invocation-bound receipt."""
     if payload is None:
         return None
     value = payload.get("verification_scope")
     return value if value in {scope.value for scope in VerificationScope} else None
 
 
-def _terminal_authorization(stdout: str) -> str | None:
-    """Read the typed terminal authorization from a structured receipt."""
-    payload = _structured_verification_receipt(stdout)
+def _terminal_authorization(payload: Mapping[str, Any] | None) -> str | None:
+    """Read terminal authorization from an invocation-bound receipt."""
     if payload is None:
         return None
     value = payload.get("terminal_authorization")
@@ -397,7 +384,7 @@ def cmd_record(pr: int, command: str) -> int:
         except OSError as exc:
             print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
             return 2
-        verification_receipt = _structured_verification_receipt(result.stdout) or _invocation_receipt(
+        verification_receipt = _invocation_receipt(
             path=receipt_path,
             invocation_id=invocation_id,
             head_sha=head_sha,
@@ -405,7 +392,6 @@ def cmd_record(pr: int, command: str) -> int:
             checkout_root=checkout_root,
         )
     duration_s = round(time.time() - started, 2)
-    verification_payload = json.dumps(verification_receipt) if verification_receipt is not None else ""
 
     receipt = {
         "pr": pr,
@@ -422,9 +408,9 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
-        "verification_scope": _verification_scope(verification_payload),
-        "release_baseline_allowed": _release_baseline_permission(verification_payload),
-        "terminal_authorization": _terminal_authorization(verification_payload),
+        "verification_scope": _verification_scope(verification_receipt),
+        "release_baseline_allowed": _release_baseline_permission(verification_receipt),
+        "terminal_authorization": _terminal_authorization(verification_receipt),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),

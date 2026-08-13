@@ -3513,8 +3513,11 @@ def _discard_testmon_dependency_authority() -> None:
 # ── main ────────────────────────────────────────────────────────────
 
 
-@finalize_checkout_mutation_monitors
-def main(argv: list[str] | None = None) -> int:
+_ACTIVE_VERIFY_RUN: VerifyRun | None = None
+
+
+def _main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_VERIFY_RUN
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument(
@@ -3618,6 +3621,7 @@ def main(argv: list[str] | None = None) -> int:
         environment_fingerprint=environment_fingerprint,
         worktree_fingerprint=checkout_fingerprint,
     )
+    _ACTIVE_VERIFY_RUN = verify_run
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False
     prepared_seed_attempt: dict[str, Any] | None = None
@@ -4061,3 +4065,47 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     return exit_code
+
+
+def _finalize_verify_runner_exception(run: VerifyRun, exc: Exception, *, use_json: bool) -> int:
+    """Leave typed, durable failed evidence when verification orchestration raises."""
+    diagnosis = "verify_runner_exception"
+    run.finish_interrupted_steps(
+        exit_code=125,
+        diagnosis=diagnosis,
+        termination_reason="runner_exception",
+    )
+    try:
+        final_worktree_fingerprint = worktree_fingerprint(ROOT)
+    except Exception:
+        final_worktree_fingerprint = "unavailable"
+    payload = run.finish(
+        exit_code=125,
+        duration_s=0.0,
+        diagnosis=diagnosis,
+        verification_scope=VerificationScope.AFFECTED.value,
+        release_baseline_allowed=False,
+        final_worktree_fingerprint=final_worktree_fingerprint,
+    )
+    payload["exception_type"] = type(exc).__name__
+    payload["error"] = str(exc)
+    _save_history(payload)
+    if use_json:
+        _print_json(payload)
+    sys.stderr.write(f"verify: unexpected runner exception: {exc}\n")
+    return 125
+
+
+@finalize_checkout_mutation_monitors
+def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_VERIFY_RUN
+    _ACTIVE_VERIFY_RUN = None
+    try:
+        return _main(argv)
+    except Exception as exc:
+        if _ACTIVE_VERIFY_RUN is None:
+            raise
+        raw_argv = sys.argv[1:] if argv is None else argv
+        return _finalize_verify_runner_exception(_ACTIVE_VERIFY_RUN, exc, use_json="--json" in raw_argv)
+    finally:
+        _ACTIVE_VERIFY_RUN = None

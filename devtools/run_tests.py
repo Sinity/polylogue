@@ -49,6 +49,7 @@ from devtools.verify import (
 )
 from devtools.verify_runs import (
     CheckoutMutationMonitor,
+    CheckoutMutationObservation,
     VerifyRun,
     append_verify_history,
     finalize_checkout_mutation_monitors,
@@ -77,6 +78,22 @@ _PATH_VALUE_OPTIONS = frozenset(
     }
 )
 _ENV_EXPANDING_PATH_OPTIONS = frozenset({"--rootdir"})
+_NON_PATH_VALUE_OPTIONS = frozenset(
+    {
+        "-k",
+        "--keyword",
+        "-m",
+        "--mark",
+        "--deselect",
+        "--maxfail",
+        "--tb",
+        "--capture",
+        "--durations",
+        "--durations-min",
+        "--override-ini",
+        "-o",
+    }
+)
 
 
 def _absolute_option_path(
@@ -104,7 +121,7 @@ def _normalize_selection_paths(selection: list[str], *, invocation_directory: Pa
             # option belongs to pytest, not to --debug's optional value.
             if pending_option == "--debug" and argument.startswith("-"):
                 pending_option = None
-            else:
+            elif pending_option in _PATH_VALUE_OPTIONS:
                 normalized.append(
                     _absolute_option_path(
                         argument,
@@ -112,6 +129,10 @@ def _normalize_selection_paths(selection: list[str], *, invocation_directory: Pa
                         expand_environment_variables=pending_option in _ENV_EXPANDING_PATH_OPTIONS,
                     )
                 )
+                pending_option = None
+                continue
+            else:
+                normalized.append(argument)
                 pending_option = None
                 continue
         if argument.startswith("-c="):
@@ -134,6 +155,11 @@ def _normalize_selection_paths(selection: list[str], *, invocation_directory: Pa
                 normalized.append(f"{option_name}={normalized_value}")
             else:
                 normalized.append(argument)
+                pending_option = option_name
+            continue
+        if option_name in _NON_PATH_VALUE_OPTIONS:
+            normalized.append(argument)
+            if not equals:
                 pending_option = option_name
             continue
         if argument.startswith("-c") and len(argument) > len("-c"):
@@ -284,29 +310,58 @@ def main(argv: list[str] | None = None) -> int:
             worktree_fingerprint=initial_worktree_fingerprint,
         )
         started = time.monotonic()
+        final_worktree_fingerprint = "unavailable"
+        mutation_observation = CheckoutMutationObservation(changed=False, unavailable=True)
+        runner_exception = False
         try:
             rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
         except KeyboardInterrupt:
             rc = 130
             metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
             run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
-        final_worktree_fingerprint = worktree_fingerprint(ROOT)
-        mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
-        if (
-            "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
-            or mutation_observation.unavailable
-        ):
-            metadata["diagnosis"] = "checkout_fingerprint_unavailable"
-            if rc == 0:
-                rc = 125
-            sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
-        elif mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint:
-            metadata["diagnosis"] = "checkout_changed_during_focused_test"
-            metadata["transient_checkout_mutation"] = mutation_observation.changed
-            metadata["checkout_mutation_path"] = mutation_observation.observed_path
-            if rc == 0:
-                rc = 125
-            sys.stderr.write("devtools test: checkout contents changed during pytest; evidence is not exact-head.\n")
+        except Exception as exc:
+            runner_exception = True
+            rc = 125
+            metadata = {
+                "diagnosis": "focused_test_runner_exception",
+                "exception_type": type(exc).__name__,
+                "error": str(exc),
+                "termination_reason": "runner_exception",
+            }
+            run.finish_interrupted_steps(
+                exit_code=rc,
+                diagnosis=str(metadata["diagnosis"]),
+                termination_reason="runner_exception",
+            )
+            try:
+                final_worktree_fingerprint = worktree_fingerprint(ROOT)
+            except Exception:
+                final_worktree_fingerprint = "unavailable"
+            try:
+                mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+            except Exception:
+                mutation_observation = CheckoutMutationObservation(changed=False, unavailable=True)
+            sys.stderr.write(f"devtools test: unexpected runner exception: {exc}\n")
+        if not runner_exception:
+            final_worktree_fingerprint = worktree_fingerprint(ROOT)
+            mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+            if (
+                "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
+                or mutation_observation.unavailable
+            ):
+                metadata["diagnosis"] = "checkout_fingerprint_unavailable"
+                if rc == 0:
+                    rc = 125
+                sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
+            elif mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint:
+                metadata["diagnosis"] = "checkout_changed_during_focused_test"
+                metadata["transient_checkout_mutation"] = mutation_observation.changed
+                metadata["checkout_mutation_path"] = mutation_observation.observed_path
+                if rc == 0:
+                    rc = 125
+                sys.stderr.write(
+                    "devtools test: checkout contents changed during pytest; evidence is not exact-head.\n"
+                )
         payload = run.finish(
             exit_code=rc,
             duration_s=time.monotonic() - started,

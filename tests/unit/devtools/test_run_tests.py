@@ -281,6 +281,68 @@ def test_normalize_selection_paths_preserves_pytest_symlinks_and_optional_debug(
     assert str(target) not in normalized
 
 
+def test_main_preserves_keyword_and_marker_values_from_tests_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+    monkeypatch.chdir(run_tests.ROOT / "tests")
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+
+    def capture(_label: str, command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured.extend(command)
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.setattr(
+        run_tests,
+        "_run",
+        capture,
+    )
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["-k", "unit", "-m", "unit"]) == 0
+
+    keyword_index = captured.index("-k")
+    marker_index = next(index for index in range(keyword_index + 1, len(captured)) if captured[index] == "-m")
+    assert captured[keyword_index + 1] == "unit"
+    assert captured[marker_index + 1] == "unit"
+
+
+def test_main_finalizes_runner_exception_after_open_step(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        run_tests,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+
+    def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        run = kwargs["run"]
+        run.start_step(label="pytest focused", cmd=command)
+        raise RuntimeError("focused runner exploded")
+
+    monkeypatch.setattr(run_tests, "_run", explode)
+
+    assert run_tests.main(["focused-selector", "--json"]) == 125
+    assert history["exit_code"] == 125
+    assert history["diagnosis"] == "focused_test_runner_exception"
+    assert history["steps"][0]["status"] == "failed"
+    assert history["steps"][0]["exit"] == 125
+
+
 def test_main_withholds_success_when_checkout_changes_during_pytest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
