@@ -197,6 +197,25 @@ def test_production_executor_factory_persists_audit_preview(tmp_path: Path) -> N
         assert conn.execute("SELECT preview_id FROM operation_previews").fetchone()[0] == preview.preview_ref
 
 
+def test_audit_authority_rejects_a_symlinked_audit_leaf_without_touching_its_target(tmp_path: Path) -> None:
+    """Bootstrap and direct audit access never follow an audit path outside its archive root."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    external_audit = tmp_path.parent / "external-audit.db"
+    external_audit.write_bytes(audit_path.read_bytes())
+    audit_path.unlink()
+    audit_path.symlink_to(external_audit)
+    before = external_audit.read_bytes()
+
+    with pytest.raises(RuntimeError, match="archive-owned regular file"):
+        initialize_active_archive_root(tmp_path)
+    with pytest.raises(RuntimeError, match="archive-owned regular file"):
+        AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
+
+    assert external_audit.read_bytes() == before
+
+
 def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:
     """A second composition-root call recognizes the first executor's owner."""
     initialize_active_archive_root(tmp_path)

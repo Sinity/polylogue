@@ -8,6 +8,7 @@ import math
 import os
 import secrets
 import sqlite3
+import stat
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -399,15 +400,27 @@ class AuditRepository:
     def reconcile_continuity(self) -> None:
         """Reject audit bytes that cannot prove the source control head."""
 
+        self._assert_regular_audit_leaf()
         self._continuity.reconcile(self._replay_pending_mutation)
+
+    def _assert_regular_audit_leaf(self) -> None:
+        """Refuse an audit pathname that redirects authority outside the archive root."""
+
+        try:
+            metadata = self.path.lstat()
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"audit tier is missing or uninitialized: {self.path}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect audit tier leaf: {self.path}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"audit tier must be an archive-owned regular file: {self.path}")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
+        self._assert_regular_audit_leaf()
         if self._coordinated_connection is not None:
             yield self._coordinated_connection
             return
-        if not self.path.is_file():
-            raise RuntimeError(f"audit tier is missing or uninitialized: {self.path}")
         conn = sqlite3.connect(f"{self.path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")

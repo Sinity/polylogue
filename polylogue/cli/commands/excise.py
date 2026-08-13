@@ -163,11 +163,10 @@ def excise_command(
 
         import sqlite3
 
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
         user_db = root / "user.db"
-        initialize_archive_database(user_db, ArchiveTier.USER)
+        initialize_active_archive_root(root)
         conn = sqlite3.connect(user_db)
         try:
             with conn:

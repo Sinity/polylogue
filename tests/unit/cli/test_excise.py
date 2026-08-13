@@ -286,6 +286,34 @@ class TestExciseMirrorPrimary:
             index_conn.close()
         assert count == 1
 
+    def test_primary_refuses_missing_audit_without_writing_a_lifecycle_request(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="primary-missing-audit")
+        (archive_root / "audit.db").unlink()
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "ops",
+                    "excise",
+                    "--session",
+                    session_id,
+                    "--reason",
+                    "leak",
+                    "--mode",
+                    "primary",
+                    "--yes",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "missing audit.db" in str(result.exception)
+        with sqlite3.connect(archive_root / "user.db") as connection:
+            assert connection.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'excision_request'").fetchone() == (
+                0,
+            )
+
 
 class TestExciseLineageSafety:
     """CLI coverage for the polylogue-27m fix-round lineage-safety guard."""

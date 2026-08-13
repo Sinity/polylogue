@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -335,6 +336,19 @@ def initialize_active_archive_root(root: Path) -> None:
         allow_reentrant=True,
     ) as owned:
 
+        def assert_regular_audit_leaf() -> None:
+            """Reject an audit pathname that could redirect durable authority outside this root."""
+
+            audit_path = root / archive_tier_spec(ArchiveTier.AUDIT).filename
+            try:
+                metadata = audit_path.lstat()
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise RuntimeError(f"cannot inspect audit tier leaf: {audit_path}") from exc
+            if not stat.S_ISREG(metadata.st_mode):
+                raise RuntimeError(f"audit tier must be an archive-owned regular file: {audit_path}")
+
         def assert_owned_root() -> None:
             """Refuse pathname writes after the owned root has been replaced."""
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
@@ -342,6 +356,7 @@ def initialize_active_archive_root(root: Path) -> None:
         # Classify the archive after acquiring ownership. Another process may
         # publish a marker or durable train while the probe is in flight.
         assert_owned_root()
+        assert_regular_audit_leaf()
         durable_tier_exists = any(
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
