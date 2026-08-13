@@ -2044,6 +2044,7 @@ def test_registry_rejects_duplicate_check_and_incident_identity(monkeypatch: pyt
     tier_schema = module.ARCHIVE_VERIFICATION_CHECKS[0]
     source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
     assert tier_schema.incident is not None
+    assert source_coverage.incident is not None
     duplicate = replace(
         source_coverage,
         name=tier_schema.name,
