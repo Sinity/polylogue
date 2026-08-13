@@ -128,6 +128,7 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
         archive_identity_digest="c" * 64,
         proof_ref="proof:archive-root-relocation:receipt-current",
     )
+    assert current_authority.source_continuity_evidence is not None
     assert rebound_current_authority.source_continuity_evidence == replace(
         current_authority.source_continuity_evidence,
         archive_identity_digest="c" * 64,
