@@ -1141,6 +1141,7 @@ class VerifyRun:
         terminal_authorization: str | None = None,
         final_worktree_fingerprint: str | None = None,
         checkout_mutation_path: str | None = None,
+        checkout_diagnosis: str | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -1152,6 +1153,8 @@ class VerifyRun:
             self._payload["final_worktree_fingerprint"] = final_worktree_fingerprint
         if checkout_mutation_path is not None:
             self._payload["checkout_mutation_path"] = checkout_mutation_path
+        if checkout_diagnosis is not None:
+            self._payload["checkout_diagnosis"] = checkout_diagnosis
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed

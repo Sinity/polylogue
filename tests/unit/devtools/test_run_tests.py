@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +13,10 @@ import pytest
 
 from devtools import run_tests, verify
 from devtools.verify_runs import (
+    CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
+    VERIFICATION_INVOCATION_ID_ENV,
+    VERIFICATION_RECEIPT_PATH_ENV,
     CheckoutMutationObservation,
     git_head,
     pytest_command_worker_request,
@@ -225,6 +229,44 @@ def test_main_keeps_interruption_diagnosis_when_checkout_verification_finds_a_ch
     assert run_tests.main(["tests/unit/example.py"]) == 130
     assert history["diagnosis"] == "pytest_interrupted"
     assert history["checkout_diagnosis"] == "checkout_changed_during_focused_test"
+
+
+def test_main_persists_interrupted_checkout_diagnosis_to_all_run_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+    fingerprints = iter(("before", "after"))
+    receipt = tmp_path / "receipt.json"
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        run_tests,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setenv(VERIFICATION_INVOCATION_ID_ENV, "focused-interrupt")
+    monkeypatch.setenv(VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", interrupt)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 130
+
+    run_payload = json.loads((tmp_path / history["artifact_dir"] / "run.json").read_text())
+    current_payload = json.loads((tmp_path / CURRENT_RUN_PATH).read_text())
+    receipt_payload = json.loads(receipt.read_text())
+    for payload in (history, run_payload, current_payload, receipt_payload):
+        assert payload["diagnosis"] == "pytest_interrupted"
+        assert payload["checkout_diagnosis"] == "checkout_changed_during_focused_test"
 
 
 def test_normalize_selection_paths_preserves_pytest_path_option_semantics(

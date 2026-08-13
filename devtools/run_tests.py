@@ -378,10 +378,10 @@ def main(argv: list[str] | None = None) -> int:
             release_baseline_allowed=False,
             final_worktree_fingerprint=final_worktree_fingerprint,
             checkout_mutation_path=mutation_observation.observed_path,
+            checkout_diagnosis=(
+                metadata["checkout_diagnosis"] if isinstance(metadata.get("checkout_diagnosis"), str) else None
+            ),
         )
-        recorded_checkout_diagnosis = metadata.get("checkout_diagnosis")
-        if isinstance(recorded_checkout_diagnosis, str):
-            payload["checkout_diagnosis"] = recorded_checkout_diagnosis
         append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
