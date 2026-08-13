@@ -41,13 +41,14 @@ def _write_record(
     content: bytes,
     source_path: str,
     source_name: str = "claude-code",
+    provider: Provider = Provider.CLAUDE_CODE,
 ) -> RawSessionRecord:
     raw_id, blob_size = store.write_from_bytes(content)
     return RawSessionRecord(
         raw_id=raw_id,
         source_name=source_name,
         source_path=source_path,
-        payload_provider=Provider.CLAUDE_CODE,
+        payload_provider=provider,
         source_index=None,
         blob_size=blob_size,
         acquired_at="2026-01-01T00:00:00+00:00",
@@ -103,3 +104,31 @@ def test_clean_large_jsonl_is_not_flagged(blob_store: BlobStore) -> None:
         ArtifactSupportStatus.PARTIAL_DECODE,
         ArtifactSupportStatus.DECODE_FAILED,
     }
+
+
+def test_large_codex_stream_is_not_terminalized_from_session_meta_prefix(blob_store: BlobStore) -> None:
+    session_meta = b'{"type":"session_meta","payload":{"id":"large-codex"}}\n'
+    message = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+        b'"role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+    padding = (
+        b'{"type":"response_item","payload":{"type":"token_count","padding":"'
+        + (b"x" * (_INSPECTION_PREFIX_BYTES * 2))
+        + b'"}}\n'
+    )
+    content = session_meta + message + padding
+    assert len(content) > _INSPECTION_PREFIX_BYTES
+
+    record = _write_record(
+        blob_store,
+        content=content,
+        source_path="codex/large-session.jsonl",
+        source_name="codex",
+        provider=Provider.CODEX,
+    )
+    observation = inspect_raw_artifact(record)
+
+    assert observation.parse_as_session is True
+    assert observation.artifact_kind == "session_record_stream"
+    assert observation.classification_reason == "parser-supported Codex session record stream"
