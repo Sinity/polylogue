@@ -53,6 +53,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
@@ -501,6 +502,91 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     ]
 
 
+def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplicate_coordinates(
+    tmp_path: Path,
+) -> None:
+    """Recovery, not acquisition, resolves UNKNOWN ZIP bytes and replays each coordinate."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "inbox"
+    root.mkdir()
+    bundle = root / "export.zip"
+    payload = json.dumps(
+        [
+            {
+                "id": "zip-chatgpt",
+                "conversation_id": "zip-chatgpt",
+                "title": "ZIP recovery",
+                "create_time": 1_700_000_000,
+                "update_time": 1_700_000_001,
+                "current_node": "assistant-node",
+                "mapping": {
+                    "user-node": {
+                        "id": "user-node",
+                        "parent": None,
+                        "children": ["assistant-node"],
+                        "message": {
+                            "id": "user-message",
+                            "author": {"role": "user"},
+                            "content": {"content_type": "text", "parts": ["recover ZIP"]},
+                            "create_time": 1_700_000_000,
+                        },
+                    },
+                    "assistant-node": {
+                        "id": "assistant-node",
+                        "parent": "user-node",
+                        "children": [],
+                        "message": {
+                            "id": "assistant-message",
+                            "author": {"role": "assistant"},
+                            "content": {"content_type": "text", "parts": ["replayed"]},
+                            "create_time": 1_700_000_001,
+                        },
+                    },
+                },
+            }
+        ],
+        sort_keys=True,
+    ).encode()
+    with zipfile.ZipFile(bundle, "w") as zf:
+        zf.writestr("first/conversations.json", payload)
+        zf.writestr("second/conversations.json", payload)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="unknown", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        result = processor._ingest_full_paths_sync([bundle], source_name="unknown")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [bundle]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        before_replay = conn.execute(
+            "SELECT raw_id, hex(blob_hash), source_path, source_index, origin FROM raw_sessions ORDER BY source_index"
+        ).fetchall()
+    assert len(before_replay) == 2
+    assert len({row[0] for row in before_replay}) == 2
+    assert len({row[1] for row in before_replay}) == 1
+    assert [row[2:] for row in before_replay] == [
+        (f"{bundle}:first/conversations.json", 0, "unknown-export"),
+        (f"{bundle}:second/conversations.json", 1, "unknown-export"),
+    ]
+
+    replay = backfill_historical_revision_evidence(tmp_path)
+
+    assert replay.replayed_logical_sources == 2
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("zip-chatgpt", 2)]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE origin = 'chatgpt-export'").fetchone() == (2,)
+
+
 def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shape_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -532,6 +618,118 @@ def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shap
     assert result.succeeded == [state_db]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT source_path, parsed_at_ms FROM raw_sessions").fetchall() == [(str(state_db), None)]
+
+
+def _write_codex_thread_state_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                model TEXT,
+                agent_nickname TEXT,
+                agent_role TEXT,
+                archived INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT NOT NULL,
+                child_thread_id TEXT NOT NULL PRIMARY KEY,
+                status TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("codex-thread", "Recover retained state", "/work", 1, 2, "cli", "gpt-5", None, None, 0),
+        )
+        conn.execute(
+            "INSERT INTO thread_spawn_edges VALUES (?, ?, ?)",
+            ("codex-thread", "codex-child", "closed"),
+        )
+
+
+def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_path: Path) -> None:
+    """Removing the replay effect leaves the durable state raw pending and title-less."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "codex"
+    state_db = root / "state_5.sqlite"
+    _write_codex_thread_state_db(state_db)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        assert processor._ingest_full_paths_sync([state_db], source_name="codex").succeeded == [state_db]
+    finally:
+        clear_degraded()
+
+    replay = backfill_historical_revision_evidence(tmp_path)
+
+    assert replay.scanned == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parsed_at_ms IS NOT NULL FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute(
+            "SELECT hook_event_id, event_type FROM raw_hook_events ORDER BY hook_event_id"
+        ).fetchall() == [
+            ("codex-thread-spawn-edge:codex-thread:codex-child", "codex_thread_spawn_edge"),
+            ("codex-thread-title:codex-thread", "codex_thread_title"),
+        ]
+
+
+@pytest.mark.parametrize("state_name", ["state.db", "verification_evidence.db"])
+def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state_name: str,
+) -> None:
+    """A direct file copy loses an uncheckpointed WAL row; the snapshot retains it."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "hermes"
+    state_db = root / state_name
+    state_db.parent.mkdir(parents=True)
+    writer = sqlite3.connect(state_db)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("CREATE TABLE retained_wal_row (value TEXT NOT NULL)")
+    writer.commit()
+    writer.execute("INSERT INTO retained_wal_row VALUES ('must survive')")
+    writer.commit()
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="hermes", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr("polylogue.sources.parsers.hermes_state.looks_like_state_db_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        "polylogue.sources.parsers.hermes_verification.looks_like_verification_evidence_db_path",
+        lambda *_a, **_k: False,
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        assert processor._ingest_full_paths_sync([state_db], source_name="hermes").succeeded == [state_db]
+    finally:
+        clear_degraded()
+        writer.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        blob_hash = str(conn.execute("SELECT hex(blob_hash) FROM raw_sessions").fetchone()[0]).lower()
+    with sqlite3.connect(BlobStore(tmp_path / "blob").blob_path(blob_hash)) as snapshot:
+        assert snapshot.execute("SELECT value FROM retained_wal_row").fetchall() == [("must survive",)]
 
 
 def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(

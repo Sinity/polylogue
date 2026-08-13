@@ -870,6 +870,37 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     assert isinstance(row["parse_error"], str) and "Malformed JSONL lines" in row["parse_error"]
 
 
+def test_verify_raw_corpus_quarantine_advances_past_an_existing_parse_transition(db_path: Path) -> None:
+    """A wall clock behind the parse transition must not reverse raw-state authority."""
+    raw_id = _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-codex-quarantine-order",
+        source_name="codex",
+        source_path="/tmp/quarantine-order.jsonl",
+        raw_content=(
+            b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
+        ),
+    )
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parsed_at_ms = 9999999999999 WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    from polylogue.schemas.validation.corpus import apply_quarantine_updates
+
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        apply_quarantine_updates(
+            conn,
+            updates=[(raw_id, "malformed retained JSONL", "codex", "codex")],
+        )
+
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        parsed_at_ms, validated_at_ms, validation_status = conn.execute(
+            "SELECT parsed_at_ms, validated_at_ms, validation_status FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert validation_status == "failed"
+    assert validated_at_ms > parsed_at_ms
+
+
 def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_path: Path) -> None:
     raw_id = _insert_raw_record(
         db_path=db_path,

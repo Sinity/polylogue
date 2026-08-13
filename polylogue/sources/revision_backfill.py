@@ -44,8 +44,10 @@ from polylogue.pipeline.services.process_pool import (
     parallel_threads_effective,
     resolve_revision_backfill_census_dispatch,
 )
+from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
+    detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
@@ -53,9 +55,10 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
@@ -66,6 +69,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     FrozenSourceRemediationRequiredError,
     record_current_parser_source_census,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import apply_source_raw_state_update
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -656,6 +660,18 @@ def _census_historical_revision_evidence(
             commit_unit()
             return
         sessions, payload_bytes, revision_kind = outcome
+        stored_provider, _blob_hash, _source_path, _stored_kind, _stored_size = archive.raw_revision_descriptor(raw_id)
+        if stored_provider is Provider.UNKNOWN and sessions:
+            # Acquisition deliberately did not decode an UNKNOWN source-only
+            # member.  A successful replay now has durable shape evidence for
+            # its provider, so retain that result independently of the later
+            # index promotion outcome.
+            apply_source_raw_state_update(
+                archive._ensure_source_conn(),
+                raw_id,
+                state=RawSessionStateUpdate(payload_provider=Provider.from_string(sessions[0].source_name)),
+                manage_transaction=not batched,
+            )
         state.classified += int(len(sessions) == 1)
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
         if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
@@ -730,6 +746,12 @@ def _census_historical_revision_evidence(
             census_selection = initial_selection
             while True:
                 rows = archive.raw_membership_census_rows(census_selection)
+                for raw_id, _source_index, _terminal_non_session in rows:
+                    if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
+                        continue
+                    state.scanned += 1
+                    state.censused.add(raw_id)
+                    commit_unit()
                 terminal_raw_ids = {
                     raw_id for raw_id, _source_index, terminal_non_session in rows if terminal_non_session
                 }
@@ -1922,9 +1944,27 @@ def census_parse_worker(
     fallback_id_override = native_id if kind is RawRevisionKind.APPEND else None
     publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
     try:
+        if provider is Provider.UNKNOWN:
+            payload = publisher.read_all(blob_hash)
+            provider, _evidence = detect_provider_from_raw_bytes_evidence(payload, Path(source_path).name, provider)
+            payload_path = None
+            if provider is Provider.HERMES:
+                candidate_path = publisher.blob_path(blob_hash)
+                payload_path = candidate_path if candidate_path.exists() else None
+            sessions = _parse_one(
+                provider,
+                payload,
+                source_path,
+                payload_path=payload_path,
+                archive_root=Path(blob_root_str).parent,
+                fallback_id_override=fallback_id_override,
+            )
+            return raw_id, sessions, None
         if is_stream:
-            with publisher.open(blob_hash) as payload:
-                sessions = _parse_stream(provider, payload, source_path, fallback_id_override=fallback_id_override)
+            with publisher.open(blob_hash) as stream_payload:
+                sessions = _parse_stream(
+                    provider, stream_payload, source_path, fallback_id_override=fallback_id_override
+                )
         else:
             payload_path = None
             if provider is Provider.HERMES:
@@ -2121,6 +2161,8 @@ def _enrich_retained_parse_results(
             continue
         provider, _blob_hash, source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
         sessions, payload_bytes, kind = outcome
+        if sessions:
+            provider = Provider.from_string(sessions[0].source_name)
         results[raw_id] = (
             _replay_safe_enrich_sessions(
                 source_conn,
@@ -2326,6 +2368,26 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     # the unchanged stem-based fallback -- their stored bytes still carry
     # the synthetic session_meta line that made this unnecessary for them.
     fallback_id_override = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
+    if provider is Provider.UNKNOWN:
+        # Source-only acquisition deliberately retains unknown ZIP members
+        # without decoding them.  Recovery is the first lawful point to
+        # inspect the durable bytes and resolve their parser, before deciding
+        # whether their filename is a stream route.
+        _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+        provider, _evidence = detect_provider_from_raw_bytes_evidence(
+            eager_payload,
+            Path(source_path).name,
+            provider,
+        )
+        payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
+        return _parse_one(
+            provider,
+            eager_payload,
+            source_path,
+            payload_path=payload_path,
+            archive_root=archive.archive_root,
+            fallback_id_override=fallback_id_override,
+        )
     if is_stream_record_provider(source_path, str(provider)):
         with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
             return _parse_stream(stream_provider, payload, stream_path, fallback_id_override=fallback_id_override)
@@ -2339,6 +2401,42 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         archive_root=archive.archive_root,
         fallback_id_override=fallback_id_override,
     )
+
+
+def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) -> bool:
+    """Apply a retained, in-scope Codex state snapshot without minting a session.
+
+    Source-only acquisition snapshots named Codex databases before it can
+    inspect their schema.  Once recovery owns the derived tier, only a
+    recognized retained snapshot may become thread evidence.  The parser
+    reads the immutable blob path, never the original mutable state DB.
+    """
+    provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if provider is not Provider.CODEX:
+        return False
+    state_path = archive.blob_path_for_hash(blob_hash)
+    if state_path is None:
+        return False
+    state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
+    if state_kind not in codex_state.IN_SCOPE_KINDS:
+        return False
+    if state_kind == "thread_state":
+        write_codex_thread_state_evidence(
+            archive,
+            codex_state.parse_codex_state_db(state_path, immutable=True),
+            source_path=source_path,
+            acquired_at_ms=archive.raw_revision_acquired_at_ms(raw_id),
+        )
+    archive.replace_raw_membership_census(
+        raw_id,
+        [],
+        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+        censused_at_ms=0,
+        detail="retained Codex state evidence applied",
+        retire_full_revision_governance=True,
+    )
+    archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
+    return True
 
 
 #: Lever-A prefetch-buffer budget clamp (estimated tree bytes) -- same
@@ -3140,6 +3238,22 @@ def _parse_one_raw(
         return sessions
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
+    if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
+        with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
+            if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
+                return hermes_state.parse_state_db(
+                    sqlite_path,
+                    fallback_id=fallback_id,
+                    profile_root=Path(source_path).parent,
+                    immutable=True,
+                )
+            if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
+                return hermes_verification.parse_verification_evidence_db(
+                    sqlite_path,
+                    fallback_id=fallback_id,
+                    profile_root=Path(source_path).parent,
+                    immutable=True,
+                )
     rule = artifact_rule_for_path(provider, source_path)
     declared_path_session_evidence = False
     if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):
@@ -3163,22 +3277,6 @@ def _parse_one_raw(
         provider, source_path, sample=records[:64]
     ):
         return []
-    if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
-        with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
-            if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
-                return hermes_state.parse_state_db(
-                    sqlite_path,
-                    fallback_id=fallback_id,
-                    profile_root=Path(source_path).parent,
-                    immutable=True,
-                )
-            if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
-                return hermes_verification.parse_verification_evidence_db(
-                    sqlite_path,
-                    fallback_id=fallback_id,
-                    profile_root=Path(source_path).parent,
-                    immutable=True,
-                )
     return parse_payload(
         provider,
         records,
@@ -3236,8 +3334,6 @@ def _parse_stream_raw(
     *,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
-    if _is_declared_non_session_artifact(provider, source_path):
-        return []
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
     stream = _iter_json_stream(payload, source_name)
@@ -3247,7 +3343,11 @@ def _parse_stream_raw(
     # ingest gate uses -- are materialized for content classification; the
     # rest of the stream is chained back on unread.
     sample = list(islice(stream, 64))
-    if _is_declared_non_session_artifact(provider, source_path, sample=sample):
+    sample_sessions = parse_stream_payload(provider, sample, fallback_id, source_path=source_path)
+    sample_has_session_evidence = bool(
+        require_positive_conversational_evidence(sample_sessions, provider=provider, source_path=source_path)
+    )
+    if not sample_has_session_evidence and _is_declared_non_session_artifact(provider, source_path, sample=sample):
         return []
     return parse_stream_payload(
         provider,

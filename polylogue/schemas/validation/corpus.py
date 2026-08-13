@@ -10,11 +10,13 @@ from typing import TypeAlias
 
 from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 from .models import ProviderSchemaVerification, SchemaVerificationReport
 from .requests import SchemaVerificationRequest, bounded_window
@@ -201,17 +203,18 @@ def apply_quarantine_updates(
     """
     validated_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     for raw_id, reason, _provider, _payload_provider in updates:
+        set_clauses, params = compile_raw_state_update(
+            RawSessionStateUpdate(
+                validation_status=ValidationStatus.FAILED,
+                validation_error=reason,
+                validation_drift_count=0,
+                validation_mode=ValidationMode.STRICT,
+            ),
+            now_ms=validated_at_ms,
+        )
         conn.execute(
-            """
-            UPDATE raw_sessions
-            SET validation_status = 'failed',
-                validation_error = ?,
-                validation_drift_count = 0,
-                validation_mode = 'strict',
-                validated_at_ms = ?
-            WHERE raw_id = ?
-            """,
-            (reason, validated_at_ms, raw_id),
+            f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",
+            (*params, raw_id),
         )
         conn.execute(
             """

@@ -66,6 +66,7 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
@@ -147,6 +148,7 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
     stream_preserved_zip_entry_raw_data,
+    zip_member_raw_id,
 )
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (
@@ -274,82 +276,6 @@ def _hot_capture_prefix_is_proven(
     except (EOFError, OSError):
         return False
     return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
-
-
-def _write_codex_thread_state_evidence(
-    archive: Any,
-    snapshot: codex_state.CodexStateSnapshot,
-    *,
-    source_path: str,
-    acquired_at_ms: int,
-) -> None:
-    """Attach ``threads``/``thread_spawn_edges`` evidence to EXISTING sessions.
-
-    polylogue-0jf4 acceptance criterion 3: threads.title and
-    thread_spawn_edges must reach the archive as typed evidence without ever
-    minting a session or session of their own -- the same hook-event
-    incident precedent as polylogue-31r1 (standalone hook-event ingestion
-    once inflated the archive from 18,391 to 83,286 sessions). Reuses
-    ``ArchiveStore.write_hook_event``/``raw_hook_events`` exactly as
-    ``sources/hooks.py`` does: a durable, session-scoped evidence row keyed
-    by ``session_native_id`` (here the Codex ``thread_id``), joined at read
-    time (``ArchiveStore.hook_event_summary_for_session``) rather than
-    materialized into ``index.db`` via a full session replace. No schema
-    change -- ``raw_hook_events.event_type`` is unconstrained TEXT.
-    """
-    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
-
-    for thread in snapshot.threads:
-        payload: dict[str, object] = {
-            "thread_id": thread.thread_id,
-            "title": thread.title,
-            "cwd": thread.cwd,
-            "source": thread.source,
-            "model": thread.model,
-            "agent_nickname": thread.agent_nickname,
-            "agent_role": thread.agent_role,
-            "archived": thread.archived,
-        }
-        encoded = json_dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        archive.write_hook_event(
-            provider=Provider.CODEX,
-            payload=encoded,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-title:{thread.thread_id}",
-                origin=Origin.CODEX_SESSION,
-                source_path=source_path,
-                event_type="codex_thread_title",
-                payload=payload,
-                observed_at_ms=thread.updated_at_ms or acquired_at_ms,
-                native_id=f"{thread.thread_id}:codex_thread_title",
-                session_native_id=thread.thread_id,
-            ),
-        )
-    for edge in snapshot.spawn_edges:
-        edge_payload: dict[str, object] = {
-            "parent_thread_id": edge.parent_thread_id,
-            "child_thread_id": edge.child_thread_id,
-            "status": edge.status,
-        }
-        encoded = json_dumps(edge_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        archive.write_hook_event(
-            provider=Provider.CODEX,
-            payload=encoded,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-spawn-edge:{edge.parent_thread_id}:{edge.child_thread_id}",
-                origin=Origin.CODEX_SESSION,
-                source_path=source_path,
-                event_type="codex_thread_spawn_edge",
-                payload=edge_payload,
-                observed_at_ms=acquired_at_ms,
-                native_id=f"{edge.parent_thread_id}:{edge.child_thread_id}:codex_thread_spawn_edge",
-                session_native_id=edge.parent_thread_id,
-            ),
-        )
 
 
 def _is_json_stream_decode_error(error: BaseException) -> bool:
@@ -1935,9 +1861,16 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            if hermes_state.looks_like_state_db_path(
-                path
-            ) or hermes_verification.looks_like_verification_evidence_db_path(path):
+            hermes_owned_sqlite_name = (
+                source_only
+                and fallback_provider is Provider.HERMES
+                and path.name in {"state.db", "verification_evidence.db"}
+            )
+            if (
+                hermes_owned_sqlite_name
+                or hermes_state.looks_like_state_db_path(path)
+                or hermes_verification.looks_like_verification_evidence_db_path(path)
+            ):
                 provider = Provider.HERMES
                 source_name = provider.value
                 try:
@@ -2585,13 +2518,14 @@ class LiveBatchProcessor:
                             blob_size=record.blob_size,
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
-                            # A populated ``blob_hash`` field marks a
-                            # sqlite-snapshot acquisition (Hermes or, per
-                            # polylogue-0jf4, Codex state dbs), whose raw_id
-                            # is a deterministic profile/path-scoped id
-                            # distinct from the blob's own content hash --
-                            # every other provider's raw_id already IS the
-                            # content hash, so passing it again is a no-op.
+                            # A populated ``blob_hash`` field means this
+                            # record already has a durable blob reference.
+                            # SQLite snapshots and ZIP members both keep a
+                            # raw id distinct from that blob address: the
+                            # former is profile/path scoped, the latter is
+                            # coordinate scoped.  Preserve that identity at
+                            # source admission rather than collapsing either
+                            # kind back onto a shared content hash.
                             raw_id=(record.raw_id if record.blob_hash is not None else None),
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
@@ -2723,7 +2657,7 @@ class LiveBatchProcessor:
                         state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
                         if state_kind == "thread_state":
                             state_snapshot = codex_state.parse_codex_state_db(state_path, immutable=True)
-                            _write_codex_thread_state_evidence(
+                            write_codex_thread_state_evidence(
                                 archive,
                                 state_snapshot,
                                 source_path=record.source_path,
@@ -3329,11 +3263,17 @@ class LiveBatchProcessor:
                             member_provider = raw_data.provider_hint or fallback_provider
                             member_size = raw_data.blob_size or 0
                             total_bytes += member_size
+                            member_raw_id = zip_member_raw_id(
+                                raw_data.source_path,
+                                raw_data.source_index or 0,
+                                raw_data.blob_hash,
+                            )
                             records.append(
                                 (
-                                    raw_data.blob_hash,
+                                    member_raw_id,
                                     RawSessionRecord(
-                                        raw_id=raw_data.blob_hash,
+                                        raw_id=member_raw_id,
+                                        blob_hash=raw_data.blob_hash,
                                         payload_provider=member_provider,
                                         capture_mode=(
                                             fallback_provider
@@ -3402,11 +3342,17 @@ class LiveBatchProcessor:
                     if raw_data.blob_hash is None:
                         continue
                     total_bytes += raw_data.blob_size or 0
+                    member_raw_id = zip_member_raw_id(
+                        raw_data.source_path,
+                        source_index,
+                        raw_data.blob_hash,
+                    )
                     records.append(
                         (
-                            raw_data.blob_hash,
+                            member_raw_id,
                             RawSessionRecord(
-                                raw_id=raw_data.blob_hash,
+                                raw_id=member_raw_id,
+                                blob_hash=raw_data.blob_hash,
                                 payload_provider=fallback_provider,
                                 capture_mode=fallback_provider,
                                 source_name=fallback_provider.value,
