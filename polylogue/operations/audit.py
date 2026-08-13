@@ -46,6 +46,7 @@ AuditTargetState = Literal[
     "cancelled",
 ]
 _F = TypeVar("_F", bound=Callable[..., object])
+_CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token": 2}
 
 
 def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
@@ -462,11 +463,18 @@ class AuditRepository:
                 "principal": _principal_payload(principal),
             }
         if kind == "issue_authorization":
-            preview, principal, authorization = (
-                cast(MutationPreview, args[0]),
-                cast(MutationPrincipal, args[1]),
-                cast(MutationAuthorization, args[2]),
-            )
+            if isinstance(args[0], _StoredAuthorizationDigest):
+                preview, principal, authorization = (
+                    cast(MutationPreview, args[1]),
+                    cast(MutationPrincipal, args[2]),
+                    cast(MutationAuthorization, args[3]),
+                )
+            else:
+                preview, principal, authorization = (
+                    cast(MutationPreview, args[0]),
+                    cast(MutationPrincipal, args[1]),
+                    cast(MutationAuthorization, args[2]),
+                )
             return {
                 "authorization_id": f"authorization:{secrets.token_urlsafe(18)}",
                 "issued_at_ms": cast(int, values.get("issued_at_ms", int(time.time() * 1000))),
@@ -482,6 +490,10 @@ class AuditRepository:
             return {
                 "operation_id": f"operation:{secrets.token_urlsafe(18)}",
                 "attempt_id": f"attempt:{secrets.token_urlsafe(18)}",
+                # The command can be replayed by a fresh repository process.
+                # Keep the original actuator owner, rather than accidentally
+                # assigning its pre-effect attempt to the recovery process.
+                "attempt_owner_id": self._attempt_owner_id,
                 "now_ms": int(time.time() * 1000),
                 "preview": _preview_payload(preview),
                 "authorization": _authorization_payload(authorization),
@@ -534,6 +546,7 @@ class AuditRepository:
                     _preview_from_payload(payload["preview"]),
                     _principal_from_payload(payload["principal"]),
                     _authorization_from_payload(payload["authorization"]),
+                    issued_at_ms=cast(int, payload["issued_at_ms"]),
                 )
             if mutation.kind == "consume_authorization_and_start":
                 return self._consume_authorization(
@@ -681,7 +694,6 @@ class AuditRepository:
                 )
         return preview_id
 
-    @_continuity_mutation("issue_authorization")
     def issue_authorization(
         self,
         preview: MutationPreview,
@@ -694,8 +706,31 @@ class AuditRepository:
 
         if authorization.token is None:
             raise ValueError("bound authorization requires a token")
-        return self._persist_authorization(
+        authorization_id = self._issue_authorization(
             _StoredAuthorizationDigest(token_sha256(authorization.token)),
+            preview,
+            principal,
+            authorization,
+            issued_at_ms=issued_at_ms,
+        )
+        if authorization_id is None:
+            raise TokenExpiredError("cannot authorize an expired preview")
+        return authorization_id
+
+    @_continuity_mutation("issue_authorization")
+    def _issue_authorization(
+        self,
+        token_digest: _StoredAuthorizationDigest,
+        preview: MutationPreview,
+        principal: MutationPrincipal,
+        authorization: MutationAuthorization,
+        *,
+        issued_at_ms: int | None = None,
+    ) -> str | None:
+        """Persist one token from the durable preview's exact authorization evidence."""
+
+        return self._persist_authorization(
+            token_digest,
             preview,
             principal,
             authorization,
@@ -710,7 +745,7 @@ class AuditRepository:
         authorization: MutationAuthorization,
         *,
         issued_at_ms: int | None = None,
-    ) -> str:
+    ) -> str | None:
         authorization_id = cast(
             str, self._command_value("authorization_id", f"authorization:{secrets.token_urlsafe(18)}")
         )
@@ -721,7 +756,11 @@ class AuditRepository:
         with self._connection() as conn:
             self._begin(conn)
             preview_row = conn.execute(
-                "SELECT plan_hash, expires_at_ms, state, principal_actor_ref FROM operation_previews WHERE preview_id = ?",
+                """
+                SELECT plan_hash, expires_at_ms, state, principal_actor_ref,
+                       principal_surface, role_label, required_confirmation
+                FROM operation_previews WHERE preview_id = ?
+                """,
                 (preview.preview_ref,),
             ).fetchone()
             if preview_row is None:
@@ -730,8 +769,43 @@ class AuditRepository:
                 raise ValueError("preview plan hash does not match its durable row")
             if str(preview_row[2]) != "prepared":
                 raise ValueError("preview is not authorizable")
-            if principal.actor_ref != str(preview_row[3]):
+            durable_expires_at_ms = int(preview_row[1])
+            durable_capabilities = tuple(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT capability FROM operation_preview_capabilities WHERE preview_id = ? ORDER BY capability",
+                    (preview.preview_ref,),
+                )
+            )
+            if principal.actor_ref != str(preview_row[3]) or principal.surface != str(preview_row[4]):
                 raise ValueError("authorization principal differs from preview principal")
+            if principal.role_label != cast(str | None, preview_row[5]):
+                raise ValueError("authorization role differs from preview principal")
+            if not set(durable_capabilities).issubset(principal.capabilities):
+                raise ValueError("authorization principal lacks the preview's required capabilities")
+            if (
+                _CONFIRMATION_STRENGTH_ORDER.get(authorization.confirmation_strength, -1)
+                < _CONFIRMATION_STRENGTH_ORDER[str(preview_row[6])]
+            ):
+                raise ValueError("authorization confirmation is weaker than the durable preview")
+            if (
+                authorization.preview_ref != preview.preview_ref
+                or authorization.plan_hash != str(preview_row[0])
+                or authorization.actor != str(preview_row[3])
+                or authorization.surface != str(preview_row[4])
+                or authorization.role != (cast(str | None, preview_row[5]) or "")
+                or authorization.expires_at_ms != durable_expires_at_ms
+                or authorization.capabilities != durable_capabilities
+                or (durable_capabilities and authorization.capability not in durable_capabilities)
+                or (not durable_capabilities and authorization.capability != "")
+            ):
+                raise ValueError("authorization evidence differs from its durable preview")
+            if effective_issued_at_ms >= durable_expires_at_ms:
+                conn.execute(
+                    "UPDATE operation_previews SET state = 'expired' WHERE preview_id = ? AND state = 'prepared'",
+                    (preview.preview_ref,),
+                )
+                return None
             conn.execute(
                 """
                 INSERT INTO operation_authorizations(
@@ -749,10 +823,10 @@ class AuditRepository:
                     authorization.confirmation_strength,
                     token_digest.value,
                     effective_issued_at_ms,
-                    authorization.expires_at_ms or effective_issued_at_ms,
+                    durable_expires_at_ms,
                 ),
             )
-            for capability in authorization.capabilities:
+            for capability in durable_capabilities:
                 conn.execute(
                     "INSERT INTO operation_authorization_capabilities(authorization_id, capability) VALUES (?, ?)",
                     (authorization_id, capability),
@@ -799,7 +873,8 @@ class AuditRepository:
             row = conn.execute(
                 """
                 SELECT a.authorization_id, a.preview_id, a.actor_ref, a.surface,
-                       a.state, a.expires_at_ms, p.plan_hash
+                       a.role_label, a.confirmation_strength, a.state, a.expires_at_ms,
+                       p.plan_hash
                 FROM operation_authorizations AS a
                 JOIN operation_previews AS p ON p.preview_id = a.preview_id
                 WHERE a.token_sha256 = ?
@@ -808,17 +883,33 @@ class AuditRepository:
             ).fetchone()
             if row is None or str(row[1]) != preview.preview_ref:
                 raise ValueError("authorization token does not match preview")
-            if str(row[4]) != "active":
+            if str(row[6]) != "active":
                 raise RuntimeError("authorization token is already consumed or revoked")
-            if int(row[5]) <= now_ms:
+            if int(row[7]) <= now_ms:
                 conn.execute(
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),
                 )
                 return None
-            if str(row[2]) != authorization.actor or str(row[3]) != (authorization.surface or ""):
+            durable_capabilities = tuple(
+                str(capability_row[0])
+                for capability_row in conn.execute(
+                    "SELECT capability FROM operation_authorization_capabilities WHERE authorization_id = ? ORDER BY capability",
+                    (str(row[0]),),
+                )
+            )
+            if (
+                str(row[2]) != authorization.actor
+                or str(row[3]) != (authorization.surface or "")
+                or (cast(str | None, row[4]) or "") != authorization.role
+                or str(row[5]) != authorization.confirmation_strength
+                or int(row[7]) != authorization.expires_at_ms
+                or durable_capabilities != authorization.capabilities
+                or (durable_capabilities and authorization.capability not in durable_capabilities)
+                or (not durable_capabilities and authorization.capability != "")
+            ):
                 raise ValueError("authorization principal mismatch")
-            if str(row[6]) != preview.plan.plan_hash or authorization.plan_hash != preview.plan.plan_hash:
+            if str(row[8]) != preview.plan.plan_hash or authorization.plan_hash != preview.plan.plan_hash:
                 raise ValueError("authorization plan mismatch")
             conn.execute(
                 "UPDATE operation_authorizations SET state = 'consumed', consumed_at_ms = ? WHERE authorization_id = ?",
@@ -850,15 +941,15 @@ class AuditRepository:
                     preview.plan.parameter_digest,
                     preview.plan.target_digest or preview.plan.plan_hash,
                     preview.plan.target_count,
-                    authorization.actor,
-                    authorization.surface,
-                    authorization.role,
+                    str(row[2]),
+                    str(row[3]),
+                    cast(str | None, row[4]),
                     now_ms,
                     now_ms,
                     now_ms,
                 ),
             )
-            for capability in authorization.capabilities:
+            for capability in durable_capabilities:
                 conn.execute(
                     "INSERT INTO operation_run_capabilities(operation_id, capability) VALUES (?, ?)",
                     (operation_id, capability),
@@ -893,7 +984,7 @@ class AuditRepository:
                     operation_id,
                     0 if preview.plan.targets else None,
                     str(row[0]),
-                    self._attempt_owner_id,
+                    cast(str | None, self._command_value("attempt_owner_id", self._attempt_owner_id)),
                     now_ms,
                 ),
             )

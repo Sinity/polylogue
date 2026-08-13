@@ -11,12 +11,12 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 
 
-def test_audit_tier_bootstrap_has_v1_authority_tables_and_is_durable(tmp_path: Path) -> None:
+def test_audit_tier_bootstrap_has_current_authority_tables_and_is_durable(tmp_path: Path) -> None:
     path = tmp_path / "audit.db"
     initialize_archive_database(path, ArchiveTier.AUDIT)
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_TIER_SPECS[ArchiveTier.AUDIT].version
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     finally:
         conn.close()
@@ -26,6 +26,7 @@ def test_audit_tier_bootstrap_has_v1_authority_tables_and_is_durable(tmp_path: P
         "operation_authorizations",
         "operation_runs",
         "operation_events",
+        "audit_continuity_head",
     } <= tables
     assert ArchiveTier.AUDIT in DURABLE_MIGRATION_TIERS
     assert ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] == ARCHIVE_TIER_SPECS[ArchiveTier.AUDIT].version

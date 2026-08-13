@@ -17,6 +17,7 @@ from polylogue.storage.sqlite.audit_continuity import (
     AuditContinuityCoordinator,
     AuditContinuityError,
     AuditMutation,
+    audit_semantic_sha256,
 )
 
 
@@ -110,6 +111,48 @@ def test_pending_command_promotes_after_audit_commit(tmp_path: Path) -> None:
     AuditContinuityCoordinator(tmp_path).reconcile(_apply)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone()[0] is None
+
+
+@pytest.mark.parametrize(
+    ("dropped_table", "error"),
+    [
+        ("audit_continuity_control", "current source schema"),
+        ("audit_continuity_head", "current audit schema"),
+    ],
+)
+def test_current_schema_missing_a_continuity_table_is_damage(tmp_path: Path, dropped_table: str, error: str) -> None:
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / ("source.db" if dropped_table.endswith("control") else "audit.db")
+    with sqlite3.connect(path) as connection:
+        connection.execute(f"DROP TABLE {dropped_table}")
+        connection.commit()
+
+    with pytest.raises(AuditContinuityError, match=error):
+        AuditContinuityCoordinator(tmp_path).is_available()
+
+
+@pytest.mark.parametrize(
+    ("path_name", "table", "legacy_version"),
+    [("source.db", "audit_continuity_control", 31), ("audit.db", "audit_continuity_head", 1)],
+)
+def test_legitimate_one_sided_precontinuity_schema_window_stays_in_standby(
+    tmp_path: Path, path_name: str, table: str, legacy_version: int
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / path_name) as connection:
+        connection.execute(f"DROP TABLE {table}")
+        connection.execute(f"PRAGMA user_version = {legacy_version}")
+        connection.commit()
+
+    assert not AuditContinuityCoordinator(tmp_path).is_available()
+
+
+def test_empty_fresh_archive_can_use_the_genesis_continuity_head(tmp_path: Path) -> None:
+    """Genesis is valid only when it describes an empty freshly-created audit journal."""
+
+    initialize_active_archive_root(tmp_path)
+
+    assert AuditContinuityCoordinator(tmp_path).is_available()
 
 
 def test_second_mutation_refuses_while_first_command_is_pending(tmp_path: Path) -> None:
@@ -209,4 +252,77 @@ def test_rebind_rejects_a_stale_in_place_image_before_blessing_it(tmp_path: Path
             mutation_id="rebind:stale-image",
             now_ms=1,
             evidence={"audit_image_sha256": expected_image_sha256},
+        )
+
+
+def test_populated_precontinuity_audit_is_bound_before_normal_coordination(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        audit.execute(
+            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('legacy:archive', 1, 1)"
+        )
+        audit.execute("DROP TABLE audit_continuity_head")
+        audit.execute("PRAGMA user_version = 1")
+        audit.executescript(Path("polylogue/storage/sqlite/migrations/audit/002_audit_continuity_head.sql").read_text())
+        audit.execute("PRAGMA user_version = 2")
+        audit.commit()
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("DROP TABLE audit_continuity_control")
+        source.execute("PRAGMA user_version = 31")
+        source.executescript(
+            Path("polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql").read_text()
+        )
+        source.execute("PRAGMA user_version = 32")
+        source.commit()
+    expected = audit_semantic_sha256(tmp_path / "audit.db")
+    coordinator = AuditContinuityCoordinator(tmp_path)
+
+    with pytest.raises(AuditContinuityError, match="post-migration binding"):
+        coordinator.is_available()
+    coordinator.bind_precontinuity_audit(
+        mutation_id=f"precontinuity-audit:{expected}", now_ms=1, audit_semantic_sha256=expected
+    )
+
+    assert coordinator.is_available()
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "audit.db") as audit:
+        assert (
+            source.execute(
+                "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
+            ).fetchone()
+            == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
+        )
+
+
+def test_precontinuity_binding_rejects_a_substituted_genesis_audit_image(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        audit.execute(
+            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('legacy:archive', 1, 1)"
+        )
+        audit.execute("DROP TABLE audit_continuity_head")
+        audit.execute("PRAGMA user_version = 1")
+        audit.executescript(Path("polylogue/storage/sqlite/migrations/audit/002_audit_continuity_head.sql").read_text())
+        audit.execute("PRAGMA user_version = 2")
+        audit.commit()
+    expected = audit_semantic_sha256(tmp_path / "audit.db")
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("DROP TABLE audit_continuity_control")
+        source.execute("PRAGMA user_version = 31")
+        source.executescript(
+            Path("polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql").read_text()
+        )
+        source.execute("PRAGMA user_version = 32")
+        source.commit()
+    replacement_root = tmp_path / "replacement"
+    initialize_active_archive_root(replacement_root)
+    with sqlite3.connect(replacement_root / "audit.db") as audit:
+        audit.execute(
+            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('substituted:archive', 1, 1)"
+        )
+        audit.commit()
+    (replacement_root / "audit.db").replace(tmp_path / "audit.db")
+
+    with pytest.raises(AuditContinuityError, match="differs from its authenticated migration evidence"):
+        AuditContinuityCoordinator(tmp_path).bind_precontinuity_audit(
+            mutation_id=f"precontinuity-audit:{expected}", now_ms=1, audit_semantic_sha256=expected
         )

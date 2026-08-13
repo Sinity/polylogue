@@ -1921,6 +1921,74 @@ def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
     assert reconcile_durable_change_train_startup(archive_root) == ()
 
 
+def test_adopted_audit_restore_republishes_before_reading_a_promoted_unreadable_audit(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry restores its verified image before authenticating a promoted rebind head."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = backup_archive(
+        output_dir=archive_root.parent / "promoted-missing-pre", profile="full_evidence", verify=True
+    )
+    assert pre_adoption.ok and pre_adoption.output_path is not None, pre_adoption.error
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:promoted-missing-adopt") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    verified = backup_archive(
+        output_dir=archive_root.parent / "promoted-missing-post", profile="full_evidence", verify=True
+    )
+    assert verified.ok and verified.output_path is not None, verified.error
+    audit_path.write_bytes(b"corrupt before promoted crash")
+    original_phase = AuditContinuityCoordinator._phase
+
+    def crash_after_source_promotion(self: AuditContinuityCoordinator, phase: str, mutation: object) -> None:
+        if getattr(mutation, "mutation_id", "").startswith("audit-restore:") and phase == "after_source_promotion":
+            raise RuntimeError("crash after restore source promotion")
+        original_phase(self, phase, mutation)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(AuditContinuityCoordinator, "_phase", crash_after_source_promotion)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:promoted-missing-crash") as owner:
+            with pytest.raises(RuntimeError, match="crash after restore source promotion"):
+                restore_adopted_audit_tier(
+                    audit_path,
+                    backup_manifest=Path(verified.output_path) / "manifest.json",
+                    directory_fd=owner.directory_fd,
+                    stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+                )
+
+    # The source promotion survived while the live authority image became
+    # unreadable. The retry must publish the verified backup before reading
+    # its continuity head.
+    audit_path.write_bytes(b"unreadable after promoted restore crash")
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:promoted-missing-retry") as owner:
+        receipt = restore_adopted_audit_tier(
+            audit_path,
+            backup_manifest=Path(verified.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    assert receipt.name.endswith(".committed.json")
+    with sqlite3.connect(archive_root / "source.db") as source, sqlite3.connect(audit_path) as audit:
+        assert (
+            source.execute(
+                "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
+            ).fetchone()
+            == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
+        )
+
+
 @pytest.mark.parametrize("order", ((ArchiveTier.AUDIT, ArchiveTier.SOURCE), (ArchiveTier.SOURCE, ArchiveTier.AUDIT)))
 def test_continuity_migrations_have_a_deployable_cross_tier_compatibility_window(
     workspace_env: dict[str, Path], order: tuple[ArchiveTier, ArchiveTier]
@@ -1962,6 +2030,45 @@ def test_continuity_migrations_have_a_deployable_cross_tier_compatibility_window
             assert probe.runtime_probe().startswith("standby")
         else:
             assert probe.runtime_probe() == "reconciled matching source/audit continuity heads"
+
+
+def test_populated_precontinuity_audit_upgrade_binds_authenticated_existing_content(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The real two-tier upgrade advances past genesis with the legacy journal's digest."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        audit.execute(
+            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('legacy:archive', 1, 1)"
+        )
+        audit.execute("DROP TABLE audit_continuity_head")
+        audit.execute("PRAGMA user_version = 1")
+        audit.commit()
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute("DROP TABLE audit_continuity_control")
+        source.execute("PRAGMA user_version = 31")
+        source.commit()
+    backup = backup_archive(
+        output_dir=archive_root.parent / "populated-precontinuity", profile="full_evidence", verify=True
+    )
+    assert backup.ok and backup.output_path is not None, backup.error
+    manifest = Path(backup.output_path) / "manifest.json"
+
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert migrate_archive_tier(audit, ArchiveTier.AUDIT, backup_manifest=manifest).applied_versions == (2,)
+    with sqlite3.connect(archive_root / "source.db") as source:
+        assert migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=manifest).applied_versions == (32,)
+
+    with sqlite3.connect(archive_root / "source.db") as source, sqlite3.connect(archive_root / "audit.db") as audit:
+        assert source.execute("SELECT committed_generation FROM audit_continuity_control").fetchone() == (1,)
+        assert audit.execute("SELECT generation, mutation_id FROM audit_continuity_head").fetchone()[0] == 1
+        assert str(audit.execute("SELECT mutation_id FROM audit_continuity_head").fetchone()[0]).startswith(
+            "precontinuity-audit:"
+        )
 
 
 def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(

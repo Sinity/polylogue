@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
@@ -37,7 +38,7 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.specs import OperationKind, OperationSpec
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
-from polylogue.storage.sqlite.audit_leaf import AuditLeafError, VerifiedAuditLeaf
+from polylogue.storage.sqlite.audit_leaf import AuditLeafError, VerifiedAuditLeaf, open_verified_audit_connection
 
 
 @dataclass
@@ -270,16 +271,25 @@ def test_audit_authority_rejects_a_foreign_owned_audit_leaf(tmp_path: Path, monk
     assert audit_path.read_bytes() == before
 
 
-def test_audit_leaf_uses_dev_fd_alias_without_proc(tmp_path: Path) -> None:
-    """Descriptor-bound audit access remains available on macOS-style hosts.
+def test_audit_leaf_uses_the_verified_native_directory_when_descriptor_children_are_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A portable native descriptor path is used before pseudo-filesystem traversal.
 
-    Anti-vacuity: restoring the Linux-only alias makes this descriptor-bound
-    route expose ``/proc/self/fd`` instead of the portable ``/dev/fd`` path.
+    Anti-vacuity: removing the F_GETPATH-style route makes this macOS-shaped
+    host fail closed because neither pseudo-filesystem child is available.
     """
 
     initialize_active_archive_root(tmp_path)
+
+    def native_path_from_descriptor(_fd: int, _request: int, _buffer: bytes) -> bytes:
+        return os.fsencode(tmp_path) + b"\0"
+
+    monkeypatch.setattr(VerifiedAuditLeaf, "_descriptor_child_path", lambda _self: None)
+    monkeypatch.setattr("polylogue.storage.sqlite.audit_leaf.fcntl.F_GETPATH", 50, raising=False)
+    monkeypatch.setattr("polylogue.storage.sqlite.audit_leaf.fcntl.fcntl", native_path_from_descriptor)
     with VerifiedAuditLeaf(tmp_path) as leaf:
-        assert str(leaf.anchored_path).startswith("/dev/fd/")
+        assert leaf.anchored_path == tmp_path / "audit.db"
 
 
 def test_audit_leaf_closes_its_directory_descriptor_after_validation_failure(tmp_path: Path) -> None:
@@ -298,6 +308,88 @@ def test_audit_leaf_closes_its_directory_descriptor_after_validation_failure(tmp
         leaf.__enter__()
 
     assert leaf._directory_fd is None
+    assert leaf._leaf_fd is None
+
+
+def test_audit_leaf_rejects_a_foreign_sidecar_without_leaking_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SQLite namespace is validated with the main leaf before any writer opens.
+
+    Anti-vacuity: checking only audit.db accepts this foreign-owned WAL leaf
+    and lets SQLite consume attacker-controlled sidecar bytes.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    sidecar = tmp_path / "audit.db-wal"
+    sidecar.write_bytes(b"not a sqlite wal")
+    leaf = VerifiedAuditLeaf(tmp_path)
+    real_stat = sidecar.stat()
+    real_os_stat = os.stat
+
+    def foreign_sidecar_metadata(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes], *args: Any, **kwargs: Any
+    ) -> os.stat_result:
+        metadata = real_os_stat(path, *args, **kwargs)
+        if path == "audit.db-wal":
+            values = list(metadata)
+            values[4] = real_stat.st_uid + 1
+            return os.stat_result(values)
+        return metadata
+
+    monkeypatch.setattr("polylogue.storage.sqlite.audit_leaf.os.stat", foreign_sidecar_metadata)
+
+    with pytest.raises(AuditLeafError, match="sidecar.*current effective user"):
+        leaf.__enter__()
+
+    assert leaf._directory_fd is None
+    assert leaf._leaf_fd is None
+
+
+def test_audit_leaf_rejects_group_writable_archive_directory(tmp_path: Path) -> None:
+    """A second Unix principal cannot plant an SQLite sidecar in the authority namespace."""
+
+    initialize_active_archive_root(tmp_path)
+    tmp_path.chmod(0o770)
+    leaf = VerifiedAuditLeaf(tmp_path)
+
+    with pytest.raises(AuditLeafError, match="directory must not be writable by group or other"):
+        leaf.__enter__()
+
+    assert leaf._directory_fd is None
+    assert leaf._leaf_fd is None
+
+
+def test_audit_leaf_rejects_group_writable_main_and_sidecar_files(tmp_path: Path) -> None:
+    """UID equality alone cannot grant exclusive write authority over SQLite files."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    audit_path.chmod(0o660)
+    with pytest.raises(AuditLeafError, match="audit tier must not be writable by group or other"):
+        VerifiedAuditLeaf(tmp_path).__enter__()
+
+    audit_path.chmod(0o600)
+    sidecar = tmp_path / "audit.db-wal"
+    sidecar.write_bytes(b"not a sqlite wal")
+    sidecar.chmod(0o660)
+    with pytest.raises(AuditLeafError, match="sidecar must not be writable by group or other"):
+        VerifiedAuditLeaf(tmp_path).__enter__()
+
+
+def test_audit_leaf_serializes_writers_across_the_main_and_sidecar_namespace(tmp_path: Path) -> None:
+    """A second writer cannot validate then race the first SQLite namespace owner.
+
+    Anti-vacuity: without the nonblocking main-leaf lock, both contexts open
+    and can independently create or replace the audit sidecar namespace.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    with open_verified_audit_connection(audit_path):
+        with pytest.raises(AuditLeafError, match="active writer"):
+            with open_verified_audit_connection(audit_path):
+                pass
 
 
 def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
@@ -483,6 +575,46 @@ def test_audit_repository_replays_a_prepared_mutation_with_its_original_inputs(
         )
 
 
+def test_replayed_start_keeps_the_crashed_owner_recoverable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recovery never adopts an actuator-less pre-effect attempt into its own process."""
+
+    initialize_active_archive_root(tmp_path)
+    crashed_owner = "pid:999999999:0"
+    first = AuditRepository.for_archive_root(tmp_path, attempt_owner_id=crashed_owner)
+    executor = OperationExecutor(audit=first, token_factory=lambda: "replayed-owner-token")
+    preview = executor.prepare_bound(
+        _binding(_Actuator()),
+        object(),
+        _principal(),
+        archive_instance_id="archive:replayed-owner",
+        archive_identity_digest="identity:replayed-owner",
+        parameter_digest="params:replayed-owner",
+    )
+    authorization = executor.authorize_bound(_binding(_Actuator()), preview, _principal())
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_start(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "consume_authorization_and_start" and phase == "after_source_prepare":
+            raise RuntimeError("crash after start prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_start)
+    with pytest.raises(RuntimeError, match="crash after start prepare"):
+        first.consume_authorization_and_start(preview, authorization)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    recovery = AuditRepository.for_archive_root(tmp_path, attempt_owner_id="pid:12345:recovery")
+    recovery.reconcile_continuity()
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        operation_id = str(conn.execute("SELECT operation_id FROM operation_runs").fetchone()[0])
+        assert conn.execute(
+            "SELECT worker_id FROM operation_attempts WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == (crashed_owner,)
+
+    assert recovery.recover_abandoned_attempts() == (operation_id,)
+    assert recovery.get_operation(operation_id)["status"] == "interrupted"  # type: ignore[index]
+
+
 def test_optional_archive_authority_id_replays_without_changing_existing_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -642,6 +774,122 @@ def test_expired_authorization_is_durably_marked_before_execute_refuses(
 
     with sqlite3.connect(tmp_path / "audit.db") as conn:
         assert conn.execute("SELECT state FROM operation_authorizations").fetchone() == ("expired",)
+
+
+def test_authorization_expiry_is_canonicalized_from_the_durable_preview(tmp_path: Path) -> None:
+    """A caller cannot issue a longer-lived bearer than the preview authorizes.
+
+    Anti-vacuity: storing ``authorization.expires_at_ms`` accepts the forged
+    expiry and leaves an authorization row that outlives its durable preview.
+    """
+
+    audit = _audit(tmp_path)
+    clock = [1_000]
+    executor = OperationExecutor(audit=audit, now_ms=lambda: clock[0], token_factory=lambda: "canonical-expiry")
+    preview = executor.prepare_bound(
+        _binding(_Actuator()),
+        object(),
+        _principal(),
+        archive_instance_id="archive:canonical-expiry",
+        archive_identity_digest="identity:canonical-expiry",
+        parameter_digest="params:canonical-expiry",
+        expires_at_ms=2_000,
+    )
+    authorization = executor.authorize_bound(_binding(_Actuator()), preview, _principal())
+
+    with pytest.raises(ValueError, match="evidence differs"):
+        audit.issue_authorization(
+            preview,
+            _principal(),
+            replace(authorization, token="forged-expiry", expires_at_ms=3_000),
+            issued_at_ms=1_100,
+        )
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT expires_at_ms FROM operation_previews").fetchone() == (2_000,)
+        assert conn.execute("SELECT expires_at_ms FROM operation_authorizations").fetchone() == (2_000,)
+
+
+def test_authorization_consumption_uses_durable_actor_and_capability_evidence(tmp_path: Path) -> None:
+    """Execution refuses reconstructed authority that differs from durable rows.
+
+    Anti-vacuity: persisting run fields from the caller object records this
+    substituted actor/capability instead of the issued authorization evidence.
+    """
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "durable-evidence")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:durable-evidence",
+        archive_identity_digest="identity:durable-evidence",
+        parameter_digest="params:durable-evidence",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    forged = replace(
+        authorization,
+        actor="actor:substituted",
+        role="administrator",
+        capability="archive.substituted.write",
+        capabilities=("archive.substituted.write",),
+    )
+
+    with pytest.raises(ValueError, match="principal mismatch"):
+        audit.consume_authorization_and_start(preview, forged)
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM operation_runs").fetchone() == (0,)
+        assert conn.execute("SELECT state FROM operation_authorizations").fetchone() == ("active",)
+        assert conn.execute("SELECT actor_ref FROM operation_authorizations").fetchone() == ("actor:test",)
+        assert conn.execute("SELECT capability FROM operation_authorization_capabilities").fetchone() == (
+            "archive.fixture.write",
+        )
+
+
+def test_authorization_replay_preserves_the_prepared_expiry_and_issue_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retried WAL authorization reuses its prepared durable evidence verbatim.
+
+    Anti-vacuity: omitting ``issued_at_ms`` during replay silently substitutes
+    the recovery clock and can make an authorization valid longer than the
+    original prepared command proved.
+    """
+
+    audit = _audit(tmp_path)
+    clock = [1_000]
+    executor = OperationExecutor(audit=audit, now_ms=lambda: clock[0], token_factory=lambda: "replayed-expiry")
+    preview = executor.prepare_bound(
+        _binding(_Actuator()),
+        object(),
+        _principal(),
+        archive_instance_id="archive:replayed-expiry",
+        archive_identity_digest="identity:replayed-expiry",
+        parameter_digest="params:replayed-expiry",
+        expires_at_ms=2_000,
+    )
+    original_abort = AuditContinuityCoordinator._abort_prepared
+
+    def interrupt_issue(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "issue_authorization" and phase == "after_source_prepare":
+            raise RuntimeError("crash after authorization prepare")
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_issue)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_abort_prepared", lambda _self, _prepared: None)
+    with pytest.raises(RuntimeError, match="authorization prepare"):
+        executor.authorize_bound(_binding(_Actuator()), preview, _principal())
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_abort_prepared", original_abort)
+    audit.reconcile_continuity()
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT issued_at_ms, expires_at_ms FROM operation_authorizations").fetchone() == (
+            1_000,
+            2_000,
+        )
 
 
 def test_already_satisfied_receipt_preserves_target_state_and_zero_affected_count(tmp_path: Path) -> None:
