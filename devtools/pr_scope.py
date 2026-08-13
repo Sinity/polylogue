@@ -459,9 +459,39 @@ def validate_carrier(
     if not isinstance(scope_digest, str) or scope_digest != expected_scope_digest:
         reasons.append("carrier scope_digest does not match its canonical content")
 
-    records: dict[str, dict[str, Any]] = {}
+    candidate_records: dict[str, dict[str, Any]] = {}
     try:
-        records = _bead_records_at(bead_revision) if bead_revision is not None else load_bead_records(beads_path)
+        candidate_records = (
+            _bead_records_at(bead_revision) if bead_revision is not None else load_bead_records(beads_path)
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        reasons.append(f"cannot resolve candidate Bead records: {exc}")
+
+    actual_mutations: list[str] = []
+    if base_sha is not None:
+        try:
+            actual_mutations = changed_bead_ids(base_sha=base_sha, head_sha=bead_revision or head_sha)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            reasons.append(f"cannot resolve Bead mutation scope: {exc}")
+        else:
+            if is_v1 and actual_mutations:
+                reasons.append("legacy v1 carrier cannot omit Bead mutations; render a v2 carrier")
+            elif not is_v1 and actual_mutations != sorted(mutated_ids):
+                reasons.append("mutated_beads does not match the complete Bead mutation set")
+
+    records = candidate_records
+    if base_sha is not None:
+        try:
+            records = _bead_records_at(base_sha)
+            for bead_id in actual_mutations:
+                if bead_id in candidate_records:
+                    records[bead_id] = candidate_records[bead_id]
+                else:
+                    records.pop(bead_id, None)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            reasons.append(f"cannot resolve prospective Bead state: {exc}")
+
+    try:
         missing_assigned = [bead_id for bead_id in assigned_ids if bead_id not in records]
         if missing_assigned:
             reasons.append(f"assigned Bead record(s) missing: {', '.join(missing_assigned)}")
@@ -479,43 +509,11 @@ def validate_carrier(
         reasons.append(f"cannot resolve declared Bead records: {exc}")
     if is_v1 and expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
         reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
-    actual_mutations: list[str] = []
-    if base_sha is not None:
-        try:
-            actual_mutations = changed_bead_ids(base_sha=base_sha, head_sha=bead_revision or head_sha)
-        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
-            reasons.append(f"cannot resolve Bead mutation scope: {exc}")
-        else:
-            if is_v1 and actual_mutations:
-                reasons.append("legacy v1 carrier cannot omit Bead mutations; render a v2 carrier")
-            elif not is_v1 and actual_mutations != sorted(mutated_ids):
-                reasons.append("mutated_beads does not match the complete Bead mutation set")
-
-    disposition_records = records
     dispositions = carrier.get("dispositions")
-    disposition_entries = dispositions if isinstance(dispositions, list) else []
-    successor_ids = {
-        successor
-        for entry in disposition_entries
-        if isinstance(entry, dict)
-        for successor in entry.get("successors", [])
-        if isinstance(entry.get("successors"), list) and isinstance(successor, str)
-    }
-    if base_sha is not None and successor_ids:
-        try:
-            disposition_records = _bead_records_at(base_sha)
-            for bead_id in actual_mutations:
-                if bead_id in records:
-                    disposition_records[bead_id] = records[bead_id]
-                else:
-                    disposition_records.pop(bead_id, None)
-        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
-            reasons.append(f"cannot resolve prospective Bead state: {exc}")
-
     _validate_dispositions(
         dispositions,
         assigned_ids=assigned_ids,
-        records=disposition_records,
+        records=records,
         reasons=reasons,
     )
     return ScopeVerdict(

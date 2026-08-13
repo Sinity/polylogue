@@ -899,6 +899,7 @@ def test_sync_reports_a_head_bound_attestation_without_rewriting_the_body(
     monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
     monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _revision: pr_scope.load_bead_records(beads_path))
     monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     assert pr_scope.main(["sync", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)]) == 0
@@ -960,6 +961,7 @@ def test_pr_check_uses_public_github_rest_without_cli_auth(
     monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
     monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _revision: pr_scope.load_bead_records(beads_path))
 
     exit_code = pr_scope.main(["check", "--pr", "42", "--repo", "Sinity/polylogue", "--beads-path", str(beads_path)])
 
@@ -1290,6 +1292,7 @@ def test_ci_check_bootstraps_once_when_base_has_no_validator(
     )
     monkeypatch.setattr(pr_scope, "fetch_base_validator_source", lambda **_kwargs: None)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _revision: pr_scope.load_bead_records(beads_path))
     monkeypatch.setattr(pr_scope, "_beads_snapshot_matches_head", lambda _path: True)
 
     assert (
@@ -1480,6 +1483,27 @@ def test_check_uses_prospective_merge_state_for_residual_successor(
 
     assert not verdict.ok
     assert any(f"successor {OPEN_SUCCESSOR} is closed" in reason for reason in verdict.reasons)
+
+
+def test_check_uses_prospective_merge_state_for_assigned_bead(
+    monkeypatch: pytest.MonkeyPatch, beads_path: Path
+) -> None:
+    head_records = [_record(ASSIGNED)]
+    beads_path.write_text(json.dumps(head_records[0]) + "\n")
+    carrier = pr_scope.build_carrier(_input(), head_sha=HEAD_SHA, beads_path=beads_path)
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _revision: {})
+
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        base_sha="b" * 40,
+    )
+
+    assert not verdict.ok
+    assert f"assigned Bead record(s) missing: {ASSIGNED}" in verdict.reasons
 
 
 def test_check_rejects_stale_canonical_beads_digest(
