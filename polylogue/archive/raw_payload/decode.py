@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal, TypeAlias, cast
@@ -79,6 +80,56 @@ class RawPayloadEnvelope:
     malformed_jsonl_detail: str | None = None
 
 
+@dataclass(frozen=True)
+class JSONLSessionArtifactScan:
+    """Bounded records that supplied a stream's positive session evidence."""
+
+    artifact: ArtifactClassification | None
+    sample: tuple[JSONValue, ...] = ()
+    oversized_records: int = 0
+
+
+def _bounded_raw_lines(
+    stream: IO[bytes] | IO[str],
+    *,
+    max_record_bytes: int | None,
+) -> Iterator[tuple[bytes | str | None, bool]]:
+    """Yield complete lines without allocating beyond an optional record cap.
+
+    Oversized records are consumed in bounded chunks and represented as
+    ``(None, True)`` so callers can continue at the next newline.
+    """
+    if max_record_bytes is None:
+        for raw_line in stream:
+            yield raw_line, False
+        return
+    if max_record_bytes < 1:
+        raise ValueError("max_record_bytes must be positive")
+
+    read_size = max_record_bytes + 1
+    while True:
+        raw_line = stream.readline(read_size)
+        if not raw_line:
+            return
+        has_newline = raw_line.endswith(b"\n") if isinstance(raw_line, bytes) else raw_line.endswith("\n")
+        if has_newline:
+            if len(raw_line) > max_record_bytes:
+                yield None, True
+            else:
+                yield raw_line, False
+            continue
+        if len(raw_line) <= max_record_bytes:
+            yield raw_line, False
+            return
+
+        while raw_line:
+            has_newline = raw_line.endswith(b"\n") if isinstance(raw_line, bytes) else raw_line.endswith("\n")
+            if has_newline:
+                break
+            raw_line = stream.readline(read_size)
+        yield None, True
+
+
 def _decode_jsonl_payload(
     raw: Path | bytes | str,
     *,
@@ -133,6 +184,7 @@ def _sample_jsonl_payload_with_detail(
     max_samples: int = 64,
     jsonl_dict_only: bool = False,
     scan_full: bool = True,
+    max_record_bytes: int | None = None,
 ) -> tuple[list[JSONValue], int, str | None]:
     """Collect a bounded sample of valid JSONL records.
 
@@ -148,8 +200,15 @@ def _sample_jsonl_payload_with_detail(
     line_number = 0
 
     with raw_line_stream(raw) as stream:
-        for raw_line in stream:
+        for raw_line, oversized in _bounded_raw_lines(stream, max_record_bytes=max_record_bytes):
             line_number += 1
+            if oversized:
+                malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: record exceeds inspection byte bound"
+                first_line = False
+                continue
+            assert raw_line is not None
             try:
                 line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:
@@ -183,22 +242,32 @@ def _sample_jsonl_payload_with_detail(
     return samples, malformed_lines, malformed_detail
 
 
-def jsonl_session_artifact(
+def scan_jsonl_session_artifact(
     raw: Path | bytes | str | IO[bytes] | IO[str],
     *,
     provider: Provider,
     jsonl_dict_only: bool = False,
-) -> ArtifactClassification | None:
-    """Stream JSONL until one decoded record proves session eligibility.
+    source_path: str | Path | None = None,
+    max_record_bytes: int | None = None,
+) -> JSONLSessionArtifactScan:
+    """Stream JSONL until bounded decoded records prove session eligibility.
 
     Terminal artifact admission must not let an arbitrary prefix of
-    non-conversational records hide a later session record. This retains a
-    rolling 32-record window, including for blob-backed multi-gigabyte JSONL.
+    non-conversational records hide a later session record. The rolling window
+    retains at most 32 decoded records. When ``max_record_bytes`` is supplied,
+    oversized records are discarded in chunks so a later record remains
+    inspectable without allocating the oversized line.
     """
     records: deque[JSONValue] = deque(maxlen=32)
     first_line = True
+    oversized_records = 0
     with raw_line_stream(raw) as stream:
-        for raw_line in stream:
+        for raw_line, oversized in _bounded_raw_lines(stream, max_record_bytes=max_record_bytes):
+            if oversized:
+                oversized_records += 1
+                first_line = False
+                continue
+            assert raw_line is not None
             try:
                 line = _decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError:
@@ -218,10 +287,29 @@ def jsonl_session_artifact(
             records.append(payload)
             window = list(records)
             for start in range(len(window)):
-                artifact = classify_artifact(window[start:], provider=provider)
+                sample = window[start:]
+                artifact = classify_artifact(sample, provider=provider, source_path=source_path)
                 if artifact.parse_as_session:
-                    return artifact
-    return None
+                    return JSONLSessionArtifactScan(
+                        artifact=artifact,
+                        sample=tuple(sample),
+                        oversized_records=oversized_records,
+                    )
+    return JSONLSessionArtifactScan(artifact=None, oversized_records=oversized_records)
+
+
+def jsonl_session_artifact(
+    raw: Path | bytes | str | IO[bytes] | IO[str],
+    *,
+    provider: Provider,
+    jsonl_dict_only: bool = False,
+) -> ArtifactClassification | None:
+    """Compatibility wrapper for callers that only need classification."""
+    return scan_jsonl_session_artifact(
+        raw,
+        provider=provider,
+        jsonl_dict_only=jsonl_dict_only,
+    ).artifact
 
 
 def sample_jsonl_payload(
@@ -482,8 +570,10 @@ __all__ = [
     "JSONRecord",
     "JSONValue",
     "RawPayloadEnvelope",
+    "JSONLSessionArtifactScan",
     "WireFormat",
     "build_raw_payload_envelope",
     "jsonl_session_artifact",
+    "scan_jsonl_session_artifact",
     "sample_jsonl_payload",
 ]

@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import (
-    ArtifactClassification,
     ArtifactKind,
     classify_artifact_path,
     strong_path_classification,
@@ -19,7 +18,7 @@ from polylogue.archive.raw_payload import (
     RawPayloadEnvelope,
     build_raw_payload_envelope,
 )
-from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+from polylogue.archive.raw_payload.decode import JSONLSessionArtifactScan, scan_jsonl_session_artifact
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
@@ -185,16 +184,18 @@ def _complete_stream_session_artifact(
     *,
     provider: Provider,
     blob_store: BlobStore,
-) -> ArtifactClassification | None:
+) -> JSONLSessionArtifactScan | None:
     """Recover positive stream evidence hidden by bounded inspection."""
     if not _prefers_json_stream(record.source_path) or provider not in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return None
     path_artifact = strong_path_classification(record.source_path, provider=provider)
     if path_artifact is not None and not path_artifact.parse_as_session:
         return None
-    return jsonl_session_artifact(
+    return scan_jsonl_session_artifact(
         blob_store.blob_path(_record_blob_ref(record)),
         provider=provider,
+        source_path=record.source_path,
+        max_record_bytes=_INSPECTION_PREFIX_BYTES,
     )
 
 
@@ -297,6 +298,7 @@ def _full_scan_malformed_jsonl(record: RawSessionRecord, *, blob_store: BlobStor
             max_samples=1,
             jsonl_dict_only=False,
             scan_full=True,
+            max_record_bytes=_INSPECTION_PREFIX_BYTES,
         )
     except ValueError:
         # No valid JSONL records at all — leave the decision to the prefix-based
@@ -361,30 +363,43 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
             envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
         except Exception:
             stream_provider = Provider.from_string(provider_token)
-            recovered_artifact = _complete_stream_session_artifact(
+            recovered_scan = _complete_stream_session_artifact(
                 record,
                 provider=stream_provider,
                 blob_store=resolved_blob_store,
             )
-            if recovered_artifact is None:
+            if recovered_scan is None or recovered_scan.artifact is None:
                 raise
             envelope = RawPayloadEnvelope(
-                payload=[],
+                payload=list(recovered_scan.sample),
                 provider=stream_provider,
                 wire_format="jsonl",
-                artifact=recovered_artifact,
+                artifact=recovered_scan.artifact,
+                malformed_jsonl_lines=recovered_scan.oversized_records,
+                malformed_jsonl_detail=(
+                    "one or more records exceeded the inspection byte bound"
+                    if recovered_scan.oversized_records
+                    else None
+                ),
             )
         payload_provider = envelope.provider
         artifact = envelope.artifact
         if not artifact.parse_as_session:
-            artifact = (
-                _complete_stream_session_artifact(
-                    record,
-                    provider=payload_provider,
-                    blob_store=resolved_blob_store,
-                )
-                or artifact
+            recovered_scan = _complete_stream_session_artifact(
+                record,
+                provider=payload_provider,
+                blob_store=resolved_blob_store,
             )
+            if recovered_scan is not None and recovered_scan.artifact is not None:
+                envelope = RawPayloadEnvelope(
+                    payload=list(recovered_scan.sample),
+                    provider=payload_provider,
+                    wire_format="jsonl",
+                    artifact=recovered_scan.artifact,
+                    malformed_jsonl_lines=envelope.malformed_jsonl_lines,
+                    malformed_jsonl_detail=envelope.malformed_jsonl_detail,
+                )
+                artifact = envelope.artifact
         resolution: SchemaResolution | None = None
         has_supported_resolution = False
 

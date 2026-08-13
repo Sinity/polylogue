@@ -8,11 +8,15 @@ tests preserve both duties without weakening definitive sidecar exclusions.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.raw_payload.decode import scan_jsonl_session_artifact
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.core.json import JSONValue
+from polylogue.schemas.observation import schema_cluster_id
 from polylogue.storage.artifacts.inspection import (
     _INSPECTION_PREFIX_BYTES,
     inspect_raw_artifact,
@@ -158,6 +162,74 @@ def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_
     assert observation.artifact_kind == "session_record_stream"
     assert observation.wire_format == "jsonl"
     assert observation.decode_error is None
+    expected_message: JSONValue = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "id": "message-1",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}],
+        },
+    }
+    assert observation.cohort_id == schema_cluster_id([expected_message], "session_record_stream")
+
+
+def test_recovery_reader_discards_oversized_record_in_bounded_chunks() -> None:
+    class BoundedReadlineStream(BytesIO):
+        def readline(self, size: int | None = -1, /) -> bytes:
+            assert isinstance(size, int)
+            assert 0 < size <= _INSPECTION_PREFIX_BYTES + 1
+            return super().readline(size)
+
+    oversized = b'{"ignored":"' + (b"x" * (_INSPECTION_PREFIX_BYTES * 3)) + b'"}\n'
+    message = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+        b'"role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+
+    scan = scan_jsonl_session_artifact(
+        BoundedReadlineStream(oversized + message),
+        provider=Provider.CODEX,
+        source_path="codex/bounded.jsonl",
+        max_record_bytes=_INSPECTION_PREFIX_BYTES,
+    )
+
+    assert scan.artifact is not None
+    assert scan.artifact.parse_as_session is True
+    assert scan.oversized_records == 1
+    assert len(scan.sample) == 1
+
+
+def test_recovered_stream_retains_subagent_artifact_kind(blob_store: BlobStore) -> None:
+    oversized = b'{"ignored":"' + (b"x" * (_INSPECTION_PREFIX_BYTES * 2)) + b'"}\n'
+    message = (
+        b'{"parentUuid":null,"type":"user","sessionId":"agent-session",'
+        b'"message":{"role":"user","content":"hello"},'
+        b'"uuid":"user-1","timestamp":"2026-01-01T00:00:00Z"}\n'
+    )
+    record = _write_record(
+        blob_store,
+        content=oversized + message,
+        source_path="projects/project/subagents/agent-abcd.jsonl",
+    )
+
+    observation = inspect_raw_artifact(record)
+
+    assert observation.parse_as_session is True
+    assert observation.artifact_kind == "agent_transcript"
+    assert observation.cohort_id == schema_cluster_id(
+        [
+            {
+                "parentUuid": None,
+                "type": "user",
+                "sessionId": "agent-session",
+                "message": {"role": "user", "content": "hello"},
+                "uuid": "user-1",
+                "timestamp": "2026-01-01T00:00:00Z",
+            }
+        ],
+        "agent_transcript",
+    )
 
 
 def test_rolling_scan_preserves_tool_result_sidecar_exclusion(blob_store: BlobStore) -> None:
