@@ -373,6 +373,65 @@ def test_serial_owner():
     assert "assert 0 == 42" in third.stderr
 
 
+def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    semantic = repo / "polylogue" / "archive" / "semantic"
+    data = semantic / "data"
+    data.mkdir(parents=True)
+    for package in (repo / "polylogue", repo / "polylogue" / "archive", semantic):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    pricing_data = data / "litellm_model_prices.json"
+    pricing_data.write_text('{"test-model": {"input_cost_per_token": 42}}\n', encoding="utf-8")
+    (semantic / "pricing.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n\n"
+        "def input_price() -> int:\n"
+        "    path = Path(__file__).parent / 'data' / 'litellm_model_prices.json'\n"
+        "    return int(json.loads(path.read_text(encoding='utf-8'))['test-model']['input_cost_per_token'])\n",
+        encoding="utf-8",
+    )
+    (repo / "tests" / "test_pricing.py").write_text(
+        "import pytest\n\n"
+        "def test_parallel_pricing_owner():\n"
+        "    from polylogue.archive.semantic.pricing import input_price\n"
+        "    assert input_price() == 42\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_pricing_owner():\n"
+        "    from polylogue.archive.semantic.pricing import input_price\n"
+        "    assert input_price() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    seeded, bootstrap = _run_production_verify(repo)
+    assert seeded.returncode == 0, seeded.stderr
+    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+
+    pricing_data.write_text('{"test-model": {"input_cost_per_token": 0}}\n', encoding="utf-8")
+    completed, mutated = _run_production_verify(repo)
+
+    assert completed.returncode == 1
+    assert mutated["testmon_environment"]["selection_mode"] == "full"
+    assert mutated["testmon_environment"]["runtime_data_paths"] == [
+        "polylogue/archive/semantic/data/litellm_model_prices.json"
+    ]
+    assert mutated["pytest_aggregate"]["selected_union_count"] == 2
+    assert mutated["pytest_aggregate"]["terminal_union_count"] == 2
+    assert mutated["release_baseline_allowed"] is False
+    assert [step["semantic_lane"] for step in mutated["steps"] if step.get("semantic_lane")] == [
+        "parallel",
+        "serial",
+    ]
+    assert "assert 0 == 42" in completed.stderr
+
+
 def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -> None:
     main = tmp_path / "main"
     main.mkdir()

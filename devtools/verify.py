@@ -62,7 +62,7 @@ from devtools.testmon_bootstrap import (
     NativeTestmonPreparation,
     NativeTestmonRepairError,
     NativeTestmonState,
-    executable_python_paths,
+    classify_native_testmon_changes,
     inspect_native_testmon_environment,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
@@ -2624,6 +2624,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     relevant_paths: tuple[str, ...] = ()
     required_executable_paths: tuple[str, ...] = ()
+    runtime_data_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
     testmon_mode: str | None = None
     if pytest_enabled:
@@ -2631,7 +2632,9 @@ def _main(argv: list[str] | None = None) -> int:
         assert head is not None
         try:
             relevant_paths = _changed_test_relevant_paths(base_commit, head)
-            required_executable_paths = executable_python_paths(ROOT, relevant_paths)
+            change_impact = classify_native_testmon_changes(ROOT, relevant_paths)
+            required_executable_paths = change_impact.executable_paths
+            runtime_data_paths = change_impact.runtime_data_paths
             preparation = prepare_native_testmon_environment(
                 ROOT,
                 required_executable_paths=required_executable_paths,
@@ -2666,7 +2669,7 @@ def _main(argv: list[str] | None = None) -> int:
                 mutation_monitor=mutation_monitor,
                 initial_worktree_fingerprint=checkout_fingerprint,
             )
-        testmon_mode = "full" if full_requested else preparation.selection_mode
+        testmon_mode = "full" if full_requested or runtime_data_paths else preparation.selection_mode
         if preparation.removed_paths:
             sys.stderr.write(
                 "verify: repaired invalid native pytest-testmon state by removing only "
@@ -2677,6 +2680,12 @@ def _main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"verify: copied matching native pytest-testmon DB from {preparation.copied_from}\n")
         elif preparation.selection_mode == "bootstrap":
             sys.stderr.write("verify: native pytest-testmon environment is empty; plain verify will build it\n")
+        if runtime_data_paths and not full_requested:
+            sys.stderr.write(
+                "verify: changed package runtime data is outside Python tracing; running the complete corpus: "
+                + ", ".join(runtime_data_paths)
+                + "\n"
+            )
 
     planned_scope = _planned_verification_scope(args, testmon_mode=testmon_mode)
     _ACTIVE_VERIFY_RUN = (verify_run, started_at, planned_scope)
@@ -2927,6 +2936,7 @@ def _main(argv: list[str] | None = None) -> int:
             "selection_mode": testmon_mode,
             "copied_from": str(preparation.copied_from) if preparation.copied_from is not None else None,
             "required_executable_paths": list(required_executable_paths),
+            "runtime_data_paths": list(runtime_data_paths),
         }
     if pytest_aggregate is not None:
         history_entry["pytest_aggregate"] = pytest_aggregate

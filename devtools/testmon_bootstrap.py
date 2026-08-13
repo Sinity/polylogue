@@ -101,6 +101,14 @@ class NativeTestmonPreparation:
     main_checkout: Path | None
 
 
+@dataclass(frozen=True, slots=True)
+class NativeTestmonChangeImpact:
+    """Changed inputs that native Python tracing can and cannot select."""
+
+    executable_paths: tuple[str, ...]
+    runtime_data_paths: tuple[str, ...]
+
+
 class NativeTestmonRepairError(RuntimeError):
     """The exact derived testmon state could not be repaired safely."""
 
@@ -365,6 +373,27 @@ def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str,
         if not source.is_file() or classify_source_ast(source) != "declaration-only":
             executable.append(relative)
     return tuple(executable)
+
+
+def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> NativeTestmonChangeImpact:
+    """Classify changed product inputs against native testmon's trace boundary.
+
+    Pytest-testmon records Python execution. Every non-Python file inside the
+    shipped ``polylogue`` package is therefore package-owned runtime data and
+    cannot safely use affected selection. The caller must run the complete
+    native corpus for those changes. This convention covers additions,
+    deletions, and all package-data formats without a filename registry.
+    """
+    normalized = tuple(relative for raw in sorted(set(paths)) if (relative := _safe_relative_path(raw)) is not None)
+    runtime_data = tuple(
+        relative
+        for relative in normalized
+        if PurePosixPath(relative).parts[0] == "polylogue" and not relative.endswith(".py")
+    )
+    return NativeTestmonChangeImpact(
+        executable_paths=executable_python_paths(repo_root, normalized),
+        runtime_data_paths=runtime_data,
+    )
 
 
 def _readonly_uri(path: Path) -> str:
@@ -681,11 +710,13 @@ __all__ = [
     "ASTClassification",
     "NativeTestmonEnvironment",
     "NativeTestmonDeadlineError",
+    "NativeTestmonChangeImpact",
     "NativeTestmonPreparation",
     "NativeTestmonRepairError",
     "NativeTestmonState",
     "TESTMON_DATA_RELPATH",
     "classify_source_ast",
+    "classify_native_testmon_changes",
     "executable_python_paths",
     "inspect_native_testmon_environment",
     "linked_worktree_info",

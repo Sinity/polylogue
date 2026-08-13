@@ -7,6 +7,7 @@ import pytest
 from devtools.testmon_bootstrap import (
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
+    classify_native_testmon_changes,
     classify_source_ast,
     executable_python_paths,
     remove_invalid_native_testmon_state,
@@ -61,6 +62,31 @@ def test_executable_paths_require_current_runtime_modules_but_allow_deletion(tmp
     ) == (
         "polylogue/malformed.py",
         "polylogue/runtime.py",
+    )
+
+
+def test_package_runtime_data_changes_force_full_native_selection(tmp_path: Path) -> None:
+    runtime = tmp_path / "polylogue" / "archive" / "semantic" / "data" / "prices.json"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("{}\n", encoding="utf-8")
+    declaration = runtime.with_name("types.pyi")
+    declaration.write_text("VALUE: int\n", encoding="utf-8")
+
+    impact = classify_native_testmon_changes(
+        tmp_path,
+        (
+            "polylogue/archive/semantic/data/prices.json",
+            "polylogue/archive/semantic/data/deleted.json",
+            "polylogue/archive/semantic/data/types.pyi",
+            "docs/prices.json",
+        ),
+    )
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == (
+        "polylogue/archive/semantic/data/deleted.json",
+        "polylogue/archive/semantic/data/prices.json",
+        "polylogue/archive/semantic/data/types.pyi",
     )
 
 
