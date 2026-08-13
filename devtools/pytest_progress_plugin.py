@@ -12,6 +12,8 @@ import contextlib
 import json
 import os
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,90 @@ _CONTROLLER_COLLECTION_PAYLOAD: dict[str, Any] | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
+_ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
+
+
+@dataclass
+class _SessionState:
+    deselected_nodeids_sample: list[str]
+    deselected_count: int
+    selected_count: int
+    slowest_reports: list[dict[str, Any]]
+    recorded_report_keys: set[tuple[int, str, str, str, float]]
+    collection_started_at: float | None
+    collection_duration_s: float | None
+    controller_collection_payload: dict[str, Any] | None
+    artifact_environment: dict[str, str | None]
+
+
+_SESSION_STATE_STACK: list[_SessionState] = []
+
+
+def _capture_session_state() -> _SessionState:
+    return _SessionState(
+        deselected_nodeids_sample=list(_DESELECTED_NODEIDS_SAMPLE),
+        deselected_count=_DESELECTED_COUNT,
+        selected_count=_SELECTED_COUNT,
+        slowest_reports=list(_SLOWEST_REPORTS),
+        recorded_report_keys=set(_RECORDED_REPORT_KEYS),
+        collection_started_at=_COLLECTION_STARTED_AT,
+        collection_duration_s=_COLLECTION_DURATION_S,
+        controller_collection_payload=(
+            dict(_CONTROLLER_COLLECTION_PAYLOAD) if _CONTROLLER_COLLECTION_PAYLOAD else None
+        ),
+        artifact_environment={name: os.environ.get(name) for name in _ARTIFACT_ENV_NAMES},
+    )
+
+
+def _restore_session_state(state: _SessionState) -> None:
+    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD
+    global _DESELECTED_COUNT, _SELECTED_COUNT
+    _DESELECTED_NODEIDS_SAMPLE[:] = state.deselected_nodeids_sample
+    _DESELECTED_COUNT = state.deselected_count
+    _SELECTED_COUNT = state.selected_count
+    _SLOWEST_REPORTS[:] = state.slowest_reports
+    _RECORDED_REPORT_KEYS.clear()
+    _RECORDED_REPORT_KEYS.update(state.recorded_report_keys)
+    _COLLECTION_STARTED_AT = state.collection_started_at
+    _COLLECTION_DURATION_S = state.collection_duration_s
+    _CONTROLLER_COLLECTION_PAYLOAD = state.controller_collection_payload
+    for name, value in state.artifact_environment.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+def _reset_session_state() -> None:
+    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD
+    global _DESELECTED_COUNT, _SELECTED_COUNT
+    _DESELECTED_NODEIDS_SAMPLE.clear()
+    _DESELECTED_COUNT = 0
+    _SELECTED_COUNT = 0
+    _SLOWEST_REPORTS.clear()
+    _RECORDED_REPORT_KEYS.clear()
+    _COLLECTION_STARTED_AT = None
+    _COLLECTION_DURATION_S = None
+    _CONTROLLER_COLLECTION_PAYLOAD = None
+
+
+def _isolate_nested_artifact_destinations() -> None:
+    """Give an in-process nested pytest invocation its own durable evidence."""
+    raw_candidates = [os.environ.get(name) for name in _ARTIFACT_ENV_NAMES]
+    base = next((Path(value).parent for value in raw_candidates if value), None)
+    if base is None:
+        return
+    root = base / f"nested-pytest-{os.getpid()}-{uuid.uuid4().hex}"
+    if os.environ.get(_EVENTS_DIR_ENV):
+        os.environ[_EVENTS_DIR_ENV] = str(root / "events")
+        os.environ.pop(_EVENTS_ENV, None)
+    elif os.environ.get(_EVENTS_ENV):
+        os.environ[_EVENTS_ENV] = str(root / "events.jsonl")
+        os.environ.pop(_EVENTS_DIR_ENV, None)
+    if os.environ.get(_SELECTION_ENV):
+        os.environ[_SELECTION_ENV] = str(root / "selection.json")
+    if os.environ.get(_SUMMARY_ENV):
+        os.environ[_SUMMARY_ENV] = str(root / "summary.json")
 
 
 def _selection_nodeid_limit() -> int:
@@ -191,16 +277,10 @@ def _durable_report_outcome(report: Any, outcome: str) -> str:
 def pytest_sessionstart(session: Any) -> None:
     """Reset per-session ledgers when tests invoke pytest in-process."""
     del session
-    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD
-    global _DESELECTED_COUNT, _SELECTED_COUNT
-    _DESELECTED_NODEIDS_SAMPLE.clear()
-    _DESELECTED_COUNT = 0
-    _SELECTED_COUNT = 0
-    _SLOWEST_REPORTS.clear()
-    _RECORDED_REPORT_KEYS.clear()
-    _COLLECTION_STARTED_AT = None
-    _COLLECTION_DURATION_S = None
-    _CONTROLLER_COLLECTION_PAYLOAD = None
+    _SESSION_STATE_STACK.append(_capture_session_state())
+    _reset_session_state()
+    if len(_SESSION_STATE_STACK) > 1:
+        _isolate_nested_artifact_destinations()
     # The worker environment is assigned after process exec, so it is not
     # reliably visible through /proc/<pid>/environ.  Emit the identity from
     # inside the worker for the supervisor's process-state sampler.
@@ -344,19 +424,25 @@ def pytest_runtest_logreport(report: Any) -> None:
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
-    # Worker processes have their own in-memory slowest lists. The controller
-    # receives the forwarded timings and is the only writer for the shared
-    # summary path, so an empty worker summary cannot overwrite it.
-    if os.environ.get("PYTEST_XDIST_WORKER"):
-        return
-    collection_payload = merge_worker_collection_payloads() or _CONTROLLER_COLLECTION_PAYLOAD or _collection_payload()
-    _write_selection(collection_payload)
-    payload: dict[str, Any] = {
-        "exitstatus": int(exitstatus),
-        "selected_count": collection_payload["selected_count"],
-        "deselected_count": collection_payload["deselected_count"],
-        "slowest_reports": list(_SLOWEST_REPORTS),
-    }
-    if "collection_duration_s" in collection_payload:
-        payload["collection_duration_s"] = collection_payload["collection_duration_s"]
-    _write_summary(payload)
+    try:
+        # Worker processes have their own in-memory slowest lists. The controller
+        # receives the forwarded timings and is the only writer for the shared
+        # summary path, so an empty worker summary cannot overwrite it.
+        if os.environ.get("PYTEST_XDIST_WORKER"):
+            return
+        collection_payload = (
+            merge_worker_collection_payloads() or _CONTROLLER_COLLECTION_PAYLOAD or _collection_payload()
+        )
+        _write_selection(collection_payload)
+        payload: dict[str, Any] = {
+            "exitstatus": int(exitstatus),
+            "selected_count": collection_payload["selected_count"],
+            "deselected_count": collection_payload["deselected_count"],
+            "slowest_reports": list(_SLOWEST_REPORTS),
+        }
+        if "collection_duration_s" in collection_payload:
+            payload["collection_duration_s"] = collection_payload["collection_duration_s"]
+        _write_summary(payload)
+    finally:
+        if _SESSION_STATE_STACK:
+            _restore_session_state(_SESSION_STATE_STACK.pop())

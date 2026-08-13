@@ -74,7 +74,11 @@ pytest_plugins = (
 # A completed invocation therefore cannot authorize stale environment values,
 # and an unmanaged middle scope cannot resurrect a managed outer identity.
 _ACTIVE_PYTEST_SCOPES: list[tuple[str, str] | None] = []
+_ACTIVE_PYTEST_BASETEMPS: set[Path] = set()
 _PYTEST_SCOPE_ATTR = "_polylogue_pytest_scope"
+_PYTEST_SCOPE_BASETEMP_ATTR = "_polylogue_pytest_scope_basetemp"
+_PYTEST_SCOPE_ENV_ATTR = "_polylogue_pytest_scope_environment"
+_NESTED_BASETEMP_POLICY_ENV = ("POLYLOGUE_PYTEST_BASETEMP_ROOT", "POLYLOGUE_PYTEST_TMPFS")
 
 if TYPE_CHECKING:
     from click.testing import CliRunner
@@ -100,10 +104,40 @@ def _set_managed_pytest_identity(identity: tuple[str, str] | None) -> None:
     os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = basetemp
 
 
-def _push_pytest_scope(config: pytest.Config, identity: tuple[str, str] | None) -> None:
+def _push_pytest_scope(
+    config: pytest.Config, identity: tuple[str, str] | None, *, basetemp: Path | None = None
+) -> None:
     """Register one controller invocation, managed or caller-owned."""
     _ACTIVE_PYTEST_SCOPES.append(identity)
     setattr(config, _PYTEST_SCOPE_ATTR, identity)
+    if basetemp is not None:
+        claim_path = _basetemp_claim_path(basetemp, kind="lock")
+        _ACTIVE_PYTEST_BASETEMPS.add(claim_path)
+        setattr(config, _PYTEST_SCOPE_BASETEMP_ATTR, claim_path)
+
+
+def _force_nested_pytest_scratch(config: pytest.Config) -> None:
+    """Keep an unsupervised nested controller out of an outer tmpfs budget."""
+    previous = {name: os.environ.get(name) for name in _NESTED_BASETEMP_POLICY_ENV}
+    setattr(config, _PYTEST_SCOPE_ENV_ATTR, previous)
+    forced = verify_runs.force_managed_pytest_scratch(os.environ)
+    for name in _NESTED_BASETEMP_POLICY_ENV:
+        value = forced.get(name)
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+def _restore_nested_pytest_scratch(config: pytest.Config) -> None:
+    previous = getattr(config, _PYTEST_SCOPE_ENV_ATTR, None)
+    if previous is None:
+        return
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -140,8 +174,12 @@ def pytest_configure(config: pytest.Config) -> None:
         )
         if supervised_managed and not hasattr(config, "workerinput"):
             assert run_id is not None
+            if _basetemp_claim_path(Path(configured_basetemp), kind="lock") in _ACTIVE_PYTEST_BASETEMPS:
+                raise pytest.UsageError(
+                    f"pytest: explicit basetemp is already active in this pytest process: {configured_basetemp}"
+                )
             identity = (run_id, configured_basetemp)
-            _push_pytest_scope(config, identity)
+            _push_pytest_scope(config, identity, basetemp=Path(configured_basetemp))
             return
         # A second in-process pytest.main() inherits os.environ from the first
         # run. Explicit basetemp ownership is per invocation, so stale managed
@@ -149,7 +187,7 @@ def pytest_configure(config: pytest.Config) -> None:
         # fodder at session finish.
         if not hasattr(config, "workerinput"):
             _mark_caller_owned_basetemp(Path(configured_basetemp))
-            _push_pytest_scope(config, None)
+            _push_pytest_scope(config, None, basetemp=Path(configured_basetemp))
             _set_managed_pytest_identity(None)
         return
 
@@ -159,6 +197,7 @@ def pytest_configure(config: pytest.Config) -> None:
         )
         if _ACTIVE_PYTEST_SCOPES and not hasattr(config, "workerinput"):
             _set_managed_pytest_identity(None)
+            _force_nested_pytest_scratch(config)
         normalized_basetemp_env = normalize_pytest_basetemp_env(os.environ)
         configured_root = normalized_basetemp_env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
         unmanaged_tmpfs_root = configured_root is not None and verify_runs._is_beneath(
@@ -186,6 +225,7 @@ def pytest_configure(config: pytest.Config) -> None:
             if not hasattr(config, "workerinput"):
                 _mark_basetemp_owner(basetemp)
         except PytestResourceError as exc:
+            _restore_nested_pytest_scratch(config)
             _set_managed_pytest_identity(prior_scope)
             # Fail loudly and early: refuse before pytest starts collecting,
             # rather than crashing an unrelated command later with a bare
@@ -195,7 +235,7 @@ def pytest_configure(config: pytest.Config) -> None:
         os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
         if not hasattr(config, "workerinput"):
             identity = (run_id, str(basetemp))
-            _push_pytest_scope(config, identity)
+            _push_pytest_scope(config, identity, basetemp=basetemp)
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
 
 
@@ -207,6 +247,10 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     if not _ACTIVE_PYTEST_SCOPES or _ACTIVE_PYTEST_SCOPES[-1] != scope:
         return
     _ACTIVE_PYTEST_SCOPES.pop()
+    active_basetemp = getattr(config, _PYTEST_SCOPE_BASETEMP_ATTR, None)
+    if active_basetemp is not None:
+        _ACTIVE_PYTEST_BASETEMPS.discard(active_basetemp)
+    _restore_nested_pytest_scratch(config)
     _set_managed_pytest_identity(_ACTIVE_PYTEST_SCOPES[-1] if _ACTIVE_PYTEST_SCOPES else None)
 
 
@@ -255,6 +299,9 @@ def _mark_basetemp_owner(basetemp: Path) -> None:
 
 def _mark_caller_owned_basetemp(basetemp: Path) -> None:
     """Claim an explicit ``--basetemp`` before pytest may replace its tree."""
+    lock_path = _basetemp_claim_path(basetemp, kind="lock")
+    if lock_path in _ACTIVE_PYTEST_BASETEMPS:
+        raise pytest.UsageError(f"pytest: explicit basetemp is already active in this pytest process: {basetemp}")
     handle = _acquire_basetemp_claim_lock(basetemp, blocking=True)
     if handle is None:
         raise pytest.UsageError(f"pytest: cannot claim the explicit basetemp: {basetemp}")

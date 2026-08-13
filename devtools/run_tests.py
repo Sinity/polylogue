@@ -48,6 +48,7 @@ from devtools.verify import (
     _run,
 )
 from devtools.verify_runs import (
+    CheckoutMutationMonitor,
     VerifyRun,
     append_verify_history,
     git_head,
@@ -84,7 +85,10 @@ def _absolute_option_path(
     if expand_environment_variables:
         value = os.path.expandvars(value)
     path = Path(value)
-    return str(path if path.is_absolute() else (invocation_directory / path).resolve())
+    # pytest deliberately uses ``os.path.abspath`` for command-line paths:
+    # resolving here would make ``-c config-link.ini`` select the linked
+    # target as its rootdir instead of preserving the caller's spelling.
+    return os.path.abspath(path if path.is_absolute() else invocation_directory / path)
 
 
 def _normalize_selection_paths(selection: list[str], *, invocation_directory: Path) -> list[str]:
@@ -93,14 +97,28 @@ def _normalize_selection_paths(selection: list[str], *, invocation_directory: Pa
     pending_option: str | None = None
     for argument in selection:
         if pending_option is not None:
+            # pytest's --debug accepts an optional file name.  A following
+            # option belongs to pytest, not to --debug's optional value.
+            if pending_option == "--debug" and argument.startswith("-"):
+                pending_option = None
+            else:
+                normalized.append(
+                    _absolute_option_path(
+                        argument,
+                        invocation_directory=invocation_directory,
+                        expand_environment_variables=pending_option in _ENV_EXPANDING_PATH_OPTIONS,
+                    )
+                )
+                pending_option = None
+                continue
+        if argument.startswith("-c="):
             normalized.append(
-                _absolute_option_path(
-                    argument,
+                "-c"
+                + _absolute_option_path(
+                    argument[len("-c=") :],
                     invocation_directory=invocation_directory,
-                    expand_environment_variables=pending_option in _ENV_EXPANDING_PATH_OPTIONS,
                 )
             )
-            pending_option = None
             continue
         option_name, equals, option_value = argument.partition("=")
         if option_name in _PATH_VALUE_OPTIONS:
@@ -250,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
         initial_worktree_fingerprint = worktree_fingerprint(ROOT)
+        mutation_monitor = CheckoutMutationMonitor(ROOT)
+        mutation_monitor.start()
         run = VerifyRun(
             tier="focused-test",
             argv=selection,
@@ -267,13 +287,19 @@ def main(argv: list[str] | None = None) -> int:
             metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
             run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
         final_worktree_fingerprint = worktree_fingerprint(ROOT)
-        if "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}:
+        mutation_observation = mutation_monitor.finish()
+        if (
+            "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
+            or mutation_observation.unavailable
+        ):
             metadata["diagnosis"] = "checkout_fingerprint_unavailable"
             if rc == 0:
                 rc = 125
             sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
-        elif final_worktree_fingerprint != initial_worktree_fingerprint:
+        elif mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint:
             metadata["diagnosis"] = "checkout_changed_during_focused_test"
+            metadata["transient_checkout_mutation"] = mutation_observation.changed
+            metadata["checkout_mutation_path"] = mutation_observation.observed_path
             if rc == 0:
                 rc = 125
             sys.stderr.write("devtools test: checkout contents changed during pytest; evidence is not exact-head.\n")
@@ -284,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
             verification_scope="affected",
             release_baseline_allowed=False,
             final_worktree_fingerprint=final_worktree_fingerprint,
+            checkout_mutation_path=mutation_observation.observed_path,
         )
         append_verify_history(payload)
     if use_json:

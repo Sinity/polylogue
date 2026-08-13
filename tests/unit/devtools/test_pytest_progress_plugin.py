@@ -34,7 +34,9 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
     controller_collection_payload = pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD
     recorded_report_keys = set(pytest_progress_plugin._RECORDED_REPORT_KEYS)
+    session_state_stack = list(pytest_progress_plugin._SESSION_STATE_STACK)
     pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
+    pytest_progress_plugin._SESSION_STATE_STACK.clear()
     yield
     pytest_progress_plugin._SELECTED_COUNT = selected_count
     pytest_progress_plugin._DESELECTED_COUNT = deselected_count
@@ -45,6 +47,7 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD = controller_collection_payload
     pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
     pytest_progress_plugin._RECORDED_REPORT_KEYS.update(recorded_report_keys)
+    pytest_progress_plugin._SESSION_STATE_STACK[:] = session_state_stack
 
 
 @dataclass(frozen=True)
@@ -419,6 +422,51 @@ def test_progress_plugin_retains_controller_selection_through_session_finish(
     selection = json.loads(selection_path.read_text())
     assert selection["selected_nodeids"] == ["tests/a.py::test_keep"]
     assert selection["selected_nodeids_omitted"] == 0
+
+
+def test_nested_pytest_session_keeps_outer_progress_and_artifacts_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outer_events = tmp_path / "outer-events.jsonl"
+    outer_selection = tmp_path / "outer-selection.json"
+    outer_summary = tmp_path / "outer-summary.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(outer_events))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(outer_selection))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(outer_summary))
+
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_collection_modifyitems(
+        _Session(["tests/outer.py::test_outer"]), object(), [_Item("tests/outer.py::test_outer")]
+    )
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("tests/outer.py::test_outer", "call", "passed"))
+
+    pytest_progress_plugin.pytest_sessionstart(object())
+    nested_selection = Path(os.environ["POLYLOGUE_PYTEST_SELECTION_PATH"])
+    nested_summary = Path(os.environ["POLYLOGUE_PYTEST_SUMMARY_PATH"])
+    nested_events = Path(os.environ["POLYLOGUE_PYTEST_EVENTS_PATH"])
+    assert nested_selection != outer_selection
+    assert nested_summary != outer_summary
+    assert nested_events != outer_events
+    pytest_progress_plugin.pytest_collection_modifyitems(
+        _Session(["tests/inner.py::test_inner"]), object(), [_Item("tests/inner.py::test_inner")]
+    )
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("tests/inner.py::test_inner", "call", "passed"))
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    assert os.environ["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(outer_selection)
+    assert json.loads(outer_selection.read_text())["selected_nodeids"] == ["tests/outer.py::test_outer"]
+    assert json.loads(nested_selection.read_text())["selected_nodeids"] == ["tests/inner.py::test_inner"]
+    assert [json.loads(line)["nodeid"] for line in nested_events.read_text().splitlines() if "nodeid" in line] == [
+        "tests/inner.py::test_inner"
+    ]
+
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    outer_payload = json.loads(outer_summary.read_text())
+    nested_payload = json.loads(nested_summary.read_text())
+    assert [report["nodeid"] for report in outer_payload["slowest_reports"]] == ["tests/outer.py::test_outer"]
+    assert [report["nodeid"] for report in nested_payload["slowest_reports"]] == ["tests/inner.py::test_inner"]
 
 
 def test_progress_plugin_merges_xdist_collection_facts_without_double_counting(

@@ -88,6 +88,7 @@ from devtools.verify_runs import (
     PYTEST_CANONICAL_REPORT_NAME,
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
+    CheckoutMutationMonitor,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
@@ -3556,7 +3557,7 @@ def main(argv: list[str] | None = None) -> int:
 
     head = _git_head()
     t0 = time.monotonic()
-    checkout_fingerprint = worktree_fingerprint()
+    checkout_fingerprint = worktree_fingerprint(ROOT)
     verify_run = VerifyRun(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
@@ -3625,6 +3626,8 @@ def main(argv: list[str] | None = None) -> int:
         return 125
 
     step_results: list[dict[str, Any]] = []
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    mutation_monitor.start()
 
     for label, cmd in steps:
         if label.startswith("pytest"):
@@ -3777,8 +3780,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"inspect {TESTMON_SEED_ATTEMPT}.\n"
             )
 
-    final_checkout_fingerprint = worktree_fingerprint()
-    if "unavailable" in {checkout_fingerprint, final_checkout_fingerprint}:
+    final_checkout_fingerprint = worktree_fingerprint(ROOT)
+    mutation_observation = mutation_monitor.finish()
+    if "unavailable" in {checkout_fingerprint, final_checkout_fingerprint} or mutation_observation.unavailable:
         step_results.append(
             {
                 "name": "checkout stability",
@@ -3792,7 +3796,7 @@ def main(argv: list[str] | None = None) -> int:
         if exit_code == 0:
             exit_code = 125
         sys.stderr.write("verify: checkout fingerprint unavailable; evidence is not exact-head.\n")
-    elif final_checkout_fingerprint != checkout_fingerprint:
+    elif mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
         step_results.append(
             {
                 "name": "checkout stability",
@@ -3801,6 +3805,8 @@ def main(argv: list[str] | None = None) -> int:
                 "diagnosis": "checkout_changed_during_verification",
                 "initial_worktree_fingerprint": checkout_fingerprint,
                 "final_worktree_fingerprint": final_checkout_fingerprint,
+                "transient_checkout_mutation": mutation_observation.changed,
+                "checkout_mutation_path": mutation_observation.observed_path,
             }
         )
         if exit_code == 0:
@@ -3919,6 +3925,7 @@ def main(argv: list[str] | None = None) -> int:
         release_baseline_allowed=release_baseline_allowed,
         terminal_authorization=args.terminal_authorization,
         final_worktree_fingerprint=final_checkout_fingerprint,
+        checkout_mutation_path=mutation_observation.observed_path,
     )
     if exit_code == 0:
         _stamp_head()

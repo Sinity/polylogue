@@ -8,6 +8,7 @@ selection and event streams, resource samples, and postmortem classification.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -15,7 +16,9 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -195,6 +198,196 @@ def worktree_fingerprint(root: Path | None = None) -> str:
         except OSError:
             return "unavailable"
     return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class CheckoutMutationObservation:
+    """Whether an exact-head verification interval observed a checkout write."""
+
+    changed: bool
+    unavailable: bool
+    observed_path: str | None = None
+
+
+class CheckoutMutationMonitor:
+    """Fail closed when inotify cannot observe the checkout interval.
+
+    Endpoint hashes establish the state of the checkout, while this monitor
+    records writes that occur and are later reverted before the final sample.
+    Watches exclude verifier-owned disposable directories so receipts do not
+    invalidate themselves.
+    """
+
+    _IGNORED_TOP_LEVEL = frozenset(
+        {
+            ".cache",
+            ".git",
+            ".hypothesis",
+            ".local",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+        }
+    )
+    _EVENT_MASK = (
+        0x00000002
+        | 0x00000004
+        | 0x00000008
+        | 0x00000040
+        | 0x00000080
+        | 0x00000100
+        | 0x00000200
+        | 0x00000400
+        | 0x00000800
+        | 0x00002000
+    )
+    _INIT_FLAGS = 0x00000800 | 0x00080000
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self._changed = False
+        self._observed_path: str | None = None
+        self._unavailable = False
+        self._descriptor: int | None = None
+        self._paths_by_watch: dict[int, Path] = {}
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()
+
+    def start(self) -> None:
+        """Start the interval monitor, recording an unavailable monitor eagerly."""
+        try:
+            descriptor = self._open_inotify()
+            self._descriptor = descriptor
+            for directory in self._watched_directories():
+                watch = self._add_watch(descriptor, directory)
+                if watch < 0:
+                    raise OSError(ctypes.get_errno(), "inotify_add_watch")
+                self._paths_by_watch[watch] = directory
+        except OSError:
+            self._unavailable = True
+            self._close_descriptor()
+            return
+        self._thread = threading.Thread(target=self._watch, name="checkout-mutation-monitor", daemon=True)
+        self._thread.start()
+
+    def finish(self) -> CheckoutMutationObservation:
+        """Stop monitoring only after the caller took its final fingerprint."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        self._drain_events()
+        self._close_descriptor()
+        with self._state_lock:
+            return CheckoutMutationObservation(
+                changed=self._changed,
+                unavailable=self._unavailable,
+                observed_path=self._observed_path,
+            )
+
+    def _watched_directories(self) -> list[Path]:
+        directories: list[Path] = []
+        for current, child_directories, _files in os.walk(self.root):
+            current_path = Path(current)
+            child_directories[:] = [child for child in child_directories if child not in self._IGNORED_TOP_LEVEL]
+            if current_path == self.root or not any(
+                part in self._IGNORED_TOP_LEVEL for part in current_path.relative_to(self.root).parts
+            ):
+                directories.append(current_path)
+        return directories
+
+    @staticmethod
+    def _open_inotify() -> int:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        init = libc.inotify_init1
+        init.argtypes = [ctypes.c_int]
+        init.restype = ctypes.c_int
+        descriptor = int(init(CheckoutMutationMonitor._INIT_FLAGS))
+        if descriptor < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1")
+        return descriptor
+
+    @staticmethod
+    def _add_watch(descriptor: int, directory: Path) -> int:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        add_watch = libc.inotify_add_watch
+        add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        add_watch.restype = ctypes.c_int
+        return int(add_watch(descriptor, os.fsencode(directory), CheckoutMutationMonitor._EVENT_MASK))
+
+    def _watch(self) -> None:
+        while not self._stop.wait(0.02):
+            self._drain_events()
+
+    def _drain_events(self) -> None:
+        descriptor = self._descriptor
+        if descriptor is None:
+            return
+        while True:
+            try:
+                raw_events = os.read(descriptor, 64 * 1024)
+            except BlockingIOError:
+                return
+            except OSError:
+                if not self._stop.is_set():
+                    with self._state_lock:
+                        self._unavailable = True
+                return
+            offset = 0
+            while offset + 16 <= len(raw_events):
+                watch, mask, _cookie, name_length = struct.unpack_from("iIII", raw_events, offset)
+                offset += 16
+                name = raw_events[offset : offset + name_length].rstrip(b"\0")
+                offset += name_length
+                if mask & 0x00004000:
+                    with self._state_lock:
+                        self._unavailable = True
+                    return
+                directory = self._paths_by_watch.get(watch)
+                if directory is None:
+                    continue
+                candidate = directory / os.fsdecode(name) if name else directory
+                try:
+                    relative = candidate.relative_to(self.root)
+                except ValueError:
+                    continue
+                if self._path_is_ignored(relative):
+                    continue
+                with self._state_lock:
+                    self._changed = True
+                    self._observed_path = relative.as_posix()
+                return
+
+    def _path_is_ignored(self, relative: Path) -> bool:
+        if any(part in self._IGNORED_TOP_LEVEL for part in relative.parts):
+            return True
+        try:
+            result = subprocess.run(
+                ["git", "check-ignore", "--quiet", "--no-index", "--", relative.as_posix()],
+                cwd=self.root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            with self._state_lock:
+                self._unavailable = True
+            return True
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        with self._state_lock:
+            self._unavailable = True
+        return True
+
+    def _close_descriptor(self) -> None:
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -693,6 +886,7 @@ class VerifyRun:
         release_baseline_allowed: bool | None = None,
         terminal_authorization: str | None = None,
         final_worktree_fingerprint: str | None = None,
+        checkout_mutation_path: str | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -702,6 +896,8 @@ class VerifyRun:
             self._payload["diagnosis"] = diagnosis
         if final_worktree_fingerprint is not None:
             self._payload["final_worktree_fingerprint"] = final_worktree_fingerprint
+        if checkout_mutation_path is not None:
+            self._payload["checkout_mutation_path"] = checkout_mutation_path
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed

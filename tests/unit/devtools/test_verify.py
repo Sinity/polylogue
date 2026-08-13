@@ -78,6 +78,8 @@ from devtools.verify import (
     main,
 )
 from devtools.verify_runs import (
+    CheckoutMutationMonitor,
+    CheckoutMutationObservation,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
@@ -1794,6 +1796,56 @@ def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> 
     after = _worktree_fingerprint()
 
     assert before != after
+
+
+def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_final_fingerprint(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    tracked = tmp_path / "tracked.py"
+    original = "VALUE = 1\n"
+    tracked.write_text(original, encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    tracked.write_text("VALUE = 2\n", encoding="utf-8")
+    tracked.write_text(original, encoding="utf-8")
+    observation = monitor.finish()
+
+    assert observation.changed is True
+    assert observation.unavailable is False
+    assert observation.observed_path == "tracked.py"
+
+
+def test_checkout_mutation_monitor_ignores_nested_disposable_cache_writes(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    cache_file = package / "__pycache__" / "module.pyc"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"cache")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_uses_gitignore_for_verifier_task_history(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], check=True)
+    (tmp_path / ".gitignore").write_text(".agent/*\n", encoding="utf-8")
+    history = tmp_path / ".agent" / "task-history" / "tasks.jsonl"
+    history.parent.mkdir(parents=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    history.write_text('{"task": "verification"}\n', encoding="utf-8")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
 def test_seed_receipt_classifies_every_node_terminal_outcome(
@@ -4377,6 +4429,52 @@ def test_checkout_stability_failure_controls_every_broad_run_receipt(
     for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
         assert durable_payload["diagnosis"] == expected_diagnosis
         assert durable_payload["final_worktree_fingerprint"] == fingerprints[1]
+
+
+def test_transient_checkout_mutation_controls_every_broad_run_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _ChangedMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=True, unavailable=False)
+
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation" / "run.json"
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", _ChangedMonitor)
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "broad-invocation")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {"diagnosis": "pytest_passed"})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    run_payload = json.loads(next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json")).read_text())
+    current_payload = json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text())
+    receipt_payload = json.loads(receipt.read_text())
+    for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
+        assert durable_payload["diagnosis"] == "checkout_changed_during_verification"
+        assert durable_payload["final_worktree_fingerprint"] == "stable"
 
 
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:

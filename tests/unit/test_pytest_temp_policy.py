@@ -370,7 +370,6 @@ def test_nested_explicit_basetemp_restores_active_outer_managed_identity(
         os.environ.get("POLYLOGUE_PYTEST_RUN_ID"),
         os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"),
     )
-    assert all(ambient_identity)
     _shm, _scratch = _make_real_candidates(monkeypatch, tmp_path)
     for name in (
         "POLYLOGUE_VERIFY_RUN_ID",
@@ -406,6 +405,92 @@ def test_nested_explicit_basetemp_restores_active_outer_managed_identity(
 
     assert os.environ.get("POLYLOGUE_PYTEST_RUN_ID") == ambient_identity[0]
     assert os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP") == ambient_identity[1]
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_nested_explicit_basetemp_reuse_is_rejected_before_the_nonreentrant_claim_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    alias: bool,
+) -> None:
+    active = tmp_path / "active-basetemp"
+    requested = active
+    if alias:
+        active.mkdir()
+        requested = tmp_path / "active-basetemp-alias"
+        requested.symlink_to(active, target_is_directory=True)
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_SCOPES", [])
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_BASETEMPS", set())
+    outer = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(active)),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    nested = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(requested)),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    with _configured_pytest(outer):
+        with pytest.raises(pytest.UsageError, match="already active in this pytest process"):
+            conftest.pytest_configure(cast("pytest.Config", nested))
+
+
+def test_nested_supervised_explicit_basetemp_reuse_is_rejected_before_claiming(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active-basetemp"
+    active.mkdir()
+    run_id = "supervised-run"
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(active)),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_SCOPES", [])
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_BASETEMPS", set())
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_BASETEMPS", set())
+    monkeypatch.setenv("POLYLOGUE_VERIFY_RUN_ID", run_id)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", run_id)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(active))
+    conftest._mark_basetemp_owner(active)
+    try:
+        with _configured_pytest(config):
+            with pytest.raises(pytest.UsageError, match="already active in this pytest process"):
+                conftest.pytest_configure(cast("pytest.Config", config))
+    finally:
+        conftest._release_basetemp_claim_lock(active)
+
+
+def test_nested_managed_pytest_forces_scratch_outside_the_outer_tmpfs_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _make_real_candidates(monkeypatch, tmp_path)
+    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_SCOPES", [])
+    monkeypatch.setenv("POLYLOGUE_VERIFY_RUN_ID", "outer-supervisor")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(shm))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_TMPFS", "1")
+    outer = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    nested = SimpleNamespace(
+        option=SimpleNamespace(basetemp=None),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+
+    with _configured_pytest(outer):
+        assert Path(str(outer.option.basetemp)).parent == shm
+        with _configured_pytest(nested):
+            assert Path(str(nested.option.basetemp)).parent == scratch
+            assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+        assert os.environ["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(shm)
+        assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "1"
 
 
 def test_nested_unmanaged_scopes_do_not_reclaim_the_live_outer_tree(

@@ -11,7 +11,23 @@ from typing import Any, cast
 import pytest
 
 from devtools import run_tests, verify
-from devtools.verify_runs import CURRENT_STATISTICS_PATH, git_head, pytest_command_worker_request
+from devtools.verify_runs import (
+    CURRENT_STATISTICS_PATH,
+    CheckoutMutationObservation,
+    git_head,
+    pytest_command_worker_request,
+)
+
+
+class _NoMutationMonitor:
+    def __init__(self, _root: Path) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+    def finish(self) -> CheckoutMutationObservation:
+        return CheckoutMutationObservation(changed=False, unavailable=False)
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -243,6 +259,28 @@ def test_normalize_selection_paths_preserves_pytest_path_option_semantics(
     assert normalized[-1] == str(invocation / "$PYTEST_ROOT" / "literal.ini")
 
 
+def test_normalize_selection_paths_preserves_pytest_symlinks_and_optional_debug(
+    tmp_path: Path,
+) -> None:
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    target = invocation / "target.ini"
+    target.write_text("[pytest]\n", encoding="utf-8")
+    config_link = invocation / "config-link.ini"
+    config_link.symlink_to(target.name)
+
+    normalized = run_tests._normalize_selection_paths(
+        ["-c", "config-link.ini", "-c=config-link.ini", "--debug", "-k", "focused"],
+        invocation_directory=invocation,
+    )
+
+    lexical_link = str(invocation / "config-link.ini")
+    assert normalized[:2] == ["-c", lexical_link]
+    assert normalized[2] == f"-c{lexical_link}"
+    assert normalized[3:] == ["--debug", "-k", "focused"]
+    assert str(target) not in normalized
+
+
 def test_main_withholds_success_when_checkout_changes_during_pytest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,6 +291,7 @@ def test_main_withholds_success_when_checkout_changes_during_pytest(
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
     monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
 
     assert run_tests.main(["tests/unit/example.py"]) == 125
@@ -274,6 +313,7 @@ def test_main_withholds_success_when_checkout_fingerprint_is_unavailable(
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
     monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprint_values))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
 
     assert run_tests.main(["tests/unit/example.py"]) == 125
@@ -324,6 +364,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
     )
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
     monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "_run", fake_run)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
