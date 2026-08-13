@@ -2085,6 +2085,7 @@ def build_verify_steps(
                 ("render all", _devtools_cmd("render all", "--check")),
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("verify ci-commands", _devtools_cmd("verify ci-commands")),
+                ("verify doc-commands", _devtools_cmd("verify doc-commands")),
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
                 # Static, archive-independent, sub-second: an index bump that
                 # lands without its lifecycle.py delta declaration silently

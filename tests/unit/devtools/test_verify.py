@@ -211,6 +211,7 @@ def test_quick_verify_omits_pytest() -> None:
         "render all",
         "verify layering",
         "verify ci-commands",
+        "verify doc-commands",
         "lab schema roundtrip",
         "lab policy schema-versioning",
         "schema promotion audit",

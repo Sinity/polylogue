@@ -214,6 +214,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify ci-commands", "devtools verify ci-commands --json"),
     ),
     CommandSpec(
+        "verify doc-commands",
+        "verification",
+        "Validate executable documentation examples against live command inventories.",
+        "devtools.verify_doc_commands",
+        use_when="Catch README and documentation examples that reference an unknown command path or flag.",
+        examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
+    ),
+    CommandSpec(
         "verify corpus-fidelity",
         "verification",
         "Run the production corpus-fidelity acceptance gate against an archive root.",
