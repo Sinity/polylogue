@@ -262,6 +262,35 @@ class TestLoadSamplesFromDb:
         assert len(result) == 1
         assert result[0]["uuid"] == "conv-1"
 
+    def test_sampling_keeps_successfully_reparsed_historical_validation_failure(self, tmp_path: Path) -> None:
+        db = _archive_index_db(tmp_path)
+        _insert_raw_session(
+            db_path=db,
+            origin="claude-ai-export",
+            source_path="/tmp/sessions.json",
+            raw_content=json.dumps(
+                [
+                    {
+                        "uuid": "reparsed",
+                        "name": "Retained",
+                        "summary": "successful reparse",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:05:00Z",
+                        "account": {"uuid": "acct-reparsed"},
+                        "chat_messages": [],
+                    }
+                ]
+            ).encode(),
+        )
+        with sqlite3.connect(db.with_name("source.db")) as conn:
+            conn.execute("UPDATE raw_sessions SET parsed_at_ms = 1, validation_status = 'failed'")
+            conn.commit()
+
+        result = load_samples_from_db("claude-ai", db_path=db)
+
+        assert len(result) == 1
+        assert result[0]["uuid"] == "reparsed"
+
     def test_record_provider_sampling_streams_without_full_envelope(
         self,
         tmp_path: Path,

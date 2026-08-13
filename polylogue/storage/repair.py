@@ -4768,6 +4768,7 @@ def _raw_replay_plan_outcome(
 
 def _raw_replay_plan_outcomes(
     archive_root: Path,
+    index_db: Path,
     plans: Sequence[RawReplayPlan],
     *,
     remaining: RawMaterializationCandidates,
@@ -4777,7 +4778,7 @@ def _raw_replay_plan_outcomes(
         return ()
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         return tuple(
             _raw_replay_plan_outcome(conn, plan, remaining=remaining, no_progress=no_progress) for plan in plans
         )
@@ -6840,7 +6841,8 @@ def repair_raw_materialization(
     # writer-hot table before this bounded live pass; this is the same
     # planner invariant seeded for a fresh index bootstrap, without turning
     # raw materialization into a full rebuild.
-    with closing(sqlite3.connect(archive_root / "index.db", timeout=60)) as planner_conn:
+    index_db = _raw_materialization_index_path(config, archive_root)
+    with closing(sqlite3.connect(index_db, timeout=60)) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
         # A freshly reset index uses representative bootstrap statistics.
         # ``ANALYZE blocks`` on an empty table deletes that seed and brings
@@ -6996,7 +6998,9 @@ def repair_raw_materialization(
         # ``_raw_replay_plan_outcome`` types this TERMINAL (not RETRYABLE) so
         # it stops being silently reselected forever.
         no_progress = part.replayed_logical_sources == 0 and part.quarantined == 0 and part.adoption_deferred == 0
-        component_outcomes = _raw_replay_plan_outcomes(archive_root, [plan], remaining=current, no_progress=no_progress)
+        component_outcomes = _raw_replay_plan_outcomes(
+            archive_root, index_db, [plan], remaining=current, no_progress=no_progress
+        )
         for outcome in component_outcomes:
             application_receipt = raw_replay_application_receipt(archive_root, plan)
             receipted = dataclasses.replace(outcome, application_receipt=application_receipt)

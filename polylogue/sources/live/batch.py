@@ -517,8 +517,7 @@ def _captured_jsonl_ends_at_record_boundary(
     blob_hash: str,
     blob_size: int,
 ) -> bool:
-    path = Path(source_path)
-    if not required or path.suffix.lower() not in {".jsonl", ".ndjson"}:
+    if not required or not is_jsonl_source_path(source_path):
         return True
     if blob_size <= 0:
         # A zero-byte capture has zero records -- none complete, none
@@ -2241,7 +2240,7 @@ class LiveBatchProcessor:
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
-                    requires_complete_record_boundary=path.suffix.lower() in {".jsonl", ".ndjson"},
+                    requires_complete_record_boundary=is_jsonl_source_path(str(path)),
                 )
             )
             raw_source_revisions.setdefault(path, raw_id)

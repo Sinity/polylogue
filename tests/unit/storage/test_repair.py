@@ -884,14 +884,19 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
         ).fetchone() == ("terminal_corrupt_input", "decode_failed")
 
     # A reset removes only the derived projection; durable raw evidence and
-    # its historical validation diagnosis remain available to replay.
-    (tmp_path / "index.db").unlink()
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    # its historical validation diagnosis remain available to replay.  Leave
+    # the populated conventional index as a stale shadow: the production
+    # planner and replay postcondition must use this promoted empty generation.
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
 
     replay = repair_mod.repair_raw_materialization(_config(tmp_path))
 
     assert replay.success is True
     assert replay.repaired_count == 1
+    with sqlite3.connect(active_index) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
 

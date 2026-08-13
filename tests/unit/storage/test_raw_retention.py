@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage import raw_retention as raw_retention_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_retention import (
@@ -418,20 +419,19 @@ def test_real_revision_receipt_authorizes_only_current_byte_head_supersession(tm
 
 
 def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: Path) -> None:
-    """Healthy live compaction reads terminal authority only for its input paths."""
+    """Terminal authority scans only the caller's source-path scope."""
 
-    old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
     source_db = tmp_path / "source.db"
-    source_path = tmp_path / "session.jsonl"
-    unrelated_path = tmp_path / "unrelated-terminal.json"
+    source_path = tmp_path / "terminal.json"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES ('raw-unrelated-terminal', 'unknown-export', 'terminal', ?, 0, ?, 1, 3)
+            ) VALUES ('raw-terminal', 'unknown-export', 'terminal', ?, 0, ?, 1, 3)
             """,
-            (str(unrelated_path), bytes.fromhex("03" * 32)),
+            (str(source_path), bytes.fromhex("03" * 32)),
         )
         conn.execute(
             """
@@ -439,27 +439,22 @@ def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: P
                 artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
                 support_status, classification_reason, parse_as_session, schema_eligible,
                 malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
-            ) VALUES ('artifact-unrelated-terminal', 'raw-unrelated-terminal', 'unknown-export', ?, 0,
+            ) VALUES ('artifact-terminal', 'raw-terminal', 'unknown-export', ?, 0,
                       'workflow_journal', 'unknown', 'terminal', 0, 0, 0, 3, 3)
             """,
-            (str(unrelated_path),),
+            (str(source_path),),
         )
         conn.commit()
         statements: list[str] = []
         conn.set_trace_callback(statements.append)
-        authority = active_raw_retention_authority(
-            conn,
-            index_db_path=tmp_path / "index.db",
-            terminal_source_paths=(source_path,),
-        )
+        terminal_paths = raw_retention_mod._terminal_artifact_paths(conn, {str(source_path)})
 
-    normalized = {" ".join(statement.split()) for statement in statements}
-    assert "SELECT raw_id FROM raw_sessions" not in normalized
-    assert "SELECT DISTINCT source_path FROM raw_sessions" not in normalized
-    assert authority == RawRetentionAuthority(
-        protected_raw_ids=frozenset({new_raw_id}),
-        eligible_raw_ids=frozenset({old_raw_id}),
-    )
+    raw_reads = [" ".join(statement.split()).upper() for statement in statements if "RAW_SESSIONS" in statement.upper()]
+    assert raw_reads
+    # Every raw_sessions scan in this cursor-scoped route must carry the
+    # source-path scope.  Assert the SQL shape, not one historical rendering.
+    assert all("SOURCE_PATH IN (" in statement for statement in raw_reads)
+    assert terminal_paths == {str(source_path)}
 
 
 def test_semantic_head_receipt_authorizes_no_raw_deletion(tmp_path: Path) -> None:

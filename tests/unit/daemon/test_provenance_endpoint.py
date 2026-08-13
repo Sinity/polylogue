@@ -387,6 +387,7 @@ class TestProvenancePayload:
             raw_id=raw_id,
             source_path="/tmp/x.json",
             blob_size=len(payload_bytes),
+            parsed_at_ms=None,
             validation_status="failed",
         )
 
@@ -394,6 +395,24 @@ class TestProvenancePayload:
         assert result is not None
         assert result["quarantined"] is True
         assert result["quarantine_reason"] == "validation_failed"
+
+    def test_historical_validation_failure_is_not_current_quarantine(self, workspace_env: dict[str, Path]) -> None:
+        raw_id = _seed_raw_blob(b"{}")
+        session_id = _seed_archive_provenance(
+            session_id="c-historical-validation",
+            raw_id=raw_id,
+            source_path="/tmp/x.json",
+            blob_size=2,
+            validation_status="failed",
+        )
+
+        result = build_provenance_payload(session_id)
+
+        assert result is not None
+        assert result["validation_status"] == "failed"
+        assert result["parsed_at"] is not None
+        assert result["quarantined"] is False
+        assert result["quarantine_reason"] is None
 
     def test_quarantine_surfaces_when_no_raw_artifact(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_archive_provenance(

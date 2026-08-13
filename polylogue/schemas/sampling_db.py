@@ -74,6 +74,7 @@ class _RawSessionRow:
     blob_hash: bytes
     file_mtime_ms: int | None
     acquired_at_ms: int | None
+    parsed_at_ms: int | None
     validation_status: str | None
 
     @property
@@ -117,6 +118,7 @@ def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
         blob_hash=bytes(row["blob_hash"]) if row["blob_hash"] is not None else b"",
         file_mtime_ms=row["file_mtime_ms"],
         acquired_at_ms=row["acquired_at_ms"],
+        parsed_at_ms=row["parsed_at_ms"],
         validation_status=row["validation_status"],
     )
 
@@ -302,7 +304,7 @@ def _iter_schema_units_from_db(
             query = f"""
                 WITH heads AS (
                     SELECT
-                        source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                        source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
                         validation_status,
                         ROW_NUMBER() OVER (
                             PARTITION BY origin, {logical_cohort_expr}
@@ -311,12 +313,13 @@ def _iter_schema_units_from_db(
                     FROM raw_sessions
                     WHERE origin IN ({placeholders})
                 )
-                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, validation_status
+                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
+                       validation_status
                 FROM heads WHERE rn = 1
             """
         else:
             query = f"""
-                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
                        validation_status
                 FROM raw_sessions
                 WHERE origin IN ({placeholders})
@@ -367,7 +370,7 @@ def _iter_schema_units_from_db(
                     )
                     continue
 
-                if row.validation_status == "failed":
+                if row.validation_status == "failed" and row.parsed_at_ms is None:
                     _record_terminal(
                         terminal_recorder,
                         row,

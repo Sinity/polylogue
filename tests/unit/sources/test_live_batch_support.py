@@ -762,6 +762,43 @@ def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
     assert artifact == ("deferred_hot_jsonl_capture", "partial_decode", 1)
 
 
+def test_full_ingest_applies_incomplete_record_guard_to_jsonl_txt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supported ``.jsonl.txt`` wire suffix has JSONL tail authority too."""
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "active.jsonl.txt"
+    captured = b'{"type":"session_meta"'
+    path.write_bytes(captured)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "archive.sqlite"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "archive.sqlite"),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+
+    def grow_source_after_capture(**kwargs: object) -> bool:
+        path.write_bytes(captured + b"\n")
+        return boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", grow_source_after_capture)
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    _parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert isinstance(parse_error, str) and parse_error.endswith("complete record boundary")
+
+
 def test_full_ingest_claude_partial_jsonl_has_provider_specific_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
