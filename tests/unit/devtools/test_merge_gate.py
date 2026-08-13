@@ -78,6 +78,8 @@ def _fake_run(
             call_count["round"] += 1
             return MagicMock(returncode=0, stdout=json.dumps([comment_rounds[round_index]]), stderr="")
         if cmd[:2] == ["git", "rev-parse"]:
+            if "--show-toplevel" in cmd:
+                return MagicMock(returncode=0, stdout=str(Path.cwd()) + "\n", stderr="")
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
             return MagicMock(returncode=0, stdout=" M dirty.py\n" if dirty else "", stderr="")
@@ -192,25 +194,25 @@ def test_record_consumes_receipt_after_streamed_verifier_progress(
     assert receipt["terminal_authorization"] == "narrow-terminal"
 
 
-def test_record_consumes_exact_new_current_run_when_verifier_writes_only_stderr(
+def test_record_consumes_exact_invocation_receipt_when_verifier_writes_only_stderr(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
     base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
-    current_run = tmp_path / merge_gate.CURRENT_RUN_PATH
-    current_run.parent.mkdir(parents=True)
-    current_run.write_text(json.dumps({"run_id": "old"}))
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         if cmd[:2] in (["git", "rev-parse"], ["git", "status"]):
             return base(cmd, **kwargs)
         if cmd[:3] == ["gh", "pr", "view"]:
             return base(cmd, **kwargs)
-        current_run.write_text(
+        env = cast(dict[str, str], kwargs["env"])
+        receipt_path = Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV])
+        receipt_path.write_text(
             json.dumps(
                 {
                     "run_id": "new",
+                    "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
                     "git_head": "abc123",
                     "checkout_root": str(tmp_path),
                     "exit_code": 0,
@@ -229,21 +231,21 @@ def test_record_consumes_exact_new_current_run_when_verifier_writes_only_stderr(
     assert receipt["release_baseline_allowed"] is False
 
 
-def test_record_rejects_current_run_from_another_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_record_rejects_invocation_receipt_from_another_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
     base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
-    current_run = tmp_path / merge_gate.CURRENT_RUN_PATH
-    current_run.parent.mkdir(parents=True)
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         if cmd[:2] in (["git", "rev-parse"], ["git", "status"]):
             return base(cmd, **kwargs)
         if cmd[:3] == ["gh", "pr", "view"]:
             return base(cmd, **kwargs)
-        current_run.write_text(
+        env = cast(dict[str, str], kwargs["env"])
+        Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
             json.dumps(
                 {
+                    "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
                     "git_head": "different",
                     "checkout_root": str(tmp_path),
                     "exit_code": 0,
@@ -259,6 +261,78 @@ def test_record_rejects_current_run_from_another_head(monkeypatch: pytest.Monkey
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
     assert receipt["verification_scope"] is None
     assert receipt["release_baseline_allowed"] is None
+
+
+def test_record_rejects_unrelated_invocation_receipt_with_same_head_and_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
+    base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] in (["git", "rev-parse"], ["git", "status"]):
+            return base(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return base(cmd, **kwargs)
+        env = cast(dict[str, str], kwargs["env"])
+        Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
+            json.dumps(
+                {
+                    "invocation_id": "another-command",
+                    "git_head": "abc123",
+                    "checkout_root": str(tmp_path),
+                    "exit_code": 0,
+                    "verification_scope": "affected",
+                    "release_baseline_allowed": False,
+                }
+            )
+        )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    assert merge_gate.cmd_record(42, "devtools test tests/unit/foo.py") == 0
+    receipt = json.loads(merge_gate._receipt_path(42).read_text())
+    assert receipt["verification_scope"] is None
+    assert receipt["release_baseline_allowed"] is None
+
+
+def test_record_anchors_invocation_to_repository_root_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    subdirectory = tmp_path / "devtools"
+    subdirectory.mkdir()
+    monkeypatch.chdir(subdirectory)
+    pr_view: dict[str, object] = {"headRefOid": "abc123", "headRefName": "feature/x"}
+    base = cast(Callable[..., MagicMock], _fake_run(pr_view, [], local_head_sha="abc123"))
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd == ["git", "rev-parse", "--show-toplevel"]:
+            return MagicMock(returncode=0, stdout=str(tmp_path) + "\n", stderr="")
+        if cmd[:2] in (["git", "rev-parse"], ["git", "status"]):
+            return base(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return base(cmd, **kwargs)
+        assert kwargs["cwd"] == tmp_path
+        env = cast(dict[str, str], kwargs["env"])
+        Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
+            json.dumps(
+                {
+                    "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
+                    "git_head": "abc123",
+                    "checkout_root": str(tmp_path),
+                    "exit_code": 0,
+                    "verification_scope": "affected",
+                    "release_baseline_allowed": False,
+                }
+            )
+        )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    assert merge_gate.cmd_record(42, "devtools test tests/unit/foo.py") == 0
+    receipt = json.loads(merge_gate._receipt_path(42).read_text())
+    assert receipt["verification_scope"] == "affected"
 
 
 def test_record_accepts_authoritative_dependabot_dependency_only_pr_without_carrier(

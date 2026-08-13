@@ -31,6 +31,8 @@ VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 DEVTOOLS_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "polylogue" / "devtools"
 VERIFY_HISTORY_PATH = DEVTOOLS_STATE_DIR / "verify-history.jsonl"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
+VERIFICATION_INVOCATION_ID_ENV = "POLYLOGUE_VERIFICATION_INVOCATION_ID"
+VERIFICATION_RECEIPT_PATH_ENV = "POLYLOGUE_VERIFICATION_RECEIPT_PATH"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
@@ -503,6 +505,9 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
+        invocation_id = os.environ.get(VERIFICATION_INVOCATION_ID_ENV)
+        if invocation_id:
+            self._payload["invocation_id"] = invocation_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 
@@ -512,6 +517,9 @@ class VerifyRun:
 
     def write(self) -> None:
         _write_json(self.run_dir / "run.json", self._payload)
+        invocation_receipt = os.environ.get(VERIFICATION_RECEIPT_PATH_ENV)
+        if invocation_receipt:
+            _write_json(Path(invocation_receipt), self._payload)
         current_path = self.root / CURRENT_RUN_PATH
         if not _current_owner_is_other_live_run(current_path):
             _write_json(current_path, self._payload)
@@ -623,6 +631,11 @@ class VerifyRun:
 
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
+    # The merge-gate invocation receipt belongs to the top-level devtools
+    # process. Pytest and any nested harness commands must not inherit the
+    # token and overwrite that receipt with a child run.
+    updated.pop(VERIFICATION_INVOCATION_ID_ENV, None)
+    updated.pop(VERIFICATION_RECEIPT_PATH_ENV, None)
     updated["POLYLOGUE_VERIFY_RUN_ID"] = run.run_id
     updated["POLYLOGUE_PYTEST_RUN_ID"] = run.run_id
     updated["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(artifacts.events_dir)

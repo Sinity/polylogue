@@ -929,6 +929,30 @@ def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
     assert json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text()) == payload
 
 
+def test_verify_run_writes_invocation_receipt_without_leaking_token_to_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = tmp_path / "invocation" / "run.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "invocation-1")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
+
+    payload = run.finish(
+        exit_code=0,
+        duration_s=0.1,
+        verification_scope="affected",
+        release_baseline_allowed=False,
+    )
+    child_env = verify_runs.env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
+
+    assert json.loads(receipt.read_text()) == payload
+    assert payload["invocation_id"] == "invocation-1"
+    assert verify_runs.VERIFICATION_INVOCATION_ID_ENV not in child_env
+    assert verify_runs.VERIFICATION_RECEIPT_PATH_ENV not in child_env
+
+
 def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_path: Path) -> None:
     step = tmp_path / "step"
     step.mkdir()

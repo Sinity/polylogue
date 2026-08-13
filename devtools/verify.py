@@ -3914,7 +3914,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # Persist history and stamp.
     _save_history(history_entry)
-    verify_run.finish(exit_code=exit_code, duration_s=total_duration, diagnosis=pytest_diagnosis)
+    verify_run.finish(
+        exit_code=exit_code,
+        duration_s=total_duration,
+        diagnosis=pytest_diagnosis,
+        verification_scope=verification_scope.value,
+        release_baseline_allowed=release_baseline_allowed,
+        terminal_authorization=args.terminal_authorization,
+    )
     if exit_code == 0:
         _stamp_head()
 

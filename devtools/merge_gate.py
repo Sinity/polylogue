@@ -70,17 +70,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
 from devtools.testmon_state import TerminalAuthorization, VerificationScope
-from devtools.verify_runs import CURRENT_RUN_PATH as CURRENT_RUN_PATH
+from devtools.verify_runs import VERIFICATION_INVOCATION_ID_ENV as VERIFICATION_INVOCATION_ID_ENV
+from devtools.verify_runs import VERIFICATION_RECEIPT_PATH_ENV as VERIFICATION_RECEIPT_PATH_ENV
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
@@ -193,6 +197,18 @@ def _git_is_clean() -> bool:
     return result.returncode == 0 and not result.stdout.strip()
 
 
+def _repository_root() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip()).resolve(strict=False)
+    return Path.cwd().resolve(strict=False)
+
+
 @dataclass
 class GateVerdict:
     pr: int
@@ -206,11 +222,11 @@ class GateVerdict:
 
 
 def _receipt_path(pr: int) -> Path:
-    return _RECEIPT_DIR / f"pr-{pr}.json"
+    return _repository_root() / _RECEIPT_DIR / f"pr-{pr}.json"
 
 
 def _ack_path(pr: int) -> Path:
-    return _RECEIPT_DIR / f"pr-{pr}-acks.json"
+    return _repository_root() / _RECEIPT_DIR / f"pr-{pr}-acks.json"
 
 
 def _command_skips_tests(command: str) -> bool:
@@ -238,34 +254,30 @@ def _structured_verification_receipt(stdout: str) -> dict[str, Any] | None:
     return None
 
 
-def _current_run_bytes() -> bytes | None:
-    try:
-        return CURRENT_RUN_PATH.read_bytes()
-    except OSError:
-        return None
-
-
-def _current_run_receipt(
+def _invocation_receipt(
     *,
-    previous: bytes | None,
+    path: Path,
+    invocation_id: str,
     head_sha: str,
     command_exit: int,
+    checkout_root: Path,
 ) -> dict[str, Any] | None:
-    """Load the exact run artifact produced when a verifier writes no stdout receipt."""
+    """Load the exact run artifact bound to the launched verifier process."""
 
-    current = _current_run_bytes()
-    if current is None or current == previous:
-        return None
     try:
-        payload = json.loads(current)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict):
         return None
-    if payload.get("git_head") != head_sha or payload.get("exit_code") != command_exit:
+    if (
+        payload.get("invocation_id") != invocation_id
+        or payload.get("git_head") != head_sha
+        or payload.get("exit_code") != command_exit
+    ):
         return None
-    checkout_root = payload.get("checkout_root")
-    if not isinstance(checkout_root, str) or Path(checkout_root).resolve(strict=False) != Path.cwd().resolve(
+    recorded_root = payload.get("checkout_root")
+    if not isinstance(recorded_root, str) or Path(recorded_root).resolve(strict=False) != checkout_root.resolve(
         strict=False
     ):
         return None
@@ -305,7 +317,13 @@ def _base_sha(info: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.ScopeVerdict:
+def _scope_verdict(
+    pr: int,
+    info: dict[str, Any],
+    *,
+    head_sha: str,
+    checkout_root: Path,
+) -> pr_scope.ScopeVerdict:
     """Use the same carrier or typed bot exception for record and check."""
     author = info.get("author")
     files = info.get("files")
@@ -328,6 +346,7 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
         info.get("body") or "",
         head_sha=head_sha,
         is_draft=bool(info.get("isDraft")),
+        beads_path=checkout_root / ".beads" / "issues.jsonl",
         base_sha=_base_sha(info),
     )
 
@@ -335,6 +354,7 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,baseRefOid,body,isDraft,author,files"])
     head_sha = info["headRefOid"]
+    checkout_root = _repository_root()
 
     local_head = _git_head_sha()
     if local_head != head_sha:
@@ -354,7 +374,7 @@ def cmd_record(pr: int, command: str) -> int:
         )
         return 2
 
-    scope = _scope_verdict(pr, info, head_sha=head_sha)
+    scope = _scope_verdict(pr, info, head_sha=head_sha, checkout_root=checkout_root)
     if not scope.ok:
         print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
         for reason in scope.reasons:
@@ -365,19 +385,26 @@ def cmd_record(pr: int, command: str) -> int:
     if not argv:
         print("REFUSING to record: --command is empty after shell splitting.", file=sys.stderr)
         return 2
-    previous_current_run = _current_run_bytes()
+    invocation_id = uuid.uuid4().hex
     started = time.time()
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True)
-    except OSError as exc:
-        print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
-        return 2
+    with tempfile.TemporaryDirectory(prefix="polylogue-merge-gate-") as temp_dir:
+        receipt_path = Path(temp_dir) / "run.json"
+        env = dict(os.environ)
+        env[VERIFICATION_INVOCATION_ID_ENV] = invocation_id
+        env[VERIFICATION_RECEIPT_PATH_ENV] = str(receipt_path)
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, cwd=checkout_root, env=env)
+        except OSError as exc:
+            print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
+            return 2
+        verification_receipt = _structured_verification_receipt(result.stdout) or _invocation_receipt(
+            path=receipt_path,
+            invocation_id=invocation_id,
+            head_sha=head_sha,
+            command_exit=result.returncode,
+            checkout_root=checkout_root,
+        )
     duration_s = round(time.time() - started, 2)
-    verification_receipt = _structured_verification_receipt(result.stdout) or _current_run_receipt(
-        previous=previous_current_run,
-        head_sha=head_sha,
-        command_exit=result.returncode,
-    )
     verification_payload = json.dumps(verification_receipt) if verification_receipt is not None else ""
 
     receipt = {
@@ -404,8 +431,9 @@ def cmd_record(pr: int, command: str) -> int:
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
     }
-    _RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
-    _receipt_path(pr).write_text(json.dumps(receipt, indent=2))
+    receipt_path = _receipt_path(pr)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(receipt, indent=2))
 
     print(f"recorded receipt for PR #{pr} @ {head_sha[:8]}: exit={result.returncode} ({duration_s}s)")
     if receipt["skips_tests"]:
@@ -436,7 +464,7 @@ def cmd_ack(pr: int, comment_id: int, *, reason: str) -> int:
     else:
         acks = {}
     acks[str(comment_id)] = {"head_sha": head_sha, "reason": reason, "acked_at": time.time()}
-    _RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    ack_path.parent.mkdir(parents=True, exist_ok=True)
     ack_path.write_text(json.dumps(acks, indent=2))
     print(f"acknowledged comment {comment_id} on PR #{pr} @ {head_sha[:8]}: {reason}")
     return 0
@@ -549,7 +577,7 @@ def cmd_check(
             "current checkout has uncommitted changes; merge-gate check requires committed PR content"
         )
 
-    scope = _scope_verdict(pr, info, head_sha=head_sha)
+    scope = _scope_verdict(pr, info, head_sha=head_sha, checkout_root=_repository_root())
     verdict.pr_scope = asdict(scope)
     if not scope.ok:
         verdict.ok = False
