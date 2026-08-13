@@ -53,6 +53,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Plan or apply one offline inode-preserving archive-root relocation.",
     ),
     (
+        "source-continuity-recovery",
+        "_source_continuity_recovery",
+        "source_continuity_recovery_command",
+        "Recover one authenticated pre-#3868 source liveness transition offline.",
+    ),
+    (
         "run-preview",
         "_run_preview",
         "run_preview_command",
@@ -243,7 +249,9 @@ def maintenance_group(ctx: click.Context) -> None:
 
 
 for _cli_name, _submodule, _attr, _short_help in _COMMANDS:
-    _command_type = _LazyGroup if _cli_name == "archive-root-relocation" else _LazyCommand
+    _command_type = (
+        _LazyGroup if _cli_name in {"archive-root-relocation", "source-continuity-recovery"} else _LazyCommand
+    )
     maintenance_group.add_command(
         _command_type(
             _cli_name,

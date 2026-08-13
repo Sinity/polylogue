@@ -330,7 +330,10 @@ def classify_blob_ref_liveness(conn: sqlite3.Connection) -> BlobRefLivenessClass
     """Return the complete candidate projection for read-only callers."""
 
     staged = stage_blob_ref_liveness(conn, sample_limit=0)
-    candidates = tuple(staged.candidates(conn))
+    # ``stage_blob_ref_liveness`` intentionally avoids creating a temp table
+    # for archives predating ``blob_refs``.  That is still a valid empty
+    # read-only classification, not a reason to query the absent temp table.
+    candidates = tuple(staged.candidates(conn)) if staged.classification.candidate_count else ()
     return BlobRefLivenessClassification(
         scanned_count=staged.classification.scanned_count,
         ref_type_counts=staged.classification.ref_type_counts,

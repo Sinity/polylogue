@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import replace
@@ -16,6 +17,11 @@ from polylogue.operations.archive_root_relocation import (
     ArchiveRootRelocationError,
     apply_archive_root_relocation,
     prepare_archive_root_relocation,
+)
+from polylogue.operations.historical_source_continuity_recovery import (
+    HistoricalSourceContinuityRecoveryError,
+    apply_historical_source_continuity_recovery,
+    load_historical_source_continuity_recovery_plan,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
@@ -43,6 +49,13 @@ def test_archive_root_relocation_is_a_real_maintenance_route(cli_workspace: dict
 
     assert result.exit_code == 0, result.output
     assert "inode-preserving" in result.output
+    nested = CliRunner().invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "archive-root-relocation", "plan", "--help"],
+        catch_exceptions=False,
+    )
+    assert nested.exit_code == 0, nested.output
+    assert "--old-root" in nested.output
 
 
 def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
@@ -176,6 +189,167 @@ def _released_moved_source_train(root: Path, monkeypatch: pytest.MonkeyPatch) ->
     write_durable_change_train_manifest(manifest, historical, expected_revision=-1)
     monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 1)
     return manifest
+
+
+def _legacy_zero_candidate_receipt(path: Path, *, old_root: Path, pre_manifest: Path) -> None:
+    """Encode the exact pre-#3868 shape: no backup digest or postcondition field."""
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(old_root / "source.db"),
+                "backup_manifest": str(pre_manifest),
+                "candidate_count": 0,
+                "candidate_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise old-path HMACs, backup bytes, train CAS, census, and ordinary verification.
+
+    This is deliberately file-backed: deleting the recovery identity rewrite,
+    swapping either backup, or changing the receipt's old path makes the real
+    plan/apply route fail before the train manifest can be written.
+    """
+    from polylogue.storage.sqlite import durable_change_train as trains
+
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    pre_backup = backup_archive(output_dir=tmp_path / "pre", profile="rebuildable_cache_exclude", verify=True)
+    post_backup = backup_archive(output_dir=tmp_path / "post", profile="rebuildable_cache_exclude", verify=True)
+    assert pre_backup.ok and pre_backup.output_path is not None
+    assert post_backup.ok and post_backup.output_path is not None
+    pre_manifest = Path(pre_backup.output_path) / "manifest.json"
+    post_manifest = Path(post_backup.output_path) / "manifest.json"
+    legacy_receipt = tmp_path / "legacy-liveness.jsonl"
+    _legacy_zero_candidate_receipt(legacy_receipt, old_root=old_root, pre_manifest=pre_manifest)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    moved_manifest = new_root / manifest.relative_to(old_root)
+    database_before = {
+        path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
+    }
+
+    plan_path = tmp_path / "continuity-plan.json"
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(new_root)}
+    plan_result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "source-continuity-recovery",
+            "plan",
+            "--old-root",
+            str(old_root),
+            "--mutation-receipt",
+            str(legacy_receipt),
+            "--pre-backup-manifest",
+            str(pre_manifest),
+            "--post-backup-manifest",
+            str(post_manifest),
+            "--output",
+            str(plan_path),
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+    assert plan_result.exit_code == 0, plan_result.output
+    plan = load_historical_source_continuity_recovery_plan(plan_path)
+    assert database_before == {
+        path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
+    }
+    with sqlite3.connect(new_root / "source.db") as connection:
+        with pytest.raises(Exception, match="continuity proof failed"):
+            trains._verify_released_train_live_tier(
+                new_root,
+                connection,
+                trains.load_durable_change_train_manifest(moved_manifest),
+            )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            "polylogue.operations.historical_source_continuity_recovery.recover_released_source_train_continuity",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("crash after prepared receipt")),
+        )
+        with pytest.raises(RuntimeError, match="crash after prepared"):
+            apply_historical_source_continuity_recovery(
+                root=new_root,
+                plan=plan,
+                authorization=plan.plan_sha256,
+                stopped_daemon_evidence_ref="proof:daemon-stopped",
+                single_writer_evidence_ref="proof:archive-ownership-lock",
+            )
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+        trains.reconcile_durable_change_train_startup(new_root)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "source-continuity-recovery",
+            "apply",
+            "--plan",
+            str(plan_path),
+            "--authorize",
+            plan.plan_sha256,
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["state"] == "committed"
+    # The second apply is the crash-recovery/idempotency path, not a second revision.
+    replay = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "source-continuity-recovery",
+            "apply",
+            "--plan",
+            str(plan_path),
+            "--authorize",
+            plan.plan_sha256,
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+    assert replay.exit_code == 0, replay.output
+    assert json.loads(replay.output)["state"] == "committed"
+    with sqlite3.connect(new_root / "source.db") as connection:
+        assert (
+            trains._verify_released_train_live_tier(
+                new_root,
+                connection,
+                trains.load_durable_change_train_manifest(moved_manifest),
+            )
+            is None
+        )
 
 
 def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_crash(

@@ -41,7 +41,7 @@ command's migration result alone.
 
 ## Relocating an archive root
 
-Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. It requires the daemon to be stopped, archive ownership, and a successful verified `full_evidence` backup whose receipt is authenticated against the old root path. A current source train with post-release source content must first have its existing receipt-backed source-continuity refresh; this operation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
+Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. It requires the daemon to be stopped, archive ownership, and a successful verified `full_evidence` backup whose receipt is authenticated against the old root path. A current source train with post-release source content must first have receipt-backed source-continuity authority; relocation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation plan --old-root /old/archive/root --backup-manifest /path/to/manifest.json --output /safe/relocation-plan.json --output-format json
@@ -49,6 +49,17 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-
 ```
 
 If apply stops after recording a prepared receipt, daemon startup fails closed and names the exact apply command. Rerun that command with the same plan and authorization after restoring offline ownership. Do not use this operation for a copy, restore, new archive, migration, or live service move.
+
+### Recovering the one historical liveness receipt shape
+
+`source-continuity-recovery` is a one-purpose bridge for a committed pre-#3868 blob-reference-liveness receipt that lacks the modern manifest digest and post-orphan fields. It does not make ordinary liveness receipts permissive. It requires an authenticated pre-mutation backup at the old source path, an authenticated post-mutation backup at that same old path, exact pre/post `blob_refs` delta proof, and a fresh zero-orphan census against the configured moved root. It creates no SQLite rows; apply CAS-revises only the current released source train and retained receipts.
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-continuity-recovery plan --old-root /old/archive/root --mutation-receipt /safe/liveness.jsonl --pre-backup-manifest /safe/pre/manifest.json --post-backup-manifest /safe/post/manifest.json --output /safe/continuity-plan.json --output-format json
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-continuity-recovery apply --plan /safe/continuity-plan.json --authorize PLAN_SHA256 --output-format json
+```
+
+After this bridge commits, create and verify a fresh `full_evidence` backup at the moved root before running the separate archive-root-relocation plan/apply transition. A prepared bridge receipt blocks daemon startup and names its exact resume command.
 
 ### Rebuild deployment-currency preflight
 

@@ -37,6 +37,18 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 
 
+def test_classify_missing_blob_refs_is_an_empty_read_only_result(tmp_path: Path) -> None:
+    """The public classifier must support old source schemas with no blob_refs table."""
+    database = tmp_path / "old-source.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE legacy_items (id TEXT PRIMARY KEY)")
+        classification = classify_blob_ref_liveness(connection)
+
+    assert classification.scanned_count == 0
+    assert classification.orphaned_count == 0
+    assert classification.candidates == ()
+
+
 def _source_archive(tmp_path: Path) -> Path:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)

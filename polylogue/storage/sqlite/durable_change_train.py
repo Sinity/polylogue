@@ -583,6 +583,41 @@ def rebind_released_source_train_archive_identity(
     return updated
 
 
+def recover_released_source_train_continuity(
+    train: DurableChangeTrain,
+    *,
+    current_evidence: DurableDatabaseEvidence,
+    proof_ref: str,
+) -> DurableChangeTrain:
+    """Bind one released source train to separately authenticated current bytes.
+
+    This is deliberately narrower than the ordinary liveness refresh: callers
+    must have already authenticated a historical mutation bridge.  It never
+    accepts a legacy receipt itself and only revises the current released
+    source train's identity/evidence authority.
+    """
+    if train.tier is not ArchiveTier.SOURCE or train.state is not DurableChangeTrainState.RELEASED:
+        raise DurableChangeTrainError("historical continuity recovery requires a released source train")
+    if train.apply_evidence is None:
+        raise DurableChangeTrainError("historical continuity recovery requires source train apply evidence")
+    if current_evidence.tier is not ArchiveTier.SOURCE or current_evidence.user_version != train.target_version:
+        raise DurableChangeTrainError("historical continuity recovery has the wrong live source schema")
+    if current_evidence.quick_check != ("ok",):
+        raise DurableChangeTrainError("historical continuity recovery requires successful source quick_check")
+    if current_evidence.schema_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256:
+        raise DurableChangeTrainError("historical continuity recovery changed the released source schema")
+    post = replace(train.apply_evidence.post, archive_identity_digest=current_evidence.archive_identity_digest)
+    updated = replace(
+        train,
+        revision=train.revision + 1,
+        apply_evidence=replace(train.apply_evidence, post=post),
+        source_continuity_evidence=current_evidence,
+        proof_refs=_migration_runner._append_proof_refs(train.proof_refs, proof_ref),
+    )
+    validate_durable_change_train_manifest(updated)
+    return updated
+
+
 def write_source_continuity_pending_intent(
     archive_root: Path,
     *,
@@ -2332,8 +2367,12 @@ def _reconcile_durable_change_train_startup_locked(
     """Reconcile persisted trains while the caller holds archive ownership."""
     from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
     from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
+    from polylogue.operations.historical_source_continuity_recovery import (
+        assert_no_prepared_historical_source_continuity_recovery,
+    )
 
     assert_no_prepared_archive_root_relocation(archive_root)
+    assert_no_prepared_historical_source_continuity_recovery(archive_root)
     validate_audit_adoption_receipt(archive_root)
     deferred_tiers = _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"

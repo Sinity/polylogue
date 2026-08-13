@@ -69,6 +69,7 @@ class RelocationSourceTrain(BaseModel):
     before_manifest_sha256: str
     before_archive_identity_digest: str
     after_archive_identity_digest: str
+    requires_rebind: bool
     source_continuity_receipt_digests: tuple[str, ...]
 
 
@@ -294,10 +295,13 @@ def _source_trains(
                 before_manifest_sha256=_sha256_file(path),
                 before_archive_identity_digest=train.apply_evidence.post.archive_identity_digest,
                 after_archive_identity_digest=after_identity_digest,
+                requires_rebind=train.apply_evidence.post.archive_identity_digest != after_identity_digest,
                 source_continuity_receipt_digests=continuity_refs,
             )
         )
-        if trains[-1].before_archive_identity_digest == after_identity_digest:
+        if trains[-1].before_archive_identity_digest == after_identity_digest and not (
+            train.target_version == source_version and train.source_continuity_evidence is not None
+        ):
             raise ArchiveRootRelocationError(
                 f"released source train already carries the current archive identity: {path}"
             )
@@ -519,7 +523,7 @@ def _revalidate_plan_live_state(
                 ) from exc
         before = _sha256_file(path) == item.before_manifest_sha256
         after = (
-            train.revision == item.before_revision + 1
+            train.revision == item.before_revision + (1 if item.requires_rebind else 0)
             and train.apply_evidence is not None
             and train.apply_evidence.post.archive_identity_digest == item.after_archive_identity_digest
             and (
@@ -587,7 +591,7 @@ def apply_archive_root_relocation(
         path = Path(item.path)
         train = load_durable_change_train_manifest(path)
         actual_hash = _sha256_file(path)
-        if actual_hash == item.before_manifest_sha256:
+        if actual_hash == item.before_manifest_sha256 and item.requires_rebind:
             updated = rebind_released_source_train_archive_identity(
                 train,
                 archive_identity_digest=item.after_archive_identity_digest,
@@ -595,7 +599,7 @@ def apply_archive_root_relocation(
             )
             write_durable_change_train_manifest(path, updated, expected_revision=item.before_revision)
         elif (
-            train.revision != item.before_revision + 1
+            train.revision != item.before_revision + (1 if item.requires_rebind else 0)
             or train.apply_evidence is None
             or train.apply_evidence.post.archive_identity_digest != item.after_archive_identity_digest
         ):
