@@ -20,9 +20,12 @@ from polylogue.operations.archive_root_relocation import (
 )
 from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
+    _assert_complete_source_semantic_delta,
+    _assert_exact_liveness_delta,
     apply_historical_source_continuity_recovery,
     load_historical_source_continuity_recovery_plan,
 )
+from polylogue.storage.blob_ref_liveness import BlobRefLivenessCandidate
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
@@ -215,6 +218,58 @@ def _legacy_zero_candidate_receipt(path: Path, *, old_root: Path, pre_manifest: 
         + "\n",
         encoding="utf-8",
     )
+
+
+def _write_liveness_delta_database(path: Path, *, keep_body: str = "kept", include_candidate: bool = True) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE unrelated_authority (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL, ref_type TEXT NOT NULL, ref_id TEXT NOT NULL,
+                source_path TEXT, size_bytes INTEGER NOT NULL, acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY (blob_hash, ref_type, ref_id)
+            ) STRICT;
+            """
+        )
+        connection.execute("INSERT INTO raw_sessions VALUES ('live', ?)", (keep_body,))
+        connection.execute("INSERT INTO unrelated_authority VALUES ('stable', 'unchanged')")
+        connection.execute("INSERT INTO blob_refs VALUES (X'01', 'attachment', 'live', NULL, 1, 1)")
+        if include_candidate:
+            connection.execute("INSERT INTO blob_refs VALUES (X'02', 'attachment', 'deleted', NULL, 2, 2)")
+
+
+def test_historical_liveness_delta_requires_exact_deletion_and_no_other_source_mutation(tmp_path: Path) -> None:
+    """The bridge permits one enumerated orphan deletion, not a broad backup-to-backup rewrite."""
+    pre = tmp_path / "pre.db"
+    post = tmp_path / "post.db"
+    _write_liveness_delta_database(pre)
+    _write_liveness_delta_database(post, include_candidate=False)
+    candidate = BlobRefLivenessCandidate(
+        blob_hash="02",
+        ref_type="attachment",
+        ref_id="deleted",
+        source_path=None,
+        size_bytes=2,
+        acquired_at_ms=2,
+        referent_table="raw_sessions",
+        referent_column="raw_id",
+    )
+    _assert_exact_liveness_delta(pre, post, (candidate,))
+    _assert_complete_source_semantic_delta(pre, post)
+
+    changed_table = tmp_path / "changed-table.db"
+    _write_liveness_delta_database(changed_table, keep_body="tampered", include_candidate=False)
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="non-blob-ref"):
+        _assert_complete_source_semantic_delta(pre, changed_table)
+
+    wrong_blob_set = tmp_path / "wrong-blob-set.db"
+    _write_liveness_delta_database(wrong_blob_set, include_candidate=False)
+    with sqlite3.connect(wrong_blob_set) as connection:
+        connection.execute("INSERT INTO blob_refs VALUES (X'03', 'attachment', 'extra', NULL, 3, 3)")
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="beyond the historical candidates"):
+        _assert_exact_liveness_delta(pre, wrong_blob_set, (candidate,))
 
 
 def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(

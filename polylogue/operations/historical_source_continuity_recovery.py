@@ -43,6 +43,7 @@ from polylogue.storage.sqlite.durable_change_train import (
 from polylogue.storage.sqlite.migration_runner import (
     DurableDatabaseEvidence,
     capture_durable_database_evidence,
+    capture_durable_schema_inventory,
 )
 
 PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v1"] = (
@@ -377,6 +378,52 @@ def _blob_ref_rows_digest(connection: sqlite3.Connection, *, excluded: set[tuple
     return count, digest.hexdigest()
 
 
+def _table_content_digest(connection: sqlite3.Connection, table: str) -> tuple[int, str]:
+    """Stream a deterministic typed row digest without materializing a table."""
+    quoted = '"' + table.replace('"', '""') + '"'
+    columns = [str(row[1]) for row in connection.execute(f"PRAGMA table_xinfo({quoted})") if int(row[6]) == 0]
+    if not columns:
+        raise HistoricalSourceContinuityRecoveryError(f"source table has no readable columns: {table}")
+    quoted_columns = ['"' + column.replace('"', '""') + '"' for column in columns]
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        for row in connection.execute(
+            f"SELECT {', '.join(quoted_columns)} FROM {quoted} ORDER BY {', '.join(quoted_columns)}"
+        ):
+            encoded = [value.hex() if isinstance(value, bytes) else value for value in row]
+            digest.update(json.dumps(encoded, separators=(",", ":"), ensure_ascii=True).encode() + b"\n")
+            count += 1
+    except (sqlite3.Error, TypeError) as exc:
+        raise HistoricalSourceContinuityRecoveryError(f"cannot deterministically read source table: {table}") from exc
+    return count, digest.hexdigest()
+
+
+def _assert_complete_source_semantic_delta(pre_source: Path, post_source: Path) -> None:
+    """Require every non-blob-ref schema object and relation to be identical."""
+    try:
+        with (
+            sqlite3.connect(f"file:{pre_source}?mode=ro&immutable=1", uri=True) as pre,
+            sqlite3.connect(f"file:{post_source}?mode=ro&immutable=1", uri=True) as post,
+        ):
+            if capture_durable_schema_inventory(pre) != capture_durable_schema_inventory(post):
+                raise HistoricalSourceContinuityRecoveryError("pre/post backups have source schema or object drift")
+            tables = [
+                str(row[0])
+                for row in pre.execute(
+                    "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+                if str(row[0]) != "blob_refs"
+            ]
+            for table in tables:
+                if _table_content_digest(pre, table) != _table_content_digest(post, table):
+                    raise HistoricalSourceContinuityRecoveryError(
+                        f"post-mutation backup changed non-blob-ref source table: {table}"
+                    )
+    except sqlite3.Error as exc:
+        raise HistoricalSourceContinuityRecoveryError("cannot compare complete pre/post source authority") from exc
+
+
 def _assert_exact_liveness_delta(
     pre_source: Path, post_source: Path, candidates: tuple[BlobRefLivenessCandidate, ...]
 ) -> None:
@@ -515,6 +562,9 @@ def prepare_historical_source_continuity_recovery(
         pre_backup_manifest.parent / "source.db",
         post_backup_manifest.parent / "source.db",
         prior.candidates,
+    )
+    _assert_complete_source_semantic_delta(
+        pre_backup_manifest.parent / "source.db", post_backup_manifest.parent / "source.db"
     )
     current = _current_evidence(root)
     current_path = root / "source.db"
