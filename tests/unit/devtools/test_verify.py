@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.testmon_state import (
@@ -1834,18 +1836,80 @@ def test_checkout_mutation_monitor_ignores_nested_disposable_cache_writes(tmp_pa
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
-def test_checkout_mutation_monitor_uses_gitignore_for_verifier_task_history(tmp_path: Path) -> None:
+def test_checkout_mutation_monitor_uses_gitignore_for_verifier_task_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     subprocess.run(["git", "init", "-q"], check=True)
     (tmp_path / ".gitignore").write_text(".agent/*\n", encoding="utf-8")
     history = tmp_path / ".agent" / "task-history" / "tasks.jsonl"
     history.parent.mkdir(parents=True)
 
+    def portable_watch(*_paths: Path, **kwargs: object) -> object:
+        yield set()
+        yield {(watchfiles.Change.modified, str(history))}
+        stop_event = kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait()
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
     monitor = CheckoutMutationMonitor(tmp_path)
     monitor.start()
-    history.write_text('{"task": "verification"}\n', encoding="utf-8")
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux_kernel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+    event_emitted = threading.Event()
+
+    def portable_watch(*paths: Path, **kwargs: object) -> object:
+        calls["paths"] = paths
+        calls["kwargs"] = kwargs
+        yield set()
+        event_emitted.set()
+        yield {(watchfiles.Change.modified, str(tracked))}
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    assert event_emitted.wait(timeout=1)
+    observation = monitor.finish()
+
+    assert calls["paths"] == (tmp_path.resolve(),)
+    assert calls["kwargs"] == {
+        "watch_filter": None,
+        "debounce": 0,
+        "step": 1,
+        "stop_event": monitor._stop,
+        "rust_timeout": monitor._WATCH_RUST_TIMEOUT_MS,
+        "yield_on_timeout": True,
+        "raise_interrupt": False,
+    }
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="tracked.py")
+
+
+def test_checkout_mutation_monitor_fails_closed_when_portable_watcher_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_watch(*_paths: Path, **_kwargs: object) -> object:
+        raise OSError("watcher unavailable")
+        yield set()
+
+    monkeypatch.setattr(watchfiles, "watch", broken_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
 
 
 def test_seed_receipt_classifies_every_node_terminal_outcome(

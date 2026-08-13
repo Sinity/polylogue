@@ -8,7 +8,6 @@ selection and event streams, resource samples, and postmortem classification.
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import fcntl
 import hashlib
 import json
@@ -16,7 +15,6 @@ import os
 import re
 import shutil
 import stat
-import struct
 import subprocess
 import threading
 import time
@@ -26,6 +24,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
+
+import watchfiles
 
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
@@ -210,7 +210,7 @@ class CheckoutMutationObservation:
 
 
 class CheckoutMutationMonitor:
-    """Fail closed when inotify cannot observe the checkout interval.
+    """Fail closed when watchfiles cannot observe the checkout interval.
 
     Endpoint hashes establish the state of the checkout, while this monitor
     records writes that occur and are later reverted before the final sample.
@@ -231,55 +231,42 @@ class CheckoutMutationMonitor:
             "__pycache__",
         }
     )
-    _EVENT_MASK = (
-        0x00000002
-        | 0x00000004
-        | 0x00000008
-        | 0x00000040
-        | 0x00000080
-        | 0x00000100
-        | 0x00000200
-        | 0x00000400
-        | 0x00000800
-        | 0x00002000
-    )
-    _INIT_FLAGS = 0x00000800 | 0x00080000
+    _WATCH_START_TIMEOUT_S = 1.0
+    _WATCH_SETTLE_S = 0.2
+    _WATCH_RUST_TIMEOUT_MS = 25
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self._changed = False
         self._observed_path: str | None = None
         self._unavailable = False
-        self._descriptor: int | None = None
-        self._paths_by_watch: dict[int, Path] = {}
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
-        """Start the interval monitor, recording an unavailable monitor eagerly."""
-        try:
-            descriptor = self._open_inotify()
-            self._descriptor = descriptor
-            for directory in self._watched_directories():
-                watch = self._add_watch(descriptor, directory)
-                if watch < 0:
-                    raise OSError(ctypes.get_errno(), "inotify_add_watch")
-                self._paths_by_watch[watch] = directory
-        except OSError:
-            self._unavailable = True
-            self._close_descriptor()
-            return
+        """Start and prove the portable interval watcher before verification."""
         self._thread = threading.Thread(target=self._watch, name="checkout-mutation-monitor", daemon=True)
         self._thread.start()
+        if not self._ready.wait(timeout=self._WATCH_START_TIMEOUT_S):
+            with self._state_lock:
+                self._unavailable = True
+            self._stop.set()
+            self._thread.join(timeout=self._WATCH_START_TIMEOUT_S)
 
     def finish(self) -> CheckoutMutationObservation:
         """Stop monitoring only after the caller took its final fingerprint."""
+        # The final fingerprint is already sampled. Give watchfiles one short
+        # backend turn to surface any event emitted before that sample, then
+        # stop the generator cleanly through its portable stop event.
+        self._stop.wait(self._WATCH_SETTLE_S)
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1)
-        self._drain_events()
-        self._close_descriptor()
+            if self._thread.is_alive():
+                with self._state_lock:
+                    self._unavailable = True
         with self._state_lock:
             return CheckoutMutationObservation(
                 changed=self._changed,
@@ -287,78 +274,46 @@ class CheckoutMutationMonitor:
                 observed_path=self._observed_path,
             )
 
-    def _watched_directories(self) -> list[Path]:
-        directories: list[Path] = []
-        for current, child_directories, _files in os.walk(self.root):
-            current_path = Path(current)
-            child_directories[:] = [child for child in child_directories if child not in self._IGNORED_TOP_LEVEL]
-            if current_path == self.root or not any(
-                part in self._IGNORED_TOP_LEVEL for part in current_path.relative_to(self.root).parts
-            ):
-                directories.append(current_path)
-        return directories
-
-    @staticmethod
-    def _open_inotify() -> int:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        init = libc.inotify_init1
-        init.argtypes = [ctypes.c_int]
-        init.restype = ctypes.c_int
-        descriptor = int(init(CheckoutMutationMonitor._INIT_FLAGS))
-        if descriptor < 0:
-            raise OSError(ctypes.get_errno(), "inotify_init1")
-        return descriptor
-
-    @staticmethod
-    def _add_watch(descriptor: int, directory: Path) -> int:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        add_watch = libc.inotify_add_watch
-        add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
-        add_watch.restype = ctypes.c_int
-        return int(add_watch(descriptor, os.fsencode(directory), CheckoutMutationMonitor._EVENT_MASK))
-
     def _watch(self) -> None:
-        while not self._stop.wait(0.02):
-            self._drain_events()
-
-    def _drain_events(self) -> None:
-        descriptor = self._descriptor
-        if descriptor is None:
-            return
-        while True:
-            try:
-                raw_events = os.read(descriptor, 64 * 1024)
-            except BlockingIOError:
-                return
-            except OSError:
-                if not self._stop.is_set():
-                    with self._state_lock:
-                        self._unavailable = True
-                return
-            offset = 0
-            while offset + 16 <= len(raw_events):
-                watch, mask, _cookie, name_length = struct.unpack_from("iIII", raw_events, offset)
-                offset += 16
-                name = raw_events[offset : offset + name_length].rstrip(b"\0")
-                offset += name_length
-                if mask & 0x00004000:
-                    with self._state_lock:
-                        self._unavailable = True
-                    return
-                directory = self._paths_by_watch.get(watch)
-                if directory is None:
-                    continue
-                candidate = directory / os.fsdecode(name) if name else directory
-                try:
-                    relative = candidate.relative_to(self.root)
-                except ValueError:
-                    continue
-                if self._path_is_ignored(relative):
-                    continue
+        try:
+            for changes in watchfiles.watch(
+                self.root,
+                watch_filter=None,
+                debounce=0,
+                step=1,
+                stop_event=self._stop,
+                rust_timeout=self._WATCH_RUST_TIMEOUT_MS,
+                yield_on_timeout=True,
+                raise_interrupt=False,
+            ):
+                # An empty timeout batch proves the backend initialized before
+                # a verification command starts, closing the startup race.
+                self._ready.set()
+                for _change, raw_path in changes:
+                    self._record_change(Path(raw_path))
+                    if self._changed or self._unavailable:
+                        return
+            if not self._stop.is_set():
                 with self._state_lock:
-                    self._changed = True
-                    self._observed_path = relative.as_posix()
-                return
+                    self._unavailable = True
+        except Exception:
+            with self._state_lock:
+                self._unavailable = True
+        finally:
+            self._ready.set()
+
+    def _record_change(self, candidate: Path) -> None:
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        try:
+            relative = candidate.relative_to(self.root)
+        except ValueError:
+            return
+        if self._path_is_ignored(relative):
+            return
+        with self._state_lock:
+            self._changed = True
+            self._observed_path = relative.as_posix()
 
     def _path_is_ignored(self, relative: Path) -> bool:
         if any(part in self._IGNORED_TOP_LEVEL for part in relative.parts):
@@ -382,12 +337,6 @@ class CheckoutMutationMonitor:
         with self._state_lock:
             self._unavailable = True
         return True
-
-    def _close_descriptor(self) -> None:
-        descriptor, self._descriptor = self._descriptor, None
-        if descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
 
 
 @dataclass(frozen=True)
