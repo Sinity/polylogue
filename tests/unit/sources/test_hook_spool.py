@@ -33,6 +33,7 @@ from polylogue.sources.hooks import (
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 @pytest.mark.parametrize(
@@ -373,14 +374,20 @@ async def test_hook_shard_retry_replacement_remains_tracked_until_stop(
     class ControlledTask:
         def __init__(self) -> None:
             self._done = False
-            self.cancelled = False
+            self._cancelled = False
             self.callbacks: list[Callable[[ControlledTask], None]] = []
 
         def done(self) -> bool:
             return self._done
 
         def cancel(self) -> None:
-            self.cancelled = True
+            self._cancelled = True
+
+        def cancelled(self) -> bool:
+            return self._cancelled
+
+        def result(self) -> None:
+            return None
 
         def add_done_callback(self, callback: Callable[[ControlledTask], None]) -> None:
             self.callbacks.append(callback)
@@ -417,7 +424,7 @@ async def test_hook_shard_retry_replacement_remains_tracked_until_stop(
     tracked_replacement = cast(object, watcher._hook_spool_directory_retry_tasks[directory.resolve()])
     assert tracked_replacement is replacement
     watcher.stop()
-    assert replacement.cancelled is True
+    assert replacement.cancelled() is True
 
 
 @pytest.mark.uses_real_clock("exercises retry polling while a pending hook envelope remains unacknowledged")
@@ -479,6 +486,44 @@ def test_hook_spool_retains_sqlite_failures_for_retry(
     assert result.acknowledged == 0
     assert result.failed == 1
     assert event_path.exists()
+
+
+def test_hook_spool_drain_remains_source_only_when_derived_generation_is_unavailable(tmp_path: Path) -> None:
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    archive_root = tmp_path / "archive"
+    spool_root = tmp_path / "hooks"
+    initialize_active_archive_root(archive_root)
+    pointer = archive_root / ".index-active-pointer"
+    pointer.write_bytes(b"\xff")
+    enqueue_hook_event(
+        event_id="derived-only-hook",
+        provider="codex",
+        event_type="PostToolUse",
+        session_id="session-1",
+        timestamp="2026-08-13T05:00:00Z",
+        payload={"tool_name": "exec"},
+        root=spool_root,
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        result = drain_hook_event_spool(archive_root, root=spool_root)
+    finally:
+        clear_degraded()
+
+    assert result.acknowledged == 1
+    assert pointer.read_bytes() == b"\xff"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT hook_event_id FROM raw_hook_events WHERE hook_event_id = ?",
+            ("hook:derived-only-hook",),
+        ).fetchone() == ("hook:derived-only-hook",)
 
 
 @pytest.mark.parametrize(
@@ -737,8 +782,6 @@ def test_drain_opens_archive_once_per_pass_and_honors_limit(
 ) -> None:
     """One archive open per drain pass (never per record), bounded by limit,
     with remaining telling the caller to drain again."""
-    from types import SimpleNamespace
-
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     spool_root = tmp_path / "hooks"
@@ -754,17 +797,16 @@ def test_drain_opens_archive_once_per_pass_and_honors_limit(
         )
     archive_root = tmp_path / "archive"
     open_calls = 0
-    real_open = ArchiveStore.open_existing
+    from polylogue.sources.live import archive_open
 
-    def counting_open(root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
+    real_open = archive_open._open_archive_for_live_write
+
+    def counting_open(root: Path) -> ArchiveStore:
         nonlocal open_calls
         open_calls += 1
-        return real_open(root, read_only=read_only, read_timeout=read_timeout)
+        return real_open(root)
 
-    monkeypatch.setattr(
-        "polylogue.sources.hooks.ArchiveStore",
-        SimpleNamespace(open_existing=counting_open),
-    )
+    monkeypatch.setattr(archive_open, "_open_archive_for_live_write", counting_open)
 
     first = drain_hook_event_spool(archive_root, root=spool_root, limit=2)
     assert first.acknowledged == 2
