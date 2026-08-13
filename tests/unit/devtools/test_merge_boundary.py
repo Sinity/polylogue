@@ -218,7 +218,12 @@ def test_workspace_merge_dispatches_documented_direct_pr_form(monkeypatch: pytes
 
 def test_workspace_merge_preserves_train_status_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
-    monkeypatch.setattr(merge_boundary, "cmd_train_status", lambda as_json: calls.append(as_json) or 0)
+
+    def train_status(as_json: bool) -> int:
+        calls.append(as_json)
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "cmd_train_status", train_status)
 
     assert click_dispatch._dispatch(["workspace", "merge", "train-status", "--json"]) == 0
     assert calls == [True]
@@ -226,13 +231,14 @@ def test_workspace_merge_preserves_train_status_dispatch(monkeypatch: pytest.Mon
 
 def test_workspace_merge_preserves_record_full_verify_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[tuple[str, str]] = []
+
+    def record(command: str, target_sha: str, **_kwargs: object) -> int:
+        captured.append((command, target_sha))
+        return 0
+
     monkeypatch.setattr(merge_boundary, "_reconciled_terminal_verify_snapshot", lambda: {})
     monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", lambda: "master-sha")
-    monkeypatch.setattr(
-        merge_boundary,
-        "_run_post_merge_terminal_verify",
-        lambda command, target_sha, **_kwargs: captured.append((command, target_sha)) or 0,
-    )
+    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", record)
 
     assert (
         click_dispatch._dispatch(["workspace", "merge", "record-full-verify", "--command", "devtools verify --all"])
