@@ -131,12 +131,6 @@ def _detect_unknown_retained_provider(
     return Provider.UNKNOWN, last_evidence
 
 
-def _require_resolved_jsonl_provider(provider: Provider, source_path: str) -> None:
-    """Refuse an eager fallback when bounded JSONL detection stayed unknown."""
-    if provider is Provider.UNKNOWN and is_jsonl_source_path(source_path):
-        raise ValueError("retained UNKNOWN JSONL provider remained unresolved after bounded record scan")
-
-
 def _canonical_authority_logical_key(logical_key: str) -> str:
     """Normalize transitional provider and public-origin authority prefixes."""
     prefix, separator, native_id = logical_key.partition(":")
@@ -2082,7 +2076,6 @@ def census_parse_worker(
                         provider, stream_payload, source_path, fallback_id_override=fallback_id_override
                     )
                 return raw_id, sessions, None
-            _require_resolved_jsonl_provider(provider, source_path)
             payload = publisher.read_all(blob_hash)
             if provider is Provider.UNKNOWN:
                 provider, _evidence = detect_provider_from_raw_bytes_evidence(
@@ -2521,7 +2514,6 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
                 return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
-        _require_resolved_jsonl_provider(provider, source_path)
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
         if provider is Provider.UNKNOWN:
             provider, _evidence = detect_provider_from_raw_bytes_evidence(
@@ -3342,8 +3334,6 @@ def _detected_provider_for_empty_replay(
     with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
         provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
     if provider is not Provider.UNKNOWN:
-        return provider
-    if is_jsonl_source_path(source_path):
         return provider
     _provider, full_payload, _path, _kind = archive.raw_revision_material(raw_id)
     provider, _evidence = detect_provider_from_raw_bytes_evidence(

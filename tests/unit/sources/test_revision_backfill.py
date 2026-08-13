@@ -229,6 +229,22 @@ def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record
     assert [session.provider_session_id for session in sessions] == ["unknown-worker"]
 
 
+def test_unknown_retained_nonstream_jsonl_keeps_complete_payload_fallback(tmp_path: Path) -> None:
+    """A bounded scan must not remove eager replay for a non-stream provider."""
+    initialize_active_archive_root(tmp_path)
+    payload = json.dumps(_chatgpt_session("large-jsonl-document", "x" * 9_000), sort_keys=True).encode() + b"\n"
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="large-chatgpt.jsonl",
+            acquired_at_ms=1,
+        )
+        sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+
+    assert [session.provider_session_id for session in sessions] == ["large-jsonl-document"]
+
+
 def test_unknown_retained_document_replays_after_complete_payload_detection(tmp_path: Path) -> None:
     """A complete ChatGPT document must retry UNKNOWN prefix detection.
 
