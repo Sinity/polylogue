@@ -106,7 +106,13 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
     if config.option.basetemp is not None:
+        # A second in-process pytest.main() inherits os.environ from the first
+        # run. Explicit basetemp ownership is per invocation, so stale managed
+        # markers must not turn the caller-owned diagnostic tree into cleanup
+        # fodder at session finish.
         if not hasattr(config, "workerinput"):
+            os.environ.pop("POLYLOGUE_PYTEST_RUN_ID", None)
+            os.environ.pop("POLYLOGUE_PYTEST_MANAGED_BASETEMP", None)
             _mark_caller_owned_basetemp(Path(str(config.option.basetemp)))
         return
 

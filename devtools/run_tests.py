@@ -57,12 +57,41 @@ from devtools.verify_runs import (
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
+_PATH_VALUE_OPTIONS = frozenset(
+    {
+        "--basetemp",
+        "--confcutdir",
+        "--ignore",
+        "--junitxml",
+        "--rootdir",
+    }
+)
+
+
+def _absolute_option_path(value: str, *, invocation_directory: Path) -> str:
+    path = Path(value)
+    return str(path if path.is_absolute() else (invocation_directory / path).resolve())
 
 
 def _normalize_selection_paths(selection: list[str], *, invocation_directory: Path) -> list[str]:
     """Preserve path selections relative to the directory that invoked devtools."""
     normalized: list[str] = []
+    option_value_pending = False
     for argument in selection:
+        if option_value_pending:
+            normalized.append(_absolute_option_path(argument, invocation_directory=invocation_directory))
+            option_value_pending = False
+            continue
+        option_name, equals, option_value = argument.partition("=")
+        if option_name in _PATH_VALUE_OPTIONS:
+            if equals:
+                normalized.append(
+                    f"{option_name}={_absolute_option_path(option_value, invocation_directory=invocation_directory)}"
+                )
+            else:
+                normalized.append(argument)
+                option_value_pending = True
+            continue
         if argument.startswith("-"):
             normalized.append(argument)
             continue
@@ -188,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
+        initial_worktree_fingerprint = worktree_fingerprint(ROOT)
         run = VerifyRun(
             tier="focused-test",
             argv=selection,
@@ -195,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
             root=ROOT,
             polylogue_import_path=str(polylogue_import_path),
             environment_fingerprint=environment_fingerprint,
-            worktree_fingerprint=worktree_fingerprint(ROOT),
+            worktree_fingerprint=initial_worktree_fingerprint,
         )
         started = time.monotonic()
         try:
@@ -204,12 +234,23 @@ def main(argv: list[str] | None = None) -> int:
             rc = 130
             metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
             run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
+        final_worktree_fingerprint = worktree_fingerprint(ROOT)
+        if (
+            initial_worktree_fingerprint != "unavailable"
+            and final_worktree_fingerprint != "unavailable"
+            and final_worktree_fingerprint != initial_worktree_fingerprint
+        ):
+            metadata["diagnosis"] = "checkout_changed_during_focused_test"
+            if rc == 0:
+                rc = 125
+            sys.stderr.write("devtools test: checkout contents changed during pytest; evidence is not exact-head.\n")
         payload = run.finish(
             exit_code=rc,
             duration_s=time.monotonic() - started,
             diagnosis=metadata.get("diagnosis"),
             verification_scope="affected",
             release_baseline_allowed=False,
+            final_worktree_fingerprint=final_worktree_fingerprint,
         )
         append_verify_history(payload)
     if use_json:

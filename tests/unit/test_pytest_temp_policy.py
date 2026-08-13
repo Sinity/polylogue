@@ -339,6 +339,27 @@ def test_explicit_basetemp_remains_outside_a_later_startup_stale_sweep(
         assert explicit.exists()
 
 
+def test_explicit_basetemp_clears_stale_managed_identity_from_prior_in_process_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    explicit = tmp_path / "pytest-polylogue-debug"
+    config = SimpleNamespace(
+        option=SimpleNamespace(basetemp=str(explicit)),
+        addinivalue_line=lambda *args, **kwargs: None,
+        rootpath=tmp_path,
+    )
+    monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", "prior-run")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(explicit))
+
+    with _configured_pytest(config):
+        assert "POLYLOGUE_PYTEST_RUN_ID" not in os.environ
+        assert "POLYLOGUE_PYTEST_MANAGED_BASETEMP" not in os.environ
+        explicit.mkdir(exist_ok=True)
+
+    assert explicit.exists()
+
+
 def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_path: Path) -> None:
     """Exercise pytest's lazy TempPathFactory clearing against our real conftest."""
     explicit = tmp_path / "pytest-polylogue-diagnostic"

@@ -19,6 +19,7 @@ def test_static_gates_read_shared_verify_history(monkeypatch: pytest.MonkeyPatch
                 "checkout_root": str(tmp_path.resolve()),
                 "git_head": "current-head",
                 "worktree_fingerprint": "current-fingerprint",
+                "final_worktree_fingerprint": "current-fingerprint",
                 "steps": [{"name": "ruff check", "duration_s": 1.0, "exit": 0}],
             }
         )
@@ -58,6 +59,7 @@ def test_static_gates_accept_exactly_bound_last_verify_result(monkeypatch: pytes
                     "checkout_root": str(tmp_path.resolve()),
                     "git_head": "current-head",
                     "worktree_fingerprint": "current-fingerprint",
+                    "final_worktree_fingerprint": "current-fingerprint",
                     "steps": [{"name": "ruff check", "duration_s": 1.0, "exit": 0}],
                 }
             }
@@ -159,6 +161,34 @@ def test_static_gates_reject_wrong_checkout_fingerprint_and_legacy_evidence(
                     "steps": [{"name": "render all", "exit": 0}],
                 },
             )
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(evidence_dashboard, "VERIFY_HISTORY_PATH", history)
+    monkeypatch.setattr(evidence_dashboard, "git_head", lambda _root: "current-head")
+    monkeypatch.setattr(evidence_dashboard, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(evidence_dashboard, "_worktree_fingerprint", lambda _root: "current-fingerprint")
+
+    gates = evidence_dashboard._static_gates(tmp_path, now=datetime(2026, 8, 12, tzinfo=timezone.utc))
+
+    assert gates["available"] is False
+    assert all(gate["available"] is False for gate in gates["gates"])
+
+
+def test_static_gates_reject_a_run_whose_checkout_changed_mid_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        json.dumps(
+            {
+                "checkout_root": str(tmp_path.resolve()),
+                "git_head": "current-head",
+                "worktree_fingerprint": "current-fingerprint",
+                "final_worktree_fingerprint": "changed-during-run",
+                "steps": [{"name": "ruff check", "exit": 0}],
+            }
         )
         + "\n"
     )

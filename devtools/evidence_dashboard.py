@@ -237,6 +237,7 @@ def _static_evidence_is_bound(
         entry.get("checkout_root") == checkout_root
         and entry.get("git_head") == checkout_head
         and entry.get("worktree_fingerprint") == worktree_fingerprint
+        and entry.get("final_worktree_fingerprint") == worktree_fingerprint
     )
 
 

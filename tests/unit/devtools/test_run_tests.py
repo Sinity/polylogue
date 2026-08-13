@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -139,6 +139,52 @@ def test_main_preserves_relative_selection_from_subdirectory(
     assert run_tests.main(["core/test_identity_law.py::test_session_id_is_origin_native_id"]) == 0
 
     assert "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id" in captured["cmd"]
+
+
+def test_main_preserves_path_valued_options_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_run(_label: str, cmd: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["cmd"] = cmd
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    invocation = tmp_path / "nested"
+    invocation.mkdir()
+    (invocation / "fixtures").mkdir()
+    monkeypatch.chdir(invocation)
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", _fake_run)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["-k", "proof", "--basetemp=diagnostic", "--rootdir", ".", "--ignore", "fixtures"]) == 0
+
+    command = cast(list[str], captured["cmd"])
+    assert f"--basetemp={invocation / 'diagnostic'}" in command
+    assert command[command.index("--rootdir") + 1] == str(invocation)
+    assert command[command.index("--ignore") + 1] == str(invocation / "fixtures")
+
+
+def test_main_withholds_success_when_checkout_changes_during_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    fingerprints = iter(("initial", "changed"))
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 125
+    assert captured["status"] == "failed"
+    assert captured["diagnosis"] == "checkout_changed_during_focused_test"
+    assert captured["worktree_fingerprint"] == "initial"
+    assert captured["final_worktree_fingerprint"] == "changed"
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
