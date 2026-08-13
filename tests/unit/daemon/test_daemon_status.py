@@ -72,6 +72,15 @@ def _complete_healthy_frontier() -> JSONDocument:
     }
 
 
+def _complete_raw_materialization_readiness() -> status_module.RawMaterializationReadiness:
+    """Return the complete source evidence required to isolate claim signals."""
+    return status_module.RawMaterializationReadiness(
+        available=True,
+        raw_authority_frontier={"lifecycle_status": "completed"},
+        raw_authority_parser_census={"available": True},
+    )
+
+
 def test_status_snapshot_serves_cached_payload_without_rebuilding_status(monkeypatch: pytest.MonkeyPatch) -> None:
     payload: JSONDocument = {"ok": True, "daemon_liveness": True, "checked_at": "cached"}
     refresh_status_snapshot(payload=payload)
@@ -1677,10 +1686,7 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
         archive_schema_ready=True,
         present_tiers=["source", "index", "embeddings", "user", "ops"],
     )
-    raw_readiness = status_module.RawMaterializationReadiness(
-        available=True,
-        raw_authority_frontier={"lifecycle_status": "completed"},
-    )
+    raw_readiness = _complete_raw_materialization_readiness()
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
     if debt_setup == "pending":
         initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
@@ -1767,10 +1773,7 @@ def test_build_daemon_status_claim_guard_uses_real_registry_convergence_snapshot
         archive_schema_ready=True,
         present_tiers=["source", "index", "embeddings", "user", "ops"],
     )
-    raw_readiness = status_module.RawMaterializationReadiness(
-        available=True,
-        raw_authority_frontier={"lifecycle_status": "completed"},
-    )
+    raw_readiness = _complete_raw_materialization_readiness()
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
 
     def convergence_collector(*_args: object, **_kwargs: object) -> status_module.ConvergenceDebtSummary:
@@ -2048,10 +2051,7 @@ def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
         archive_schema_ready=True,
         present_tiers=["source", "index", "embeddings", "user", "ops"],
     )
-    raw_readiness = status_module.RawMaterializationReadiness(
-        available=True,
-        raw_authority_frontier={"lifecycle_status": "completed"},
-    )
+    raw_readiness = _complete_raw_materialization_readiness()
     daemon_guard = status_module._daemon_claim_guard(
         archive_storage=storage,
         raw_materialization_readiness=raw_readiness,

@@ -90,6 +90,7 @@ def _completed_raw_materialization_readiness() -> dict[str, Any]:
         "total": 0,
         "affected_total": 0,
         "raw_authority_frontier": {"lifecycle_status": "completed"},
+        "raw_authority_parser_census": {"available": True},
     }
 
 
