@@ -322,12 +322,58 @@ class CheckoutMutationMonitor:
 
     def _watched_directories(self) -> list[Path]:
         """Watch existing source directories shallowly and omit disposable trees."""
+        ignored_roots = self._ignored_directory_roots()
         directories: list[Path] = []
         for current, child_directories, _files in os.walk(self.root):
             current_path = Path(current)
-            child_directories[:] = [child for child in child_directories if child not in self._IGNORED_TOP_LEVEL]
+            relative_current = current_path.relative_to(self.root)
+            child_directories[:] = [
+                child
+                for child in child_directories
+                if child not in self._IGNORED_TOP_LEVEL
+                and not self._is_within_ignored_root(relative_current / child, ignored_roots)
+            ]
             directories.append(current_path)
         return directories
+
+    def _ignored_directory_roots(self) -> frozenset[Path]:
+        """Return existing ignored directory roots without traversing their contents."""
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--ignored=matching",
+                    "--untracked-files=normal",
+                ],
+                cwd=self.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            with self._state_lock:
+                self._unavailable = True
+            return frozenset()
+        if result.returncode != 0:
+            with self._state_lock:
+                self._unavailable = True
+            return frozenset()
+        ignored: set[Path] = set()
+        for record in result.stdout.split(b"\0"):
+            if not record.startswith(b"!! "):
+                continue
+            relative = Path(os.fsdecode(record[3:]).rstrip("/"))
+            if relative.parts and (self.root / relative).is_dir():
+                ignored.add(relative)
+        return frozenset(ignored)
+
+    @staticmethod
+    def _is_within_ignored_root(relative: Path, ignored_roots: frozenset[Path]) -> bool:
+        return any(relative == root or relative.is_relative_to(root) for root in ignored_roots)
 
     def _record_change(self, candidate: Path) -> None:
         if not candidate.is_absolute():

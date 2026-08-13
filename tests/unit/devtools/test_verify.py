@@ -1825,6 +1825,7 @@ def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_fina
 
 
 def test_checkout_mutation_monitor_ignores_nested_disposable_cache_writes(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     package = tmp_path / "package"
     package.mkdir()
     monitor = CheckoutMutationMonitor(tmp_path)
@@ -1940,10 +1941,18 @@ def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_sour
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subprocess.run(["git", "init", "-q"], check=True)
+    (tmp_path / ".gitignore").write_text(
+        "browser-extension/node_modules/\ncustom/generated-output/\n",
+        encoding="utf-8",
+    )
     source = tmp_path / "src" / "package"
     source.mkdir(parents=True)
     for disposable in (".venv", ".git", ".cache"):
         (tmp_path / disposable / "nested").mkdir(parents=True, exist_ok=True)
+    ignored_dependency = tmp_path / "browser-extension" / "node_modules" / "dependency"
+    ignored_dependency.mkdir(parents=True)
+    ignored_build = tmp_path / "custom" / "generated-output" / "deep" / "tree"
+    ignored_build.mkdir(parents=True)
     calls: dict[str, object] = {}
     allow_event = threading.Event()
     new_source = tmp_path / "new_source"
@@ -1970,6 +1979,10 @@ def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_sour
     assert tmp_path.resolve() in watched
     assert source in watched
     assert all(not any(part in {".venv", ".git", ".cache"} for part in path.parts) for path in watched)
+    assert all("node_modules" not in path.parts for path in watched)
+    assert all("generated-output" not in path.parts for path in watched)
+    assert tmp_path / "browser-extension" in watched
+    assert tmp_path / "custom" in watched
     assert raw_kwargs["recursive"] is False
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="new_source")
 
