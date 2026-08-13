@@ -72,9 +72,12 @@ def test_tour_report_preserves_failed_run_evidence(tmp_path: Path) -> None:
     assert payload["problems"] == ["demo archive verification failed"]
 
 
-def test_tour_markdown_keeps_measured_scope_visible(tmp_path: Path) -> None:
+def test_tour_markdown_renders_measured_run_values(tmp_path: Path) -> None:
     report = _render_report_markdown(_tour_result(tmp_path))
 
-    assert "## What this tour proves" in report
-    assert "## What this tour does not prove" in report
-    assert "Declared fixture constructs" in report
+    assert "Status: **passed**" in report
+    assert "First evidence result: 2.000s" in report
+    assert "Full tour: 4.000s" in report
+    assert "Sessions: 11" in report
+    assert "Messages: 43" in report
+    assert "| archive facets | 0 | 1.000s | 20 |" in report

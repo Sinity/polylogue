@@ -179,11 +179,9 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     assert written_summary["index_db"] == report["index_db"]
     assert written_summary["snapshot_identity"] == report["snapshot_identity"]
     assert written_summary["index_schema_version"] == report["index_schema_version"]
-    assert written_summary["proof_report"]["top_families"] == report["summary"]["top_families"]
-    assert written_summary["proof_report"]["surface_inventory_summary"] == report["surface_inventory_summary"]
-    assert "claim" in written_summary
-    assert "non_claim" in written_summary
-    assert "caveats" in written_summary
+    assert written_summary["top_families"] == report["summary"]["top_families"]
+    assert written_summary["surface_inventory_summary"] == report["surface_inventory_summary"]
+    assert written_summary["action_scope"] == report["action_scope"]
     with (out_dir / "surface-inventory.csv").open(encoding="utf-8", newline="") as handle:
         inventory_rows = list(csv.DictReader(handle))
     assert len(inventory_rows) == len(EXPECTED_TOOL_NAMES) + len(command_paths)

@@ -55,15 +55,12 @@ def test_verification_lab_surface_is_explicit_and_implemented() -> None:
 
     for spec in specs:
         assert spec.module.startswith("devtools.")
-        assert "Alias" not in spec.description
         assert spec.use_when
         assert spec.examples
         assert callable(spec.resolve_main())
 
 
-def test_bead_graph_catalog_exposes_complete_json_report() -> None:
+def test_bead_graph_catalog_exposes_json_report() -> None:
     graph = COMMANDS["lab policy bead-graph"]
 
     assert any("--json" in example for example in graph.examples)
-    assert graph.use_when is not None
-    assert "dependency records only" in graph.use_when

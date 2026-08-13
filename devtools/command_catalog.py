@@ -408,27 +408,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace backlog-calibration",
-        "workspace",
-        "Measured lead-time/discovery/staleness distributions over the bead corpus.",
-        "devtools.backlog_calibration",
-        use_when=(
-            "Re-fit the numbers a backlog-execution plan rests on instead of guessing them: "
-            "closed-bead lead-time percentiles split by priority/type/epic-membership/dependency "
-            "degree, a censoring-honest survival view (closed-only medians are survivorship-"
-            "biased), close-reason classification measuring how much of the backlog closes with "
-            "no implementation (already-satisfied/obsolete/duplicate), and created-vs-closed "
-            "discovery dynamics (does the backlog drain?). Optionally calibrates PR open->merge "
-            "latency by size from a gh dump. This is duration *models* over "
-            "history, meant to be re-run as the corpus grows so plans stop quoting stale guesses."
-        ),
-        examples=(
-            "devtools workspace backlog-calibration",
-            "devtools workspace backlog-calibration --input beads.jsonl --json",
-            "devtools workspace backlog-calibration --prs prs.json",
-        ),
-    ),
-    CommandSpec(
         "workspace bead-batch-show",
         "workspace",
         "Batch-show beads: id, status, prio, title, desc head, deps, notes tail.",

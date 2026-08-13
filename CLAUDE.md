@@ -420,9 +420,6 @@ workflow, not optional conveniences — use them at the point named, every time:
   `devtools workspace merge-gate record/check` commands still exist for
   ad hoc receipt inspection, but the merge action itself should go through
   `workspace merge`.
-- Sizing/triage input: `devtools workspace backlog-calibration` for
-  lead-time/discovery/staleness distributions before deciding batch size.
-
 If you build a new tool in this family, add it here in the same sentence —
 a tool without a line in this file is a tool the next session won't use.
 
