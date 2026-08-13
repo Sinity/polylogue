@@ -272,8 +272,10 @@ def test_default_verify_uses_adaptive_pytest_testmon(monkeypatch: pytest.MonkeyP
     assert "--testmon" in command
     assert "--testmon-noselect" not in command
     assert "--testmon-forceselect" in command
+    assert "--dist=loadgroup" in command
     assert "-n" in command
     assert command[command.index("-n") + 1] == "8"
+    assert "--dist=loadgroup" in command
 
 
 def test_broad_default_verify_uses_parallel_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -639,6 +641,7 @@ def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.Mo
     assert "--testmon" not in bulk_command
     assert "-n" in bulk_command
     assert bulk_command[bulk_command.index("-n") + 1] == "8"
+    assert "--dist=loadgroup" in bulk_command
 
     isolated_label, isolated_command = steps[-1]
     assert isolated_label == "pytest load-sensitive (isolated)"
@@ -1095,6 +1098,52 @@ def test_aggregate_pytest_statistics_accounts_for_started_node_without_a_phase(t
     assert result["node_count"] == 2
     assert result["outcomes"] == {"passed": 1, "interrupted": 1}
     assert sum(result["outcomes"].values()) == result["node_count"]
+
+
+def test_aggregate_pytest_statistics_uses_completed_report_to_fill_event_gaps(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/a.py::test_event",
+                "when": "call",
+                "outcome": "passed",
+                "duration_s": 0.1,
+                "worker_id": "gw0",
+            }
+        )
+        + "\n"
+    )
+    (step / "pytest-report.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/a.py::test_event",
+                        "outcome": "passed",
+                        "call": {"outcome": "passed", "duration": 0.1},
+                    },
+                    {
+                        "nodeid": "tests/a.py::test_redirected",
+                        "outcome": "xfailed",
+                        "setup": {"outcome": "passed", "duration": 0.2},
+                        "call": {"outcome": "skipped", "duration": 0.3},
+                        "teardown": {"outcome": "passed", "duration": 0.1},
+                    },
+                ]
+            }
+        )
+    )
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["canonical_report_status"] == "present"
+    assert result["node_count"] == 2
+    assert result["outcomes"] == {"passed": 1, "xfailed": 1}
+    assert result["phases"]["setup"]["count"] == 1
+    assert result["phases"]["call"]["count"] == 2
 
 
 def test_verify_run_statistics_only_cover_pytest_steps(tmp_path: Path) -> None:

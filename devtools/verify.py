@@ -84,6 +84,7 @@ from devtools.verify_runs import (
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
     CURRENT_STATISTICS_PATH,
+    PYTEST_CANONICAL_REPORT_NAME,
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
     PytestResourceError,
@@ -1716,6 +1717,10 @@ def _run(
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report, report_path=report_path))
             metadata["report_status"] = "present"
+            if artifacts is not None:
+                durable_report_path = artifacts.step_dir / PYTEST_CANONICAL_REPORT_NAME
+                shutil.copyfile(report_path, durable_report_path)
+                metadata["report_path"] = str(durable_report_path.relative_to(ROOT))
         else:
             # Fallback: terminal scraping when the structured report is
             # missing (pytest crashed before writing it, or the plugin is
@@ -2352,7 +2357,7 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     workers = adaptive_pytest_worker_count(os.environ)
     if maximum is not None:
         workers = min(workers, maximum)
-    return ["-n", str(workers)]
+    return ["--dist=loadgroup", "-n", str(workers)]
 
 
 BROAD_PYTEST_STEP_LABELS = {
@@ -2931,7 +2936,6 @@ def _seed_shard_command(
     else:
         command.extend(
             [
-                "--dist=loadgroup",
                 *_pytest_worker_args(maximum=10),
                 "--testmon",
                 "--testmon-noselect",

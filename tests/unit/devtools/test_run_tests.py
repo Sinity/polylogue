@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from devtools import run_tests, verify
-from devtools.verify_runs import git_head
+from devtools.verify_runs import CURRENT_STATISTICS_PATH, git_head
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -141,7 +141,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
     subdirectory.mkdir(parents=True)
     external_directory.mkdir()
     stale_report = root / verify.PYTEST_REPORT_PATH
-    stale_statistics = root / verify.CURRENT_STATISTICS_PATH
+    stale_statistics = root / CURRENT_STATISTICS_PATH
     stale_report.parent.mkdir(parents=True)
     stale_report.write_text('{"stale": true}')
     stale_statistics.write_text('{"stale": true}')

@@ -35,6 +35,7 @@ CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
+PYTEST_CANONICAL_REPORT_NAME = "pytest-report.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S = 15.0
 DEFAULT_TMPFS_SIZE_SAMPLE_INTERVAL_S = 2.0
@@ -261,6 +262,36 @@ def aggregate_pytest_statistics(
         if prior is None or (prior.get("worker_id") == "controller" and row.get("worker_id") != "controller"):
             reports[key] = row
 
+    canonical_outcomes: dict[str, str] = {}
+    canonical_report_path = step_dir / PYTEST_CANONICAL_REPORT_NAME
+    if canonical_report_path.exists():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            canonical_report = json.loads(canonical_report_path.read_text(encoding="utf-8"))
+            canonical_tests = canonical_report.get("tests") if isinstance(canonical_report, dict) else None
+            if isinstance(canonical_tests, list):
+                for test in canonical_tests:
+                    if not isinstance(test, dict):
+                        continue
+                    nodeid = test.get("nodeid")
+                    outcome = test.get("outcome")
+                    if not isinstance(nodeid, str) or not nodeid or not isinstance(outcome, str):
+                        continue
+                    nodes.add(nodeid)
+                    canonical_outcomes[nodeid] = outcome
+                    for when in phases:
+                        phase = test.get(when)
+                        if not isinstance(phase, dict) or (nodeid, when) in reports:
+                            continue
+                        phase_outcome = phase.get("outcome")
+                        duration = phase.get("duration")
+                        reports[(nodeid, when)] = {
+                            "nodeid": nodeid,
+                            "when": when,
+                            "outcome": phase_outcome,
+                            "duration_s": duration,
+                            "worker_id": "canonical-report",
+                        }
+
     reports_by_node: dict[str, dict[str, dict[str, Any]]] = {}
     for (nodeid, when), row in reports.items():
         reports_by_node.setdefault(nodeid, {})[when] = row
@@ -277,12 +308,17 @@ def aggregate_pytest_statistics(
         setup = node_reports.get("setup", {}).get("outcome")
         call = node_reports.get("call", {}).get("outcome")
         teardown = node_reports.get("teardown", {}).get("outcome")
-        if setup == "failed" or teardown == "failed":
+        canonical_outcome = canonical_outcomes.get(nodeid)
+        if canonical_outcome is not None:
+            terminal = canonical_outcome
+        elif setup == "failed" or teardown == "failed":
             terminal = "error"
         elif isinstance(call, str):
             terminal = call
-        elif setup in {"skipped", "xfailed", "xpassed"} or teardown in {"skipped", "xfailed", "xpassed"}:
-            terminal = setup if setup in {"skipped", "xfailed", "xpassed"} else teardown
+        elif setup in {"skipped", "xfailed", "xpassed"}:
+            terminal = str(setup)
+        elif teardown in {"skipped", "xfailed", "xpassed"}:
+            terminal = str(teardown)
         else:
             # A test may have emitted its start event just before an interrupt
             # or forced containment cleanup. Keep that missing terminal phase
@@ -324,6 +360,7 @@ def aggregate_pytest_statistics(
     parent_cleanup = (step_result or {}).get("basetemp_cleanup")
     return {
         "schema_version": 1,
+        "canonical_report_status": "present" if canonical_outcomes else "missing",
         "command": [str(value) for value in command],
         "node_count": len(nodes),
         "outcomes": outcomes,
