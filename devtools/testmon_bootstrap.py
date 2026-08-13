@@ -30,6 +30,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -99,19 +100,59 @@ class NativeTestmonRepairError(RuntimeError):
     """The exact derived testmon state could not be repaired safely."""
 
 
-def _fingerprint_inputs(root: Path, relative_paths: Sequence[str]) -> str:
+class NativeTestmonDeadlineError(NativeTestmonRepairError):
+    """The verify invocation deadline expired during native-state preparation."""
+
+
+def _ensure_deadline(deadline_monotonic: float | None) -> None:
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        raise NativeTestmonDeadlineError("verify invocation deadline expired during native testmon preparation")
+
+
+def _remaining_timeout(deadline_monotonic: float | None, maximum: float) -> float:
+    _ensure_deadline(deadline_monotonic)
+    if deadline_monotonic is None:
+        return maximum
+    return max(0.001, min(maximum, deadline_monotonic - time.monotonic()))
+
+
+def _fingerprint_inputs(
+    root: Path,
+    relative_paths: Sequence[str],
+    *,
+    deadline_monotonic: float | None = None,
+) -> str:
     digest = hashlib.sha256()
     for relative in relative_paths:
+        _ensure_deadline(deadline_monotonic)
         digest.update(relative.encode())
         digest.update(b"\0")
         try:
-            contents = (root / relative).read_bytes()
+            with (root / relative).open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+                    _ensure_deadline(deadline_monotonic)
         except OSError:
             digest.update(b"missing")
-        else:
-            digest.update(contents)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _active_local_pytest_plugin_paths(root: Path) -> set[str]:
+    """Resolve explicitly active local pytest plugins regardless of filename."""
+    paths: set[str] = set()
+    for raw_name in os.environ.get("PYTEST_PLUGINS", "").split(","):
+        module_name = raw_name.strip()
+        if not module_name or any(part in {"", ".", ".."} for part in module_name.split(".")):
+            continue
+        module_path = Path(*module_name.split("."))
+        module_file = root / module_path.with_suffix(".py")
+        if module_file.is_file():
+            paths.add(module_file.relative_to(root).as_posix())
+        package = root / module_path
+        if (package / "__init__.py").is_file():
+            paths.update(path.relative_to(root).as_posix() for path in package.rglob("*.py") if path.is_file())
+    return paths
 
 
 def _environment_input_paths(root: Path) -> tuple[str, ...]:
@@ -119,12 +160,12 @@ def _environment_input_paths(root: Path) -> tuple[str, ...]:
     paths = set(_ENVIRONMENT_INPUTS)
     patterns = (
         "devtools/pytest*.py",
-        "pytest*.py",
         "tests/**/conftest.py",
         "tests/infra/**/*.py",
     )
     for pattern in patterns:
         paths.update(path.relative_to(root).as_posix() for path in root.glob(pattern) if path.is_file())
+    paths.update(_active_local_pytest_plugin_paths(root))
     return tuple(sorted(paths))
 
 
@@ -139,9 +180,15 @@ def _installed_distributions() -> tuple[tuple[str, str], ...]:
     return tuple(sorted(distributions))
 
 
-def testmon_environment_digest(repo_root: Path, *, pytest_profile: str = "default") -> str:
+def testmon_environment_digest(
+    repo_root: Path,
+    *,
+    pytest_profile: str = "default",
+    deadline_monotonic: float | None = None,
+) -> str:
     """Return the native testmon environment name for collection semantics."""
     root = repo_root.resolve()
+    _ensure_deadline(deadline_monotonic)
     payload = {
         "protocol": 1,
         "python": {
@@ -152,7 +199,11 @@ def testmon_environment_digest(repo_root: Path, *, pytest_profile: str = "defaul
             "platform": platform.platform(),
         },
         "distributions": _installed_distributions(),
-        "inputs": _fingerprint_inputs(root, _environment_input_paths(root)),
+        "inputs": _fingerprint_inputs(
+            root,
+            _environment_input_paths(root),
+            deadline_monotonic=deadline_monotonic,
+        ),
         "pytest_environment": {key: os.environ.get(key) for key in _PYTEST_ENVIRONMENT_KEYS},
         "pytest_profile": pytest_profile,
     }
@@ -258,8 +309,10 @@ def inspect_native_testmon_environment(
     *,
     environment_name: str,
     required_executable_paths: Sequence[str] = (),
+    deadline_monotonic: float | None = None,
 ) -> NativeTestmonState:
     """Validate one native environment without interpreting plugin internals."""
+    _ensure_deadline(deadline_monotonic)
     sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
     if not data_path.exists():
         if any(path.exists() or path.is_symlink() for path in sidecars):
@@ -272,8 +325,15 @@ def inspect_native_testmon_environment(
     if not stat.S_ISREG(mode):
         return NativeTestmonState("invalid", "native testmon database is not a regular file")
     try:
-        with sqlite3.connect(_readonly_uri(data_path), uri=True, timeout=10) as connection:
+        with sqlite3.connect(
+            _readonly_uri(data_path),
+            uri=True,
+            timeout=_remaining_timeout(deadline_monotonic, 10),
+        ) as connection:
+            if deadline_monotonic is not None:
+                connection.set_progress_handler(lambda: int(time.monotonic() >= deadline_monotonic), 1_000)
             quick_check = connection.execute("PRAGMA quick_check").fetchone()
+            _ensure_deadline(deadline_monotonic)
             if quick_check is None or quick_check[0] != "ok":
                 return NativeTestmonState("invalid", "SQLite quick_check failed")
             version_row = connection.execute("PRAGMA user_version").fetchone()
@@ -283,6 +343,7 @@ def inspect_native_testmon_environment(
                 "SELECT id FROM environment WHERE environment_name = ? ORDER BY id DESC",
                 (environment_name,),
             ).fetchall()
+            _ensure_deadline(deadline_monotonic)
             if len(environment_rows) != 1:
                 reason = "native environment is absent" if not environment_rows else "native environment is ambiguous"
                 return NativeTestmonState("invalid", reason)
@@ -295,6 +356,7 @@ def inspect_native_testmon_environment(
                 ).fetchall()
                 if isinstance(row[0], str) and row[0]
             )
+            _ensure_deadline(deadline_monotonic)
             if not nodeids or len(nodeids) != len(set(nodeids)):
                 return NativeTestmonState("invalid", "native environment has no unique collected corpus")
             uncovered = connection.execute(
@@ -306,6 +368,7 @@ def inspect_native_testmon_environment(
                 """,
                 (environment_id,),
             ).fetchone()
+            _ensure_deadline(deadline_monotonic)
             if uncovered is None or int(uncovered[0]) != 0:
                 return NativeTestmonState("invalid", "native environment has tests without dependency placeholders")
             raw_files = connection.execute(
@@ -318,7 +381,11 @@ def inspect_native_testmon_environment(
                 """,
                 (environment_id,),
             ).fetchall()
+            _ensure_deadline(deadline_monotonic)
+    except NativeTestmonDeadlineError:
+        raise
     except (NativeTestmonRepairError, OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        _ensure_deadline(deadline_monotonic)
         return NativeTestmonState("invalid", f"native testmon database is unreadable: {exc}")
     fingerprinted = frozenset(
         relative
@@ -384,19 +451,32 @@ def _atomic_copy_sqlite_database(
     *,
     environment_name: str,
     required_executable_paths: Sequence[str],
+    deadline_monotonic: float | None,
 ) -> None:
+    _ensure_deadline(deadline_monotonic)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp")
     try:
         with (
-            sqlite3.connect(_readonly_uri(source), uri=True, timeout=60) as source_connection,
-            sqlite3.connect(temporary, timeout=60) as destination_connection,
+            sqlite3.connect(
+                _readonly_uri(source),
+                uri=True,
+                timeout=_remaining_timeout(deadline_monotonic, 60),
+            ) as source_connection,
+            sqlite3.connect(temporary, timeout=_remaining_timeout(deadline_monotonic, 60)) as destination_connection,
         ):
-            source_connection.backup(destination_connection)
+            source_connection.backup(
+                destination_connection,
+                pages=256,
+                progress=lambda _status, _remaining, _total: _ensure_deadline(deadline_monotonic),
+                sleep=0.05,
+            )
+        _ensure_deadline(deadline_monotonic)
         copied = inspect_native_testmon_environment(
             temporary,
             environment_name=environment_name,
             required_executable_paths=required_executable_paths,
+            deadline_monotonic=deadline_monotonic,
         )
         if not copied.valid:
             raise NativeTestmonRepairError(f"copied main-checkout database failed validation: {copied.reason}")
@@ -407,6 +487,9 @@ def _atomic_copy_sqlite_database(
             os.close(descriptor)
         os.replace(temporary, destination)
         _fsync_directory(destination.parent)
+        _ensure_deadline(deadline_monotonic)
+    except NativeTestmonDeadlineError:
+        raise
     except (OSError, sqlite3.Error) as exc:
         raise NativeTestmonRepairError(f"SQLite online backup failed: {exc}") from exc
     finally:
@@ -417,17 +500,24 @@ def _atomic_copy_sqlite_database(
                 Path(f"{temporary}{suffix}").unlink()
 
 
-def linked_worktree_info(repo_root: Path) -> tuple[bool, Path] | None:
+def linked_worktree_info(
+    repo_root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> tuple[bool, Path] | None:
     """Return linked-worktree status and the main checkout path."""
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_root), "rev-parse", "--absolute-git-dir", "--git-common-dir"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_remaining_timeout(deadline_monotonic, 10),
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        _ensure_deadline(deadline_monotonic)
+        return None
+    except OSError:
         return None
     if result.returncode != 0:
         return None
@@ -445,23 +535,30 @@ def prepare_native_testmon_environment(
     *,
     required_executable_paths: Sequence[str] = (),
     pytest_profile: str = "default",
+    deadline_monotonic: float | None = None,
 ) -> NativeTestmonPreparation:
     """Repair derived local state and optionally reuse a matching main graph."""
     root = repo_root.resolve()
-    environment_name = testmon_environment_digest(root, pytest_profile=pytest_profile)
+    environment_name = testmon_environment_digest(
+        root,
+        pytest_profile=pytest_profile,
+        deadline_monotonic=deadline_monotonic,
+    )
     local_data = root / TESTMON_DATA_RELPATH
     local = inspect_native_testmon_environment(
         local_data,
         environment_name=environment_name,
         required_executable_paths=required_executable_paths,
+        deadline_monotonic=deadline_monotonic,
     )
-    info = linked_worktree_info(root)
+    info = linked_worktree_info(root, deadline_monotonic=deadline_monotonic)
     linked = bool(info and info[0])
     main_checkout = info[1] if linked and info is not None else None
     if local.valid:
         return NativeTestmonPreparation(environment_name, "affected", local, None, (), linked, main_checkout)
 
     removed = remove_invalid_native_testmon_state(root)
+    _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root:
         main_data = main_checkout / TESTMON_DATA_RELPATH
@@ -469,6 +566,7 @@ def prepare_native_testmon_environment(
             main_data,
             environment_name=environment_name,
             required_executable_paths=required_executable_paths,
+            deadline_monotonic=deadline_monotonic,
         )
         if main.valid:
             _atomic_copy_sqlite_database(
@@ -476,12 +574,14 @@ def prepare_native_testmon_environment(
                 local_data,
                 environment_name=environment_name,
                 required_executable_paths=required_executable_paths,
+                deadline_monotonic=deadline_monotonic,
             )
             copied_from = main_data
             local = inspect_native_testmon_environment(
                 local_data,
                 environment_name=environment_name,
                 required_executable_paths=required_executable_paths,
+                deadline_monotonic=deadline_monotonic,
             )
             if not local.valid:
                 raise NativeTestmonRepairError(f"published native testmon copy is invalid: {local.reason}")
@@ -501,6 +601,7 @@ def prepare_native_testmon_environment(
 __all__ = [
     "ASTClassification",
     "NativeTestmonEnvironment",
+    "NativeTestmonDeadlineError",
     "NativeTestmonPreparation",
     "NativeTestmonRepairError",
     "NativeTestmonState",

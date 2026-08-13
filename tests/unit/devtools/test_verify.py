@@ -19,7 +19,8 @@ import pytest
 import watchfiles
 
 from devtools import run_tests, verify, verify_runs
-from devtools.testmon_bootstrap import executable_python_paths
+from devtools.checkout_guard import CheckoutImportMismatchError
+from devtools.testmon_bootstrap import NativeTestmonDeadlineError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
@@ -140,7 +141,7 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
         assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
 
 
-def test_native_marker_policy_only_excludes_benchmarks() -> None:
+def test_native_corpus_excludes_only_benchmark_directory() -> None:
     complete_steps = build_verify_steps(
         quick=False,
         lab=True,
@@ -149,8 +150,7 @@ def test_native_marker_policy_only_excludes_benchmarks() -> None:
 
     complete_command = next(command for label, command in complete_steps if "parallel" in label)
     complete_expr = _pytest_marker_expr(complete_command)
-    assert "not benchmark" in complete_expr
-    assert "not slow" not in complete_expr
+    assert complete_expr == "not load_sensitive and not tui"
     assert "--ignore=tests/benchmarks" in complete_command
     assert "--ignore=tests/integration" not in complete_command
 
@@ -3714,8 +3714,11 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
         assert durable_payload["final_worktree_fingerprint"] == "stable"
 
 
-def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> None:
+def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     events: list[str] = []
+    history: dict[str, Any] = {}
 
     class _ExceptionalExitMonitor:
         def __init__(self, _root: Path) -> None:
@@ -3732,11 +3735,124 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> 
         patch("devtools.verify.CheckoutMutationMonitor", _ExceptionalExitMonitor),
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify.worktree_fingerprint", side_effect=RuntimeError("fingerprint failed")),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._notify"),
     ):
-        with pytest.raises(RuntimeError, match="fingerprint failed"):
-            main(["--quick", "--json"])
+        assert main(["--quick", "--json"]) == 125
 
     assert events == ["monitor-started", "monitor-finished"]
+    assert history["diagnosis"] == "verify_runner_exception"
+    assert json.loads(capsys.readouterr().out)["diagnosis"] == "verify_runner_exception"
+
+
+def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation-receipt.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "import-mismatch")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch(
+            "devtools.verify.assert_polylogue_matches_checkout",
+            side_effect=CheckoutImportMismatchError("wrong checkout import"),
+        ),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    normalized = verify_runs.normalize_verify_history_entry(history)
+    assert normalized["timestamp"]
+    assert normalized["pytest_aggregate"]["selection_mode"] == "none"
+    assert normalized["diagnosis"] == "checkout_import_mismatch"
+    assert json.loads(receipt.read_text())["diagnosis"] == "checkout_import_mismatch"
+    assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_import_mismatch"
+
+
+def test_git_authority_failure_writes_history_and_invocation_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation-receipt.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "git-authority")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value=None),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 125
+
+    assert history["diagnosis"] == "native_git_authority_unavailable"
+    assert history["final_worktree_fingerprint"] == "stable"
+    assert json.loads(receipt.read_text())["diagnosis"] == "native_git_authority_unavailable"
+    assert json.loads(capsys.readouterr().out)["diagnosis"] == "native_git_authority_unavailable"
+
+
+def test_native_preparation_uses_invocation_deadline_and_records_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation-receipt.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "preparation-deadline")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+    monkeypatch.setattr(verify, "VERIFY_INVOCATION_BUDGET_S", 42.0)
+
+    def expire_preparation(*_args: object, **kwargs: object) -> object:
+        assert kwargs["deadline_monotonic"] == 142.0
+        raise NativeTestmonDeadlineError("verify invocation deadline expired during native testmon preparation")
+
+    with (
+        patch("devtools.verify.time.monotonic", return_value=100.0),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch("devtools.verify.prepare_native_testmon_environment", side_effect=expire_preparation),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 124
+
+    normalized = verify_runs.normalize_verify_history_entry(history)
+    assert normalized["diagnosis"] == "verify_invocation_deadline_exceeded"
+    assert normalized["pytest_aggregate"]["deadline"] == {"budget_s": 42.0, "met": False}
+    assert json.loads(receipt.read_text())["exit_code"] == 124
+    assert json.loads(capsys.readouterr().out)["exit_code"] == 124
 
 
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(

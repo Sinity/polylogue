@@ -182,6 +182,13 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
     no_pytest = not pytest_steps
     corpus_digest = hashlib.sha256(b"").hexdigest()
     exit_code = entry.get("exit_code")
+    raw_budget = entry.get("invocation_budget_s")
+    invocation_budget = float(raw_budget) if isinstance(raw_budget, int | float) else None
+    raw_wall = entry.get("total_duration_s", entry.get("duration_s", 0.0))
+    wall_s = float(raw_wall) if isinstance(raw_wall, int | float) else 0.0
+    deadline_met = entry.get("diagnosis") != "verify_invocation_deadline_exceeded"
+    if invocation_budget is not None:
+        deadline_met = deadline_met and wall_s <= invocation_budget
     return {
         "schema_version": 1,
         "environment": {
@@ -216,8 +223,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         },
         "cleanup": {"complete": True if no_pytest else cleanup_complete},
         "containment": {"complete": True if no_pytest else containment_complete},
-        "deadline": {"budget_s": None, "met": True},
-        "wall_s": entry.get("total_duration_s", entry.get("duration_s", 0.0)),
+        "deadline": {"budget_s": invocation_budget, "met": deadline_met},
+        "wall_s": wall_s,
     }
 
 
@@ -1509,6 +1516,22 @@ class VerifyRun:
         current_path = self.root / CURRENT_RUN_PATH
         if not _current_owner_is_other_live_run(current_path):
             _write_json(current_path, self._payload)
+
+    def update_checkout_provenance(
+        self,
+        *,
+        polylogue_import_path: str | None = None,
+        environment_fingerprint: Mapping[str, Any] | None = None,
+        worktree_fingerprint: str | None = None,
+    ) -> None:
+        """Persist provenance as each preflight authority becomes available."""
+        if polylogue_import_path is not None:
+            self._payload["polylogue_import_path"] = polylogue_import_path
+        if environment_fingerprint is not None:
+            self._payload["environment_fingerprint"] = dict(environment_fingerprint)
+        if worktree_fingerprint is not None:
+            self._payload["worktree_fingerprint"] = worktree_fingerprint
+        self.write()
 
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         index = len(self._payload["steps"]) + 1

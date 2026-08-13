@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from devtools.testmon_bootstrap import (
+    NativeTestmonDeadlineError,
     NativeTestmonRepairError,
     classify_source_ast,
     executable_python_paths,
@@ -76,6 +77,25 @@ def test_environment_digest_changes_with_collection_semantics(
         )
         == 6
     )
+
+
+def test_environment_digest_hashes_explicit_local_plugin_regardless_of_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = tmp_path / "local_plugin.py"
+    plugin.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_PLUGINS", "local_plugin")
+
+    initial = _testmon_environment_digest(tmp_path)
+    plugin.write_text("VALUE = 'v2'\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) != initial
+
+
+def test_environment_digest_stops_at_invocation_deadline(tmp_path: Path) -> None:
+    with pytest.raises(NativeTestmonDeadlineError, match="invocation deadline"):
+        _testmon_environment_digest(tmp_path, deadline_monotonic=0.0)
 
 
 def test_invalid_cleanup_removes_only_owned_sqlite_and_sidecars(tmp_path: Path) -> None:

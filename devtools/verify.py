@@ -58,6 +58,7 @@ from devtools.pytest_supervisor import (
     write_termination_request,
 )
 from devtools.testmon_bootstrap import (
+    NativeTestmonDeadlineError,
     NativeTestmonPreparation,
     NativeTestmonRepairError,
     NativeTestmonState,
@@ -2156,12 +2157,6 @@ def build_verify_steps(
             "-p",
             "devtools.pytest_progress_plugin",
         ]
-        # Benchmark cases are an explicit campaign surface, not part of the
-        # correctness corpus. Keeping them out here is important: a
-        # benchmark marker is not necessarily present, and the serial lane
-        # would otherwise spend minutes executing a performance probe before
-        # it can checkpoint any correctness nodes.
-        base_marker = "not benchmark"
         if testmon_mode not in {"affected", "bootstrap", "full"}:
             raise ValueError(f"unknown native testmon mode: {testmon_mode}")
         if not testmon_environment:
@@ -2175,7 +2170,7 @@ def build_verify_steps(
         parallel_cmd = [
             *pytest_cmd,
             "-m",
-            f"({base_marker}) and not load_sensitive and not tui",
+            "not load_sensitive and not tui",
             *native_args,
             *_pytest_worker_args(),
         ]
@@ -2192,7 +2187,7 @@ def build_verify_steps(
         serial_cmd.extend(
             [
                 "-m",
-                f"({base_marker}) and (load_sensitive or tui)",
+                "load_sensitive or tui",
                 *native_args,
                 "-p",
                 "no:randomly",
@@ -2435,6 +2430,97 @@ def _release_baseline_allowed(
     )
 
 
+def _finalize_preflight_failure(
+    run: VerifyRun,
+    *,
+    started_at: float,
+    tier: str,
+    head: str | None,
+    verification_scope: VerificationScope,
+    diagnosis: str,
+    exit_code: int,
+    message: str,
+    use_json: bool,
+    mutation_monitor: CheckoutMutationMonitor | None = None,
+    initial_worktree_fingerprint: str | None = None,
+) -> int:
+    """Persist one normalized failed invocation before pytest can start."""
+    final_head = _git_head()
+    try:
+        final_worktree_fingerprint = worktree_fingerprint(ROOT) if mutation_monitor is not None else "unavailable"
+    except Exception:
+        final_worktree_fingerprint = "unavailable"
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
+    checkout_diagnosis: str | None = None
+    if mutation_monitor is None:
+        checkout_diagnosis = "preflight_failed_before_checkout_monitor"
+    elif (
+        head is None
+        or final_head is None
+        or initial_worktree_fingerprint in {None, "unavailable"}
+        or final_worktree_fingerprint == "unavailable"
+        or mutation_observation is None
+        or mutation_observation.unavailable
+    ):
+        checkout_diagnosis = "checkout_fingerprint_unavailable"
+    elif (
+        final_head != head or mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint
+    ):
+        checkout_diagnosis = "checkout_changed_during_verification"
+
+    duration_s = round(time.monotonic() - started_at, 2)
+    artifacts = run.start_step(label="verify preflight", cmd=[])
+    step = run.finish_step(
+        step_id=artifacts.step_id,
+        result={
+            "duration_s": duration_s,
+            "exit": exit_code,
+            "diagnosis": diagnosis,
+            "error": message,
+            "checkout_diagnosis": checkout_diagnosis,
+        },
+    )
+    payload = run.finish(
+        exit_code=exit_code,
+        duration_s=duration_s,
+        diagnosis=diagnosis,
+        verification_scope=verification_scope.value,
+        release_baseline_allowed=False,
+        final_worktree_fingerprint=final_worktree_fingerprint,
+        checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
+        checkout_diagnosis=checkout_diagnosis,
+    )
+    history_entry = {
+        **payload,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_head": head,
+        "final_git_head": final_head,
+        "tier": tier,
+        "checkout_root": str(ROOT.resolve()),
+        "worktree_fingerprint": initial_worktree_fingerprint,
+        "final_worktree_fingerprint": final_worktree_fingerprint,
+        "steps": [step] if step is not None else [],
+        "total_duration_s": duration_s,
+        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
+        "exit_code": exit_code,
+        "verification_scope": verification_scope.value,
+        "release_baseline_allowed": False,
+        "diagnosis": diagnosis,
+    }
+    _save_history(history_entry)
+    if use_json:
+        _print_json(history_entry)
+    sys.stderr.write(f"verify: {message}\n")
+    _notify(
+        _format_completion_notification(
+            exit_code=exit_code,
+            total_duration=duration_s,
+            step_results=history_entry["steps"],
+        )
+    )
+    return exit_code
+
+
 def _main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     started_at = time.monotonic()
@@ -2457,16 +2543,12 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     _anchor_verification_paths()
-    try:
-        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
-    except CheckoutImportMismatchError as exc:
-        sys.stderr.write(f"verify: {exc}\n")
-        return 125
-    polylogue_import_path = fingerprint.polylogue_import_path
-    environment_fingerprint = fingerprint.as_dict()
-    sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
-
     if args.history:
+        try:
+            assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+        except CheckoutImportMismatchError as exc:
+            sys.stderr.write(f"verify: {exc}\n")
+            return 125
         _print_history()
         return 0
 
@@ -2485,10 +2567,59 @@ def _main(argv: list[str] | None = None) -> int:
     )
     head = _git_head()
     pytest_enabled = not (args.quick or args.commit)
+    planned_scope = _planned_verification_scope(
+        args,
+        testmon_mode="full" if full_requested else None,
+    )
+    verify_run = VerifyRun(
+        tier=tier,
+        argv=list(sys.argv[1:] if argv is None else argv),
+        git_head=head,
+    )
+    _ACTIVE_VERIFY_RUN = (verify_run, started_at, planned_scope)
+
+    try:
+        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+    except CheckoutImportMismatchError as exc:
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
+            diagnosis="checkout_import_mismatch",
+            exit_code=125,
+            message=str(exc),
+            use_json=bool(use_json),
+        )
+    polylogue_import_path = fingerprint.polylogue_import_path
+    environment_fingerprint = fingerprint.as_dict()
+    verify_run.update_checkout_provenance(
+        polylogue_import_path=str(polylogue_import_path),
+        environment_fingerprint=environment_fingerprint,
+    )
+    sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
+
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    start_checkout_mutation_monitor(mutation_monitor)
+    checkout_fingerprint = worktree_fingerprint(ROOT)
+    verify_run.update_checkout_provenance(worktree_fingerprint=checkout_fingerprint)
+
     base_commit = _git_commit("origin/master") if pytest_enabled else None
     if pytest_enabled and (base_commit is None or head is None):
-        sys.stderr.write("verify: cannot resolve immutable Git refs for native affected-test authority.\n")
-        return 125
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
+            diagnosis="native_git_authority_unavailable",
+            exit_code=125,
+            message="cannot resolve immutable Git refs for native affected-test authority.",
+            use_json=bool(use_json),
+            mutation_monitor=mutation_monitor,
+            initial_worktree_fingerprint=checkout_fingerprint,
+        )
 
     relevant_paths: tuple[str, ...] = ()
     required_executable_paths: tuple[str, ...] = ()
@@ -2504,10 +2635,36 @@ def _main(argv: list[str] | None = None) -> int:
                 ROOT,
                 required_executable_paths=required_executable_paths,
                 pytest_profile=_pytest_profile(),
+                deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
+            )
+        except NativeTestmonDeadlineError as exc:
+            return _finalize_preflight_failure(
+                verify_run,
+                started_at=started_at,
+                tier=tier,
+                head=head,
+                verification_scope=planned_scope,
+                diagnosis="verify_invocation_deadline_exceeded",
+                exit_code=124,
+                message=str(exc),
+                use_json=bool(use_json),
+                mutation_monitor=mutation_monitor,
+                initial_worktree_fingerprint=checkout_fingerprint,
             )
         except (NativeTestmonRepairError, PytestResourceError) as exc:
-            sys.stderr.write(f"verify: native pytest-testmon preparation failed: {exc}\n")
-            return 125
+            return _finalize_preflight_failure(
+                verify_run,
+                started_at=started_at,
+                tier=tier,
+                head=head,
+                verification_scope=planned_scope,
+                diagnosis="native_testmon_preparation_failed",
+                exit_code=125,
+                message=f"native pytest-testmon preparation failed: {exc}",
+                use_json=bool(use_json),
+                mutation_monitor=mutation_monitor,
+                initial_worktree_fingerprint=checkout_fingerprint,
+            )
         testmon_mode = "full" if full_requested else preparation.selection_mode
         if preparation.removed_paths:
             sys.stderr.write(
@@ -2521,17 +2678,6 @@ def _main(argv: list[str] | None = None) -> int:
             sys.stderr.write("verify: native pytest-testmon environment is empty; plain verify will build it\n")
 
     planned_scope = _planned_verification_scope(args, testmon_mode=testmon_mode)
-    mutation_monitor = CheckoutMutationMonitor(ROOT)
-    start_checkout_mutation_monitor(mutation_monitor)
-    checkout_fingerprint = worktree_fingerprint(ROOT)
-    verify_run = VerifyRun(
-        tier=tier,
-        argv=list(sys.argv[1:] if argv is None else argv),
-        git_head=head,
-        polylogue_import_path=str(polylogue_import_path),
-        environment_fingerprint=environment_fingerprint,
-        worktree_fingerprint=checkout_fingerprint,
-    )
     _ACTIVE_VERIFY_RUN = (verify_run, started_at, planned_scope)
 
     if not use_json:
@@ -2548,17 +2694,19 @@ def _main(argv: list[str] | None = None) -> int:
             testmon_environment=preparation.environment_name if preparation is not None else "",
         )
     except (PytestResourceError, ValueError) as exc:
-        finish_checkout_mutation_monitor(mutation_monitor)
-        payload = verify_run.finish(
-            exit_code=125,
-            duration_s=time.monotonic() - started_at,
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
             diagnosis="pytest_resource_preflight_failed",
-            verification_scope=planned_scope.value,
-            release_baseline_allowed=False,
+            exit_code=125,
+            message=str(exc),
+            use_json=bool(use_json),
+            mutation_monitor=mutation_monitor,
+            initial_worktree_fingerprint=checkout_fingerprint,
         )
-        _save_history(payload)
-        sys.stderr.write(f"verify: {exc}\n")
-        return 125
 
     step_results: list[dict[str, Any]] = []
     exit_code = 0
@@ -2767,6 +2915,7 @@ def _main(argv: list[str] | None = None) -> int:
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
+        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": release_baseline_allowed,
@@ -2852,6 +3001,7 @@ def _finalize_verify_runner_exception(
     )
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)
+    payload["invocation_budget_s"] = VERIFY_INVOCATION_BUDGET_S
     _save_history(payload)
     if use_json:
         _print_json(payload)
