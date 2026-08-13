@@ -1593,6 +1593,35 @@ def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_ro
     assert watcher._watch_filter(object(), str(child_directory)) is True
 
 
+def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive add recovery applies the same resolved containment as live events."""
+
+    root = tmp_path / "watched"
+    added = root / "new-directory"
+    added.mkdir(parents=True)
+    internal = added / "inside.jsonl"
+    internal.write_text("{}\n", encoding="utf-8")
+    external = tmp_path / "outside.jsonl"
+    external.write_text("secret\n", encoding="utf-8")
+    escaping = added / "escaping.jsonl"
+    escaping.symlink_to(external)
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="codex", root=root, suffixes=(".jsonl",)),),
+    )
+    enqueued: list[Path] = []
+    monkeypatch.setattr(watcher, "_enqueue", enqueued.append)
+
+    assert watcher._canonical_watch_path(escaping) is None
+    watcher._enqueue_added_directory(added)
+
+    assert enqueued == [internal]
+
+
 def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     root.mkdir()

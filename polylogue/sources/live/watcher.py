@@ -1605,7 +1605,7 @@ class LiveWatcher:
                     return source.accepts(path)
             except OSError:
                 continue
-        return path.suffix == ".jsonl"
+        return False
 
     def _is_hook_spool_path(self, path: Path) -> bool:
         for source in self._sources:
@@ -1688,8 +1688,9 @@ class LiveWatcher:
             dir_names[:] = [name for name in dir_names if not source.ignores_directory(Path(name))]
             for name in file_names:
                 candidate = Path(parent) / name
-                if source.accepts(candidate):
-                    self._enqueue(candidate)
+                canonical = self._canonical_watch_path(candidate)
+                if canonical is not None:
+                    self._enqueue(canonical)
 
     def _watch_filter(self, _change: object, path: str) -> bool:
         """Accept configured source files under hidden canonical roots.

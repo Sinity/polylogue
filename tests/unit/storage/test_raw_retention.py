@@ -417,6 +417,51 @@ def test_real_revision_receipt_authorizes_only_current_byte_head_supersession(tm
     )
 
 
+def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: Path) -> None:
+    """Healthy live compaction reads terminal authority only for its input paths."""
+
+    old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
+    source_db = tmp_path / "source.db"
+    source_path = tmp_path / "session.jsonl"
+    unrelated_path = tmp_path / "unrelated-terminal.json"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-unrelated-terminal', 'unknown-export', 'terminal', ?, 0, ?, 1, 3)
+            """,
+            (str(unrelated_path), bytes.fromhex("03" * 32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-unrelated-terminal', 'raw-unrelated-terminal', 'unknown-export', ?, 0,
+                      'workflow_journal', 'unknown', 'terminal', 0, 0, 0, 3, 3)
+            """,
+            (str(unrelated_path),),
+        )
+        conn.commit()
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        authority = active_raw_retention_authority(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            terminal_source_paths=(source_path,),
+        )
+
+    normalized = {" ".join(statement.split()) for statement in statements}
+    assert "SELECT raw_id FROM raw_sessions" not in normalized
+    assert "SELECT DISTINCT source_path FROM raw_sessions" not in normalized
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({new_raw_id}),
+        eligible_raw_ids=frozenset({old_raw_id}),
+    )
+
+
 def test_semantic_head_receipt_authorizes_no_raw_deletion(tmp_path: Path) -> None:
     old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
     with sqlite3.connect(tmp_path / "index.db") as conn:
