@@ -7356,9 +7356,8 @@ def preview_message_type_backfill(*, count: int) -> RepairResult:
 def repair_message_type_backfill(config: Config, dry_run: bool = False) -> RepairResult:
     """Backfill ``message_type`` for pre-#839 rows.
 
-    Delegates to ``storage.message_type_backfill.run_backfill``; the
-    implementation lives there to keep this module under its file-size
-    budget (see ``docs/plans/file-size-budgets.yaml``).
+    Delegates to ``storage.message_type_backfill.run_backfill`` so the
+    one-time durable-row rewrite remains isolated from the repair dispatcher.
     """
     from polylogue.storage.message_type_backfill import run_backfill
 
