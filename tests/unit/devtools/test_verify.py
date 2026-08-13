@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2086,8 +2086,8 @@ def test_checkout_mutation_monitor_rejects_partial_git_enumeration(
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     real_run = subprocess.run
 
-    def warning_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        result = real_run(*args, **kwargs)
+    def warning_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        result = cast(subprocess.CompletedProcess[bytes], real_run(*args, **kwargs))
         command = args[0]
         if isinstance(command, list) and command[:2] == ["git", "status"]:
             return subprocess.CompletedProcess(command, 0, result.stdout, b"warning: partial enumeration\n")
