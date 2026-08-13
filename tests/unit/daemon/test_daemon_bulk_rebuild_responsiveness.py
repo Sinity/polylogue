@@ -51,6 +51,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.daemon.write_coordinator as write_coordinator_module
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import run_daemon_bulk_rebuild_pass
@@ -58,6 +59,7 @@ from polylogue.daemon.parse_prefetch import DaemonParseStage
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_current_rebuild_receipt
 
 _RAW_COUNT = 150
 _BULK_BATCH_SIZE = 8  # forces >= 10 bounded passes over the fixture corpus
@@ -107,10 +109,11 @@ def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(count):
-            archive.write_raw_payload(
+            native_id = f"responsiveness-session-{index}"
+            raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=_codex_session(
-                    f"responsiveness-session-{index}",
+                    native_id,
                     (
                         ("user", f"question {index}"),
                         ("assistant", f"searchable answer {index}" * 10),
@@ -118,6 +121,18 @@ def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
                 ),
                 source_path=f"responsiveness-corpus-{index}.jsonl",
                 acquired_at_ms=index,
+                native_id=native_id,
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    logical_source_key=f"codex-session:{native_id}",
+                    kind=RawRevisionKind.FULL,
+                    source_revision=f"responsiveness:{index}",
+                    acquisition_generation=0,
+                    baseline_raw_id=raw_id,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
             )
 
 
@@ -200,6 +215,8 @@ def test_small_writer_actors_stay_responsive_during_bulk_rebuild_drain(
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path)
+    schema_receipt = write_current_rebuild_receipt(tmp_path, tmp_path.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(schema_receipt))
 
     events: list[DaemonWriteEvent] = []
     coordinator = DaemonWriteCoordinator(observer=events.append)

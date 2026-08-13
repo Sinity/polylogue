@@ -16,18 +16,18 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import sqlite3
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync, rebuild_status
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
-from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.rebuild_receipt import write_current_rebuild_receipt
 
 _DEFINITELY_DEAD_PID = 2**31 - 1
 
@@ -54,15 +54,29 @@ def _codex_session(native_id: str) -> bytes:
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _seed_one_real_codex_session(root: Path) -> None:
+def _seed_one_real_codex_session(root: Path) -> str:
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        archive.write_raw_payload(
+        native_id = "sess-status-probe"
+        raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=_codex_session("sess-status-probe"),
+            payload=_codex_session(native_id),
             source_path="status-probe-test/0.jsonl",
             acquired_at_ms=1,
+            native_id=native_id,
         )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=f"codex-session:{native_id}",
+                kind=RawRevisionKind.FULL,
+                source_revision="status-probe:0",
+                acquisition_generation=0,
+                baseline_raw_id=raw_id,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        return raw_id
 
 
 def test_reports_no_lease_and_no_transaction_on_a_fresh_archive(tmp_path: Path) -> None:
@@ -113,7 +127,10 @@ def test_reports_active_generation_and_schema_version_after_a_rebuild(
     root = tmp_path / "archive"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     _seed_one_real_codex_session(root)
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    schema_receipt = write_current_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=schema_receipt)
+    )
     assert receipt.status == "replayed"
 
     status = rebuild_status(root, operation_id="none", include_daemon_bulk_rebuild=False)
@@ -126,19 +143,13 @@ def test_reports_active_generation_and_schema_version_after_a_rebuild(
 
 def test_reports_transaction_cursor_and_no_delta_when_source_unchanged(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    _init_empty_source(root)
-    with sqlite3.connect(root / "source.db") as conn:
-        conn.execute(
-            """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
-               blob_size, acquired_at_ms, validation_status)
-               VALUES ('raw-a', 'codex-session', 'raw-a', '/raw-a', 0, randomblob(32), 1, 1, 'passed')"""
-        )
+    raw_id = _seed_one_real_codex_session(root)
     store = IndexGenerationStore.for_archive_root(root)
     transaction = store.create_transaction(
         source_snapshot=rebuild_source_evidence_snapshot(root), operation_id="status-probe-op"
     )
     transaction = store.checkpoint_transaction(
-        transaction, status="paused", last_raw_id="raw-a", last_blob_hash_hex="00" * 32, processed_raw_count=1
+        transaction, status="paused", last_raw_id=raw_id, last_blob_hash_hex="00" * 32, processed_raw_count=1
     )
 
     status = rebuild_status(root, operation_id="status-probe-op")
@@ -161,13 +172,7 @@ def test_reports_transaction_cursor_and_no_delta_when_source_unchanged(tmp_path:
 
 def test_reports_source_snapshot_delta_when_source_has_drifted(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    _init_empty_source(root)
-    with sqlite3.connect(root / "source.db") as conn:
-        conn.execute(
-            """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
-               blob_size, acquired_at_ms, validation_status)
-               VALUES ('raw-a', 'codex-session', 'raw-a', '/raw-a', 0, randomblob(32), 1, 1, 'passed')"""
-        )
+    _seed_one_real_codex_session(root)
     store = IndexGenerationStore.for_archive_root(root)
     transaction = store.create_transaction(source_snapshot="stale-snapshot", operation_id="drift-op")
     assert transaction.status == "running"
@@ -193,8 +198,8 @@ def test_falls_back_to_the_daemon_well_known_operation_id_by_default(tmp_path: P
     )
 
     root = tmp_path / "archive"
-    _init_empty_source(root)
-    receipt = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
+    _seed_one_real_codex_session(root)
+    receipt = write_current_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     resolve_or_start_daemon_bulk_rebuild_transaction(root, schema_inference_receipt_path=receipt)
 
     status = rebuild_status(root)

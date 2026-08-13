@@ -12,13 +12,15 @@ import pytest
 
 import polylogue.maintenance.archive_verification as archive_verification
 import polylogue.storage.sqlite.archive_tiers.revision_governance as revision_governance
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.maintenance.rebuild_index import RebuildIndexReceipt, RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_current_rebuild_receipt
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -39,11 +41,23 @@ def _codex_session(native_id: str, text: str) -> bytes:
 
 def _seed_raw(root: Path, native_id: str, text: str) -> None:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        archive.write_raw_payload(
+        raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=_codex_session(native_id, text),
             source_path=f"stamp-regression/{native_id}.jsonl",
             acquired_at_ms=1,
+            native_id=native_id,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=f"codex-session:{native_id}",
+                kind=RawRevisionKind.FULL,
+                source_revision=f"stamp-regression:{native_id}",
+                acquisition_generation=0,
+                baseline_raw_id=raw_id,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
         )
 
 
@@ -55,6 +69,13 @@ def _active_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
         )
 
 
+def _rebuild_with_fresh_receipt(root: Path, receipt_path: Path) -> RebuildIndexReceipt:
+    receipt = write_current_rebuild_receipt(root, receipt_path)
+    return rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=receipt)
+    )
+
+
 def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -64,7 +85,7 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     _seed_raw(root, "active-session", "active generation remains exact")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
 
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = _rebuild_with_fresh_receipt(root, tmp_path / "initial-receipt.json")
     assert initial.status == "replayed"
 
     store = IndexGenerationStore.for_archive_root(root)
@@ -72,6 +93,7 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     snapshot_before = _active_snapshot(root)
 
     _seed_raw(root, "candidate-session", "candidate must never become active")
+    candidate_receipt = write_current_rebuild_receipt(root, tmp_path / "candidate-receipt.json")
     original_writer = cast(Callable[..., str], revision_governance.__dict__["write_parsed_session_to_archive"])
     corruption_calls = 0
 
@@ -85,7 +107,9 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     monkeypatch.setattr(revision_governance, "write_parsed_session_to_archive", bypass_stamps)
 
     with pytest.raises(RuntimeError, match="reindex acceptance gate failed.*session-fingerprint-stamps"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
+        )
 
     assert corruption_calls > 0
     assert store.active_pointer.resolve(strict=True) == active_before
@@ -100,11 +124,13 @@ def test_waived_embedding_orphan_blocks_full_rebuild_candidate_promotion(
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
 
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = _rebuild_with_fresh_receipt(root, tmp_path / "initial-receipt.json")
     assert initial.status == "replayed"
 
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+    candidate_receipt = write_current_rebuild_receipt(root, tmp_path / "candidate-receipt.json")
     with sqlite3.connect(root / "embeddings.db") as conn:
         conn.execute(
             """
@@ -114,10 +140,11 @@ def test_waived_embedding_orphan_blocks_full_rebuild_candidate_promotion(
             (b"o" * 32,),
         )
         conn.commit()
-    _seed_raw(root, "candidate-session", "candidate must never become active")
 
     with pytest.raises(RuntimeError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
+        )
 
     assert store.active_pointer.resolve(strict=True) == active_before
 
@@ -128,7 +155,7 @@ def test_cross_tier_user_reference_blocks_full_rebuild_candidate_promotion(
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = _rebuild_with_fresh_receipt(root, tmp_path / "initial-receipt.json")
     assert initial.status == "replayed"
 
     store = IndexGenerationStore.for_archive_root(root)
@@ -142,26 +169,38 @@ def test_cross_tier_user_reference_blocks_full_rebuild_candidate_promotion(
         )
         conn.commit()
     _seed_raw(root, "candidate-session", "candidate must never become active")
+    candidate_receipt = write_current_rebuild_receipt(root, tmp_path / "candidate-receipt.json")
 
     with pytest.raises(RuntimeError, match=r"user-tier-refs \[error\]"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
+        )
 
     assert store.active_pointer.resolve(strict=True) == active_before
 
 
-@pytest.mark.parametrize("mutation", ("missing", "corrupt", "orphan"))
+@pytest.mark.parametrize(
+    ("mutation", "failure_pattern"),
+    (
+        ("missing", "rebuild schema-inference preflight gate failed"),
+        ("corrupt", "rebuild schema-inference preflight gate failed"),
+        ("orphan", "reindex source preflight gate failed:.*blob-integrity"),
+    ),
+)
 def test_rebuild_preflight_rejects_each_physical_blob_failure_before_candidate_creation(
-    tmp_path: Path, mutation: str
+    tmp_path: Path, mutation: str, failure_pattern: str
 ) -> None:
     """The source preflight catches physical debt before any new generation exists."""
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = _rebuild_with_fresh_receipt(root, tmp_path / "initial-receipt.json")
     assert initial.status == "replayed"
 
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+    candidate_receipt = write_current_rebuild_receipt(root, tmp_path / "candidate-receipt.json")
     with sqlite3.connect(root / "source.db") as conn:
         blob_hash = bytes(conn.execute("SELECT blob_hash FROM raw_sessions LIMIT 1").fetchone()[0]).hex()
     blob_store = BlobStore(root / "blob")
@@ -171,10 +210,10 @@ def test_rebuild_preflight_rejects_each_physical_blob_failure_before_candidate_c
         blob_store.blob_path(blob_hash).write_bytes(b"corrupt raw bytes")
     else:
         blob_store.write_from_bytes(b"orphan physical bytes")
-    _seed_raw(root, "candidate-session", "candidate must never become active")
-
-    with pytest.raises(RuntimeError, match="reindex source preflight gate failed:.*blob-integrity"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    with pytest.raises(RuntimeError, match=failure_pattern):
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
+        )
 
     assert store.active_pointer.resolve(strict=True) == active_before
     assert len(list(store.generations_root.glob("gen-*/index.db"))) == 1
@@ -186,9 +225,11 @@ def test_rebuild_preflight_rejects_acquired_unreachable_attachment_before_candid
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = _rebuild_with_fresh_receipt(root, tmp_path / "initial-receipt.json")
     assert initial.status == "replayed"
 
+    _seed_raw(root, "candidate-session", "candidate must never become active")
+    candidate_receipt = write_current_rebuild_receipt(root, tmp_path / "candidate-receipt.json")
     blob_hash, size = BlobStore(root / "blob").write_from_bytes(b"unreachable attachment")
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute(
@@ -201,10 +242,10 @@ def test_rebuild_preflight_rejects_acquired_unreachable_attachment_before_candid
         conn.commit()
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
-    _seed_raw(root, "candidate-session", "candidate must never become active")
-
     with pytest.raises(RuntimeError, match="reindex source preflight gate failed:.*attachment-acquisition-debt"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
+        )
 
     assert store.active_pointer.resolve(strict=True) == active_before
     assert len(list(store.generations_root.glob("gen-*/index.db"))) == 1
@@ -228,12 +269,13 @@ def test_full_rebuild_promotion_rejects_non_ok_or_missing_required_result(
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
-    initial = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    initial = _rebuild_with_fresh_receipt(root, tmp_path / "initial-receipt.json")
     assert initial.status == "replayed"
 
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
     _seed_raw(root, "candidate-session", "candidate must never become active")
+    candidate_receipt = write_current_rebuild_receipt(root, tmp_path / "candidate-receipt.json")
 
     def mutated_verifier(*args: object, **kwargs: object) -> archive_verification.ArchiveVerificationReport:
         checks = cast(tuple[str, ...], kwargs["checks"])
@@ -250,6 +292,8 @@ def test_full_rebuild_promotion_rejects_non_ok_or_missing_required_result(
 
     monkeypatch.setattr(archive_verification, "verify_archive", mutated_verifier)
     with pytest.raises(RuntimeError, match=f"reindex acceptance gate failed.*{check_name}"):
-        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+        rebuild_index_from_source_sync(
+            RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
+        )
 
     assert store.active_pointer.resolve(strict=True) == active_before

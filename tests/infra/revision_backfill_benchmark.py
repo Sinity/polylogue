@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -93,23 +94,40 @@ def build_independent_raw_corpus(
     *,
     raw_count: int,
     avg_payload_bytes: int,
+    authoritative_source: bool = False,
 ) -> list[str]:
     """Write ``raw_count`` independent, uncensused, single-session raws.
 
     Returns the written raw ids in insertion order. The archive root is
-    initialized fresh; call once per corpus.
+    initialized fresh; call once per corpus. ``authoritative_source`` binds
+    each raw to its own byte-proven full-revision baseline without deriving
+    index rows, for rebuild-route fixtures that must pass source admission.
     """
     initialize_active_archive_root(archive_root)
     raw_ids: list[str] = []
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         for index in range(raw_count):
             payload = _codex_raw_payload(index, target_bytes=avg_payload_bytes)
+            native_id = f"amg1-session-{index:06d}"
             raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=f"synthetic-amg1/session-{index:06d}.jsonl",
                 acquired_at_ms=index + 1,
+                native_id=native_id if authoritative_source else None,
             )
+            if authoritative_source:
+                archive.bind_raw_revision(
+                    raw_id,
+                    RawRevisionEnvelope(
+                        logical_source_key=f"codex-session:{native_id}",
+                        kind=RawRevisionKind.FULL,
+                        source_revision=f"synthetic-amg1:{index:06d}",
+                        acquisition_generation=0,
+                        baseline_raw_id=raw_id,
+                        authority=RawRevisionAuthority.BYTE_PROVEN,
+                    ),
+                )
             raw_ids.append(raw_id)
     return raw_ids
 

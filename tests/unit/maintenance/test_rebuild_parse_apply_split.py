@@ -38,6 +38,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.sources import revision_backfill
 from polylogue.sources.census_parse_stage import CensusParseStage
 from polylogue.sources.revision_backfill import split_parse_and_apply_seconds
+from tests.infra.rebuild_receipt import write_current_rebuild_receipt
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 
 REINDEX_PRODUCTION_SEAMS = (
@@ -47,7 +48,7 @@ REINDEX_PRODUCTION_SEAMS = (
         production_entrypoint="polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",
         tested_symbols=("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",),
         required_symbols=(
-            "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+            "polylogue.maintenance.replay.rebuild_index_from_source",
             "polylogue.storage.repair.repair_session_insights",
         ),
     ),
@@ -57,7 +58,7 @@ REINDEX_PRODUCTION_SEAMS = (
         production_entrypoint="polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",
         tested_symbols=("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",),
         required_symbols=(
-            "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+            "polylogue.maintenance.replay.rebuild_index_from_source",
             "polylogue.storage.repair.repair_session_insights",
         ),
     ),
@@ -67,7 +68,7 @@ REINDEX_PRODUCTION_SEAMS = (
         production_entrypoint="polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",
         tested_symbols=("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync",),
         required_symbols=(
-            "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+            "polylogue.maintenance.replay.rebuild_index_from_source",
             "polylogue.storage.repair.repair_session_insights",
         ),
     ),
@@ -113,7 +114,7 @@ def test_rebuild_records_parse_apply_split_summing_to_stage_total(
     already being logged -- not a second, independently-computed number.
     """
     root = tmp_path / "archive"
-    build_independent_raw_corpus(root, raw_count=8, avg_payload_bytes=20_000)
+    build_independent_raw_corpus(root, raw_count=8, avg_payload_bytes=20_000, authoritative_source=True)
     # ArchiveStore.open_owned_inactive_generation resolves the generation
     # store via the CONFIGURED archive root (polylogue.paths.archive_root),
     # not the archive_root argument threaded through the call -- it must
@@ -121,12 +122,14 @@ def test_rebuild_records_parse_apply_split_summing_to_stage_total(
     # tests/unit/storage/test_rebuild_paging_content_order.py for the same
     # requirement on the same code path).
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    schema_receipt = write_current_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(
             archive_root=root,
             promote=True,
             raw_batch_size=500,  # single page: whole corpus fits in one pass
+            schema_inference_receipt_path=schema_receipt,
         )
     )
 
@@ -176,8 +179,9 @@ def test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_o
     self-authorized double.
     """
     root = tmp_path / "archive"
-    raw_ids = build_independent_raw_corpus(root, raw_count=6, avg_payload_bytes=20_000)
+    raw_ids = build_independent_raw_corpus(root, raw_count=6, avg_payload_bytes=20_000, authoritative_source=True)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    schema_receipt = write_current_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
     warmed_raw_id_batches: list[tuple[str, ...]] = []
     real_warm_raw_ids = CensusParseStage.warm_raw_ids
@@ -193,6 +197,7 @@ def test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_o
             archive_root=root,
             promote=True,
             raw_batch_size=500,  # single page: whole corpus fits in one pass
+            schema_inference_receipt_path=schema_receipt,
         )
     )
 
@@ -263,14 +268,18 @@ def test_rebuild_index_from_source_sync_auto_engages_pipelined_decode(
 
     root = tmp_path / "archive"
     cohort_count = revision_backfill._PIPELINE_DECODE_MIN_COHORTS + 4
-    raw_ids = build_independent_raw_corpus(root, raw_count=cohort_count, avg_payload_bytes=20_000)
+    raw_ids = build_independent_raw_corpus(
+        root, raw_count=cohort_count, avg_payload_bytes=20_000, authoritative_source=True
+    )
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    schema_receipt = write_current_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
 
     receipt = rebuild_index_from_source_sync(
         RebuildIndexRequest(
             archive_root=root,
             promote=True,
             raw_batch_size=500,  # single page: whole corpus fits in one pass
+            schema_inference_receipt_path=schema_receipt,
         )
     )
 

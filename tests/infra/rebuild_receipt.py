@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.maintenance import schema_inference_gate as gate
+from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -105,4 +106,11 @@ def write_valid_rebuild_receipt(
     return receipt_path
 
 
-__all__ = ["write_valid_rebuild_receipt"]
+def write_current_rebuild_receipt(archive_root: Path, receipt_path: Path) -> Path:
+    """Settle fixture source authority, then bind a receipt to that state."""
+
+    census_historical_revision_evidence(archive_root)
+    return write_valid_rebuild_receipt(archive_root, receipt_path)
+
+
+__all__ = ["write_current_rebuild_receipt", "write_valid_rebuild_receipt"]
