@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,6 +17,17 @@ import pytest
 import tests.conftest as conftest
 from devtools import verify_runs
 from tests.infra.frozen_clock import FrozenClock
+
+
+@contextmanager
+def _configured_pytest(config: Any) -> Generator[None, None, None]:
+    """Run the configure hook directly without leaking its claim lock."""
+    conftest.pytest_configure(cast("pytest.Config", config))
+    basetemp = Path(str(config.option.basetemp))
+    try:
+        yield
+    finally:
+        conftest._release_basetemp_claim_lock(basetemp)
 
 
 def _make_real_candidates(
@@ -232,10 +244,9 @@ def test_bare_pytest_configure_defaults_to_scratch_without_a_supervisor(
         rootpath=tmp_path,
     )
 
-    conftest.pytest_configure(cast("pytest.Config", config))
-
-    assert Path(str(config.option.basetemp)).parent == scratch
-    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    with _configured_pytest(config):
+        assert Path(str(config.option.basetemp)).parent == scratch
+        assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
 
 
 def test_bare_pytest_ignores_leaked_cloud_basetemp_on_workstation(
@@ -255,11 +266,10 @@ def test_bare_pytest_ignores_leaked_cloud_basetemp_on_workstation(
         rootpath=tmp_path,
     )
 
-    conftest.pytest_configure(cast("pytest.Config", config))
-
-    assert Path(str(config.option.basetemp)).parent == scratch
-    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
-    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    with _configured_pytest(config):
+        assert Path(str(config.option.basetemp)).parent == scratch
+        assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
+        assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
 
 
 def test_bare_pytest_routes_an_environment_configured_tmpfs_root_to_scratch(
@@ -279,11 +289,10 @@ def test_bare_pytest_routes_an_environment_configured_tmpfs_root_to_scratch(
         rootpath=tmp_path,
     )
 
-    conftest.pytest_configure(cast("pytest.Config", config))
-
-    assert Path(str(config.option.basetemp)).parent == scratch
-    assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
-    assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
+    with _configured_pytest(config):
+        assert Path(str(config.option.basetemp)).parent == scratch
+        assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in os.environ
+        assert os.environ["POLYLOGUE_PYTEST_TMPFS"] == "0"
 
 
 def test_sweep_stale_polylogue_basetemps_preserves_unknown_seeded_and_recent(
@@ -320,14 +329,14 @@ def test_explicit_basetemp_remains_outside_a_later_startup_stale_sweep(
         rootpath=tmp_path,
     )
 
-    conftest.pytest_configure(cast("pytest.Config", config))
-    assert verify_runs.pytest_basetemp_claim_path(explicit, kind="caller-owned").is_file()
-    old = frozen_clock.time() - 24 * 60 * 60
-    os.utime(explicit, (old, old))
+    with _configured_pytest(config):
+        assert verify_runs.pytest_basetemp_claim_path(explicit, kind="caller-owned").is_file()
+        old = frozen_clock.time() - 24 * 60 * 60
+        os.utime(explicit, (old, old))
 
-    conftest._sweep_stale_polylogue_basetemps(roots=(tmp_path,))
+        conftest._sweep_stale_polylogue_basetemps(roots=(tmp_path,))
 
-    assert explicit.exists()
+        assert explicit.exists()
 
 
 def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_path: Path) -> None:
