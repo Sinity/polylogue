@@ -1622,6 +1622,40 @@ def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
     assert enqueued == [internal]
 
 
+def test_added_directory_scan_retains_a_deeper_root_under_outer_ignore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An outer ignore rule cannot hide a configured nested source root."""
+
+    outer = tmp_path / "codex-state"
+    ignored = outer / "runtime"
+    inner = ignored / "sessions"
+    inner.mkdir(parents=True)
+    session = inner / "session.jsonl"
+    session.write_text("{}\n", encoding="utf-8")
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        outer,
+        sources=(
+            WatchSource(
+                name="codex-state",
+                root=outer,
+                suffixes=(".sqlite",),
+                ignored_dir_names=frozenset({"runtime"}),
+            ),
+            WatchSource(name="codex", root=inner, suffixes=(".jsonl",)),
+        ),
+    )
+    enqueued: list[Path] = []
+    monkeypatch.setattr(watcher, "_enqueue", enqueued.append)
+
+    assert watcher._watch_filter(object(), str(ignored)) is True
+    watcher._enqueue_added_directory(ignored)
+
+    assert enqueued == [session]
+
+
 def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     root.mkdir()
@@ -3290,6 +3324,53 @@ def test_catch_up_processes_pre_existing_files(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
+def test_catch_up_acquires_source_without_reading_unavailable_index(tmp_path: Path) -> None:
+    """The real catch-up planner and batch route remain source-only while derived-only."""
+
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False):
+        pass
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "degraded-catch-up.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"degraded-catch-up"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    pointer = tmp_path / ".index-active-pointer"
+    pointer.write_bytes(b"\xff")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "cursor.sqlite", ops_db_path=tmp_path / "ops.db"),
+    )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        asyncio.run(watcher._catch_up([root]))
+    finally:
+        clear_degraded()
+        parse_stage.shutdown()
+
+    assert pointer.read_bytes() == b"\xff"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        row = conn.execute(
+            """SELECT parsed_at_ms, parse_error FROM raw_sessions
+               WHERE source_path = ? ORDER BY acquired_at_ms DESC, raw_id DESC LIMIT 1""",
+            (str(path),),
+        ).fetchone()
+    assert row == (None, None)
+
+
 def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -3550,16 +3631,20 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
         ),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
 
     try:
         assert watcher._source_accepts(path) is True
         assert watcher._source_name_for(path) == "codex"
         assert watcher._batch_processor._source_name_for(path) == "codex"
-        assert watcher._source_for_directory(sessions).name == "codex"
+        directory_source = watcher._source_for_directory(sessions)
+        assert directory_source is not None
+        assert directory_source.name == "codex"
         candidates = watcher._scan_catch_up_candidates([root, sessions])
         assert [(candidate.path, candidate.source_name) for candidate in candidates] == [(path, "codex")]
     finally:
-        watcher._parse_stage.shutdown()
+        parse_stage.shutdown()
 
 
 @pytest.mark.asyncio
@@ -3573,6 +3658,8 @@ async def test_hook_spool_directory_retry_retries_sqlite_operational_error(tmp_p
         (),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
     calls = 0
 
     async def drain() -> None:
@@ -3586,7 +3673,7 @@ async def test_hook_spool_directory_retry_retries_sqlite_operational_error(tmp_p
     try:
         await watcher._retry_hook_spool_directory_until_populated(shard)
     finally:
-        watcher._parse_stage.shutdown()
+        parse_stage.shutdown()
 
     assert calls == 2
 
@@ -3603,6 +3690,8 @@ async def test_hook_spool_directory_retry_rejects_non_lock_sqlite_error(tmp_path
         (),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
 
     async def drain() -> None:
         raise sqlite3.OperationalError("no such table: hook_events")
@@ -3612,7 +3701,7 @@ async def test_hook_spool_directory_retry_rejects_non_lock_sqlite_error(tmp_path
         with pytest.raises(sqlite3.OperationalError, match="no such table"):
             await watcher._retry_hook_spool_directory_until_populated(shard)
     finally:
-        watcher._parse_stage.shutdown()
+        parse_stage.shutdown()
 
 
 @pytest.mark.asyncio
@@ -3629,6 +3718,8 @@ async def test_scheduled_hook_spool_retry_observes_and_logs_failure(
         (),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
     recorded_logger = MagicMock()
     monkeypatch.setattr(live_watcher, "logger", recorded_logger)
 
@@ -3643,7 +3734,7 @@ async def test_scheduled_hook_spool_retry_observes_and_logs_failure(
             await asyncio.sleep(0)
         await asyncio.sleep(0)
     finally:
-        watcher._parse_stage.shutdown()
+        parse_stage.shutdown()
 
     assert watcher._hook_spool_directory_retry_tasks == {}
     recorded_logger.exception.assert_called_once()

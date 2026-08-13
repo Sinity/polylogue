@@ -902,6 +902,13 @@ class LiveBatchProcessor:
             if authorization is not None and authorization.force_full_ingest:
                 full_paths.append(path)
                 continue
+            if _source_tier_acquisition_required():
+                # Append planning and replay both consult the active index to
+                # prove lineage. In acquire-only mode the derived tier is the
+                # unavailable component, so capture the complete source
+                # observation through the source-only full route instead.
+                full_paths.append(path)
+                continue
             if is_fully_degraded():
                 full_paths.append(path)
                 continue
