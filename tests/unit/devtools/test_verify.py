@@ -1146,6 +1146,18 @@ def test_aggregate_pytest_statistics_uses_completed_report_to_fill_event_gaps(tm
     assert result["phases"]["call"]["count"] == 2
 
 
+def test_aggregate_pytest_statistics_recognizes_completed_empty_report(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "pytest-report.json").write_text(json.dumps({"tests": []}))
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["canonical_report_status"] == "present"
+    assert result["node_count"] == 0
+    assert result["outcomes"] == {}
+
+
 def test_verify_run_statistics_only_cover_pytest_steps(tmp_path: Path) -> None:
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
     artifacts = run.start_step(label="ruff check", cmd=["ruff", "check"])

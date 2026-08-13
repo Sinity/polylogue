@@ -263,12 +263,14 @@ def aggregate_pytest_statistics(
             reports[key] = row
 
     canonical_outcomes: dict[str, str] = {}
+    canonical_report_present = False
     canonical_report_path = step_dir / PYTEST_CANONICAL_REPORT_NAME
     if canonical_report_path.exists():
         with contextlib.suppress(OSError, json.JSONDecodeError):
             canonical_report = json.loads(canonical_report_path.read_text(encoding="utf-8"))
             canonical_tests = canonical_report.get("tests") if isinstance(canonical_report, dict) else None
             if isinstance(canonical_tests, list):
+                canonical_report_present = True
                 for test in canonical_tests:
                     if not isinstance(test, dict):
                         continue
@@ -360,7 +362,7 @@ def aggregate_pytest_statistics(
     parent_cleanup = (step_result or {}).get("basetemp_cleanup")
     return {
         "schema_version": 1,
-        "canonical_report_status": "present" if canonical_outcomes else "missing",
+        "canonical_report_status": "present" if canonical_report_present else "missing",
         "command": [str(value) for value in command],
         "node_count": len(nodes),
         "outcomes": outcomes,
