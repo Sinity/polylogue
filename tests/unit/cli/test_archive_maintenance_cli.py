@@ -17,6 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.cli.command_inventory import iter_command_paths
 from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_rebuild_index
 from polylogue.cli.commands.maintenance._migrate_tier import (
     MigrateTierErrorPayload,
@@ -104,6 +105,14 @@ def test_archive_root_relocation_cli_help_exposes_only_plan_and_apply(
     assert result.exit_code == 0, result.output
     assert "plan" in result.output
     assert "apply" in result.output
+
+
+def test_archive_root_relocation_apply_is_in_the_public_command_inventory() -> None:
+    """Generated docs must discover the nested apply JSON option."""
+    paths = {item.path: item.command for item in iter_command_paths(cli, include_root=False)}
+
+    apply = paths[("ops", "maintenance", "archive-root-relocation", "apply")]
+    assert "--output-format" in {option for parameter in apply.params for option in parameter.opts}
 
 
 def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
