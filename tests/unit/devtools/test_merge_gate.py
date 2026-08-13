@@ -139,6 +139,77 @@ def _fake_run(
     return _run
 
 
+def test_fetch_review_state_includes_unresolved_threads_after_first_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages = [
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewDecision": "APPROVED",
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "resolved-first-page",
+                                    "isResolved": True,
+                                    "isOutdated": False,
+                                    "comments": {"nodes": []},
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                        },
+                    }
+                }
+            }
+        },
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewDecision": "APPROVED",
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "unresolved-second-page",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "comments": {
+                                        "nodes": [
+                                            {
+                                                "databaseId": 987,
+                                                "createdAt": "2026-08-13T01:20:29Z",
+                                                "path": "polylogue/operations/audit.py",
+                                                "line": 10,
+                                                "body": "finding hidden beyond the first 100 threads",
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        },
+                    }
+                }
+            }
+        },
+    ]
+
+    def _run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        assert cmd[:3] == ["gh", "api", "graphql"]
+        assert "--paginate" in cmd
+        assert "--slurp" in cmd
+        return MagicMock(returncode=0, stdout=json.dumps(pages), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    state = merge_gate._fetch_review_state(3947)
+
+    assert state is not None
+    assert state["review_decision"] == "APPROVED"
+    assert [thread["comment_id"] for thread in state["unresolved_threads"]] == [987]
+
+
 def test_record_persists_receipt_keyed_to_current_head_sha(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
