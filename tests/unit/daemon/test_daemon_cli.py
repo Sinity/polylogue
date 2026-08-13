@@ -1083,6 +1083,80 @@ def test_raw_materialization_closes_fts_on_cancellation(
     assert closed == [active_index]
 
 
+@pytest.mark.parametrize("whale", [False, True])
+def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    whale: bool,
+) -> None:
+    """FTS closure must finish under the same promotion-excluding lease as replay."""
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    active_index.touch()
+    archive.mkdir()
+    (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    lease_events: list[str] = []
+    held = 0
+
+    @contextlib.contextmanager
+    def fake_generation_lease(_config: Config) -> Any:
+        nonlocal held
+        held += 1
+        lease_events.append("acquire")
+        try:
+            yield active_index
+        finally:
+            lease_events.append("close")
+            held -= 1
+
+    class FakeRestoreResult:
+        restored_count = 0
+
+    result = SimpleNamespace(
+        success=True,
+        repaired_count=1,
+        detail="repaired",
+        metrics={"raw_materialization_remaining_candidate_count": 0},
+    )
+    closed: list[Path] = []
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        lambda *_args, **_kwargs: FakeRestoreResult(),
+    )
+    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", lambda _config: ())
+    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", lambda _config: 0)
+    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr("polylogue.product.raw_authority.materialization_generation_lease", fake_generation_lease)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, **_kwargs: 0)
+
+    def close_fts(index_db: Path) -> None:
+        assert held == 1
+        closed.append(index_db)
+        lease_events.append("fts")
+
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", close_fts)
+
+    if whale:
+        assert (
+            daemon_cli._run_raw_materialization_whale_pass_once(raw_artifact_id="raw-whale", max_payload_bytes=123)
+            is result
+        )
+    else:
+        assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1
+
+    assert closed == [active_index]
+    assert lease_events == ["acquire", "fts", "close"]
+    assert held == 0
+
+
 def test_raw_materialization_fts_failure_records_durable_debt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

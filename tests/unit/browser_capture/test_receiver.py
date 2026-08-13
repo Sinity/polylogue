@@ -703,6 +703,19 @@ def test_receiver_archive_state_reports_missing_without_spool_or_archive(tmp_pat
     assert Path(state.artifact_ref).is_absolute() is False
 
 
+def test_receiver_archive_state_tolerates_invalid_active_index_pointer(tmp_path: Path) -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    (tmp_path / ".index-active-pointer").write_text("not-an-index.db\n", encoding="utf-8")
+
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "spooled_only"
+    assert state.indexed_session_exists is False
+
+
 def test_receiver_archive_state_requires_indexed_messages(tmp_path: Path) -> None:
     envelope = BrowserCaptureEnvelope.model_validate(_payload())
     write_capture_envelope(envelope, spool_path=tmp_path)

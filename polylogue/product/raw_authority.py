@@ -7,6 +7,8 @@ typed product operation rather than importing storage internals directly.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -119,6 +121,19 @@ def auto_resolve_stale_plan_blockers(config: Config) -> int:
     return _auto_resolve(config.archive_root)
 
 
+@contextlib.contextmanager
+def materialization_generation_lease(config: Config) -> Iterator[Path]:
+    """Pin one active index generation through a replay-adjacent closure."""
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    lease = ActiveWriterLease(config.archive_root)
+    lease.acquire()
+    try:
+        yield config.current_db_path()
+    finally:
+        lease.close()
+
+
 def repair_materialization(
     config: Config,
     *,
@@ -222,6 +237,7 @@ __all__ = [
     "apply_frontier",
     "inspect_frontier",
     "list_blockers",
+    "materialization_generation_lease",
     "read_census",
     "read_detail",
     "recover_interrupted_frontier",

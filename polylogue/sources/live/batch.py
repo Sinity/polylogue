@@ -2505,9 +2505,18 @@ class LiveBatchProcessor:
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
-                    artifact_classification = _declared_non_session_artifact_classification(
-                        provider,
-                        record.source_path,
+                    # Source-only acquisition deliberately has no decoded
+                    # evidence with which to confirm or override a path
+                    # classification. Keep every such raw pending instead of
+                    # giving a filename-only fact/sidecar rule terminal
+                    # authority that a recovered derived tier could not undo.
+                    artifact_classification = (
+                        None
+                        if source_only
+                        else _declared_non_session_artifact_classification(
+                            provider,
+                            record.source_path,
+                        )
                     )
                     session_evidence = False
                     if artifact_classification is not None and not source_only:

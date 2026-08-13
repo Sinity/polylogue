@@ -39,7 +39,7 @@ from polylogue.paths import (
     browser_capture_receiver_token_path,
     browser_capture_spool_root,
 )
-from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
@@ -446,7 +446,14 @@ def _lookup_index_archive_state(
     provider: str,
     provider_session_id: str,
 ) -> _IndexArchiveLookup:
-    conn = _open_readonly_sqlite(resolve_active_index_path(archive_root))
+    try:
+        index_path = resolve_active_index_path(archive_root)
+    except ArchiveLocationError:
+        # Archive state is a best-effort capture acknowledgement. A malformed
+        # active-generation pointer must not turn a receiver GET into a 500 or
+        # make us consult the conventional shadow index instead.
+        return _IndexArchiveLookup()
+    conn = _open_readonly_sqlite(index_path)
     if conn is None:
         return _IndexArchiveLookup()
     try:
