@@ -16,6 +16,8 @@ from polylogue.cli.click_app import cli
 from polylogue.daemon.backup import backup_archive
 from polylogue.operations.archive_root_relocation import (
     ArchiveRootRelocationError,
+    RelocationTierEvidence,
+    _check_backup_against_live,
     apply_archive_root_relocation,
     prepare_archive_root_relocation,
 )
@@ -29,10 +31,13 @@ from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
     _assert_complete_source_semantic_delta,
     _assert_exact_liveness_delta,
+    _current_evidence,
     _table_content_digest,
+    _verify_historical_operation_evidence,
     _write_refresh_receipt,
-    apply_historical_source_continuity_recovery,
-    load_historical_source_continuity_recovery_plan,
+)
+from polylogue.operations.historical_source_continuity_recovery import (
+    _legacy_liveness_receipt as _validate_legacy_liveness_receipt,
 )
 from polylogue.operations.historical_source_continuity_recovery import (
     _sealed_receipt as _sealed_continuity_receipt,
@@ -165,7 +170,7 @@ def test_plan_rejects_byte_identical_copied_archive_with_new_inodes(
     assert (old_root / "source.db").read_bytes() == (new_root / "source.db").read_bytes()
     assert (old_root / "source.db").stat().st_ino != (new_root / "source.db").stat().st_ino
 
-    with pytest.raises(ArchiveRootRelocationError, match="inode continuity"):
+    with pytest.raises(ArchiveRootRelocationError, match="device/inode continuity"):
         prepare_archive_root_relocation(
             old_root=old_root,
             new_root=new_root,
@@ -175,6 +180,133 @@ def test_plan_rejects_byte_identical_copied_archive_with_new_inodes(
         )
 
     assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
+
+
+def test_tier_identity_rejects_a_changed_device_with_a_coincident_inode(tmp_path: Path) -> None:
+    """Tier continuity is the full device/inode pair, not an inode alone."""
+    snapshot = RelocationTierEvidence(
+        tier="source",
+        configured_path=str(tmp_path / "source.db"),
+        resolved_path=str(tmp_path / "source.db"),
+        old_device=41,
+        old_inode=99,
+        device=42,
+        inode=99,
+        size_bytes=1,
+        sha256="a" * 64,
+        user_version=0,
+        schema_inventory_sha256="b" * 64,
+        content_sha256="c" * 64,
+        quick_check=("ok",),
+    )
+    fingerprint = {
+        "device": snapshot.old_device,
+        "inode": snapshot.old_inode,
+        "size_bytes": snapshot.size_bytes,
+        "sha256": snapshot.sha256,
+        "user_version": snapshot.user_version,
+    }
+    with pytest.raises(ArchiveRootRelocationError, match="device/inode continuity"):
+        _check_backup_against_live(
+            tmp_path,
+            manifest={"tier_source_fingerprints": {"source.db": fingerprint}},
+            receipt={"tier_artifacts": [{"tier": "source", "source_fingerprint": fingerprint}]},
+            snapshots=(snapshot,),
+        )
+
+
+def test_plan_rejects_root_device_change_with_a_coincident_inode(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The full prepare route checks root device/inode continuity from authenticated evidence."""
+    from polylogue.operations import archive_root_relocation as relocation
+
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch)
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    real_authenticated_identity = relocation._authenticated_identity
+
+    def changed_root_device(payload: object, *, label: str) -> tuple[int, int]:
+        device, inode = real_authenticated_identity(payload, label=label)
+        return (device + 1, inode) if label == "archive root" else (device, inode)
+
+    monkeypatch.setattr(relocation, "_authenticated_identity", changed_root_device)
+    with pytest.raises(ArchiveRootRelocationError, match="root device/inode continuity"):
+        prepare_archive_root_relocation(
+            old_root=old_root,
+            new_root=new_root,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+
+@pytest.mark.parametrize("leaf_kind", ["symlink", "directory", "hardlink"])
+def test_current_source_evidence_rejects_unverified_live_leaves_before_sqlite_read(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leaf_kind: str
+) -> None:
+    """Continuity recovery validates the live source leaf before evidence collection."""
+    root = tmp_path / leaf_kind
+    root.mkdir()
+    source = workspace_env["archive_root"] / "source.db"
+    target = root / "source.db"
+    if leaf_kind == "symlink":
+        target.symlink_to(source)
+    elif leaf_kind == "directory":
+        target.mkdir()
+    else:
+        os.link(source, target)
+    monkeypatch.setattr(
+        "polylogue.operations.historical_source_continuity_recovery.capture_durable_database_evidence",
+        lambda *_args: pytest.fail("live source evidence was read before leaf validation"),
+    )
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="real single-linked file"):
+        _current_evidence(root)
+
+
+def test_historical_receipt_rejects_a_one_row_substitute_for_the_bound_operation(tmp_path: Path) -> None:
+    """A small synthetic receipt cannot stand in for the 69,340-row offline operation."""
+    receipt = tmp_path / "one-row.jsonl"
+    old_root = tmp_path / "old"
+    old_root.mkdir()
+    pre_manifest = tmp_path / "pre-manifest.json"
+    pre_manifest.write_text("{}", encoding="utf-8")
+    candidate = BlobRefLivenessCandidate(
+        blob_hash="02",
+        ref_type="attachment",
+        ref_id="deleted",
+        source_path=None,
+        size_bytes=2,
+        acquired_at_ms=2,
+        referent_table="raw_sessions",
+        referent_column="raw_id",
+    )
+    _legacy_liveness_receipt(
+        receipt,
+        old_root=old_root,
+        pre_manifest=pre_manifest,
+        candidates=(candidate,),
+    )
+    digest = BlobRefLivenessCandidateDigest()
+    digest.update(candidate)
+    assert _validate_legacy_liveness_receipt(
+        receipt, old_source_path=old_root / "source.db", pre_manifest=pre_manifest
+    ) == (1, digest.hexdigest())
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="immutable offline evidence"):
+        _verify_historical_operation_evidence(
+            mutation_receipt=receipt,
+            candidates=1,
+            candidate_digest=digest.hexdigest(),
+            pre_manifest=pre_manifest,
+            pre_receipt=pre_manifest,
+            pre_source=pre_manifest,
+            post_manifest=pre_manifest,
+            post_receipt=pre_manifest,
+            post_source=pre_manifest,
+        )
 
 
 def test_rebind_rewrites_only_the_released_source_identity_fields(
@@ -519,19 +651,13 @@ def test_receipt_writers_never_create_through_a_symlinked_maintenance_state(tmp_
     assert not tuple(outside.iterdir())
 
 
-def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
+def test_historical_continuity_recovery_cli_rejects_an_unbound_synthetic_operation(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise old-path HMACs, backup bytes, train CAS, census, and ordinary verification.
-
-    This is deliberately file-backed: deleting the recovery identity rewrite,
-    swapping either backup, or changing the receipt's old path makes the real
-    plan/apply route fail before the train manifest can be written.
-    """
-    from polylogue.storage.sqlite import durable_change_train as trains
+    """The production CLI refuses a file-backed substitute for the attested operation."""
 
     old_root = workspace_env["archive_root"]
-    manifest = _released_moved_source_train(old_root, monkeypatch, include_orphan_blob_ref=True)
+    _released_moved_source_train(old_root, monkeypatch, include_orphan_blob_ref=True)
     pre_backup = backup_archive(output_dir=tmp_path / "pre", profile="rebuildable_cache_exclude", verify=True)
     assert pre_backup.ok and pre_backup.output_path is not None
     with sqlite3.connect(f"file:{old_root / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
@@ -546,19 +672,11 @@ def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
         pre_manifest=pre_manifest,
         candidates=prior.candidates,
     )
-    with sqlite3.connect(old_root / "source.db") as connection:
-        connection.execute(
-            "DELETE FROM blob_refs WHERE blob_hash = X'02' AND ref_type = 'attachment' AND ref_id = 'deleted'"
-        )
     post_backup = backup_archive(output_dir=tmp_path / "post", profile="rebuildable_cache_exclude", verify=True)
     assert post_backup.ok and post_backup.output_path is not None
     post_manifest = Path(post_backup.output_path) / "manifest.json"
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
-    moved_manifest = new_root / manifest.relative_to(old_root)
-    database_before = {
-        path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
-    }
 
     plan_path = tmp_path / "continuity-plan.json"
     command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(new_root)}
@@ -586,99 +704,8 @@ def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
         env=command_env,
         catch_exceptions=False,
     )
-    assert plan_result.exit_code == 0, plan_result.output
-    plan = load_historical_source_continuity_recovery_plan(plan_path)
-    with monkeypatch.context() as scoped:
-        scoped.setattr(
-            "polylogue.maintenance.offline_guard.running_daemon_pid",
-            lambda _config: 4242,
-        )
-        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="daemon to be stopped"):
-            apply_historical_source_continuity_recovery(
-                root=new_root,
-                plan=plan,
-                authorization=plan.plan_sha256,
-                stopped_daemon_evidence_ref="proof:daemon-stopped",
-                single_writer_evidence_ref="proof:archive-ownership-lock",
-            )
-    assert not (new_root / ".maintenance-state" / "historical-source-continuity-recoveries").exists()
-    assert database_before == {
-        path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
-    }
-    with sqlite3.connect(new_root / "source.db") as connection:
-        with pytest.raises(Exception, match="continuity proof failed"):
-            trains._verify_released_train_live_tier(
-                new_root,
-                connection,
-                trains.load_durable_change_train_manifest(moved_manifest),
-            )
-
-    with monkeypatch.context() as scoped:
-        scoped.setattr(
-            "polylogue.operations.historical_source_continuity_recovery.recover_released_source_train_continuity",
-            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("crash after prepared receipt")),
-        )
-        with pytest.raises(RuntimeError, match="crash after prepared"):
-            apply_historical_source_continuity_recovery(
-                root=new_root,
-                plan=plan,
-                authorization=plan.plan_sha256,
-                stopped_daemon_evidence_ref="proof:daemon-stopped",
-                single_writer_evidence_ref="proof:archive-ownership-lock",
-            )
-    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
-        trains.reconcile_durable_change_train_startup(new_root)
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "source-continuity-recovery",
-            "apply",
-            "--plan",
-            str(plan_path),
-            "--authorize",
-            plan.plan_sha256,
-            "--output-format",
-            "json",
-        ],
-        env=command_env,
-        catch_exceptions=False,
-    )
-    assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["state"] == "committed"
-    # The second apply is the crash-recovery/idempotency path, not a second revision.
-    replay = CliRunner().invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "source-continuity-recovery",
-            "apply",
-            "--plan",
-            str(plan_path),
-            "--authorize",
-            plan.plan_sha256,
-            "--output-format",
-            "json",
-        ],
-        env=command_env,
-        catch_exceptions=False,
-    )
-    assert replay.exit_code == 0, replay.output
-    assert json.loads(replay.output)["state"] == "committed"
-    with sqlite3.connect(new_root / "source.db") as connection:
-        assert (
-            trains._verify_released_train_live_tier(
-                new_root,
-                connection,
-                trains.load_durable_change_train_manifest(moved_manifest),
-            )
-            is None
-        )
+    assert plan_result.exit_code != 0
+    assert "immutable offline evidence" in plan_result.output
 
 
 def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_crash(

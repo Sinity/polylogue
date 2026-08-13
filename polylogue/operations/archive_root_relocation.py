@@ -354,6 +354,13 @@ def _authenticated_old_tier_identities(manifest: dict[str, object]) -> dict[str,
     }
 
 
+def _require_identity_continuity(*, old_device: int, old_inode: int, device: int, inode: int, label: str) -> None:
+    if (old_device, old_inode) != (device, inode):
+        raise ArchiveRootRelocationError(
+            f"archive-root relocation requires {label} device/inode continuity; a copied archive is not accepted"
+        )
+
+
 def _check_backup_against_live(
     root: Path,
     *,
@@ -386,10 +393,13 @@ def _check_backup_against_live(
             artifact_fingerprint.get(key) != value for key, value in fields.items()
         ):
             raise ArchiveRootRelocationError(f"backup receipt differs from relocated {filename}")
-        if snapshot.old_inode != snapshot.inode:
-            raise ArchiveRootRelocationError(
-                f"archive-root relocation requires inode continuity for {filename}; a copied tier is not accepted"
-            )
+        _require_identity_continuity(
+            old_device=snapshot.old_device,
+            old_inode=snapshot.old_inode,
+            device=snapshot.device,
+            inode=snapshot.inode,
+            label=filename,
+        )
     _reject_sidecars(root)
 
 
@@ -442,10 +452,13 @@ def prepare_archive_root_relocation(
         after_identity_digest=source_identity_digest,
     )
     root_metadata = new_resolved.stat()
-    if old_root_inode != root_metadata.st_ino:
-        raise ArchiveRootRelocationError(
-            "archive-root relocation requires root inode continuity; a copied archive root is not accepted"
-        )
+    _require_identity_continuity(
+        old_device=old_root_device,
+        old_inode=old_root_inode,
+        device=root_metadata.st_dev,
+        inode=root_metadata.st_ino,
+        label="root",
+    )
     return _sealed_plan(
         old_configured_root=str(old_configured),
         old_resolved_root=str(old_resolved),

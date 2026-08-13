@@ -45,6 +45,20 @@ def _open_directory_at(parent_fd: int, name: str, *, label: str) -> int:
     return descriptor
 
 
+def _remove_created_empty_child(parent_fd: int, name: str, *, expected: os.stat_result) -> None:
+    """Remove only the empty child this operation created, through its pinned parent."""
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise MaintenanceReceiptPathError(f"cannot inspect fresh maintenance receipt directory: {name}") from exc
+    if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+        raise MaintenanceReceiptPathError(f"fresh maintenance receipt directory changed before cleanup: {name}")
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+    except OSError as exc:
+        raise MaintenanceReceiptPathError(f"cannot remove fresh maintenance receipt directory: {name}") from exc
+
+
 @contextmanager
 def maintenance_receipt_directory(archive_root: Path, directory_name: str) -> Iterator[int]:
     """Yield a pinned child of an existing, non-symlink ``.maintenance-state``."""
@@ -57,10 +71,22 @@ def maintenance_receipt_directory(archive_root: Path, directory_name: str) -> It
         try:
             child_fd = os.open(child_name, _DIRECTORY_FLAGS, dir_fd=state_fd)
         except FileNotFoundError:
-            with suppress(FileExistsError):
+            created_child = False
+            try:
                 os.mkdir(child_name, mode=0o700, dir_fd=state_fd)
-            os.fsync(state_fd)
+                created_child = True
+            except FileExistsError:
+                pass
             child_fd = _open_directory_at(state_fd, child_name, label="maintenance receipt directory")
+            if created_child:
+                child_metadata = os.fstat(child_fd)
+                try:
+                    os.fsync(state_fd)
+                except OSError as exc:
+                    _remove_created_empty_child(state_fd, child_name, expected=child_metadata)
+                    raise MaintenanceReceiptPathError(
+                        f"cannot persist maintenance receipt directory: {child_name}"
+                    ) from exc
         except OSError as exc:
             raise MaintenanceReceiptPathError(
                 f"cannot pin maintenance receipt directory without following links: {child_name}"

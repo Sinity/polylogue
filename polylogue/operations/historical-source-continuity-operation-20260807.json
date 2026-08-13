@@ -1,0 +1,13 @@
+{
+  "format": "polylogue.historical-source-continuity-operation-evidence.v1",
+  "operation": "blob-ref-liveness-reconciliation-20260807",
+  "mutation_receipt_sha256": "66ef98cc8eb21a7df7a5766b5679700bca46d476d3fb3e54016089e8b2523e55",
+  "candidate_count": 69340,
+  "candidate_digest": "49df6c4daf45ee549e43b2eb25d9ea4dcb13585a0a105293fa3167e4a27b4445",
+  "pre_backup_manifest_sha256": "022c2a4dd9a8dce40d4c07a14b1e6e968503212a4b53cc69186f01f55f21a478",
+  "pre_backup_receipt_sha256": "ec6280ba4eac30392a3b5bd91ecdbd754868b269aeb08a69cb9854937d22e02a",
+  "pre_source_sha256": "fc68bee389e7b176a63b2e50af4d78c950058413edec9fea24891d7d0d131bbd",
+  "post_backup_manifest_sha256": "177a52476182d9c9eff8bbd73c3bba30c3bfc7e184cde026d1be43aa0de74a69",
+  "post_backup_receipt_sha256": "569fb39a7856df3a7ff345a0743b8baa827625f92537cf358d2ed704401ca12e",
+  "post_source_sha256": "fa44cbe033a0110eb3298584387624d85fd518a84b2841b893d70237b1384309"
+}

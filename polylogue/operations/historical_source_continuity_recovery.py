@@ -62,6 +62,7 @@ PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v1"] 
 RECEIPT_FORMAT: Literal["polylogue.historical-source-continuity-recovery-receipt.v1"] = (
     "polylogue.historical-source-continuity-recovery-receipt.v1"
 )
+_HISTORICAL_OPERATION_EVIDENCE = Path(__file__).with_name("historical-source-continuity-operation-20260807.json")
 
 
 class HistoricalSourceContinuityRecoveryError(RuntimeError):
@@ -78,6 +79,7 @@ class HistoricalSourceContinuityRecoveryPlan(BaseModel):
     new_resolved_root: str
     mutation_receipt_path: str
     mutation_receipt_sha256: str
+    historical_evidence_sha256: str
     legacy_candidate_count: int
     legacy_candidate_digest: str
     pre_backup_manifest_path: str
@@ -125,6 +127,24 @@ class HistoricalSourceContinuityRecoveryResult(BaseModel):
     refresh_receipt_path: str
 
 
+class HistoricalOperationEvidence(BaseModel):
+    """Digest-only authority for the one historical liveness operation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    format: Literal["polylogue.historical-source-continuity-operation-evidence.v1"]
+    operation: Literal["blob-ref-liveness-reconciliation-20260807"]
+    mutation_receipt_sha256: str
+    candidate_count: int
+    candidate_digest: str
+    pre_backup_manifest_sha256: str
+    pre_backup_receipt_sha256: str
+    pre_source_sha256: str
+    post_backup_manifest_sha256: str
+    post_backup_receipt_sha256: str
+    post_source_sha256: str
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -160,6 +180,48 @@ def _real_directory(path: Path, *, label: str) -> Path:
     if absolute != resolved:
         raise HistoricalSourceContinuityRecoveryError(f"{label} traverses a symbolic link: {path}")
     return resolved
+
+
+def _historical_operation_evidence() -> HistoricalOperationEvidence:
+    _real_file(_HISTORICAL_OPERATION_EVIDENCE, label="immutable historical operation evidence")
+    try:
+        return HistoricalOperationEvidence.model_validate_json(
+            _HISTORICAL_OPERATION_EVIDENCE.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise HistoricalSourceContinuityRecoveryError("immutable historical operation evidence is unreadable") from exc
+
+
+def _verify_historical_operation_evidence(
+    *,
+    mutation_receipt: Path,
+    candidates: int,
+    candidate_digest: str,
+    pre_manifest: Path,
+    pre_receipt: Path,
+    pre_source: Path,
+    post_manifest: Path,
+    post_receipt: Path,
+    post_source: Path,
+) -> str:
+    """Bind recovery to the real 69,340-row operation without retaining private bytes or paths."""
+    evidence = _historical_operation_evidence()
+    actual = {
+        "mutation_receipt_sha256": _sha256(mutation_receipt),
+        "candidate_count": candidates,
+        "candidate_digest": candidate_digest,
+        "pre_backup_manifest_sha256": _sha256(pre_manifest),
+        "pre_backup_receipt_sha256": _sha256(pre_receipt),
+        "pre_source_sha256": _sha256(pre_source),
+        "post_backup_manifest_sha256": _sha256(post_manifest),
+        "post_backup_receipt_sha256": _sha256(post_receipt),
+        "post_source_sha256": _sha256(post_source),
+    }
+    if any(getattr(evidence, key) != value for key, value in actual.items()):
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery inputs do not match immutable offline evidence"
+        )
+    return _sha256(_HISTORICAL_OPERATION_EVIDENCE)
 
 
 def _sealed_plan(**values: object) -> HistoricalSourceContinuityRecoveryPlan:
@@ -342,6 +404,7 @@ def _assert_pre_train_authority(
 
 
 def _current_evidence(root: Path) -> DurableDatabaseEvidence:
+    _real_file(root / "source.db", label="live source.db")
     for suffix in ("-wal", "-shm", "-journal"):
         if (root / f"source.db{suffix}").exists() or (root / f"source.db{suffix}").is_symlink():
             raise HistoricalSourceContinuityRecoveryError(
@@ -612,6 +675,17 @@ def prepare_historical_source_continuity_recovery(
     candidates, candidate_digest = _legacy_liveness_receipt(
         mutation_receipt, old_source_path=old_source, pre_manifest=pre_backup_manifest.absolute()
     )
+    historical_evidence_sha256 = _verify_historical_operation_evidence(
+        mutation_receipt=mutation_receipt,
+        candidates=candidates,
+        candidate_digest=candidate_digest,
+        pre_manifest=pre_backup_manifest,
+        pre_receipt=pre_receipt,
+        pre_source=pre_backup_manifest.parent / "source.db",
+        post_manifest=post_backup_manifest,
+        post_receipt=post_receipt,
+        post_source=post_backup_manifest.parent / "source.db",
+    )
     try:
         with sqlite3.connect(
             f"file:{pre_backup_manifest.parent / 'source.db'}?mode=ro&immutable=1", uri=True
@@ -671,6 +745,7 @@ def prepare_historical_source_continuity_recovery(
         new_resolved_root=str(root),
         mutation_receipt_path=str(mutation_receipt.absolute()),
         mutation_receipt_sha256=_sha256(mutation_receipt),
+        historical_evidence_sha256=historical_evidence_sha256,
         legacy_candidate_count=candidates,
         legacy_candidate_digest=candidate_digest,
         pre_backup_manifest_path=str(pre_backup_manifest.absolute()),
