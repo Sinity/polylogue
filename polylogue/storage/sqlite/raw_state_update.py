@@ -22,6 +22,8 @@ def compile_raw_state_update(
     validation_transition = state.validation_status is not UNSET or state.validation_error is not UNSET
     if state.parsed_at is not UNSET:
         if parsed_at_ms is None:
+            if isinstance(state.parsed_at, str):
+                raise ValueError(f"parsed_at must be a valid timestamp, got {state.parsed_at!r}")
             set_clauses.append("parsed_at_ms = ?")
             params.append(None)
         elif validation_transition:

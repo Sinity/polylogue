@@ -14,6 +14,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.json import json_document
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.daemon.status import raw_failure_info_for_root
 from polylogue.maintenance.models import DerivedModelStatus
@@ -24,7 +25,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome
+from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -89,6 +90,30 @@ def test_raw_snapshot_cleanup_binds_authority_and_delete_under_writer_lease(
         repair_mod.repair_superseded_raw_snapshots(config)
     with RebuildLease(tmp_path):
         pass
+
+
+def test_raw_materialization_returns_a_typed_failure_while_rebuild_owns_archive(tmp_path: Path) -> None:
+    """A lease conflict cannot abort a caller aggregating repair results."""
+    from polylogue.storage.index_generation import RebuildLease
+
+    initialize_active_archive_root(tmp_path)
+    with RebuildLease(tmp_path):
+        result = repair_mod.repair_raw_materialization(_config(tmp_path))
+
+    assert result.success is False
+    assert "offline index rebuild owns archive" in result.detail
+
+
+def test_raw_snapshot_cleanup_returns_a_typed_failure_while_rebuild_owns_archive(tmp_path: Path) -> None:
+    """Destructive raw cleanup reports a lease conflict through RepairResult."""
+    from polylogue.storage.index_generation import RebuildLease
+
+    initialize_active_archive_root(tmp_path)
+    with RebuildLease(tmp_path):
+        result = repair_mod.repair_superseded_raw_snapshots(_config(tmp_path))
+
+    assert result.success is False
+    assert "offline index rebuild owns archive" in result.detail
 
 
 def test_raw_materialization_reparses_legacy_indexed_raw_before_receipting(tmp_path: Path) -> None:
@@ -1002,6 +1027,62 @@ def test_raw_materialization_refuses_non_parse_authoritative_validation_failure(
 
     assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
     assert repair_mod.raw_materialization_replay_backlog(config)["candidate_count"] == 0
+
+
+def test_raw_replay_plan_marks_tied_validation_component_terminal(tmp_path: Path) -> None:
+    """A tied failed member cannot make an otherwise parsed component look executed."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        parsed_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"parsed-member"}}\n',
+            source_path="parsed-member.jsonl",
+            acquired_at_ms=1,
+        )
+        tied_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"tied-member"}}\n',
+            source_path="tied-member.jsonl",
+            acquired_at_ms=2,
+        )
+        archive.finalize_raw_parse_state(
+            parsed_raw_id,
+            state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:00.001Z"),
+        )
+        archive.finalize_raw_parse_state(
+            tied_raw_id,
+            state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:00.001Z"),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        cursor = conn.execute(
+            """
+            UPDATE raw_sessions
+            SET validation_status = 'failed', validation_error = ?, validated_at_ms = parsed_at_ms
+            WHERE raw_id = ?
+            """,
+            ("rejected at the same legacy millisecond", tied_raw_id),
+        )
+        assert cursor.rowcount == 1
+        conn.commit()
+
+    plan = RawReplayPlan(
+        "raw-replay:tied-validation-component",
+        "0" * 64,
+        (parsed_raw_id, tied_raw_id),
+        ("codex:tied-validation-component",),
+        json_document({}),
+        json_document({}),
+        json_document({}),
+    )
+    remaining = repair_mod.RawMaterializationCandidates(raw_ids=[], missing_blobs=0, already_parsed=0)
+
+    outcome = repair_mod._raw_replay_plan_outcomes(tmp_path, tmp_path / "index.db", [plan], remaining=remaining)[0]
+
+    assert outcome.status is RawReplayPlanStatus.TERMINAL
 
 
 @pytest.mark.parametrize("artifact_kind", ["deferred_hot_jsonl_capture", "deferred_claude_code_partial_jsonl"])
@@ -2192,7 +2273,7 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
     assert "persisted parser census" in targeted.detail
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_conn.execute(
+        cursor = source_conn.execute(
             """
             UPDATE raw_membership_census
             SET parser_fingerprint = 'test', status = 'failed', member_count = 0,
@@ -2201,7 +2282,7 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
             """,
             (raw_id,),
         )
-        assert source_conn.total_changes == 1
+        assert cursor.rowcount == 1
         source_conn.commit()
 
     governed = repair_mod._raw_materialization_candidate_ids(config)

@@ -194,8 +194,9 @@ class TestUpdateRawState:
         assert rec.validation_error is not None
         assert len(rec.validation_error) == 2000
 
+    @pytest.mark.parametrize("wall_clock_ms", [1000, 999])
     async def test_failed_validation_after_parse_advances_past_identical_or_backward_clock(
-        self, backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch
+        self, backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch, wall_clock_ms: int
     ) -> None:
         """A failed revalidation cannot tie or precede the parse it supersedes."""
         from polylogue.storage.sqlite.queries import raw_state as raw_state_queries
@@ -205,7 +206,7 @@ class TestUpdateRawState:
             "parse-then-failed-validation",
             state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:01Z"),
         )
-        monkeypatch.setattr(raw_state_queries, "_now_ms", lambda: 999)
+        monkeypatch.setattr(raw_state_queries, "_now_ms", lambda: wall_clock_ms)
         await backend.mark_raw_validated("parse-then-failed-validation", status="failed", error="rejected")
 
         with sqlite3.connect(backend._source_db_path) as conn:
@@ -215,8 +216,19 @@ class TestUpdateRawState:
             ).fetchone()
         assert row == (1000, 1001, "failed")
 
+    @pytest.mark.parametrize(
+        ("parsed_at", "expected"),
+        [
+            ("1970-01-01T00:00:01Z", (1001, 1000, "failed")),
+            ("1970-01-01T00:00:00.999Z", (1001, 1000, "failed")),
+        ],
+    )
     async def test_successful_parse_after_validation_advances_past_identical_or_backward_clock(
-        self, backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch
+        self,
+        backend: SQLiteBackend,
+        monkeypatch: pytest.MonkeyPatch,
+        parsed_at: str,
+        expected: tuple[int, int, str],
     ) -> None:
         """A later parse wins even if its injected wall clock is older."""
         from polylogue.storage.sqlite.queries import raw_state as raw_state_queries
@@ -226,7 +238,7 @@ class TestUpdateRawState:
         await backend.mark_raw_validated("validation-then-parse", status="failed", error="rejected")
         await backend.update_raw_state(
             "validation-then-parse",
-            state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:00.999Z", parse_error=None),
+            state=RawSessionStateUpdate(parsed_at=parsed_at, parse_error=None),
         )
 
         with sqlite3.connect(backend._source_db_path) as conn:
@@ -234,7 +246,28 @@ class TestUpdateRawState:
                 "SELECT parsed_at_ms, validated_at_ms, validation_status FROM raw_sessions WHERE raw_id = ?",
                 ("validation-then-parse",),
             ).fetchone()
-        assert row == (1001, 1000, "failed")
+        assert row == expected
+
+    async def test_malformed_parse_timestamp_cannot_clear_existing_parse_authority(
+        self, backend: SQLiteBackend
+    ) -> None:
+        await self._save_raw(backend, raw_id="malformed-parse-timestamp")
+        await backend.update_raw_state(
+            "malformed-parse-timestamp",
+            state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:01Z"),
+        )
+
+        with pytest.raises(ValueError, match="parsed_at must be a valid timestamp"):
+            await backend.update_raw_state(
+                "malformed-parse-timestamp",
+                state=RawSessionStateUpdate(parsed_at="not-a-timestamp"),
+            )
+
+        with sqlite3.connect(backend._source_db_path) as conn:
+            row = conn.execute(
+                "SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", ("malformed-parse-timestamp",)
+            ).fetchone()
+        assert row == (1000,)
 
 
 class TestMarkRawValidated:
