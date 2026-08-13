@@ -207,6 +207,23 @@ def test_parse_one_recovery_accepts_session_evidence_at_a_declared_fact_path(tmp
     assert [message.text for message in sessions[0].messages] == ["recover me", "recovered"]
 
 
+def test_parse_stream_recovery_accepts_session_evidence_at_a_declared_fact_path(tmp_path: Path) -> None:
+    """The streamed replay route must inspect fact-path records before refusing them."""
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl"
+    payload = BytesIO(
+        b'{"parentUuid":null,"type":"user","sessionId":"wf","message":{"role":"user","content":"recover me"},'
+        b'"uuid":"user-1","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"user-1","type":"assistant","sessionId":"wf","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"recovered"}]},"uuid":"assistant-1",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+
+    sessions = revision_backfill._parse_stream(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert len(sessions) == 1
+    assert [message.text for message in sessions[0].messages] == ["recover me", "recovered"]
+
+
 def _relationship_index_jsonl_bytes(count: int = 8) -> bytes:
     """Bytes shaped like the real sinex analysis artifact from polylogue-9ykn
     (gvgi): a graph-edge index sitting under a watched Claude Code directory,
