@@ -1,14 +1,11 @@
 """Replay continuity, work-effect, and query-discovery behavior together.
 
-``polylogue-t8t`` declares and proves the seven continuity scenarios (plus the
-parallel-Claude incident variant) against a deterministic synthetic archive.
-``polylogue-1vpm.6.2`` supplies production repository-effect adapters
-(``polylogue.insights.work_effects``) that reconcile work-evidence claims
-against independently observed git/GitHub/Beads effects. ``polylogue-z9gh.3``
-supplies the executable query-discovery catalog a cold model would use to
-formulate the same query plans t8t's scenarios execute. None of the three is
-wired to the other two, and no artifact reports them as one terminal gate --
-that is z9gh.7's own named residual scope (2026-07-20 "CONCRETE BAR" item 3).
+The continuity scenario suite exercises seven workflows plus the
+parallel-agent incident variant against a deterministic synthetic archive.
+The production work-effect adapters reconcile claims against independently
+observed Git, GitHub, and Beads effects. The executable query-discovery catalog
+describes the plans a cold client can formulate. This module runs those three
+existing capabilities together without reimplementing them.
 
 This module is that wiring, not a fourth reimplementation:
 
@@ -28,7 +25,7 @@ This module is that wiring, not a fourth reimplementation:
   independently from the same ledger's "issue closed" transitions, so the
   effect adapters are proving something over real evidence, not reconciling
   a graph against its own construction.
-- :func:`run_mandate_continuity_replay` calls
+- :func:`run_continuity_evidence` calls
   :func:`devtools.continuity_replay.replay_archive` unmodified against either
   a supplied archive root (an authorized live-scale replay) or a freshly
   seeded synthetic corpus (the default, privacy-safe CI lane), then combines
@@ -81,7 +78,7 @@ from polylogue.insights.work_reconciliation import reconcile_work_effects
 from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS, ContinuityScenarioSpec, continuity_scenario
 from tests.infra.continuity import load_continuity_catalog, seed_continuity_archive
 
-#: Repo root -- this file lives at ``devtools/mandate_continuity_replay.py``.
+#: Repo root -- this file lives at ``devtools/continuity_evidence.py``.
 DEFAULT_REPO_PATH = Path(__file__).resolve().parents[1]
 DEFAULT_BEADS_LEDGER_RELATIVE = Path(".beads") / "interactions.jsonl"
 _GITHUB_REPO_SLUG = "Sinity/polylogue"
@@ -332,7 +329,7 @@ def redact_report(document: JSONValue) -> JSONValue:
 # ── Orchestration ──────────────────────────────────────────────────────
 
 
-async def run_mandate_continuity_replay(
+async def run_continuity_evidence(
     *,
     archive_root: Path | None = None,
     repo_path: Path = DEFAULT_REPO_PATH,
@@ -361,7 +358,7 @@ async def run_mandate_continuity_replay(
 
     resolved_root: Path
     if archive_root is None:
-        workdir = TemporaryDirectory(prefix="mandate-continuity-replay-")
+        workdir = TemporaryDirectory(prefix="polylogue-continuity-evidence-")
         resolved_root = Path(workdir.name) / "archive"
         seed_continuity_archive(resolved_root, catalog=catalog)
     else:
@@ -400,7 +397,7 @@ async def run_mandate_continuity_replay(
         "discovery_coverage": discovery_report.to_dict(),
         "work_evidence_effect_proof": effect_proof.to_dict(),
     }
-    document = require_json_document(report, context="mandate continuity replay report")
+    document = require_json_document(report, context="continuity evidence report")
     return cast(JSONDocument, redact_report(document)) if redact else document
 
 
@@ -429,7 +426,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     args = parser.parse_args(argv)
 
     report = asyncio.run(
-        run_mandate_continuity_replay(
+        run_continuity_evidence(
             archive_root=args.archive_root,
             repo_path=args.repo_path,
             beads_ledger_path=args.beads_ledger,
@@ -463,6 +460,6 @@ __all__ = [
     "check_discovery_coverage",
     "main",
     "redact_report",
-    "run_mandate_continuity_replay",
+    "run_continuity_evidence",
     "run_work_evidence_effect_proof",
 ]

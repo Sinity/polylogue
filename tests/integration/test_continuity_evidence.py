@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.mandate_continuity_replay import main, run_mandate_continuity_replay
+from devtools.continuity_evidence import main, run_continuity_evidence
 
 
 def _init_git_repo(path: Path) -> None:
@@ -32,19 +32,19 @@ def _commit(path: Path, *, filename: str, message: str) -> None:
 
 @pytest.fixture(scope="module")
 def repo_fixture(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
-    repo = tmp_path_factory.mktemp("mandate-replay-repo") / "repo"
+    repo = tmp_path_factory.mktemp("continuity-evidence-repo") / "repo"
     repo.mkdir()
     _init_git_repo(repo)
-    _commit(repo, filename="a.txt", message="feat: land the mandate replay wiring (Ref polylogue-z9gh.7)")
+    _commit(repo, filename="a.txt", message="feat: land continuity evidence (Ref polylogue-cproof)")
     ledger = repo.parent / "interactions.jsonl"
     ledger.write_text(
         json.dumps(
             {
-                "id": "int-mandate-close",
+                "id": "int-continuity-close",
                 "kind": "field_change",
                 "created_at": "2026-07-20T00:00:00Z",
                 "actor": "Sinity",
-                "issue_id": "polylogue-z9gh.7",
+                "issue_id": "polylogue-cproof",
                 "extra": {"field": "status", "old_value": "open", "new_value": "closed"},
             }
         )
@@ -55,10 +55,10 @@ def repo_fixture(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
 
 
 @pytest.mark.asyncio
-async def test_mandate_continuity_replay_end_to_end_synthetic_lane(repo_fixture: tuple[Path, Path]) -> None:
+async def test_continuity_evidence_end_to_end_synthetic_lane(repo_fixture: tuple[Path, Path]) -> None:
     repo_path, ledger_path = repo_fixture
 
-    report = await run_mandate_continuity_replay(
+    report = await run_continuity_evidence(
         repo_path=repo_path,
         beads_ledger_path=ledger_path,
         redact=False,
@@ -95,12 +95,12 @@ def test_main_cli_writes_json_output_and_returns_pass_exit_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo_path, ledger_path = repo_fixture
-    output_path = tmp_path / "mandate-report.json"
+    output_path = tmp_path / "continuity-evidence.json"
 
     async def fake_replay(**_kwargs: object) -> dict[str, object]:
         return {"schema_version": 2, "status": "pass"}
 
-    monkeypatch.setattr("devtools.mandate_continuity_replay.run_mandate_continuity_replay", fake_replay)
+    monkeypatch.setattr("devtools.continuity_evidence.run_continuity_evidence", fake_replay)
 
     exit_code = main(
         [

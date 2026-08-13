@@ -1,4 +1,4 @@
-"""Unit tests for the z9gh.7 mandate-replay wiring artifact.
+"""Unit tests for the combined continuity-evidence artifact.
 
 Anti-vacuity: the discovery-coverage lane runs against the real shipped
 ``QUERY_DISCOVERY_EXAMPLES`` catalog and t8t's real ``CONTINUITY_SCENARIOS``
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools import mandate_continuity_replay as mcr
+from devtools import continuity_evidence as mcr
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.core.json import JSONDocument
 from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS

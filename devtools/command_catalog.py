@@ -1561,20 +1561,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace mandate-continuity-replay",
+        "workspace continuity-evidence",
         "workspace",
         "Replay continuity scenarios and repository effects through production routes.",
-        "devtools.mandate_continuity_replay",
+        "devtools.continuity_evidence",
         use_when=(
-            "Run the still-open polylogue-z9gh.7 recovery proof: replay the continuity scenario catalog "
+            "Replay the continuity scenario catalog "
             "over MCP stdio JSON-RPC, reconcile repository effects through the work-evidence adapters, "
             "and cross-check query routes against discovery. The default is a synthetic archive; pass "
             "--archive-root only for an authorized live read-only replay."
         ),
         examples=(
-            "devtools workspace mandate-continuity-replay",
-            "devtools workspace mandate-continuity-replay --output .cache/mandate-continuity-replay.json",
-            "devtools workspace mandate-continuity-replay --archive-root /path/to/authorized/archive --keep-archive",
+            "devtools workspace continuity-evidence",
+            "devtools workspace continuity-evidence --output .cache/continuity-evidence.json",
+            "devtools workspace continuity-evidence --archive-root /path/to/authorized/archive --keep-archive",
         ),
     ),
 )
