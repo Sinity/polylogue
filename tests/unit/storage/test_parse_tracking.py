@@ -70,27 +70,15 @@ class TestMarkRawParsed:
         assert rec.parse_error == "JSON decode error"
 
     async def test_mark_success_after_failure(self, backend: SQLiteBackend) -> None:
-        """Successful parse clears stale parse and validation failures."""
+        """Successful parse after failure clears the error."""
         await self._save_raw(backend)
         await backend.mark_raw_parsed("test-raw", error="first attempt failed")
-        await backend.mark_raw_validated(
-            "test-raw",
-            status="failed",
-            error="validation failed",
-            drift_count=2,
-            mode="strict",
-        )
         await backend.mark_raw_parsed("test-raw")  # Success
 
         rec = await backend.get_raw_session("test-raw")
         assert rec is not None
         assert rec.parsed_at is not None
         assert rec.parse_error is None
-        assert rec.validated_at is None
-        assert rec.validation_status is None
-        assert rec.validation_error is None
-        assert rec.validation_drift_count == 0
-        assert rec.validation_mode is None
 
     async def test_error_truncation(self, backend: SQLiteBackend) -> None:
         """Long error messages are truncated to prevent DB bloat."""

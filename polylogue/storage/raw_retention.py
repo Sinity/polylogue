@@ -1677,7 +1677,10 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                           artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
                           AND (
                               evidence_raw.parse_error IS NOT NULL
-                              OR evidence_raw.validation_status = 'failed'
+                              OR (
+                                  evidence_raw.validation_status = 'failed'
+                                  AND evidence_raw.parsed_at_ms IS NULL
+                              )
                           )
                       )
                   )
