@@ -1161,6 +1161,70 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
     assert held == 0
 
 
+@pytest.mark.parametrize("whale", [False, True])
+def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    whale: bool,
+) -> None:
+    """Both daemon routes must emit the repair contract when pinning is refused."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+    from polylogue.storage.repair import RepairResult
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    emitted: list[RepairResult] = []
+
+    class FakeRestoreResult:
+        restored_count = 0
+
+    def refuse_outer_lease(_lease: ActiveWriterLease) -> None:
+        raise RebuildLeaseUnavailableError("offline rebuild is active")
+
+    def reject_repair(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("repair must not run when the outer generation pin is refused")
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        lambda *_args, **_kwargs: FakeRestoreResult(),
+    )
+    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", lambda _config: ())
+    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", lambda _config: 0)
+    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", reject_repair)
+    monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, **_kwargs: 0)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_close_raw_materialization_fts",
+        lambda *_args, **_kwargs: pytest.fail("FTS closure requires an acquired generation pin"),
+    )
+
+    if whale:
+        returned = daemon_cli._run_raw_materialization_whale_pass_once(
+            raw_artifact_id="raw-whale",
+            max_payload_bytes=123,
+        )
+        assert returned is emitted[0]
+    else:
+        counts = daemon_cli._drain_raw_materialization_once()
+        assert counts.repaired_sessions == 0
+
+    assert len(emitted) == 1
+    result = emitted[0]
+    assert isinstance(result, RepairResult)
+    assert result.name == "raw_materialization"
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert result.detail == (
+        "Skipped raw materialization while offline index rebuild owns archive: offline rebuild is active"
+    )
+
+
 def test_raw_materialization_fts_failure_records_durable_debt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

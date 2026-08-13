@@ -836,6 +836,56 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE origin = 'chatgpt-export'").fetchone() == (2,)
 
 
+def test_zip_duplicate_member_coordinates_match_normal_and_source_only_routes(tmp_path: Path) -> None:
+    """Central-directory ordinal and within-member split remain independent."""
+    root = tmp_path / "inbox"
+    root.mkdir()
+    bundle = root / "duplicates.zip"
+    member_name = "sessions/duplicate.jsonl"
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"duplicate-coordinate"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"retained twice"}]}}\n'
+    )
+    with zipfile.ZipFile(bundle, "w") as zf:
+        zf.writestr("ignored/readme.txt", b"not admitted")
+        zf.writestr(member_name, payload)
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            zf.writestr(member_name, payload)
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    blob_store = BlobStore(tmp_path / "blob")
+
+    normal_records, _normal_bytes = processor._extract_zip_member_records(
+        bundle,
+        blob_store=blob_store,
+        fallback_provider=Provider.CODEX,
+        file_mtime="2026-08-13T00:00:00+00:00",
+    )
+    source_only_result = processor._extract_source_only_zip_member_records(
+        bundle,
+        blob_store=blob_store,
+        fallback_provider=Provider.CODEX,
+        file_mtime="2026-08-13T00:00:00+00:00",
+    )
+
+    assert source_only_result is not None
+    source_only_records, _source_only_bytes = source_only_result
+    normal_ids = [raw_id for raw_id, _record in normal_records]
+    source_only_ids = [raw_id for raw_id, _record in source_only_records]
+    assert len(normal_ids) == 2
+    assert len(set(normal_ids)) == 2
+    assert source_only_ids == normal_ids
+    assert [record.source_index for _raw_id, record in normal_records] == [1, 3]
+    assert [record.source_index for _raw_id, record in source_only_records] == [1, 3]
+
+
 def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shape_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -486,6 +486,12 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
             return paths
         paths[Path(raw_head_path)] = ".git/HEAD"
+        if symbolic_result.returncode == 1:
+            # A detached checkout's complete revision authority is the
+            # worktree-specific HEAD file. packed-refs is shared by every
+            # linked worktree, so unrelated fetch/pack maintenance cannot
+            # mutate this checkout and must not invalidate its verification.
+            return paths
         packed_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", "packed-refs"])
         if packed_result is None:
             return paths
@@ -495,19 +501,18 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
             return paths
         paths[Path(raw_packed_path)] = ".git/packed-refs"
-        if symbolic_result.returncode == 0:
-            ref_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", symbolic_ref])
-            if ref_result is None:
-                return paths
-            raw_ref_path = os.fsdecode(ref_result.stdout).strip()
-            if not raw_ref_path:
-                with self._state_lock:
-                    self._unavailable = True
-                return paths
-            self._git_current_ref_path = Path(raw_ref_path)
-            if self._git_current_ref_was_loose is None:
-                self._git_current_ref_was_loose = self._git_current_ref_path.exists()
-            paths[self._git_current_ref_path] = f".git/{symbolic_ref}"
+        ref_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", symbolic_ref])
+        if ref_result is None:
+            return paths
+        raw_ref_path = os.fsdecode(ref_result.stdout).strip()
+        if not raw_ref_path:
+            with self._state_lock:
+                self._unavailable = True
+            return paths
+        self._git_current_ref_path = Path(raw_ref_path)
+        if self._git_current_ref_was_loose is None:
+            self._git_current_ref_was_loose = self._git_current_ref_path.exists()
+        paths[self._git_current_ref_path] = f".git/{symbolic_ref}"
         return paths
 
     def _git_command(

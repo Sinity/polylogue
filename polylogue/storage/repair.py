@@ -5613,6 +5613,16 @@ def _internal_derived_repair_result(
     )
 
 
+def raw_materialization_lease_refusal_result(error: BaseException) -> RepairResult:
+    """Translate active-generation lease refusal into the repair contract."""
+    return _internal_derived_repair_result(
+        "raw_materialization",
+        repaired_count=0,
+        success=False,
+        detail=f"Skipped raw materialization while offline index rebuild owns archive: {error}",
+    )
+
+
 def _archive_debt_status(
     target_name: str,
     *,
@@ -6313,12 +6323,7 @@ def repair_raw_materialization(
     try:
         lease.acquire()
     except RebuildLeaseUnavailableError as exc:
-        return _internal_derived_repair_result(
-            "raw_materialization",
-            repaired_count=0,
-            success=False,
-            detail=f"Skipped raw materialization while offline index rebuild owns archive: {exc}",
-        )
+        return raw_materialization_lease_refusal_result(exc)
     try:
         return run()
     finally:
@@ -7474,6 +7479,7 @@ __all__ = [
     "preview_superseded_raw_snapshots",
     "preview_message_type_backfill",
     "preview_session_insights",
+    "raw_materialization_lease_refusal_result",
     "raw_materialization_replay_backlog",
     "raw_materialization_scale_profile",
     "repair_empty_sessions",

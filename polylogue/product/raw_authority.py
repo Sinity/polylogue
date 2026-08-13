@@ -19,6 +19,7 @@ from polylogue.core.json import JSONDocument
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport, RawAuthorityFrontierCensus
+    from polylogue.storage.repair import RepairResult
 
 
 RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
@@ -134,6 +135,17 @@ def materialization_generation_lease(config: Config) -> Iterator[Path]:
         lease.close()
 
 
+def materialization_lease_refusal_result(error: BaseException) -> RepairResult | None:
+    """Translate only a rebuild-lease refusal into raw repair's typed result."""
+    from polylogue.storage.index_generation import RebuildLeaseUnavailableError
+
+    if not isinstance(error, RebuildLeaseUnavailableError):
+        return None
+    from polylogue.storage.repair import raw_materialization_lease_refusal_result
+
+    return raw_materialization_lease_refusal_result(error)
+
+
 def repair_materialization(
     config: Config,
     *,
@@ -238,6 +250,7 @@ __all__ = [
     "inspect_frontier",
     "list_blockers",
     "materialization_generation_lease",
+    "materialization_lease_refusal_result",
     "read_census",
     "read_detail",
     "recover_interrupted_frontier",

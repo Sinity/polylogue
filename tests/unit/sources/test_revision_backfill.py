@@ -156,22 +156,17 @@ def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path
     assert sessions[0].messages[0].text == "hi"
 
 
-def test_unknown_retained_stream_replay_detects_from_prefix_without_eager_payload(
+def test_unknown_retained_stream_replay_scans_past_oversized_first_record_without_eager_payload(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """UNKNOWN source-only JSONL reopens the blob as a stream after prefix detection."""
+    """UNKNOWN JSONL scans past an oversized first record before streaming replay."""
     initialize_active_archive_root(tmp_path)
     payload = (
+        json.dumps({"opaque": "x" * 9_000}, sort_keys=True).encode() + b"\n"
         b'{"type":"session_meta","payload":{"id":"unknown-stream","timestamp":"2026-06-01T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
         b'"content":[{"type":"input_text","text":"prefix detected replay"}]}}\n'
     )
-
-    def detect_from_prefix(raw_bytes: bytes, *_args: object, **_kwargs: object) -> tuple[Provider, str]:
-        assert raw_bytes == payload
-        return Provider.CODEX, "test prefix"
-
-    monkeypatch.setattr(revision_backfill, "detect_provider_from_raw_bytes_evidence", detect_from_prefix)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
@@ -187,6 +182,51 @@ def test_unknown_retained_stream_replay_detects_from_prefix_without_eager_payloa
         sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
 
     assert [session.provider_session_id for session in sessions] == ["unknown-stream"]
+
+
+def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The production census worker must discover a later bounded JSONL record."""
+    initialize_active_archive_root(tmp_path)
+    payload = (
+        json.dumps({"opaque": "x" * 9_000}, sort_keys=True).encode()
+        + b"\n"
+        + b'{"type":"session_meta","payload":{"id":"unknown-worker","timestamp":"2026-06-01T00:00:00Z"}}\n'
+        + b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+        + b'"content":[{"type":"input_text","text":"worker replay"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="unknown-worker.jsonl",
+            acquired_at_ms=1,
+        )
+        provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+
+    monkeypatch.setattr(
+        ArchiveBlobPublisher,
+        "read_all",
+        lambda *_args, **_kwargs: pytest.fail("UNKNOWN stream census must not eagerly read the blob"),
+    )
+    same_raw_id, sessions, error = revision_backfill.census_parse_worker(
+        raw_id,
+        provider.value,
+        blob_hash,
+        source_path,
+        False,
+        str(tmp_path / "blob"),
+        str(tmp_path / "source.db"),
+        kind.value,
+        None,
+    )
+
+    assert same_raw_id == raw_id
+    assert error is None
+    assert sessions is not None
+    assert [session.provider_session_id for session in sessions] == ["unknown-worker"]
 
 
 def test_unknown_retained_document_replays_after_complete_payload_detection(tmp_path: Path) -> None:

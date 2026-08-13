@@ -82,6 +82,61 @@ _LOGGER = _polylogue_logging.get_logger(__name__)
 _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
 
 
+def _detect_unknown_retained_provider(
+    payload: BinaryIO,
+    source_path: str,
+) -> tuple[Provider, str]:
+    """Detect retained UNKNOWN bytes without eagerly materializing JSONL.
+
+    A byte prefix can end inside the first physical JSONL record.  For an
+    oversized record stream that makes a prefix-only detector inconclusive
+    even when a later bounded record identifies a streaming provider.  Scan
+    complete records across the stream instead: each record is capped at the
+    same detection bound, oversized records are consumed in bounded chunks,
+    and the scan continues until positive provider evidence or EOF.
+
+    Non-JSONL documents retain prefix detection here and their existing
+    complete-document retry at the caller.  That eager retry is required for
+    document providers whose first complete value exceeds the prefix.
+    """
+    stream_name = Path(source_path).name
+    if not is_jsonl_source_path(source_path):
+        return detect_provider_from_raw_bytes_evidence(
+            payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
+            stream_name,
+            Provider.UNKNOWN,
+            truncated_tail_ok=True,
+        )
+
+    # Local import avoids a source-dispatch import cycle during module load;
+    # this is the same bounded physical-record iterator used by raw-payload
+    # artifact inspection.
+    from polylogue.archive.raw_payload.decode import _bounded_raw_lines
+
+    last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
+    for raw_line, oversized in _bounded_raw_lines(
+        payload,
+        max_record_bytes=_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES,
+    ):
+        if oversized or raw_line is None:
+            continue
+        record_bytes = raw_line.encode("utf-8", errors="surrogatepass") if isinstance(raw_line, str) else raw_line
+        provider, last_evidence = detect_provider_from_raw_bytes_evidence(
+            record_bytes,
+            stream_name,
+            Provider.UNKNOWN,
+        )
+        if provider is not Provider.UNKNOWN:
+            return provider, last_evidence
+    return Provider.UNKNOWN, last_evidence
+
+
+def _require_resolved_jsonl_provider(provider: Provider, source_path: str) -> None:
+    """Refuse an eager fallback when bounded JSONL detection stayed unknown."""
+    if provider is Provider.UNKNOWN and is_jsonl_source_path(source_path):
+        raise ValueError("retained UNKNOWN JSONL provider remained unresolved after bounded record scan")
+
+
 def _canonical_authority_logical_key(logical_key: str) -> str:
     """Normalize transitional provider and public-origin authority prefixes."""
     prefix, separator, native_id = logical_key.partition(":")
@@ -2019,18 +2074,15 @@ def census_parse_worker(
     publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
     try:
         if provider is Provider.UNKNOWN:
-            provider, _evidence = detect_provider_from_raw_bytes_evidence(
-                publisher.read_prefix(blob_hash, _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
-                Path(source_path).name,
-                provider,
-                truncated_tail_ok=True,
-            )
+            with publisher.open(blob_hash) as detection_payload:
+                provider, _evidence = _detect_unknown_retained_provider(detection_payload, source_path)
             if is_stream_record_provider(source_path, str(provider)):
                 with publisher.open(blob_hash) as stream_payload:
                     sessions = _parse_stream(
                         provider, stream_payload, source_path, fallback_id_override=fallback_id_override
                     )
                 return raw_id, sessions, None
+            _require_resolved_jsonl_provider(provider, source_path)
             payload = publisher.read_all(blob_hash)
             if provider is Provider.UNKNOWN:
                 provider, _evidence = detect_provider_from_raw_bytes_evidence(
@@ -2465,13 +2517,11 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         # inspect the durable bytes and resolve their parser, before deciding
         # whether their filename is a stream route.
         with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, _stream_path, _stream_kind):
-            detection_prefix = payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES)
-        provider, _evidence = detect_provider_from_raw_bytes_evidence(
-            detection_prefix, Path(source_path).name, provider, truncated_tail_ok=True
-        )
+            provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
                 return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+        _require_resolved_jsonl_provider(provider, source_path)
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
         if provider is Provider.UNKNOWN:
             provider, _evidence = detect_provider_from_raw_bytes_evidence(
@@ -3290,13 +3340,10 @@ def _detected_provider_for_empty_replay(
     if stored_provider is not Provider.UNKNOWN:
         return stored_provider
     with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
-        provider, _evidence = detect_provider_from_raw_bytes_evidence(
-            payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
-            Path(source_path).name,
-            stored_provider,
-            truncated_tail_ok=True,
-        )
+        provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
     if provider is not Provider.UNKNOWN:
+        return provider
+    if is_jsonl_source_path(source_path):
         return provider
     _provider, full_payload, _path, _kind = archive.raw_revision_material(raw_id)
     provider, _evidence = detect_provider_from_raw_bytes_evidence(

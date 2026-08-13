@@ -149,6 +149,7 @@ from polylogue.sources.source_acquisition_components import (
     iter_zip_entry_raw_data,
     stream_preserved_zip_entry_raw_data,
     zip_member_raw_id,
+    zip_member_source_index,
 )
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (
@@ -3231,7 +3232,9 @@ class LiveBatchProcessor:
         )
         try:
             with zipfile.ZipFile(path) as zf:
-                entries = list(validator.filter_entries(zf.infolist()))
+                central_directory = zf.infolist()
+                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
+                entries = [(entry_ordinals[id(info)], info) for info in validator.filter_entries(central_directory)]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
                 # inbox (``fallback_provider is Provider.UNKNOWN``) still has
                 # a real dominant provider -- it just isn't visible from any
@@ -3246,8 +3249,10 @@ class LiveBatchProcessor:
                 # provider (a per-provider watched directory) is left alone.
                 zip_provider_hint = fallback_provider
                 if fallback_provider is Provider.UNKNOWN:
-                    zip_provider_hint = self._sniff_zip_provider(zf, entries) or fallback_provider
-                for info in entries:
+                    zip_provider_hint = (
+                        self._sniff_zip_provider(zf, [info for _ordinal, info in entries]) or fallback_provider
+                    )
+                for entry_ordinal, info in entries:
                     if info.file_size == 0:
                         continue
                     try:
@@ -3267,10 +3272,16 @@ class LiveBatchProcessor:
                             member_provider = raw_data.provider_hint or fallback_provider
                             member_size = raw_data.blob_size or 0
                             total_bytes += member_size
+                            split_index = raw_data.source_index if raw_data.source_index is not None else 0
+                            source_index = zip_member_source_index(
+                                entry_ordinal=entry_ordinal,
+                                split_index=split_index,
+                            )
                             member_raw_id = zip_member_raw_id(
-                                raw_data.source_path,
-                                raw_data.source_index or 0,
-                                raw_data.blob_hash,
+                                source_path=raw_data.source_path,
+                                entry_ordinal=entry_ordinal,
+                                split_index=split_index,
+                                blob_hash=raw_data.blob_hash,
                             )
                             records.append(
                                 (
@@ -3286,7 +3297,7 @@ class LiveBatchProcessor:
                                         ),
                                         source_name=member_provider.value,
                                         source_path=raw_data.source_path,
-                                        source_index=raw_data.source_index or 0,
+                                        source_index=source_index,
                                         blob_size=member_size,
                                         blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
                                         acquired_at=acquired_at,
@@ -3323,9 +3334,17 @@ class LiveBatchProcessor:
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
             with zipfile.ZipFile(path) as zf:
-                for source_index, info in enumerate(validator.filter_entries(zf.infolist())):
+                central_directory = zf.infolist()
+                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
+                for info in validator.filter_entries(central_directory):
                     if info.file_size == 0:
                         continue
+                    entry_ordinal = entry_ordinals[id(info)]
+                    split_index = 0
+                    source_index = zip_member_source_index(
+                        entry_ordinal=entry_ordinal,
+                        split_index=split_index,
+                    )
                     try:
                         raw_data = stream_preserved_zip_entry_raw_data(
                             zf,
@@ -3347,9 +3366,10 @@ class LiveBatchProcessor:
                         continue
                     total_bytes += raw_data.blob_size or 0
                     member_raw_id = zip_member_raw_id(
-                        raw_data.source_path,
-                        source_index,
-                        raw_data.blob_hash,
+                        source_path=raw_data.source_path,
+                        entry_ordinal=entry_ordinal,
+                        split_index=split_index,
+                        blob_hash=raw_data.blob_hash,
                     )
                     records.append(
                         (

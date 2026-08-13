@@ -2343,6 +2343,34 @@ def test_checkout_mutation_monitor_watches_packed_refs_when_current_ref_is_packe
     )
 
 
+def test_checkout_mutation_monitor_ignores_shared_packed_refs_when_head_is_detached(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "switch", "--detach", "--quiet"], cwd=tmp_path, check=True)
+    packed_refs = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-path", "packed-refs"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(packed_refs)
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a loose ref created from packed authority")
 def test_checkout_mutation_monitor_observes_packed_nested_branch_ref_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
