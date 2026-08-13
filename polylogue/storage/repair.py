@@ -84,6 +84,7 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
@@ -3787,9 +3788,13 @@ def _raw_materialization_index_path(config: Config, archive_root: Path) -> Path:
 
 def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
     """Correlate evidence with the exact failed artifact observation."""
+    provider_origin = raw_provider_origin_sql(table_alias=raw_alias)
     return f"""
                          AND {artifact_alias}.raw_id IS {raw_alias}.raw_id
-                         AND {artifact_alias}.origin IS {raw_alias}.origin
+                         AND (
+                           {artifact_alias}.origin IS {raw_alias}.origin
+                           OR {artifact_alias}.origin IS ({provider_origin})
+                         )
                          AND {artifact_alias}.source_path IS {raw_alias}.source_path
                          AND {artifact_alias}.source_index IS {raw_alias}.source_index
     """
@@ -3871,10 +3876,11 @@ def _raw_materialization_candidate_ids(
         if raw_artifact_id is not None:
             raw_filter = "AND r.raw_id = ?"
             params.append(raw_artifact_id)
+        effective_origin = raw_provider_origin_sql(table_alias="r")
         origin_filter = ""
         provider_origin = _raw_materialization_origin_from_provider(provider)
         if provider_origin is not None:
-            origin_filter += " AND r.origin = ?"
+            origin_filter += f" AND {effective_origin} = ?"
             params.append(provider_origin)
         if source_family is not None:
             origin_filter += " AND r.origin = ?"
@@ -3887,7 +3893,8 @@ def _raw_materialization_candidate_ids(
         terminal_pair_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size,
+            SELECT r.raw_id, r.origin, {effective_origin} AS provider_origin,
+                   r.native_id, r.source_path, r.blob_hash, r.blob_size,
                    r.acquired_at_ms, r.parsed_at_ms, r.validated_at_ms,
                    r.parse_error,
                    (
@@ -3970,7 +3977,7 @@ def _raw_materialization_candidate_ids(
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
               ON r.native_id IS NOT NULL
-             AND s_by_native.origin = r.origin
+             AND s_by_native.origin = {effective_origin}
              AND s_by_native.native_id = r.native_id
             LEFT JOIN raw_sessions AS existing_native_raw
               ON existing_native_raw.raw_id = s_by_native.raw_id
@@ -4091,7 +4098,7 @@ def _raw_materialization_candidate_ids(
             if blob_store.exists(blob_hash):
                 raw_id = str(row["raw_id"])
                 raw_ids.append(raw_id)
-                raw_origins[raw_id] = str(row["origin"] or "")
+                raw_origins[raw_id] = str(row["provider_origin"] or "")
                 raw_source_paths[raw_id] = str(row["source_path"] or "")
                 raw_acquired_at_ms[raw_id] = int(row["acquired_at_ms"] or 0)
                 blob_size = row["blob_size"]
@@ -4113,8 +4120,12 @@ def _raw_materialization_candidate_ids(
         for offset in range(0, len(expanded_raw_ids), 500):
             raw_id_chunk = expanded_raw_ids[offset : offset + 500]
             placeholders = ",".join("?" for _ in raw_id_chunk)
+            expanded_effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
             for row in conn.execute(
-                f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                f"""
+                SELECT raw_id, blob_size, {expanded_effective_origin}, source_path
+                FROM raw_sessions WHERE raw_id IN ({placeholders})
+                """,
                 raw_id_chunk,
             ):
                 rid = str(row[0])
@@ -4176,9 +4187,10 @@ def _raw_materialization_parser_census_candidates(
         if raw_artifact_id is not None:
             filters.append("r.raw_id = ?")
             params.append(raw_artifact_id)
+        effective_origin = raw_provider_origin_sql(table_alias="r")
         provider_origin = _raw_materialization_origin_from_provider(provider)
         if provider_origin is not None:
-            filters.append("r.origin = ?")
+            filters.append(f"{effective_origin} = ?")
             params.append(provider_origin)
         if source_family is not None:
             filters.append("r.origin = ?")
@@ -4190,7 +4202,8 @@ def _raw_materialization_parser_census_candidates(
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.blob_size, r.origin, r.source_path, r.acquired_at_ms
+            SELECT r.raw_id, r.blob_size, {effective_origin} AS provider_origin,
+                   r.source_path, r.acquired_at_ms
             FROM raw_sessions AS r
             {where}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
@@ -4206,7 +4219,7 @@ def _raw_materialization_parser_census_candidates(
             raw_id = str(row["raw_id"])
             raw_ids.append(raw_id)
             raw_blob_bytes[raw_id] = int(row["blob_size"] or 0)
-            raw_origins[raw_id] = str(row["origin"] or "")
+            raw_origins[raw_id] = str(row["provider_origin"] or "")
             raw_source_paths[raw_id] = str(row["source_path"] or "")
             raw_acquired_at_ms[raw_id] = int(row["acquired_at_ms"] or 0)
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -4219,8 +4232,12 @@ def _raw_materialization_parser_census_candidates(
         for offset in range(0, len(expanded_raw_ids), 500):
             raw_id_chunk = expanded_raw_ids[offset : offset + 500]
             placeholders = ",".join("?" for _ in raw_id_chunk)
+            expanded_effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
             for row in conn.execute(
-                f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                f"""
+                SELECT raw_id, blob_size, {expanded_effective_origin}, source_path
+                FROM raw_sessions WHERE raw_id IN ({placeholders})
+                """,
                 raw_id_chunk,
             ):
                 raw_id = str(row[0])
@@ -4316,18 +4333,23 @@ def raw_materialization_readonly_descriptors(
             placeholders = ",".join("?" for _ in raw_id_chunk)
             rows = conn.execute(
                 f"""
-                SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
+                SELECT raw_id, origin, detected_provider, capture_mode,
+                       lower(hex(blob_hash)), source_path, revision_kind, blob_size
                 FROM raw_sessions WHERE raw_id IN ({placeholders})
                 """,
                 raw_id_chunk,
             ).fetchall()
             for row in rows:
                 result[str(row[0])] = (
-                    provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2]),
-                    str(row[3]),
+                    (
+                        Provider.from_string(str(row[2]))
+                        if row[2] is not None
+                        else provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[3])
+                    ),
                     str(row[4]),
-                    RawRevisionKind(str(row[5])),
-                    int(row[6]),
+                    str(row[5]),
+                    RawRevisionKind(str(row[6])),
+                    int(row[7]),
                 )
     return result
 
@@ -5117,7 +5139,7 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
 
 
 def _raw_materialized_by_source_path_native(materialized_aliases: set[tuple[str, str]], row: sqlite3.Row) -> bool:
-    origin = str(row["origin"] or "")
+    origin = str(row["provider_origin"] or "")
     if not origin:
         return False
     for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
@@ -5136,7 +5158,7 @@ def _raw_materialization_parsed_non_session_artifact(archive_root: Path, row: sq
     return (
         parsed_non_session_artifact_reason(
             archive_root=archive_root,
-            origin=str(row["origin"] or ""),
+            origin=str(row["provider_origin"] or ""),
             source_path=str(row["source_path"] or ""),
             blob_hash=blob_hash,
         )

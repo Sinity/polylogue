@@ -20,6 +20,7 @@ from polylogue.archive.raw_payload import (
 )
 from polylogue.archive.raw_payload.decode import JSONLSessionArtifactScan, scan_jsonl_session_artifact
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -352,8 +353,9 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
     provider_hint = _normalize_payload_provider_hint(record)
     provider_token = provider_hint or record.source_name or ""
     bundle_scope = derive_bundle_scope(provider_token, record.source_path)
+    observation_origin = origin_from_provider(Provider.from_string(provider_token))
     observation_id = artifact_observation_id(
-        source_name=record.source_name,
+        source_name=observation_origin.value,
         source_path=record.source_path,
         source_index=record.source_index,
     )

@@ -992,6 +992,34 @@ def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shap
         assert conn.execute("SELECT source_path, parsed_at_ms FROM raw_sessions").fetchall() == [(str(state_db), None)]
 
 
+def test_source_only_foreign_sqlite_name_cannot_claim_codex_authority(tmp_path: Path) -> None:
+    """A foreign watch source cannot turn a filename into Codex authority."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    initialize_active_archive_root(tmp_path)
+    root = tmp_path / "inbox"
+    state_db = root / "state_5.sqlite"
+    _write_plain_sqlite_db(state_db)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="inbox", root=root, suffixes=(".sqlite",)),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        result = processor._ingest_full_paths_sync([state_db], source_name="inbox")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == []
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT origin FROM raw_sessions").fetchall() == []
+
+
 def _write_codex_thread_state_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:

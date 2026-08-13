@@ -85,6 +85,278 @@ from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, pr
 _LOGGER = _polylogue_logging.get_logger(__name__)
 _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
 
+_DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "account_uuid",
+        "artifactType",
+        "cascadeId",
+        "chat_messages",
+        "chunkedPrompt",
+        "chunks",
+        "conversation_id",
+        "conversations",
+        "conversations_memory",
+        "create_time",
+        "current_node",
+        "cwd",
+        "id",
+        "kind",
+        "lastUpdated",
+        "last_updated",
+        "leafUuid",
+        "mapping",
+        "markdown",
+        "message",
+        "messages",
+        "parentUuid",
+        "payload",
+        "platform",
+        "polylogue_capture_kind",
+        "project",
+        "projectHash",
+        "project_memories",
+        "record_type",
+        "session",
+        "sessionId",
+        "session_id",
+        "session_start",
+        "shared_conversation_id",
+        "source",
+        "startTime",
+        "summary",
+        "type",
+        "updatedAt",
+        "uuid",
+        "version",
+    }
+)
+_DOCUMENT_PROBE_EXACT_STRING_KEYS: Final[frozenset[str]] = frozenset(
+    {"kind", "polylogue_capture_kind", "record_type", "role", "source", "type"}
+)
+_DOCUMENT_PROBE_CHUNK_CONTENT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "codeExecutionResult",
+        "driveAudio",
+        "driveDocument",
+        "driveImage",
+        "driveVideo",
+        "errorMessage",
+        "executableCode",
+        "grounding",
+        "inlineFile",
+        "inlineImage",
+        "isThought",
+        "parts",
+        "text",
+        "youtubeVideo",
+    }
+)
+
+
+def _document_probe_value(key: str, event: str, value: object) -> object | None:
+    """Retain only detector-relevant scalar type/equality evidence."""
+    if event == "string":
+        return str(value) if key in _DOCUMENT_PROBE_EXACT_STRING_KEYS else "present"
+    if event == "number":
+        return 0
+    if event == "boolean":
+        return bool(value)
+    if event == "null":
+        return None
+    return None
+
+
+@dataclass(slots=True)
+class _StreamingDocumentProviderProbe:
+    """Bounded structural summary for one object in a JSON document.
+
+    Cardinality is fixed by provider detector fields. Large scalar bodies,
+    unrelated keys, repeated messages, and repeated mapping nodes are never
+    retained; the ijson event stream can therefore continue to EOF without a
+    whole-document allocation or a scan-count cutoff.
+    """
+
+    payload: dict[str, object] = field(default_factory=dict)
+    mapping_seen: bool = False
+    mapping_valid: bool = True
+    mapping_node_open: bool = False
+    mapping_node_message: Literal["absent", "null", "map", "invalid"] = "absent"
+    mapping_node_author: bool = False
+    chat_message_item: dict[str, object] = field(default_factory=dict)
+    chat_message_matched: bool = False
+    first_message_item: dict[str, object] = field(default_factory=dict)
+    first_message_complete: bool = False
+    chunk_item: dict[str, object] = field(default_factory=dict)
+    chunk_matched: bool = False
+    conversation_item_has_conversation: bool = False
+    conversation_item_has_responses: bool = False
+    conversation_matched: bool = False
+
+    def _set_root(self, key: str, event: str, value: object) -> None:
+        if key not in _DOCUMENT_PROBE_ROOT_KEYS:
+            return
+        if event == "start_map":
+            self.payload[key] = {}
+        elif event == "start_array":
+            self.payload[key] = []
+        elif event in {"string", "number", "boolean", "null"}:
+            self.payload[key] = _document_probe_value(key, event, value)
+
+    @staticmethod
+    def _set_item_value(item: dict[str, object], key: str, event: str, value: object) -> None:
+        if event == "start_map":
+            item[key] = {}
+        elif event == "start_array":
+            item[key] = []
+        elif event in {"string", "number", "boolean", "null"}:
+            item[key] = _document_probe_value(key, event, value)
+
+    def feed(self, prefix: str, event: str, value: object) -> None:
+        parts = prefix.split(".") if prefix else []
+        if len(parts) == 1:
+            self._set_root(parts[0], event, value)
+
+        if parts == ["session", "provider"] and event == "string":
+            session = self.payload.setdefault("session", {})
+            if isinstance(session, dict):
+                session["provider"] = str(value)
+
+        if len(parts) == 2 and parts[0] == "payload":
+            nested = self.payload.setdefault("payload", {})
+            if isinstance(nested, dict):
+                self._set_item_value(nested, parts[1], event, value)
+
+        if len(parts) == 2 and parts[0] == "mapping":
+            if event == "start_map":
+                self.mapping_seen = True
+                self.mapping_node_open = True
+                self.mapping_node_message = "absent"
+                self.mapping_node_author = False
+            elif event not in {"end_map", "map_key"}:
+                self.mapping_seen = True
+                self.mapping_valid = False
+        elif len(parts) == 3 and parts[0] == "mapping" and parts[2] == "message":
+            if event == "start_map":
+                self.mapping_node_message = "map"
+            elif event == "null":
+                self.mapping_node_message = "null"
+            elif event not in {"map_key", "end_map"}:
+                self.mapping_node_message = "invalid"
+        elif len(parts) == 4 and parts[0] == "mapping" and parts[2:] == ["message", "author"] and event == "start_map":
+            self.mapping_node_author = True
+
+        if len(parts) == 2 and parts == ["chat_messages", "item"] and event == "start_map":
+            self.chat_message_item = {}
+        elif len(parts) == 3 and parts[:2] == ["chat_messages", "item"]:
+            self._set_item_value(self.chat_message_item, parts[2], event, value)
+
+        if len(parts) == 2 and parts == ["messages", "item"] and event == "start_map":
+            if not self.first_message_complete:
+                self.first_message_item = {}
+        elif len(parts) == 3 and parts[:2] == ["messages", "item"] and not self.first_message_complete:
+            self._set_item_value(self.first_message_item, parts[2], event, value)
+
+        chunk_root = parts[:2] == ["chunks", "item"]
+        chunk_nested = parts[:3] == ["chunkedPrompt", "chunks", "item"]
+        if (chunk_root and len(parts) == 2 or chunk_nested and len(parts) == 3) and event == "start_map":
+            self.chunk_item = {}
+        elif chunk_root and len(parts) == 3:
+            self._set_item_value(self.chunk_item, parts[2], event, value)
+        elif chunk_nested and len(parts) == 4:
+            self._set_item_value(self.chunk_item, parts[3], event, value)
+
+        if parts == ["conversations", "item"] and event == "start_map":
+            self.conversation_item_has_conversation = False
+            self.conversation_item_has_responses = False
+        elif parts == ["conversations", "item", "conversation"] and event == "start_map":
+            self.conversation_item_has_conversation = True
+        elif parts == ["conversations", "item", "responses"] and event == "start_array":
+            self.conversation_item_has_responses = True
+
+        if event != "end_map":
+            return
+        if len(parts) == 2 and parts[0] == "mapping" and self.mapping_node_open:
+            if (
+                self.mapping_node_message == "map" and not self.mapping_node_author
+            ) or self.mapping_node_message == "invalid":
+                self.mapping_valid = False
+            self.mapping_node_open = False
+        elif parts == ["chat_messages", "item"]:
+            has_role = any(key in self.chat_message_item for key in ("sender", "role", "author"))
+            has_content = any(key in self.chat_message_item for key in ("text", "content"))
+            self.chat_message_matched |= has_role and has_content
+        elif parts == ["messages", "item"] and not self.first_message_complete:
+            self.first_message_complete = True
+        elif parts in (["chunks", "item"], ["chunkedPrompt", "chunks", "item"]):
+            role = self.chunk_item.get("role") or self.chunk_item.get("author")
+            self.chunk_matched |= isinstance(role, str) and any(
+                key in self.chunk_item for key in _DOCUMENT_PROBE_CHUNK_CONTENT_KEYS
+            )
+        elif parts == ["conversations", "item"]:
+            self.conversation_matched |= (
+                self.conversation_item_has_conversation and self.conversation_item_has_responses
+            )
+
+    def classify(self) -> tuple[Provider, str]:
+        if self.mapping_seen and self.mapping_valid:
+            self.payload["mapping"] = {"bounded-node": {"message": None}}
+        if self.chat_message_matched:
+            self.payload["chat_messages"] = [{"role": "present", "text": "present"}]
+        if self.first_message_complete:
+            self.payload["messages"] = [self.first_message_item]
+        if self.chunk_matched:
+            chunk = {"role": "present", "text": "present"}
+            if isinstance(self.payload.get("chunkedPrompt"), dict):
+                self.payload["chunkedPrompt"] = {"chunks": [chunk]}
+            else:
+                self.payload["chunks"] = [chunk]
+        if self.conversation_matched:
+            self.payload["conversations"] = [{"conversation": {}, "responses": []}]
+        provider, evidence = detect_provider_evidence(self.payload)
+        if provider is None:
+            return Provider.UNKNOWN, evidence
+        return provider, f"bounded streaming JSON structure: {evidence}"
+
+
+def _detect_provider_from_bounded_document(payload: BinaryIO) -> tuple[Provider, str]:
+    """Scan every document object while retaining fixed structural evidence."""
+    payload.seek(0)
+    probe: _StreamingDocumentProviderProbe | None = None
+    root_is_array = False
+    last_evidence = "no bounded document structure identified a provider; used fallback_provider"
+    try:
+        for prefix, event, value in ijson.parse(payload, use_float=True):
+            if prefix == "" and event == "start_array":
+                root_is_array = True
+                continue
+            if root_is_array:
+                if prefix == "item" and event == "start_map":
+                    probe = _StreamingDocumentProviderProbe()
+                    continue
+                if probe is None:
+                    continue
+                if prefix == "item" and event == "end_map":
+                    provider, last_evidence = probe.classify()
+                    if provider is not Provider.UNKNOWN:
+                        return provider, last_evidence
+                    probe = None
+                    continue
+                if prefix.startswith("item."):
+                    probe.feed(prefix.removeprefix("item."), event, value)
+                continue
+
+            if prefix == "" and event == "start_map":
+                probe = _StreamingDocumentProviderProbe()
+                continue
+            if probe is None:
+                continue
+            if prefix == "" and event == "end_map":
+                return probe.classify()
+            probe.feed(prefix, event, value)
+    except ijson.JSONError:
+        return Provider.UNKNOWN, last_evidence
+    return Provider.UNKNOWN, last_evidence
+
 
 def _detect_provider_from_bounded_prefix(
     prefix: bytes,
@@ -140,17 +412,21 @@ def _detect_unknown_retained_provider(
     same detection bound, oversized records are consumed in bounded chunks,
     and the scan continues until positive provider evidence or EOF.
 
-    Non-JSONL documents retain prefix detection here and their existing
-    complete-document retry at the caller.  That eager retry is required for
-    document providers whose first complete value exceeds the prefix.
+    Non-JSONL documents first use the same prefix evidence, then continue a
+    bounded structural event scan through every document object. Eager replay
+    remains gated on a positive provider result from one of those bounded
+    passes; an unresolved UNKNOWN document is never materialized wholesale.
     """
     stream_name = Path(source_path).name
     if not is_jsonl_source_path(source_path):
-        return _detect_provider_from_bounded_prefix(
+        provider, evidence = _detect_provider_from_bounded_prefix(
             payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
             stream_name,
             record_stream=False,
         )
+        if provider is not Provider.UNKNOWN:
+            return provider, evidence
+        return _detect_provider_from_bounded_document(payload)
 
     last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
     read_size = _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 1

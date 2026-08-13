@@ -40,6 +40,7 @@ from polylogue.schemas.observation_models import (
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import connection_context
+from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 logger = get_logger(__name__)
 
@@ -71,6 +72,7 @@ def _ms_to_iso(value: object) -> str | None:
 class _RawSessionRow:
     source_path: str | None
     origin: str
+    detected_provider: str | None
     raw_id: str
     blob_hash: bytes
     file_mtime_ms: int | None
@@ -81,6 +83,8 @@ class _RawSessionRow:
 
     @property
     def provider_token(self) -> str:
+        if self.detected_provider is not None:
+            return Provider.from_string(self.detected_provider).value
         try:
             return provider_from_origin(Origin.from_string(self.origin)).value
         except (ValueError, KeyError):
@@ -109,13 +113,14 @@ def _sample_origins_for_provider(source_name: Provider, config: ProviderConfig) 
 def _sample_provider_where_clause(source_name: str | Provider) -> tuple[str, tuple[str, ...]]:
     provider = Provider.from_string(source_name)
     origin = origin_from_provider(provider).value
-    return "origin = ?", (origin,)
+    return f"{raw_provider_origin_sql()} = ?", (origin,)
 
 
 def _coerce_schema_row(row: sqlite3.Row) -> _RawSessionRow:
     return _RawSessionRow(
         source_path=row["source_path"],
         origin=str(row["origin"]),
+        detected_provider=(str(row["detected_provider"]) if row["detected_provider"] is not None else None),
         raw_id=str(row["raw_id"]),
         blob_hash=bytes(row["blob_hash"]) if row["blob_hash"] is not None else b"",
         file_mtime_ms=row["file_mtime_ms"],
@@ -296,6 +301,7 @@ def _iter_schema_units_from_db(
     query_provider = config.db_source_name or source_name
     origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
     placeholders = ",".join("?" for _ in origins)
+    effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
     with connection_context(source_db_path) as conn:
         conn.row_factory = sqlite3.Row
         if logical_heads_only:
@@ -307,25 +313,26 @@ def _iter_schema_units_from_db(
             query = f"""
                 WITH heads AS (
                     SELECT
-                        source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
+                        source_path, origin, detected_provider, raw_id, blob_hash, file_mtime_ms,
+                        acquired_at_ms, parsed_at_ms,
                         validated_at_ms, validation_status,
                         ROW_NUMBER() OVER (
-                            PARTITION BY origin, {logical_cohort_expr}
+                            PARTITION BY {effective_origin}, {logical_cohort_expr}
                             ORDER BY acquired_at_ms DESC, raw_id DESC
                         ) AS rn
                     FROM raw_sessions
-                    WHERE origin IN ({placeholders})
+                    WHERE {effective_origin} IN ({placeholders})
                 )
-                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
-                       validated_at_ms, validation_status
+                SELECT source_path, origin, detected_provider, raw_id, blob_hash, file_mtime_ms,
+                       acquired_at_ms, parsed_at_ms, validated_at_ms, validation_status
                 FROM heads WHERE rn = 1
             """
         else:
             query = f"""
-                SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, parsed_at_ms,
-                       validated_at_ms, validation_status
+                SELECT source_path, origin, detected_provider, raw_id, blob_hash, file_mtime_ms,
+                       acquired_at_ms, parsed_at_ms, validated_at_ms, validation_status
                 FROM raw_sessions
-                WHERE origin IN ({placeholders})
+                WHERE {effective_origin} IN ({placeholders})
             """
         cursor = conn.execute(query, origins)
         batch_size = 1 if config.sample_granularity == "record" else 100

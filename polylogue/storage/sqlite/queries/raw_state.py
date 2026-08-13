@@ -12,12 +12,20 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
-# Raw filters follow parser-classified provider evidence when present while
-# preserving immutable acquisition origin as the fallback. The CASE keeps the
-# comparison in public Origin vocabulary even though detected_provider retains
-# the exact provider-wire token (including the Gemini/Drive fiber).
-RAW_ORIGIN_FILTER_SQL = """
-CASE detected_provider
+
+def raw_provider_origin_sql(*, table_alias: str | None = None) -> str:
+    """Project parser-classified provider evidence into Origin vocabulary.
+
+    Acquisition ``origin`` remains immutable raw identity. Provider-scoped
+    readers use this expression so a later positive parser classification is
+    visible without rewriting that identity. ``table_alias`` keeps the same
+    contract usable in joined repair and sampling queries.
+    """
+    prefix = f"{table_alias}." if table_alias else ""
+    detected = f"{prefix}detected_provider"
+    origin = f"{prefix}origin"
+    return f"""
+CASE {detected}
     WHEN 'chatgpt' THEN 'chatgpt-export'
     WHEN 'claude-ai' THEN 'claude-ai-export'
     WHEN 'claude-design' THEN 'claude-design-session'
@@ -31,9 +39,12 @@ CASE detected_provider
     WHEN 'beads' THEN 'beads-issue'
     WHEN 'grok' THEN 'grok-export'
     WHEN 'unknown' THEN 'unknown-export'
-    ELSE origin
+    ELSE {origin}
 END
 """.strip()
+
+
+RAW_ORIGIN_FILTER_SQL = raw_provider_origin_sql()
 
 
 def origin_filter_value(token: str) -> str:
@@ -236,6 +247,7 @@ __all__ = [
     "coerce_provider",
     "coerce_status",
     "origin_filter_value",
+    "raw_provider_origin_sql",
     "mark_raw_parsed",
     "mark_raw_validated",
     "reset_parse_status",

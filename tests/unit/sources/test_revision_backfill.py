@@ -29,13 +29,16 @@ from polylogue.sources.revision_backfill import (
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
 )
+from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.revision_backfill_benchmark import (
     REVISION_CHAIN_SHAPE,
     WHALE_BEARING_SHAPE,
@@ -281,18 +284,18 @@ def test_unknown_retained_nonstream_jsonl_keeps_complete_payload_fallback(tmp_pa
     assert [session.provider_session_id for session in sessions] == ["large-jsonl-document"]
 
 
-def test_unknown_retained_document_replays_after_complete_payload_detection(tmp_path: Path) -> None:
-    """A complete ChatGPT document must retry UNKNOWN prefix detection.
+def test_unknown_retained_document_scans_past_oversized_leading_value(tmp_path: Path) -> None:
+    """A complete ChatGPT document must scan beyond its bounded prefix.
 
     The raw is intentionally a source-only UNKNOWN ``conversations.json``
-    whose first complete array item is larger than the replay detection
-    prefix.  This drives the historical replay chokepoint against a real
-    archive, rather than testing the detector in isolation.
+    whose provider-defining fields follow an oversized leading value. This
+    drives the historical replay chokepoint against a real archive, rather
+    than testing the structural scanner in isolation.
     """
     initialize_active_archive_root(tmp_path)
-    document = _chatgpt_session("large-document", "bounded evidence")
-    document["padding"] = "x" * 9_000
-    payload = _bundle(document)
+    document = {"padding": "x" * 9_000, **_chatgpt_session("large-document", "bounded evidence")}
+    payload = json.dumps([document]).encode()
+    assert b'"mapping"' not in payload[: revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.UNKNOWN,
@@ -703,7 +706,8 @@ def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> 
         ).fetchone() == ("complete", "[]")
 
 
-def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: Path) -> None:
     """Detected provider evidence must survive an empty retained replay."""
     initialize_active_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
@@ -732,6 +736,29 @@ def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: Path) -
         assert conn.execute(
             "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone() == ("complete", "[]")
+
+        terminal_artifact_id = str(
+            conn.execute("SELECT artifact_id FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        )
+
+    backend = SQLiteBackend(db_path=tmp_path / "index.db")
+    try:
+        record = await backend.get_raw_session(raw_id)
+        assert record is not None
+        refreshed = inspect_raw_artifact(record, blob_store=BlobStore(tmp_path / "blob"))
+        assert refreshed.observation_id == terminal_artifact_id
+        assert await backend.save_artifact_observation(refreshed) is False
+    finally:
+        await backend.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM raw_artifacts
+            WHERE origin = 'claude-code-session' AND source_path = ? AND source_index = 0
+            """,
+            (source_path,),
+        ).fetchone() == (1,)
 
 
 def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp_path: Path) -> None:

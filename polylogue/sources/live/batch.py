@@ -1879,6 +1879,9 @@ class LiveBatchProcessor:
                 and fallback_provider is Provider.HERMES
                 and path.name in {"state.db", "verification_evidence.db"}
             )
+            codex_owned_sqlite_name = (
+                source_only and fallback_provider is Provider.CODEX and path.name in _CODEX_STATE_DB_NAMES
+            )
             if (
                 hermes_owned_sqlite_name
                 or hermes_state.looks_like_state_db_path(path)
@@ -1917,8 +1920,8 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif path.name in _CODEX_STATE_DB_NAMES and (
-                source_only or codex_state.is_in_scope_codex_sqlite_path(path)
+            elif codex_owned_sqlite_name or (
+                path.name in _CODEX_STATE_DB_NAMES and codex_state.is_in_scope_codex_sqlite_path(path)
             ):
                 # polylogue-0jf4: acquire live Codex SQLite state the same
                 # way Hermes acquires its state.db -- a consistent

@@ -2990,6 +2990,7 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
     claude_raw_id, claude_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-a"}')
     codex_raw_id, codex_size = blob_store.write_from_bytes(b'{"items":[]}')
     other_root_raw_id, other_root_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-b"}')
+    learned_raw_id, learned_size = blob_store.write_from_bytes(b'{"parentUuid":null,"sessionId":"claude-learned"}')
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
@@ -3031,6 +3032,22 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
                 ),
             ),
         )
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, detected_provider, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'unknown-export', 'claude-code', ?, ?, 0, ?, ?, ?)
+            """,
+            (
+                learned_raw_id,
+                "claude-learned",
+                "/captures/claude/learned.jsonl",
+                bytes.fromhex(learned_raw_id),
+                learned_size,
+                4,
+            ),
+        )
         source_conn.commit()
 
     by_provider = repair_mod.repair_raw_materialization(config, dry_run=True, provider="claude-code")
@@ -3040,9 +3057,18 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
     assert by_provider.repaired_count == 0
     assert by_family.repaired_count == 0
     assert by_root.repaired_count == 0
-    assert by_provider.metrics["raw_materialization_candidate_count"] == 2.0
-    assert by_provider.metrics["raw_materialization_total_blob_bytes"] == float(claude_size + other_root_size)
-    assert by_provider.metrics["raw_materialization_max_blob_bytes"] == float(max(claude_size, other_root_size))
+    assert by_provider.metrics["raw_materialization_candidate_count"] == 3.0
+    assert by_provider.metrics["raw_materialization_total_blob_bytes"] == float(
+        claude_size + other_root_size + learned_size
+    )
+    assert by_provider.metrics["raw_materialization_max_blob_bytes"] == float(
+        max(claude_size, other_root_size, learned_size)
+    )
+    census_candidates = repair_mod._raw_materialization_parser_census_candidates(
+        config,
+        provider="claude-code",
+    )
+    assert set(census_candidates.raw_ids) == {claude_raw_id, other_root_raw_id, learned_raw_id}
 
 
 def test_raw_materialization_uses_authority_substrate_not_legacy_ingest_stage(
