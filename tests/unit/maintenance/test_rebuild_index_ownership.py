@@ -12,6 +12,7 @@ holding the general archive-location ownership lock.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
 from typing import cast
 
@@ -34,17 +35,42 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+_EMPTY_SOURCE_TEMPLATE: Path | None = None
+_ACTIVE_ARCHIVE_TEMPLATE: Path | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _archive_templates(tmp_path_factory: pytest.TempPathFactory) -> Generator[None]:
+    """Build durable and active archive layouts once for isolated clones."""
+    global _ACTIVE_ARCHIVE_TEMPLATE, _EMPTY_SOURCE_TEMPLATE
+    templates = tmp_path_factory.mktemp("rebuild-ownership-templates")
+    empty_source = templates / "empty-source"
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        initialize_archive_database(empty_source / f"{tier.value}.db", tier)
+    active_archive = templates / "active-archive"
+    initialize_active_archive_root(active_archive)
+    finalize_archive_template(empty_source)
+    finalize_archive_template(active_archive)
+    _EMPTY_SOURCE_TEMPLATE = empty_source
+    _ACTIVE_ARCHIVE_TEMPLATE = active_archive
+    try:
+        yield
+    finally:
+        _EMPTY_SOURCE_TEMPLATE = None
+        _ACTIVE_ARCHIVE_TEMPLATE = None
 
 
 def _init_empty_source(root: Path) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
-        initialize_archive_database(root / f"{tier.value}.db", tier)
+    assert _EMPTY_SOURCE_TEMPLATE is not None
+    clone_archive_template(_EMPTY_SOURCE_TEMPLATE, root)
 
 
 def _init_nonempty_source(root: Path) -> None:
-    initialize_active_archive_root(root)
+    assert _ACTIVE_ARCHIVE_TEMPLATE is not None
+    clone_archive_template(_ACTIVE_ARCHIVE_TEMPLATE, root)
     payload = (
         b'{"type":"session_meta","payload":{"id":"owned-session"}}\n'
         b'{"type":"response_item","payload":{"type":"message","role":"user",'
