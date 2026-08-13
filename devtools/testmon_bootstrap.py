@@ -360,7 +360,12 @@ def _safe_relative_path(raw: str) -> str | None:
 
 
 def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str, ...]:
-    """Return changed Python paths whose runtime behavior needs graph edges."""
+    """Return changed Python paths whose runtime behavior needs graph edges.
+
+    A deleted module cannot be parsed, but it still invalidates any graph edge
+    that pointed at it. Keep that path in the required set so inspection fails
+    closed and the verifier rebuilds the complete native corpus.
+    """
     root = repo_root.resolve()
     executable: list[str] = []
     for raw in sorted(set(paths)):
@@ -368,27 +373,27 @@ def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str,
         if relative is None or not relative.endswith(".py"):
             continue
         source = root / relative
-        if not source.exists():
+        if source.exists() and source.is_file() and classify_source_ast(source) == "declaration-only":
             continue
-        if not source.is_file() or classify_source_ast(source) != "declaration-only":
-            executable.append(relative)
+        executable.append(relative)
     return tuple(executable)
 
 
 def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> NativeTestmonChangeImpact:
     """Classify changed product inputs against native testmon's trace boundary.
 
-    Pytest-testmon records Python execution. Every non-Python file inside the
-    shipped ``polylogue`` package is therefore package-owned runtime data and
-    cannot safely use affected selection. The caller must run the complete
-    native corpus for those changes. This convention covers additions,
-    deletions, and all package-data formats without a filename registry.
+    Python tracing does not observe non-Python runtime data. Non-Python files
+    under the shipped ``polylogue`` package or the test runtime tree are
+    therefore outside the native graph and cannot safely use affected
+    selection. The caller must run the complete native corpus for those
+    changes. This convention covers additions, deletions, and all data formats
+    without a filename registry.
     """
     normalized = tuple(relative for raw in sorted(set(paths)) if (relative := _safe_relative_path(raw)) is not None)
     runtime_data = tuple(
         relative
         for relative in normalized
-        if PurePosixPath(relative).parts[0] == "polylogue" and not relative.endswith(".py")
+        if not relative.endswith(".py") and relative.startswith(("polylogue/", "tests/"))
     )
     return NativeTestmonChangeImpact(
         executable_paths=executable_python_paths(repo_root, normalized),
@@ -659,6 +664,16 @@ def prepare_native_testmon_environment(
         required_executable_paths=required_executable_paths,
         deadline_monotonic=deadline_monotonic,
     )
+    missing_checkout_paths = tuple(
+        path for path in sorted(set(required_executable_paths)) if not (root / path).is_file()
+    )
+    if local.valid and missing_checkout_paths:
+        local = NativeTestmonState(
+            "invalid",
+            "changed executable modules are absent from the current checkout",
+            local.environment,
+            missing_checkout_paths,
+        )
     info = linked_worktree_info(root, deadline_monotonic=deadline_monotonic)
     linked = bool(info and info[0])
     main_checkout = info[1] if linked and info is not None else None
@@ -668,7 +683,7 @@ def prepare_native_testmon_environment(
     removed = remove_invalid_native_testmon_state(root)
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
-    if main_checkout is not None and main_checkout != root:
+    if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
         main_data = main_checkout / TESTMON_DATA_RELPATH
         main = inspect_native_testmon_environment(
             main_data,

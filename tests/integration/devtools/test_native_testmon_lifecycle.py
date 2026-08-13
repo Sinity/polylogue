@@ -486,6 +486,123 @@ def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: P
     assert "assert 0 == 42" in completed.stderr
 
 
+def test_production_verify_test_runtime_data_mutation_executes_and_fails(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    data = repo / "tests" / "data" / "expected.txt"
+    data.parent.mkdir()
+    data.write_text("42\n", encoding="utf-8")
+    (repo / "tests" / "test_data.py").write_text(
+        "import pytest\n"
+        "from pathlib import Path\n\n"
+        "def expected() -> int:\n"
+        "    return int((Path(__file__).parent / 'data' / 'expected.txt').read_text())\n\n"
+        "def test_parallel_data_owner():\n"
+        "    assert expected() == 42\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_data_owner():\n"
+        "    assert expected() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    seeded, bootstrap = _run_production_verify(repo)
+    assert seeded.returncode == 0, seeded.stderr
+    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+
+    data.write_text("0\n", encoding="utf-8")
+    completed, mutated = _run_production_verify(repo)
+
+    assert completed.returncode == 1
+    assert mutated["testmon_environment"]["selection_mode"] == "full"
+    assert mutated["testmon_environment"]["runtime_data_paths"] == ["tests/data/expected.txt"]
+    assert mutated["pytest_aggregate"]["selected_union_count"] == 2
+    assert mutated["pytest_aggregate"]["terminal_union_count"] == 2
+    assert "assert 0 == 42" in completed.stderr
+
+
+def test_production_verify_deleted_module_rebuilds_and_fails_dependents(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_answer():\n    from polylogue.app import answer\n    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    seeded, bootstrap = _run_production_verify(repo)
+    assert seeded.returncode == 0, seeded.stderr
+    assert bootstrap["pytest_aggregate"]["selected_union_count"] == 1
+
+    _git(repo, "rm", "polylogue/app.py")
+    _commit_all(repo, "delete production module")
+    completed, mutated = _run_production_verify(repo)
+
+    assert completed.returncode == 1
+    assert mutated["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert mutated["testmon_environment"]["required_executable_paths"] == ["polylogue/app.py"]
+    assert mutated["pytest_aggregate"]["selected_union_count"] == 1
+    assert mutated["pytest_aggregate"]["terminal_union_count"] == 1
+    assert "ModuleNotFoundError" in completed.stderr
+
+
+def test_production_verify_moved_module_rebuilds_and_fails_dependents(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_answer():\n    from polylogue.app import answer\n    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    seeded, bootstrap = _run_production_verify(repo)
+    assert seeded.returncode == 0, seeded.stderr
+    assert bootstrap["pytest_aggregate"]["selected_union_count"] == 1
+
+    _git(repo, "mv", "polylogue/app.py", "polylogue/renamed.py")
+    _commit_all(repo, "move production module")
+    completed, mutated = _run_production_verify(repo)
+
+    assert completed.returncode == 1
+    assert mutated["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert mutated["testmon_environment"]["required_executable_paths"] == [
+        "polylogue/app.py",
+        "polylogue/renamed.py",
+    ]
+    assert mutated["pytest_aggregate"]["selected_union_count"] == 1
+    assert mutated["pytest_aggregate"]["terminal_union_count"] == 1
+    assert "ModuleNotFoundError" in completed.stderr
+
+
 def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -> None:
     main = tmp_path / "main"
     main.mkdir()
