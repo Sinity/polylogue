@@ -1429,6 +1429,8 @@ def test_verify_main_records_containment_failure_as_terminal_history(
     with (
         patch("devtools.verify._anchor_verification_paths"),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._testmon_preflight", return_value=None),
         patch("devtools.verify.build_verify_steps", return_value=[("pytest containment", ["pytest", "-n", "0"])]),
         patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
@@ -1818,6 +1820,59 @@ def test_worktree_fingerprint_rejects_partial_git_output(
     monkeypatch.setattr(subprocess, "run", warning_run)
 
     assert _worktree_fingerprint(tmp_path) == "unavailable"
+
+
+def test_changed_paths_keep_start_time_base_when_remote_ref_advances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "example.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/example.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-qc", "feature"], cwd=tmp_path, check=True)
+    source.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "feature"], cwd=tmp_path, check=True)
+    feature_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/master", base], cwd=tmp_path, check=True)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    pinned_base = verify._git_commit("origin/master")
+    assert pinned_base == base
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=tmp_path, check=True)
+
+    assert verify._changed_executable_paths(pinned_base, feature_head) == ("polylogue/example.py",)
+
+
+def test_changed_paths_include_untracked_executable_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "README.md"
+    tracked.write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    untracked = tmp_path / "devtools" / "new_command.py"
+    untracked.parent.mkdir()
+    untracked.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    assert verify._changed_executable_paths(head, head) == ("devtools/new_command.py",)
 
 
 def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_final_fingerprint(
@@ -4697,6 +4752,37 @@ def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
     assert checkout_step["final_worktree_fingerprint"] == fingerprints[1]
 
 
+def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", side_effect=("start-head", "different-head")),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert checkout_step["diagnosis"] == "checkout_changed_during_verification"
+    assert checkout_step["initial_git_head"] == "start-head"
+    assert checkout_step["final_git_head"] == "different-head"
+
+
 @pytest.mark.parametrize(
     ("fingerprints", "expected_diagnosis"),
     [
@@ -4838,6 +4924,8 @@ def test_transient_checkout_mutation_discards_testmon_graph_before_publication(
         patch("devtools.verify._record_testmon_affected_coverage", affected_publish),
         patch("devtools.verify._refresh_testmon_selection_attempt", selection_publish),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
         patch("devtools.verify._warn_low_memory"),
         patch("devtools.verify._save_history"),
@@ -4863,7 +4951,10 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
     with (
         patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
@@ -5043,6 +5134,8 @@ def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.Ca
     with (
         patch("devtools.verify.build_verify_steps", side_effect=PytestResourceError("only 0.50 GiB available")),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._testmon_preflight", return_value=None),
         patch("devtools.verify._run") as run,
         patch("devtools.verify._save_history") as save_history,
@@ -5068,6 +5161,8 @@ def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirector
 def test_verify_rejects_zero_testmon_selection_for_executable_change(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    changed_executable_paths = MagicMock(return_value=("polylogue/example.py",))
+
     def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         del command, kwargs
         return 0, 0.01, ({"selected_count": 0} if label.startswith("pytest") else {})
@@ -5075,11 +5170,13 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
     with (
         patch("devtools.verify._run", side_effect=fake_run),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="pinned-base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
         patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+        patch("devtools.verify._changed_executable_paths", changed_executable_paths),
         patch("devtools.verify._matching_testmon_coverage", return_value=None),
     ):
         rc = main(["--json"])
@@ -5089,6 +5186,7 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
     pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
     assert pytest_step["diagnosis"] == "zero_testmon_selection_for_executable_change"
     assert pytest_step["zero_selection_changed_paths"] == ["polylogue/example.py"]
+    changed_executable_paths.assert_called_once_with("pinned-base", "head")
 
 
 def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
@@ -5100,7 +5198,10 @@ def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
 
     with (
         patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),

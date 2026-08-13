@@ -2374,6 +2374,25 @@ def _git_committed_tree() -> str | None:
     return None
 
 
+def _git_commit(ref: str) -> str | None:
+    """Resolve a mutable Git ref once for an authority-sensitive run."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ROOT,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or result.stderr.strip():
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
 def _stamp_head() -> None:
     head = _git_head()
     if head is None:
@@ -2449,32 +2468,44 @@ _BROAD_TESTMON_CHANGED_PATHS = {
 }
 
 
-def _changed_paths() -> set[str]:
+def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
+    """Return changes between immutable start-time Git authorities."""
     changed: set[str] = set()
     commands = (
-        ["git", "diff", "--name-only", "HEAD", "--"],
-        ["git", "diff", "--name-only", "origin/master...HEAD", "--"],
+        ["git", "diff", "--name-only", head_commit, "--"],
+        ["git", "diff", "--name-only", f"{base_commit}...{head_commit}", "--"],
+        ["git", "ls-files", "--others", "--exclude-standard", "--"],
     )
     for command in commands:
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode == 0:
-            changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=ROOT,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PytestResourceError("testmon changed-path authority is unavailable") from exc
+        if result.returncode != 0 or result.stderr.strip():
+            raise PytestResourceError("testmon changed-path authority is unavailable")
+        changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
     return changed
 
 
-def _default_testmon_is_broad_change() -> bool:
+def _default_testmon_is_broad_change(base_commit: str, head_commit: str) -> bool:
     """Return true when affected-test selection should be treated as broad."""
-    return bool(_changed_paths() & _BROAD_TESTMON_CHANGED_PATHS)
+    return bool(_changed_paths(base_commit, head_commit) & _BROAD_TESTMON_CHANGED_PATHS)
 
 
-def _changed_executable_paths() -> tuple[str, ...]:
+def _changed_executable_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:
     """Return changed paths whose behavior should select at least one test."""
     roots = ("polylogue/", "devtools/", "tests/", "packaging/")
     exact = {"pyproject.toml", "uv.lock"}
-    return tuple(sorted(path for path in _changed_paths() if path in exact or path.startswith(roots)))
+    return tuple(
+        sorted(path for path in _changed_paths(base_commit, head_commit) if path in exact or path.startswith(roots))
+    )
 
 
 def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any]:
@@ -3558,7 +3589,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         tier = "testmon"
 
+    head = _git_head()
     full_pytest = bool(args.all or args.full)
+    affected_testmon = not (args.quick or args.commit or args.seed_testmon or full_pytest)
+    testmon_base_commit = _git_commit("origin/master") if affected_testmon else None
+    testmon_head_commit = head if affected_testmon else None
+    if affected_testmon and (testmon_base_commit is None or testmon_head_commit is None):
+        sys.stderr.write("verify: cannot resolve immutable Git refs for affected-test authority.\n")
+        return 125
     if args.terminal_authorization is not None and not ((full_pytest or args.seed_testmon) and args.skip_slow):
         parser.error("--terminal-authorization requires --all, --full, or --seed-testmon with --skip-slow")
     preflight_error = _testmon_preflight(
@@ -3571,7 +3609,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(preflight_error)
         return 2
 
-    head = _git_head()
     t0 = time.monotonic()
     checkout_fingerprint = worktree_fingerprint(ROOT)
     verify_run = VerifyRun(
@@ -3629,7 +3666,11 @@ def main(argv: list[str] | None = None) -> int:
             seed_testmon=bool(args.seed_testmon),
             resume_testmon_seed=resume_testmon_seed,
             full_pytest=full_pytest,
-            broad_testmon=_default_testmon_is_broad_change(),
+            broad_testmon=(
+                _default_testmon_is_broad_change(testmon_base_commit, testmon_head_commit)
+                if testmon_base_commit is not None and testmon_head_commit is not None
+                else False
+            ),
         )
     except PytestResourceError as exc:
         sys.stderr.write(f"verify: {exc}\n")
@@ -3669,7 +3710,9 @@ def main(argv: list[str] | None = None) -> int:
                 refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
                 if refreshed_stamp is not None:
                     pending_testmon_stamp = refreshed_stamp
-            executable_paths = _changed_executable_paths()
+            assert testmon_base_commit is not None
+            assert testmon_head_commit is not None
+            executable_paths = _changed_executable_paths(testmon_base_commit, testmon_head_commit)
             selected_count = metadata.get("selected_count")
             if selected_count == 0 and executable_paths:
                 coverage = _matching_testmon_coverage(executable_paths)
@@ -3784,10 +3827,16 @@ def main(argv: list[str] | None = None) -> int:
             if rc == 130 or _stop_after_failed_step(label):
                 break
 
+    final_head = _git_head()
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
     mutation_observation = mutation_monitor.finish()
     checkout_stable = True
-    if "unavailable" in {checkout_fingerprint, final_checkout_fingerprint} or mutation_observation.unavailable:
+    if (
+        head is None
+        or final_head is None
+        or "unavailable" in {checkout_fingerprint, final_checkout_fingerprint}
+        or mutation_observation.unavailable
+    ):
         checkout_stable = False
         step_results.append(
             {
@@ -3795,6 +3844,8 @@ def main(argv: list[str] | None = None) -> int:
                 "duration_s": 0.0,
                 "exit": 125,
                 "diagnosis": "checkout_fingerprint_unavailable",
+                "initial_git_head": head,
+                "final_git_head": final_head,
                 "initial_worktree_fingerprint": checkout_fingerprint,
                 "final_worktree_fingerprint": final_checkout_fingerprint,
             }
@@ -3802,7 +3853,7 @@ def main(argv: list[str] | None = None) -> int:
         if exit_code == 0:
             exit_code = 125
         sys.stderr.write("verify: checkout fingerprint unavailable; evidence is not exact-head.\n")
-    elif mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
+    elif final_head != head or mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
         checkout_stable = False
         step_results.append(
             {
@@ -3810,6 +3861,8 @@ def main(argv: list[str] | None = None) -> int:
                 "duration_s": 0.0,
                 "exit": 125,
                 "diagnosis": "checkout_changed_during_verification",
+                "initial_git_head": head,
+                "final_git_head": final_head,
                 "initial_worktree_fingerprint": checkout_fingerprint,
                 "final_worktree_fingerprint": final_checkout_fingerprint,
                 "transient_checkout_mutation": mutation_observation.changed,
@@ -3867,6 +3920,7 @@ def main(argv: list[str] | None = None) -> int:
     history_entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_head": head,
+        "final_git_head": final_head,
         "tier": tier,
         "run_id": verify_run.run_id,
         "checkout_root": str(ROOT.resolve()),
