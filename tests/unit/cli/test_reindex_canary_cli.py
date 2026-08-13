@@ -301,7 +301,7 @@ def _write_real_unreviewed_canary_report(
     _seed_isolated_canary(canary_root, session_names=session_names)
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
     with sqlite3.connect(canary_root / "index.db") as connection:
-        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+        connection.execute("UPDATE sessions SET title_ref = NULL, title_confidence = NULL")
 
     receipt_path = _schema_receipt_path(canary_root)
     observed_result = run_reindex_canary(
@@ -410,9 +410,9 @@ def _write_reviewed_real_canary_report(
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-0x7nh",
-                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
-                        "rationale": "reviewed real canary difference",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "reviewed v44 title-reprocess difference",
                     }
                     for difference in differences
                 ]
@@ -659,9 +659,9 @@ def test_cli_consumes_valid_reviewed_real_report(tmp_path: Path, monkeypatch: py
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-0x7nh",
-                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
-                        "rationale": "reviewed real canary difference",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "reviewed v44 title-reprocess difference",
                     }
                     for difference in differences
                 ]
@@ -792,9 +792,9 @@ def test_cli_consumes_reviewed_report_after_parsed_state_mutation(
                         "identity": difference["identity"],
                         "changed_columns": difference["changed_columns"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-0x7nh",
-                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
-                        "rationale": "reviewed real canary difference",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "reviewed v44 title-reprocess difference",
                     }
                     for difference in differences
                 ]
@@ -868,7 +868,7 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
     )
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path / "configured-live")
     with sqlite3.connect(canary_root / "index.db") as connection:
-        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+        connection.execute("UPDATE sessions SET title_ref = NULL, title_confidence = NULL")
     observed_result = run_reindex_canary(
         canary_root,
         input_index=canary_root / "index.db",
@@ -881,8 +881,9 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
     review_payload = json.loads(review_path.read_text(encoding="utf-8"))
     for review in review_payload["reviews"]:
         review["classification"] = "expected"
-        review["reference"] = "bead:polylogue-0x7nh"
-        review["authority"] = {"kind": "bead", "id": "polylogue-0x7nh"}
+        review["reference"] = "delta:44"
+        review["authority"] = {"kind": "delta", "id": "44"}
+        review["rationale"] = "reviewed v44 title-reprocess difference"
     review_path.write_text(json.dumps(review_payload), encoding="utf-8")
     generated = CliRunner().invoke(
         cli,
@@ -1212,12 +1213,12 @@ def _canary_acceptance_attestation() -> dict[str, object]:
 
 def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
     difference = RowDifference(
-        table="session_profiles",
+        table="sessions",
         operation=DifferenceOperation.CHANGED,
         identity=(("session_id", "codex-session:sample"),),
-        before={"message_count": 1},
-        after={"message_count": 2},
-        changed_columns=("message_count",),
+        before={"title_ref": None},
+        after={"title_ref": "message:codex-session:sample:user"},
+        changed_columns=("title_ref",),
         classification=DifferenceClassification.UNEXPECTED,
         rationale="unreviewed",
     )
@@ -1486,8 +1487,8 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
     review = CanaryDifferenceReview.for_difference(
         difference,
         classification=DifferenceClassification.EXPECTED,
-        reference="polylogue-0x7nh",
-        rationale="reviewed materializer change",
+        reference="delta:44",
+        rationale="reviewed title-reprocess change",
     )
     captured: dict[str, object] = {}
 
@@ -1558,8 +1559,8 @@ def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
         identity=difference.identity,
         changed_columns=("different_column",),
         classification=DifferenceClassification.EXPECTED,
-        reference="polylogue-0x7nh",
-        rationale="wrong signature",
+        reference="delta:44",
+        rationale="wrong title-reprocess signature",
     )
     review_path.write_text(json.dumps({"reviews": [review.to_dict()]}), encoding="utf-8")
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
@@ -1645,7 +1646,7 @@ def test_reindex_canary_cli_persists_unreviewed_real_candidate_for_later_review(
     _seed_isolated_canary(canary_root)
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
     with sqlite3.connect(canary_root / "index.db") as connection:
-        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+        connection.execute("UPDATE sessions SET title_ref = NULL, title_confidence = NULL")
 
     result = CliRunner().invoke(
         cli,
@@ -1858,7 +1859,7 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
     _seed_isolated_canary(canary_root)
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
     with sqlite3.connect(canary_root / "index.db") as connection:
-        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+        connection.execute("UPDATE sessions SET title_ref = NULL, title_confidence = NULL")
 
     observed_result = run_reindex_canary(
         canary_root,
@@ -1876,9 +1877,9 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
             "identity": difference["identity"],
             "changed_columns": difference["changed_columns"],
             "classification": "expected",
-            "reference": "bead:polylogue-0x7nh",
-            "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
-            "rationale": "reviewed materializer change",
+            "reference": "delta:44",
+            "authority": {"kind": "delta", "id": "44"},
+            "rationale": "reviewed title-reprocess change",
         }
         for difference in differences
     ]

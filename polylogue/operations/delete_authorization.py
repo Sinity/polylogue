@@ -202,7 +202,11 @@ def cancel_cli_delete(
     """Cancel an authenticated caller's unconfirmed durable delete preview."""
 
     audit = _audit_repository(archive_root)
-    preview = _load_preview(audit, preview_ref, principal, require_prepared=True)
+    # An explicit decline is itself a terminal decision.  It must remain
+    # recordable after the preview's authorization window closes; otherwise
+    # the durable row is stranded in ``prepared`` even though the daemon has
+    # acknowledged the operator's refusal to mutate.
+    preview = _load_preview(audit, preview_ref, principal, require_prepared=True, require_unexpired=False)
     audit.cancel_preview(preview)
 
 
@@ -212,6 +216,7 @@ def _load_preview(
     principal: MutationPrincipal,
     *,
     require_prepared: bool,
+    require_unexpired: bool = True,
 ) -> MutationPreview:
     with sqlite3.connect(audit.path) as conn:
         conn.row_factory = sqlite3.Row
@@ -226,7 +231,7 @@ def _load_preview(
             raise DeleteAuthorizationError("preview_not_owned")
         if require_prepared and str(row["state"]) != "prepared":
             raise DeleteAuthorizationError("preview_not_active")
-        if int(row["expires_at_ms"]) <= _now_ms():
+        if require_unexpired and int(row["expires_at_ms"]) <= _now_ms():
             raise DeleteAuthorizationError("preview_expired")
         targets = _load_targets(conn, preview_ref)
         capabilities = _load_capabilities(conn, "operation_preview_capabilities", "preview_id", preview_ref)

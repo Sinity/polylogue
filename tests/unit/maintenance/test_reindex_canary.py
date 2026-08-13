@@ -810,6 +810,28 @@ def test_expected_delta_authority_resolves_outside_a_git_checkout(
     """Installed canaries resolve semantic authority from packaged declarations."""
     monkeypatch.chdir(tmp_path)
     difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:sample"),),
+        before={"title_ref": None},
+        after={"title_ref": "message:codex-session:sample:user"},
+        changed_columns=("title_ref",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    delta = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="declared targeted title reprocess",
+    )
+    reindex_canary_module._validate_expected_review_authorities((delta,))
+
+
+def test_expected_delta_authority_rejects_unrelated_table() -> None:
+    """A historical delta number cannot bless an arbitrary semantic change."""
+
+    difference = RowDifference(
         table="blocks",
         operation=DifferenceOperation.CHANGED,
         identity=(("block_id", "block"),),
@@ -819,13 +841,39 @@ def test_expected_delta_authority_resolves_outside_a_git_checkout(
         classification=DifferenceClassification.UNEXPECTED,
         rationale="unreviewed",
     )
-    delta = CanaryDifferenceReview.for_difference(
+    unrelated = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="unrelated packaged index delta",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare table blocks"):
+        reindex_canary_module._validate_expected_review_authorities((unrelated,))
+
+
+def test_expected_delta_authority_rejects_nonsemantic_delta() -> None:
+    """A DDL-only delta cannot authorize a changed row value."""
+
+    difference = RowDifference(
+        table="insight_materialization",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "session"), ("insight_type", "session_profile")),
+        before={"materializer_version": 1},
+        after={"materializer_version": 2},
+        changed_columns=("materializer_version",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    constraint_only = CanaryDifferenceReview.for_difference(
         difference,
         classification=DifferenceClassification.EXPECTED,
         reference="delta:33",
-        rationale="declared index delta",
+        rationale="constraint-only delta",
     )
-    reindex_canary_module._validate_expected_review_authorities((delta,))
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare a semantic reparse"):
+        reindex_canary_module._validate_expected_review_authorities((constraint_only,))
 
 
 def test_unknown_expected_delta_authority_fails_closed() -> None:
@@ -861,6 +909,70 @@ def test_canary_comparison_is_read_only(tmp_path: Path) -> None:
 
     after = current.stat().st_ino, current.stat().st_size, candidate.stat().st_ino, candidate.stat().st_size
     assert after == before
+
+
+def test_revision_receipt_run_identity_is_not_a_semantic_canary_difference(tmp_path: Path) -> None:
+    """Rebuild-local ids/times normalize while revision authority stays compared."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    session_id = "codex-session:alpha"
+    raw_id = "raw-alpha"
+    content_hash = hashlib.sha256(b"alpha").digest()
+    for path, decision_id, decided_at_ms in ((current, "decision-current", 1), (candidate, "decision-candidate", 2)):
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                """
+                INSERT INTO raw_revision_applications(
+                    decision_id, raw_id, session_id, logical_source_key, source_revision,
+                    acquisition_generation, decision, accepted_raw_id,
+                    accepted_source_revision, accepted_content_hash, detail, decided_at_ms
+                ) VALUES (?, ?, ?, 'codex:alpha', '1', 0, 'selected_baseline', ?, '1', ?, 'selected', ?)
+                """,
+                (decision_id, raw_id, session_id, raw_id, content_hash, decided_at_ms),
+            )
+            connection.execute(
+                """
+                INSERT INTO raw_revision_heads(
+                    logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                    accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                    acquisition_generation, decided_at_ms
+                ) VALUES ('codex:alpha', ?, ?, '1', ?, 'semantic', 1, 0, ?)
+                """,
+                (session_id, raw_id, content_hash, decided_at_ms),
+            )
+
+    report = compare_reindex_generations(current, candidate)
+
+    assert report.differences == ()
+
+
+def test_revision_receipt_semantic_decision_remains_a_canary_difference(tmp_path: Path) -> None:
+    """Normalizing attempt identity must not hide a changed authority decision."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    session_id = "codex-session:alpha"
+    for path, decision in ((current, "selected_baseline"), (candidate, "superseded")):
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                """
+                INSERT INTO raw_revision_applications(
+                    decision_id, raw_id, session_id, logical_source_key, source_revision,
+                    acquisition_generation, decision, accepted_raw_id,
+                    accepted_source_revision, accepted_content_hash, detail, decided_at_ms
+                ) VALUES (?, 'raw-alpha', ?, 'codex:alpha', '1', 0, ?, NULL, NULL, NULL, 'decision', 1)
+                """,
+                (f"decision-{decision}", session_id, decision),
+            )
+
+    report = compare_reindex_generations(current, candidate)
+
+    assert {difference.table for difference in report.differences} == {"raw_revision_applications"}
 
 
 def test_selector_samples_each_origin_and_keeps_explicit_inputs(tmp_path: Path) -> None:
@@ -1742,14 +1854,14 @@ def test_review_manifest_accepts_packaged_delta_and_nonapproving_successor(
             {
                 "reviews": [
                     {
-                        "table": "blocks",
+                        "table": "sessions",
                         "operation": "changed",
-                        "identity": {"block_id": "expected"},
-                        "changed_columns": ["text"],
+                        "identity": {"session_id": "expected"},
+                        "changed_columns": ["title_ref"],
                         "classification": "expected",
-                        "reference": "delta:33",
-                        "authority": {"kind": "delta", "id": "33"},
-                        "rationale": "the packaged index delta declares this expected difference",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "the packaged title-reprocess delta declares this expected difference",
                     },
                     {
                         "table": "blocks",

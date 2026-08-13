@@ -276,6 +276,39 @@ def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
         )
 
 
+def test_cli_delete_real_daemon_route_cancels_an_expired_preview(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A late explicit decline terminalizes the exact durable preview."""
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = client.request_mutation_json(  # type: ignore[attr-defined]
+            "POST", "/api/cli/delete/prepare", {"session_ids": [session_id]}
+        )
+        assert preview is not None
+        preview_ref = str(preview["preview_ref"])
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            conn.execute(
+                "UPDATE operation_previews SET created_at_ms = 0, expires_at_ms = 1 WHERE preview_id = ?",
+                (preview_ref,),
+            )
+
+        cancelled = client.request_mutation_json(  # type: ignore[attr-defined]
+            "POST", "/api/cli/delete/cancel", {"preview_ref": preview_ref}
+        )
+
+    assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
+    _assert_session_exists(archive_root, session_id, expected=True)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute("SELECT state FROM operation_previews WHERE preview_id = ?", (preview_ref,)).fetchone() == (
+            "cancelled",
+        )
+
+
 def test_cli_delete_bounds_body_bytes_accepts_large_selection_and_reads_before_writer_gate() -> None:
     class _ExplodingBody:
         def read(self, _size: int) -> bytes:
