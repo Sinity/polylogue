@@ -30,6 +30,7 @@ _SLOWEST_REPORTS: list[dict[str, Any]] = []
 _RECORDED_REPORT_KEYS: set[tuple[int, str, str, str, float]] = set()
 _COLLECTION_STARTED_AT: float | None = None
 _COLLECTION_DURATION_S: float | None = None
+_CONTROLLER_COLLECTION_PAYLOAD: dict[str, Any] | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
@@ -101,13 +102,15 @@ def _write_worker_collection_fact(payload: dict[str, Any]) -> None:
         tmp.replace(path)
 
 
-def _worker_collection_payloads() -> list[dict[str, Any]]:
+def _worker_collection_payloads(events_dir: Path | None = None) -> list[dict[str, Any]]:
     """Read worker collection facts in a stable order for the controller."""
-    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
-    if not raw_dir:
-        return []
+    if events_dir is None:
+        raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+        if not raw_dir:
+            return []
+        events_dir = Path(raw_dir)
     payloads: list[tuple[str, int, str, dict[str, Any]]] = []
-    for path in Path(raw_dir).glob(f"*{_COLLECTION_FACT_SUFFIX}"):
+    for path in events_dir.glob(f"*{_COLLECTION_FACT_SUFFIX}"):
         with contextlib.suppress(OSError, json.JSONDecodeError):
             payload = json.loads(path.read_text(encoding="utf-8"))
             worker_id = payload.get("worker_id")
@@ -135,9 +138,9 @@ def _collection_payload() -> dict[str, Any]:
     return payload
 
 
-def _merge_worker_collection_payloads() -> dict[str, Any] | None:
+def merge_worker_collection_payloads(events_dir: Path | None = None) -> dict[str, Any] | None:
     """Choose one canonical xdist collection set and the slowest wall time."""
-    payloads = _worker_collection_payloads()
+    payloads = _worker_collection_payloads(events_dir)
     if not payloads:
         return None
     merged = dict(payloads[0])
@@ -188,7 +191,8 @@ def _durable_report_outcome(report: Any, outcome: str) -> str:
 def pytest_sessionstart(session: Any) -> None:
     """Reset per-session ledgers when tests invoke pytest in-process."""
     del session
-    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _DESELECTED_COUNT, _SELECTED_COUNT
+    global _COLLECTION_STARTED_AT, _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD
+    global _DESELECTED_COUNT, _SELECTED_COUNT
     _DESELECTED_NODEIDS_SAMPLE.clear()
     _DESELECTED_COUNT = 0
     _SELECTED_COUNT = 0
@@ -196,6 +200,7 @@ def pytest_sessionstart(session: Any) -> None:
     _RECORDED_REPORT_KEYS.clear()
     _COLLECTION_STARTED_AT = None
     _COLLECTION_DURATION_S = None
+    _CONTROLLER_COLLECTION_PAYLOAD = None
     # The worker environment is assigned after process exec, so it is not
     # reliably visible through /proc/<pid>/environ.  Emit the identity from
     # inside the worker for the supervisor's process-state sampler.
@@ -226,7 +231,7 @@ def pytest_deselected(items: list[Any]) -> None:
 def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
     """Write the final selected test set after pytest/testmon deselection."""
     del config
-    global _COLLECTION_DURATION_S, _SELECTED_COUNT
+    global _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD, _SELECTED_COUNT
     if _COLLECTION_STARTED_AT is not None:
         _COLLECTION_DURATION_S = round(time.monotonic() - _COLLECTION_STARTED_AT, 4)
     _SELECTED_COUNT = len(items)
@@ -252,6 +257,7 @@ def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -
     if os.environ.get("PYTEST_XDIST_WORKER"):
         _write_worker_collection_fact(payload)
     else:
+        _CONTROLLER_COLLECTION_PAYLOAD = dict(payload)
         _write_selection(payload)
     _write_event(
         {
@@ -343,7 +349,7 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     # summary path, so an empty worker summary cannot overwrite it.
     if os.environ.get("PYTEST_XDIST_WORKER"):
         return
-    collection_payload = _merge_worker_collection_payloads() or _collection_payload()
+    collection_payload = merge_worker_collection_payloads() or _CONTROLLER_COLLECTION_PAYLOAD or _collection_payload()
     _write_selection(collection_payload)
     payload: dict[str, Any] = {
         "exitstatus": int(exitstatus),

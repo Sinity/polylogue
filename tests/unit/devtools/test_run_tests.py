@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from devtools import run_tests, verify
-from devtools.verify_runs import CURRENT_STATISTICS_PATH, git_head
+from devtools.verify_runs import CURRENT_STATISTICS_PATH, git_head, pytest_command_worker_request
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -54,7 +54,7 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
         arg for arg in command if arg in {"-n", "--numprocesses"} or arg.startswith(("-n", "--numprocesses="))
     ]
     assert len(worker_flags) == 1
-    assert verify._pytest_command_worker_request(command) == expected_request
+    assert pytest_command_worker_request(command) == expected_request
 
 
 def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,6 +121,26 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["history"]["status"] == "success"
 
 
+def test_main_preserves_relative_selection_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_run(_label: str, cmd: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["cmd"] = cmd
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.chdir(run_tests.ROOT / "tests" / "unit")
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr("devtools.run_tests._run", _fake_run)
+    monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["core/test_identity_law.py::test_session_id_is_origin_native_id"]) == 0
+
+    assert "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id" in captured["cmd"]
+
+
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(label: str, cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         return 5, 0.01, {"diagnosis": "pytest_failed"}
@@ -143,6 +163,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
     stale_report = root / verify.PYTEST_REPORT_PATH
     stale_statistics = root / CURRENT_STATISTICS_PATH
     stale_report.parent.mkdir(parents=True)
+    stale_statistics.parent.mkdir(parents=True, exist_ok=True)
     stale_report.write_text('{"stale": true}')
     stale_statistics.write_text('{"stale": true}')
     captured: dict[str, object] = {}
@@ -160,7 +181,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
         lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=root / "polylogue", as_dict=lambda: {}),
     )
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "_worktree_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "fingerprint")
     monkeypatch.setattr(run_tests, "_run", fake_run)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")

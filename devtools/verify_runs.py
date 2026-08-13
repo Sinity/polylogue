@@ -18,7 +18,7 @@ import stat
 import subprocess
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +28,10 @@ from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
-DEVTOOLS_STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "polylogue" / "devtools"
+_XDG_STATE_HOME = os.environ.get("XDG_STATE_HOME", "").strip()
+DEVTOOLS_STATE_DIR = (
+    (Path(_XDG_STATE_HOME) if _XDG_STATE_HOME else Path.home() / ".local" / "state") / "polylogue" / "devtools"
+)
 VERIFY_HISTORY_PATH = DEVTOOLS_STATE_DIR / "verify-history.jsonl"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 VERIFICATION_INVOCATION_ID_ENV = "POLYLOGUE_VERIFICATION_INVOCATION_ID"
@@ -76,6 +79,22 @@ class PytestResourceError(RuntimeError):
     """Raised when the host cannot safely start a managed pytest run."""
 
 
+def _trailing_history_record(descriptor: int, *, end: int) -> tuple[int, bytes]:
+    """Read only the final unterminated JSONL record and its start offset."""
+    cursor = end
+    suffix: list[bytes] = []
+    while cursor > 0:
+        start = max(0, cursor - 64 * 1024)
+        os.lseek(descriptor, start, os.SEEK_SET)
+        chunk = os.read(descriptor, cursor - start)
+        delimiter = chunk.rfind(b"\n")
+        if delimiter >= 0:
+            return start + delimiter + 1, chunk[delimiter + 1 :] + b"".join(reversed(suffix))
+        suffix.append(chunk)
+        cursor = start
+    return 0, b"".join(reversed(suffix))
+
+
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
     """Append one complete invocation to the cross-worktree run history.
 
@@ -91,17 +110,13 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         end = os.lseek(descriptor, 0, os.SEEK_END)
         if end:
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            existing = bytearray()
-            while chunk := os.read(descriptor, 64 * 1024):
-                existing.extend(chunk)
-            if not existing.endswith(b"\n"):
-                last_newline = existing.rfind(b"\n")
-                trailing = bytes(existing[last_newline + 1 :])
+            os.lseek(descriptor, end - 1, os.SEEK_SET)
+            if os.read(descriptor, 1) != b"\n":
+                trailing_start, trailing = _trailing_history_record(descriptor, end=end)
                 try:
                     json.loads(trailing)
                 except (UnicodeDecodeError, json.JSONDecodeError):
-                    os.ftruncate(descriptor, last_newline + 1)
+                    os.ftruncate(descriptor, trailing_start)
                 else:
                     # A complete JSON record can lose only its framing newline
                     # during an interrupted append. Preserve it before adding
@@ -116,6 +131,70 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
             remaining = remaining[written:]
     finally:
         os.close(descriptor)
+
+
+def pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
+    """Return the last xdist worker request from a final pytest command."""
+    request: str | None = None
+    for index, argument in enumerate(cmd):
+        if argument in {"-n", "--numprocesses"}:
+            if index + 1 < len(cmd):
+                request = cmd[index + 1]
+        elif argument.startswith("--numprocesses="):
+            request = argument.removeprefix("--numprocesses=")
+        elif argument.startswith("-n") and len(argument) > 2:
+            request = argument[2:].removeprefix("=")
+    return request
+
+
+def worktree_fingerprint(root: Path | None = None) -> str:
+    """Fingerprint tracked changes plus exact non-ignored untracked content."""
+    checkout_root = (root or Path.cwd()).resolve()
+    digest = hashlib.sha256()
+    for command in (
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        ["git", "diff", "--binary", "HEAD", "--"],
+    ):
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=30, cwd=checkout_root)
+        except (OSError, subprocess.TimeoutExpired):
+            return "unavailable"
+        if result.returncode != 0:
+            return "unavailable"
+        digest.update(result.stdout)
+        digest.update(b"\0")
+    try:
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=30,
+            cwd=checkout_root,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if untracked.returncode != 0:
+        return "unavailable"
+    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
+        try:
+            path_text = os.fsdecode(raw_path)
+            path = checkout_root / path_text
+            mode = path.lstat().st_mode
+            digest.update(raw_path)
+            digest.update(b"\0")
+            if stat.S_ISLNK(mode):
+                digest.update(b"symlink\0")
+                digest.update(os.fsencode(os.readlink(path)))
+            elif stat.S_ISREG(mode):
+                digest.update(b"file\0")
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                digest.update(f"mode:{stat.S_IFMT(mode):o}".encode())
+            digest.update(b"\0")
+        except OSError:
+            return "unavailable"
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -339,12 +418,10 @@ def aggregate_pytest_statistics(
                 if isinstance(row, dict):
                     resources.append(row)
     explicit_worker_count: int | None = None
-    command_values = [str(value) for value in command]
-    for index, value in enumerate(command_values[:-1]):
-        if value in {"-n", "--numprocesses"}:
-            with contextlib.suppress(ValueError):
-                explicit_worker_count = int(command_values[index + 1])
-            break
+    worker_request = pytest_command_worker_request([str(value) for value in command])
+    if worker_request is not None:
+        with contextlib.suppress(ValueError):
+            explicit_worker_count = int(worker_request)
     basetemp_sizes = [
         int(size_value) * 1024 for row in resources if isinstance((size_value := row.get("basetemp_size_kb")), int)
     ]
@@ -571,7 +648,8 @@ class VerifyRun:
                 # An interrupted runner never returns through the normal
                 # post-subprocess merge. Fold shards here, before every
                 # aggregation path, so completed worker evidence survives.
-                merge_worker_events(step_dir / "events", step_dir / "events.jsonl")
+                with contextlib.suppress(OSError):
+                    merge_worker_events(step_dir / "events", step_dir / "events.jsonl")
                 statistics_path = step_dir / "statistics.json"
                 with contextlib.suppress(OSError, ValueError):
                     statistics = aggregate_pytest_statistics(
@@ -952,7 +1030,7 @@ def _try_acquire_pytest_basetemp_claim_lock(basetemp: Path) -> TextIO | None:
     return handle
 
 
-def _managed_pytest_basetemp_owner_alive(basetemp: Path) -> bool | None:
+def managed_pytest_basetemp_owner_alive(basetemp: Path) -> bool | None:
     """Return whether a positive managed claim still names a live process."""
     try:
         raw_identity = pytest_basetemp_claim_path(basetemp, kind="managed").read_text(encoding="utf-8").strip()
@@ -1525,7 +1603,7 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
         # both its claim and its fixture tree for that invocation to finish.
         return None
     try:
-        owner_alive = _managed_pytest_basetemp_owner_alive(basetemp)
+        owner_alive = managed_pytest_basetemp_owner_alive(basetemp)
         if owner_alive is True:
             return None
         # A serial pytest child may already have reclaimed this exact run-owned

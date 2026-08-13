@@ -74,7 +74,6 @@ from devtools.verify import (
     _testmon_database_state,
     _testmon_preflight,
     _testmon_seed_can_resume,
-    _worktree_fingerprint,
     build_verify_steps,
     main,
 )
@@ -96,6 +95,9 @@ from devtools.verify_runs import (
     pytest_tmpfs_budget_kb,
     resolve_pytest_basetemp_root,
     xdist_uninterruptible_stall_reason,
+)
+from devtools.verify_runs import (
+    worktree_fingerprint as _worktree_fingerprint,
 )
 
 
@@ -235,7 +237,6 @@ def test_default_verify_uses_adaptive_pytest_testmon(monkeypatch: pytest.MonkeyP
     assert "--testmon" in command
     assert "--testmon-noselect" not in command
     assert "--testmon-forceselect" in command
-    assert "--dist=loadgroup" in command
     assert "-n" in command
     assert command[command.index("-n") + 1] == "8"
     assert "--dist=loadgroup" in command
@@ -1062,6 +1063,9 @@ def test_aggregate_pytest_statistics_deduplicates_xdist_reports_and_terminal_fai
     assert result["xdist"]["worker_count"] == 2
     assert result["outcomes"] == {"error": 2}
 
+    compact_result = aggregate_pytest_statistics(step, command=["pytest", "--numprocesses=3"])
+    assert compact_result["xdist"]["worker_count"] == 3
+
 
 def test_aggregate_pytest_statistics_accounts_for_started_node_without_a_phase(tmp_path: Path) -> None:
     step = tmp_path / "step"
@@ -1470,6 +1474,14 @@ def test_print_history_accepts_verify_and_focused_run_records(
                 "exit_code": 1,
                 "steps": [{"name": "pytest focused", "duration_s": None, "exit": 1}],
             },
+            {
+                "finished_at": "2026-08-12T20:02:00+00:00",
+                "tier": "focused-test",
+                "git_head": "c" * 40,
+                "duration_s": "invalid",
+                "exit_code": None,
+                "steps": [{"name": "pytest interrupted", "duration_s": "invalid", "exit": None}],
+            },
         ],
     )
 
@@ -1479,6 +1491,7 @@ def test_print_history_accepts_verify_and_focused_run_records(
     assert "quick" in output
     assert "focused-" in output
     assert "pytest focused(0s FAIL)" in output
+    assert "pytest interrupted(0s FAIL)" in output
 
 
 def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path: Path) -> None:
@@ -1503,6 +1516,30 @@ def test_verify_history_repairs_or_frames_an_incomplete_trailing_record(tmp_path
 
     rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
     assert rows == [{"sequence": 0}, {"sequence": 1}, {"sequence": 2}]
+
+
+def test_verify_history_append_reads_only_the_trailing_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_bytes(b'{"padding":"' + (b"x" * (5 * 1024 * 1024)) + b'"}\n{"interrupted":')
+    bytes_read = 0
+    real_read = os.read
+
+    def measured_read(descriptor: int, count: int) -> bytes:
+        nonlocal bytes_read
+        payload = real_read(descriptor, count)
+        bytes_read += len(payload)
+        return payload
+
+    monkeypatch.setattr(os, "read", measured_read)
+
+    append_verify_history({"sequence": 1}, path=history)
+
+    assert bytes_read < 128 * 1024
+    assert json.loads(history.read_text(encoding="utf-8").splitlines()[-1]) == {"sequence": 1}
 
 
 def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3864,6 +3901,7 @@ def test_run_reads_structured_pytest_report() -> None:
     with (
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=report),
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
     ):
         rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "--testmon", "-n", "8"])
 
@@ -4004,6 +4042,55 @@ def test_pytest_run_preserves_other_lane_reports(
     assert metadata["report_path"] is None
     assert metadata["report_status"] == "missing"
     assert metadata["junitxml_path"] == str(isolated_junit)
+
+
+def test_managed_pytest_run_reads_only_its_invocation_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    run = VerifyRun(tier="focused-test", argv=[], git_head="head", root=tmp_path)
+    seen_report: Path | None = None
+
+    def fake_pytest(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal seen_report
+        seen_report = verify._pytest_json_report_path(cmd)
+        assert seen_report is not None
+        assert seen_report.parent == run.run_dir
+        seen_report.write_text('{"summary":{"passed":1,"total":1}}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "1 passed in 0.01s\n", "")
+
+    with patch("devtools.verify._run_pytest_with_heartbeat", side_effect=fake_pytest):
+        rc, _elapsed, metadata = _run(
+            "pytest focused",
+            [sys.executable, "-m", "pytest", f"--json-report-file={PYTEST_REPORT_PATH}"],
+            run=run,
+        )
+
+    assert rc == 0
+    assert seen_report is not None and not seen_report.exists()
+    assert metadata["report_path"].endswith("/pytest-report.json")
+
+
+def test_pytest_progress_is_durable_per_step_and_mirrored_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    artifact_dir = tmp_path / ".cache" / "verify" / "runs" / "run" / "steps" / "01-pytest"
+
+    verify._write_pytest_progress(
+        event="running",
+        cmd=["pytest"],
+        started_at=0.0,
+        elapsed_s=0.0,
+        artifact_dir=str(artifact_dir),
+    )
+
+    durable = json.loads((artifact_dir / "progress.json").read_text(encoding="utf-8"))
+    current = json.loads((tmp_path / PYTEST_PROGRESS_PATH).read_text(encoding="utf-8"))
+    assert durable == current
+    assert durable["event"] == "running"
 
 
 def test_pytest_run_terminates_after_runtime_budget(
@@ -4491,7 +4578,7 @@ def test_testmon_coverage_receipts_are_content_exact() -> None:
     assert _matching_testmon_coverage(paths) is None
 
     TESTMON_SEED_STAMP.unlink()
-    with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
+    with patch("devtools.verify.worktree_fingerprint", return_value="affected"):
         _record_testmon_affected_coverage(
             executable_paths=paths,
             selected_count=3,
@@ -4501,11 +4588,11 @@ def test_testmon_coverage_receipts_are_content_exact() -> None:
         assert _matching_testmon_coverage(paths) == "successful_affected_run"
         assert _matching_testmon_coverage(("polylogue/other.py",)) is None
 
-    with patch("devtools.verify._worktree_fingerprint", return_value="changed"):
+    with patch("devtools.verify.worktree_fingerprint", return_value="changed"):
         assert _matching_testmon_coverage(paths) is None
 
     TESTMON_AFFECTED_STAMP.write_text(json.dumps({"identity": {"worktree_fingerprint": "affected"}}))
-    with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
+    with patch("devtools.verify.worktree_fingerprint", return_value="affected"):
         assert _matching_testmon_coverage(paths) is None
 
 

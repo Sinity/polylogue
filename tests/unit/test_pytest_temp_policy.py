@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import shutil
 import subprocess
@@ -393,6 +394,38 @@ def test_claim_lock_inode_stays_contended_after_managed_claim_clear(tmp_path: Pa
     assert lock_path.is_file()
 
 
+def test_claim_lock_failure_closes_handle_and_releases_thread_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    basetemp = tmp_path / "pytest-polylogue-lock-failure"
+    lock_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="lock")
+
+    with monkeypatch.context() as scoped:
+
+        def fail_lock(*_args: object) -> None:
+            raise OSError("lock failed")
+
+        scoped.setattr(fcntl, "flock", fail_lock)
+        assert conftest._acquire_basetemp_claim_lock(basetemp, blocking=True) is None
+
+    assert not conftest._BASE_TEMP_CLAIM_THREAD_LOCKS[lock_path].locked()
+    handle = conftest._acquire_basetemp_claim_lock(basetemp, blocking=True)
+    assert handle is not None
+    conftest._release_basetemp_claim_lock(basetemp)
+
+
+def test_explicit_basetemp_claim_failure_is_a_usage_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    basetemp = tmp_path / "unclaimable"
+    monkeypatch.setattr(conftest, "_acquire_basetemp_claim_lock", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(pytest.UsageError, match="cannot claim the explicit basetemp"):
+        conftest._mark_caller_owned_basetemp(basetemp)
+
+
 def test_managed_basetemp_claim_collision_is_rejected_across_processes(tmp_path: Path) -> None:
     basetemp = tmp_path / "pytest-polylogue-managed-collision"
     conftest._mark_basetemp_owner(basetemp)
@@ -440,14 +473,14 @@ def test_stale_sweep_and_explicit_claim_are_atomic_for_one_path(
     sweep_checked = threading.Event()
     allow_sweep = threading.Event()
     caller_claimed = threading.Event()
-    original_owner_alive = conftest._basetemp_owner_alive
+    original_owner_alive = verify_runs.managed_pytest_basetemp_owner_alive
 
     def pause_after_admission(entry: Path) -> bool | None:
         sweep_checked.set()
         assert allow_sweep.wait(timeout=2)
         return original_owner_alive(entry)
 
-    monkeypatch.setattr(conftest, "_basetemp_owner_alive", pause_after_admission)
+    monkeypatch.setattr(verify_runs, "managed_pytest_basetemp_owner_alive", pause_after_admission)
     sweeper = threading.Thread(
         target=conftest._sweep_stale_polylogue_basetemps,
         kwargs={"max_age_s": 60, "roots": (tmp_path,)},
@@ -606,6 +639,27 @@ def test_sessionfinish_leaves_xdist_basetemp_for_supervisor_cleanup(
     conftest.pytest_sessionfinish(cast("pytest.Session", session), 0)
 
     assert basetemp.exists()
+
+
+@pytest.mark.parametrize("worker_id", [None, "gw0"])
+def test_sessionfinish_releases_explicit_claim_without_managed_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    worker_id: str | None,
+) -> None:
+    basetemp = tmp_path / "pytest-polylogue-explicit"
+    conftest._mark_caller_owned_basetemp(basetemp)
+    lock_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="lock")
+    session = SimpleNamespace(config=SimpleNamespace(option=SimpleNamespace(basetemp=str(basetemp), numprocesses=0)))
+    monkeypatch.delenv("POLYLOGUE_PYTEST_RUN_ID", raising=False)
+    if worker_id is None:
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    else:
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", worker_id)
+
+    conftest.pytest_sessionfinish(cast("pytest.Session", session), 0)
+
+    assert not conftest._BASE_TEMP_CLAIM_THREAD_LOCKS[lock_path].locked()
 
 
 def test_sessionfinish_reclaims_only_its_managed_basetemp(

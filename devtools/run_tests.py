@@ -45,14 +45,39 @@ from devtools.verify import (
     PYTEST_SELECTION_PATH,
     PYTEST_SUMMARY_PATH,
     _clear_pytest_report,
-    _pytest_command_worker_request,
     _run,
-    _worktree_fingerprint,
 )
-from devtools.verify_runs import VerifyRun, append_verify_history, git_head
+from devtools.verify_runs import (
+    VerifyRun,
+    append_verify_history,
+    git_head,
+    pytest_command_worker_request,
+    worktree_fingerprint,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
+
+
+def _normalize_selection_paths(selection: list[str], *, invocation_directory: Path) -> list[str]:
+    """Preserve path selections relative to the directory that invoked devtools."""
+    normalized: list[str] = []
+    for argument in selection:
+        if argument.startswith("-"):
+            normalized.append(argument)
+            continue
+        path_text, separator, node_suffix = argument.partition("::")
+        candidate = Path(path_text)
+        if candidate.is_absolute() or not (invocation_directory / candidate).exists():
+            normalized.append(argument)
+            continue
+        resolved = (invocation_directory / candidate).resolve()
+        try:
+            anchored = resolved.relative_to(ROOT).as_posix()
+        except ValueError:
+            anchored = str(resolved)
+        normalized.append(f"{anchored}{separator}{node_suffix}")
+    return normalized
 
 
 def _anchor_test_paths() -> None:
@@ -78,7 +103,7 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
     if any(arg == "--dist" or arg.startswith("--dist=") for arg in selection):
         return []
     command = [*selection, *worker_args]
-    request = _pytest_command_worker_request(command)
+    request = pytest_command_worker_request(command)
     if request in {None, "0"}:
         return []
     return ["--dist=loadgroup"]
@@ -132,6 +157,9 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    invocation_directory = Path.cwd()
+    selection = list(sys.argv[1:] if argv is None else argv)
+    selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
     try:
         fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools test")
@@ -142,7 +170,6 @@ def main(argv: list[str] | None = None) -> int:
     environment_fingerprint = fingerprint.as_dict()
     sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
-    selection = list(sys.argv[1:] if argv is None else argv)
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
     # flag; it is meaningless for a streamed test run, so drop it before pytest.
@@ -168,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             root=ROOT,
             polylogue_import_path=str(polylogue_import_path),
             environment_fingerprint=environment_fingerprint,
-            worktree_fingerprint=_worktree_fingerprint(ROOT),
+            worktree_fingerprint=worktree_fingerprint(ROOT),
         )
         started = time.monotonic()
         try:

@@ -125,8 +125,9 @@ stale per-run dirs from every known root (`/dev/shm`, `/realm/tmp/polylogue-pyte
 `/tmp/polylogue-pytest`, plus any explicit configured root) — never based on
 age alone: each managed basetemp carries a PID plus process-start identity,
 and a directory whose exact owner process is still alive is never removed
-regardless of age. An owner that cannot be confirmed dead (no marker) gets a
-multi-hour grace period rather than the normal ~30-minute one. The sweeper
+regardless of age. A tree without a valid managed claim or whose owner cannot
+be confirmed dead is never removed. The thirty-minute age threshold applies
+only after a positive managed claim identifies a dead owner. The sweeper
 restores owner-write permission only after a tree is adjudicated stale, so
 published read-only fixture copies cannot leak tmpfs indefinitely. Shared
 `pytest-polylogue-*-seeded-*` caches are never touched by the sweep — they

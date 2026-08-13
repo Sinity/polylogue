@@ -63,6 +63,7 @@ def test_static_gates_accept_exactly_bound_last_verify_result(monkeypatch: pytes
             }
         )
     )
+    monkeypatch.setattr(evidence_dashboard, "VERIFY_HISTORY_PATH", tmp_path / "history.jsonl")
     monkeypatch.setattr(evidence_dashboard, "git_head", lambda _root: "current-head")
     monkeypatch.setattr(evidence_dashboard, "git_dirty", lambda _root: False)
     monkeypatch.setattr(evidence_dashboard, "_worktree_fingerprint", lambda _root: "current-fingerprint")

@@ -31,10 +31,10 @@ import selectors
 import shlex
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +44,7 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
+from devtools.pytest_progress_plugin import merge_worker_collection_payloads
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
@@ -102,9 +103,11 @@ from devtools.verify_runs import (
     latest_event_from_paths,
     normalize_pytest_basetemp_env,
     pytest_basetemp_path,
+    pytest_command_worker_request,
     pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     utc_now,
+    worktree_fingerprint,
     xdist_uninterruptible_stall_reason,
 )
 from polylogue.scenarios.workload import (
@@ -287,14 +290,28 @@ def _print_history(file: Path | None = None) -> None:
         tier = str(entry.get("tier") or "unknown")[:8]
         head = str(entry.get("git_head") or "unknown")[:8]
         duration = entry.get("total_duration_s", entry.get("duration_s", 0.0))
-        dur = f"{float(duration or 0.0):.0f}s"
-        ec = int(entry.get("exit_code", 1))
+        try:
+            dur = f"{float(duration or 0.0):.0f}s"
+        except (TypeError, ValueError):
+            dur = "0s"
+        raw_exit = entry.get("exit_code", 1)
+        try:
+            ec = int(raw_exit if raw_exit is not None else 1)
+        except (TypeError, ValueError):
+            ec = 1
         rendered_steps: list[str] = []
         for step in entry.get("steps", []):
             if not isinstance(step, dict):
                 continue
-            step_duration = float(step.get("duration_s") or 0.0)
-            step_exit = int(step.get("exit", 1))
+            try:
+                step_duration = float(step.get("duration_s") or 0.0)
+            except (TypeError, ValueError):
+                step_duration = 0.0
+            raw_step_exit = step.get("exit", 1)
+            try:
+                step_exit = int(raw_step_exit if raw_step_exit is not None else 1)
+            except (TypeError, ValueError):
+                step_exit = 1
             rendered_steps.append(f"{step.get('name', 'unknown')}({step_duration:.0f}s{' FAIL' if step_exit else ''})")
         steps = ", ".join(rendered_steps)
         print(f"{ts:<20} {tier:<8} {head:<10} {dur:>7} {ec:>4}  {steps}")
@@ -394,7 +411,7 @@ def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -
 def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     """Return verify metadata that explains the pytest worker policy."""
     metadata: dict[str, Any] = {}
-    metadata["pytest_workers"] = _pytest_command_worker_request(cmd) or "unset"
+    metadata["pytest_workers"] = pytest_command_worker_request(cmd) or "unset"
     if "--testmon" in cmd:
         metadata["pytest_selection"] = "testmon-noselect" if "--testmon-noselect" in cmd else "testmon"
     else:
@@ -630,11 +647,16 @@ def _write_pytest_output(stdout: str, stderr: str) -> None:
 
 def _persist_pytest_output(stdout: str, stderr: str, *, artifacts: PytestStepArtifacts | None) -> None:
     """Persist drained pytest output on both ordinary and exceptional exits."""
-    _write_pytest_output(stdout, stderr)
+    with contextlib.suppress(OSError):
+        _write_pytest_output(stdout, stderr)
     if artifacts is not None:
-        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
-        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
-        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+        for path, content in (
+            (artifacts.stdout_path, stdout),
+            (artifacts.stderr_path, stderr),
+            (artifacts.output_path, stdout + stderr),
+        ):
+            with contextlib.suppress(OSError):
+                path.write_text(content, encoding="utf-8")
 
 
 def _write_pytest_progress(
@@ -698,10 +720,12 @@ def _write_pytest_progress(
         }
         if latest_event.get("event") == "test_started" and isinstance(latest_event.get("nodeid"), str):
             payload["current_test_nodeid"] = latest_event["nodeid"]
-    PYTEST_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PYTEST_PROGRESS_PATH.with_name(f"{PYTEST_PROGRESS_PATH.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    tmp.replace(PYTEST_PROGRESS_PATH)
+    targets = [PYTEST_PROGRESS_PATH]
+    if artifact_dir is not None:
+        targets.insert(0, Path(artifact_dir) / "progress.json")
+    for target in dict.fromkeys(targets):
+        with contextlib.suppress(OSError):
+            _atomic_write_json(target, payload)
 
 
 def _process_cpu_seconds(pid: int) -> float | None:
@@ -1594,6 +1618,9 @@ def _run(
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
     has_managed_pytest_child = label == "bench slo"
+    if is_pytest and run is not None:
+        isolated_report = run.run_dir / f"pytest-report-{uuid.uuid4().hex}.json"
+        cmd = [f"--json-report-file={isolated_report}" if arg.startswith("--json-report-file=") else arg for arg in cmd]
     if is_pytest:
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
@@ -1719,8 +1746,17 @@ def _run(
             metadata["report_status"] = "present"
             if artifacts is not None:
                 durable_report_path = artifacts.step_dir / PYTEST_CANONICAL_REPORT_NAME
-                shutil.copyfile(report_path, durable_report_path)
-                metadata["report_path"] = str(durable_report_path.relative_to(run.root if run is not None else ROOT))
+                try:
+                    shutil.copyfile(report_path, durable_report_path)
+                except OSError:
+                    metadata["report_path"] = None
+                else:
+                    metadata["report_path"] = str(
+                        durable_report_path.relative_to(run.root if run is not None else ROOT)
+                    )
+                    if report_path != durable_report_path:
+                        with contextlib.suppress(OSError):
+                            report_path.unlink()
         else:
             # Fallback: terminal scraping when the structured report is
             # missing (pytest crashed before writing it, or the plugin is
@@ -1746,7 +1782,11 @@ def _run(
         selection_path = artifacts.selection_path if artifacts is not None else PYTEST_SELECTION_PATH
         if interrupted or containment_error is not None:
             _recover_worker_collection_facts(
-                events_dir=artifacts.events_dir if artifacts is not None else Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]),
+                events_dir=(
+                    artifacts.events_dir
+                    if artifacts is not None
+                    else Path(env.get("POLYLOGUE_PYTEST_EVENTS_DIR", str(PYTEST_EVENTS_DIR)))
+                ),
                 selection_path=selection_path,
             )
         selection = _read_json_artifact(selection_path)
@@ -1922,7 +1962,7 @@ def _run(
             }
             artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")
     elif interrupted:
-        metadata = {"diagnosis": "verification_interrupted", "termination_reason": "operator_interrupt"}
+        metadata.update({"diagnosis": "verification_interrupted", "termination_reason": "operator_interrupt"})
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -2369,25 +2409,6 @@ BROAD_PYTEST_STEP_LABELS = {
 }
 
 
-def _pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
-    """Return the last xdist worker request from a final pytest command.
-
-    ``devtools test`` forwards pytest arguments unchanged, so this accepts
-    both xdist spellings and their compact forms.  The final occurrence wins,
-    matching pytest's normal option precedence.
-    """
-    request: str | None = None
-    for index, arg in enumerate(cmd):
-        if arg in {"-n", "--numprocesses"}:
-            if index + 1 < len(cmd):
-                request = cmd[index + 1]
-        elif arg.startswith("--numprocesses="):
-            request = arg.removeprefix("--numprocesses=")
-        elif arg.startswith("-n") and len(arg) > 2:
-            request = arg[2:].removeprefix("=")
-    return request
-
-
 def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | None = None) -> int:
     """Return a fail-closed reservation for the final pytest command.
 
@@ -2395,7 +2416,7 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
     instead of guessing one worker; an unrecognised xdist value is treated the
     same way so malformed or future values cannot weaken admission.
     """
-    request = _pytest_command_worker_request(cmd)
+    request = pytest_command_worker_request(cmd)
     if request is None:
         return 0
     if request == "auto":
@@ -2455,7 +2476,7 @@ def _changed_executable_paths() -> tuple[str, ...]:
 def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any]:
     """Identify the exact worktree contents covered by an affected/full run."""
     return {
-        "worktree_fingerprint": _worktree_fingerprint(),
+        "worktree_fingerprint": worktree_fingerprint(),
         "executable_paths": list(executable_paths),
     }
 
@@ -2547,56 +2568,6 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _worktree_fingerprint(root: Path | None = None) -> str:
-    """Fingerprint tracked changes plus exact non-ignored untracked content."""
-    checkout_root = (root or Path.cwd()).resolve()
-    digest = hashlib.sha256()
-    for command in (
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        ["git", "diff", "--binary", "HEAD", "--"],
-    ):
-        try:
-            result = subprocess.run(command, capture_output=True, timeout=30, cwd=checkout_root)
-        except (OSError, subprocess.TimeoutExpired):
-            return "unavailable"
-        if result.returncode != 0:
-            return "unavailable"
-        digest.update(result.stdout)
-        digest.update(b"\0")
-    try:
-        untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-            timeout=30,
-            cwd=checkout_root,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return "unavailable"
-    if untracked.returncode != 0:
-        return "unavailable"
-    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
-        try:
-            path_text = os.fsdecode(raw_path)
-            path = checkout_root / path_text
-            mode = path.lstat().st_mode
-            digest.update(raw_path)
-            digest.update(b"\0")
-            if stat.S_ISLNK(mode):
-                digest.update(b"symlink\0")
-                digest.update(os.fsencode(os.readlink(path)))
-            elif stat.S_ISREG(mode):
-                digest.update(b"file\0")
-                with path.open("rb") as handle:
-                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                        digest.update(chunk)
-            else:
-                digest.update(f"mode:{stat.S_IFMT(mode):o}".encode())
-            digest.update(b"\0")
-        except OSError:
-            return "unavailable"
-    return digest.hexdigest()
-
-
 def _testmon_seed_identity(
     *,
     git_head: str | None,
@@ -2612,7 +2583,7 @@ def _testmon_seed_identity(
     return {
         "git_head": git_head,
         "git_tree": git_tree,
-        "worktree_fingerprint": _worktree_fingerprint(),
+        "worktree_fingerprint": worktree_fingerprint(),
         "python": sys.version,
         "skip_slow": skip_slow,
         "lab": lab,
@@ -2635,24 +2606,10 @@ def _recover_worker_collection_facts(*, events_dir: Path, selection_path: Path) 
     the runner recovers the same canonical worker fact before it terminalizes
     the durable step record.
     """
-    payloads: list[tuple[str, int, str, dict[str, Any]]] = []
-    for path in events_dir.glob("*.collection.json"):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        worker_id = payload.get("worker_id")
-        pid = payload.get("pid")
-        if isinstance(worker_id, str) and isinstance(pid, int):
-            payloads.append((worker_id, pid, path.name, payload))
-    if not payloads:
+    merged = merge_worker_collection_payloads(events_dir)
+    if merged is None:
         return False
-    payloads.sort()
-    selection = dict(payloads[0][3])
-    durations = [payload.get("collection_duration_s") for *_ignored, payload in payloads]
-    numeric_durations = [duration for duration in durations if isinstance(duration, int | float)]
-    if numeric_durations:
-        selection["collection_duration_s"] = max(numeric_durations)
+    selection = dict(merged)
     selection.update(
         {
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -3599,14 +3556,14 @@ def main(argv: list[str] | None = None) -> int:
 
     head = _git_head()
     t0 = time.monotonic()
-    worktree_fingerprint = _worktree_fingerprint()
+    checkout_fingerprint = worktree_fingerprint()
     verify_run = VerifyRun(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
         polylogue_import_path=str(polylogue_import_path),
         environment_fingerprint=environment_fingerprint,
-        worktree_fingerprint=worktree_fingerprint,
+        worktree_fingerprint=checkout_fingerprint,
     )
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False
@@ -3820,6 +3777,26 @@ def main(argv: list[str] | None = None) -> int:
                 f"inspect {TESTMON_SEED_ATTEMPT}.\n"
             )
 
+    final_checkout_fingerprint = worktree_fingerprint()
+    if (
+        checkout_fingerprint != "unavailable"
+        and final_checkout_fingerprint != "unavailable"
+        and final_checkout_fingerprint != checkout_fingerprint
+    ):
+        step_results.append(
+            {
+                "name": "checkout stability",
+                "duration_s": 0.0,
+                "exit": 125,
+                "diagnosis": "checkout_changed_during_verification",
+                "initial_worktree_fingerprint": checkout_fingerprint,
+                "final_worktree_fingerprint": final_checkout_fingerprint,
+            }
+        )
+        if exit_code == 0:
+            exit_code = 125
+        sys.stderr.write("verify: checkout contents changed during verification; evidence is not exact-head.\n")
+
     total_duration = round(time.monotonic() - t0, 2)
 
     # Build history entry.
@@ -3829,7 +3806,8 @@ def main(argv: list[str] | None = None) -> int:
         "tier": tier,
         "run_id": verify_run.run_id,
         "checkout_root": str(ROOT.resolve()),
-        "worktree_fingerprint": worktree_fingerprint,
+        "worktree_fingerprint": checkout_fingerprint,
+        "final_worktree_fingerprint": final_checkout_fingerprint,
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,

@@ -23,14 +23,9 @@ from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
-# ---------------------------------------------------------------------------
-# Place pytest temp directories on the NVMe scratch area by default.
-# Test SQLite databases are write-heavy; /tmp lives on the root SSD on the
-# operator workstation, while /realm/tmp is the high-write-budget scratch
-# volume. /dev/shm remains available for explicit performance lanes, but it
-# must not be the default: interrupted full/xdist runs can otherwise leave
-# multi-GiB RAM-backed basetemps resident until reboot.
-# ---------------------------------------------------------------------------
+# Basetemp placement is selected once by ``resolve_pytest_basetemp_root``.
+# This conftest owns only pytest-side claims, stale-tree reclamation, and the
+# optional btrfs no-CoW mark for a disk-backed selection.
 from devtools import verify_runs
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
@@ -198,7 +193,8 @@ def _mark_basetemp_owner(basetemp: Path) -> None:
 def _mark_caller_owned_basetemp(basetemp: Path) -> None:
     """Claim an explicit ``--basetemp`` before pytest may replace its tree."""
     handle = _acquire_basetemp_claim_lock(basetemp, blocking=True)
-    assert handle is not None
+    if handle is None:
+        raise pytest.UsageError(f"pytest: cannot claim the explicit basetemp: {basetemp}")
     with contextlib.suppress(OSError):
         basetemp.mkdir(parents=True, exist_ok=True)
         clear_managed_pytest_basetemp_claim(basetemp)
@@ -211,19 +207,20 @@ def _acquire_basetemp_claim_lock(basetemp: Path, *, blocking: bool) -> TextIO | 
     thread_lock = _BASE_TEMP_CLAIM_THREAD_LOCKS.setdefault(lock_path, threading.Lock())
     if not thread_lock.acquire(blocking=blocking):
         return None
-    with contextlib.suppress(OSError):
+    try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = lock_path.open("a+", encoding="utf-8")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        except BlockingIOError:
-            handle.close()
-            thread_lock.release()
-            return None
-        _BASE_TEMP_CLAIM_LOCKS[lock_path] = handle
-        return handle
-    thread_lock.release()
-    return None
+    except OSError:
+        thread_lock.release()
+        return None
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except OSError:
+        handle.close()
+        thread_lock.release()
+        return None
+    _BASE_TEMP_CLAIM_LOCKS[lock_path] = handle
+    return handle
 
 
 def _release_basetemp_claim_lock(basetemp: Path) -> None:
@@ -236,21 +233,6 @@ def _release_basetemp_claim_lock(basetemp: Path) -> None:
     thread_lock = _BASE_TEMP_CLAIM_THREAD_LOCKS.get(lock_path)
     if thread_lock is not None and thread_lock.locked():
         thread_lock.release()
-
-
-def _basetemp_owner_alive(entry: Path) -> bool | None:
-    """True/False when the owner marker resolves a live/dead process, else None."""
-    marker = _basetemp_claim_path(entry, kind="managed")
-    try:
-        raw_identity = marker.read_text(encoding="utf-8").strip()
-        raw_pid, separator, raw_start_ticks = raw_identity.partition(":")
-        pid = int(raw_pid)
-        start_ticks = int(raw_start_ticks) if separator else None
-    except (OSError, ValueError):
-        return None
-    if not Path(f"/proc/{pid}").exists():
-        return False
-    return start_ticks is None or _process_start_ticks(pid) == start_ticks
 
 
 def _remove_stale_basetemp(entry: Path) -> None:
@@ -352,7 +334,7 @@ def _sweep_stale_polylogue_basetemps(
                         continue
                     if not _basetemp_claim_path(entry, kind="managed").is_file():
                         continue
-                    owner_alive = _basetemp_owner_alive(entry)
+                    owner_alive = verify_runs.managed_pytest_basetemp_owner_alive(entry)
                     if owner_alive is not False:
                         continue
                     if entry.stat().st_mtime < cutoff:
@@ -375,18 +357,18 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     teardown, where xdist/json-report may still be flushing controller/worker
     artifacts.
     """
-    if os.environ.get("PYTEST_XDIST_WORKER"):
-        return
-    if not os.environ.get("POLYLOGUE_PYTEST_RUN_ID"):
-        return
-    numprocesses = getattr(session.config.option, "numprocesses", None)
-    if numprocesses not in (None, 0, "0"):
-        return
     basetemp = session.config.option.basetemp
     if not basetemp:
         return
     basetemp_path = Path(str(basetemp))
     try:
+        if os.environ.get("PYTEST_XDIST_WORKER"):
+            return
+        if not os.environ.get("POLYLOGUE_PYTEST_RUN_ID"):
+            return
+        numprocesses = getattr(session.config.option, "numprocesses", None)
+        if numprocesses not in (None, 0, "0"):
+            return
         if str(basetemp_path) == os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"):
             shutil.rmtree(basetemp_path, ignore_errors=True)
             if not basetemp_path.exists():

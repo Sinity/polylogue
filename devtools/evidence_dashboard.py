@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
-from devtools.verify import _worktree_fingerprint
 from devtools.verify_runs import VERIFY_HISTORY_PATH, git_dirty, git_head
+from devtools.verify_runs import worktree_fingerprint as _worktree_fingerprint
 
 ROOT = _get_root()
 
