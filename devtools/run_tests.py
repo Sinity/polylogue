@@ -349,12 +349,20 @@ def main(argv: list[str] | None = None) -> int:
                 "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
                 or mutation_observation.unavailable
             ):
-                metadata["diagnosis"] = "checkout_fingerprint_unavailable"
+                checkout_diagnosis = "checkout_fingerprint_unavailable"
+                if rc == 130:
+                    metadata["checkout_diagnosis"] = checkout_diagnosis
+                else:
+                    metadata["diagnosis"] = checkout_diagnosis
                 if rc == 0:
                     rc = 125
                 sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
             elif mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint:
-                metadata["diagnosis"] = "checkout_changed_during_focused_test"
+                checkout_diagnosis = "checkout_changed_during_focused_test"
+                if rc == 130:
+                    metadata["checkout_diagnosis"] = checkout_diagnosis
+                else:
+                    metadata["diagnosis"] = checkout_diagnosis
                 metadata["transient_checkout_mutation"] = mutation_observation.changed
                 metadata["checkout_mutation_path"] = mutation_observation.observed_path
                 if rc == 0:
@@ -371,6 +379,9 @@ def main(argv: list[str] | None = None) -> int:
             final_worktree_fingerprint=final_worktree_fingerprint,
             checkout_mutation_path=mutation_observation.observed_path,
         )
+        recorded_checkout_diagnosis = metadata.get("checkout_diagnosis")
+        if isinstance(recorded_checkout_diagnosis, str):
+            payload["checkout_diagnosis"] = recorded_checkout_diagnosis
         append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))

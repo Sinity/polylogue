@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -97,7 +97,7 @@ def _fake_run(
         env = kwargs.get("env")
         if isinstance(env, dict) and merge_gate.VERIFICATION_RECEIPT_PATH_ENV in env:
             cwd = kwargs.get("cwd")
-            checkout_root = Path(cwd) if isinstance(cwd, str) else Path.cwd()
+            checkout_root = Path(cwd) if cwd is not None else Path.cwd()
             Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
                 json.dumps(
                     {
@@ -118,6 +118,32 @@ def _fake_run(
         )
 
     return _run
+
+
+def _write_terminal_receipt(
+    kwargs: Mapping[str, Any],
+    *,
+    head: str = "merged-master",
+    scope: str = "release-baseline",
+    release_allowed: bool = True,
+    terminal_authorization: str | None = None,
+) -> None:
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    cwd = Path(kwargs["cwd"])
+    Path(env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV]).write_text(
+        json.dumps(
+            {
+                "invocation_id": env[merge_gate.VERIFICATION_INVOCATION_ID_ENV],
+                "git_head": head,
+                "checkout_root": str(cwd),
+                "exit_code": 0,
+                "verification_scope": scope,
+                "release_baseline_allowed": release_allowed,
+                "terminal_authorization": terminal_authorization,
+            }
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +529,7 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
 
     def run(cmd: list[str], **kwargs: Any) -> MagicMock:
         if cmd[:3] == ["devtools", "verify", "--all"]:
+            _write_terminal_receipt(kwargs)
             return MagicMock(
                 returncode=0,
                 stdout=json.dumps(
@@ -596,7 +623,7 @@ def test_post_merge_terminal_verify_uses_target_checkout_devshell(
     monkeypatch.chdir(tmp_path)
     commands: list[list[str]] = []
 
-    def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
         commands.append(cmd)
         if cmd[:3] == ["git", "worktree", "add"]:
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -615,6 +642,7 @@ def test_post_merge_terminal_verify_uses_target_checkout_devshell(
                     python_executable=target / ".venv" / "bin" / "python",
                 )
             assert fingerprint.clean
+            _write_terminal_receipt(kwargs)
             return MagicMock(
                 returncode=0,
                 stdout=json.dumps(
@@ -822,6 +850,7 @@ def test_record_full_verify_clears_pending_prs(monkeypatch: pytest.MonkeyPatch, 
     merge_boundary._append_merge_entry(1, "sha1", "some title")
 
     def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        _write_terminal_receipt(kwargs)
         return MagicMock(
             returncode=0,
             stdout=json.dumps(
@@ -840,6 +869,29 @@ def test_record_full_verify_clears_pending_prs(monkeypatch: pytest.MonkeyPatch, 
 
     assert exit_code == 0
     assert merge_boundary.cmd_train_status(as_json=False) == 0
+
+
+def test_record_full_verify_rejects_plausible_unbound_stdout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda _cmd, **_kwargs: MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "git_head": "merged-master",
+                    "verification_scope": "release-baseline",
+                    "release_baseline_allowed": True,
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 1
+    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
 
 
 def test_record_full_verify_propagates_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -903,22 +955,16 @@ def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization
 ) -> None:
     monkeypatch.chdir(tmp_path)
     merge_boundary._append_merge_entry(1, "sha1", "some title")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda _cmd, **_kwargs: MagicMock(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "git_head": "merged-master",
-                    "verification_scope": "narrow-terminal",
-                    "terminal_authorization": "narrow-terminal",
-                    "release_baseline_allowed": True,
-                }
-            ),
-            stderr="",
-        ),
-    )
+
+    def run(_cmd: list[str], **kwargs: Any) -> MagicMock:
+        _write_terminal_receipt(
+            kwargs,
+            scope="narrow-terminal",
+            terminal_authorization="narrow-terminal",
+        )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
 
     assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 0
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is True
@@ -951,11 +997,12 @@ def test_concurrent_merge_during_terminal_verify_remains_pending(
     monkeypatch.chdir(tmp_path)
     inserted = False
 
-    def run(_cmd: list[str], **_kwargs: Any) -> MagicMock:
+    def run(_cmd: list[str], **kwargs: Any) -> MagicMock:
         nonlocal inserted
         if not inserted:
             inserted = True
             merge_boundary._append_merge_entry(99, "concurrent-sha", "concurrent merge")
+        _write_terminal_receipt(kwargs)
         return MagicMock(
             returncode=0,
             stdout=json.dumps(
@@ -982,7 +1029,7 @@ def test_concurrent_ledger_writer_cannot_lose_merge_entry(monkeypatch: pytest.Mo
     started = threading.Event()
     writer: threading.Thread | None = None
 
-    def run(_cmd: list[str], **_kwargs: Any) -> MagicMock:
+    def run(_cmd: list[str], **kwargs: Any) -> MagicMock:
         nonlocal writer
 
         def append() -> None:
@@ -992,6 +1039,7 @@ def test_concurrent_ledger_writer_cannot_lose_merge_entry(monkeypatch: pytest.Mo
         writer = threading.Thread(target=append)
         writer.start()
         assert started.wait(timeout=1)
+        _write_terminal_receipt(kwargs)
         return MagicMock(
             returncode=0,
             stdout=json.dumps(

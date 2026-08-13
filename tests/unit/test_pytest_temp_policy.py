@@ -451,7 +451,6 @@ def test_nested_supervised_explicit_basetemp_reuse_is_rejected_before_claiming(
     )
     monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_SCOPES", [])
     monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_BASETEMPS", set())
-    monkeypatch.setattr(conftest, "_ACTIVE_PYTEST_BASETEMPS", set())
     monkeypatch.setenv("POLYLOGUE_VERIFY_RUN_ID", run_id)
     monkeypatch.setenv("POLYLOGUE_PYTEST_RUN_ID", run_id)
     monkeypatch.setenv("POLYLOGUE_PYTEST_MANAGED_BASETEMP", str(active))

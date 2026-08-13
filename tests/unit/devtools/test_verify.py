@@ -1933,14 +1933,14 @@ def test_git_head_uses_bounded_authoritative_probe() -> None:
 def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_final_fingerprint(
     tmp_path: Path,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], check=True)
-    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
-    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
     tracked = tmp_path / "tracked.py"
     original = "VALUE = 1\n"
     tracked.write_text(original, encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], check=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
 
     monitor = CheckoutMutationMonitor(tmp_path)
     monitor.start()
@@ -1994,7 +1994,7 @@ def test_checkout_mutation_monitor_uses_gitignore_for_verifier_task_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".gitignore").write_text(".agent/*\n", encoding="utf-8")
     history = tmp_path / ".agent" / "task-history" / "tasks.jsonl"
     history.parent.mkdir(parents=True)
@@ -2039,7 +2039,7 @@ def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     tracked = tmp_path / "tracked.py"
     tracked.write_text("VALUE = 1\n", encoding="utf-8")
     calls: dict[str, object] = {}
@@ -2141,7 +2141,7 @@ def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_sour
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".gitignore").write_text(
         "browser-extension/node_modules/\ncustom/generated-output/\n",
         encoding="utf-8",
@@ -5427,10 +5427,14 @@ def test_verify_finalizes_runner_exception_after_open_step(
         raise RuntimeError("verification runner exploded")
 
     monkeypatch.setattr(verify, "_run", explode)
+    monotonic_values = iter((100.0, 107.5))
+    monkeypatch.setattr("devtools.verify.time.monotonic", lambda: next(monotonic_values))
 
     assert verify.main(["--quick", "--json"]) == 125
     assert history["exit_code"] == 125
     assert history["diagnosis"] == "verify_runner_exception"
+    assert history["duration_s"] == 7.5
+    assert history["verification_scope"] == "non-test"
     assert history["steps"][0]["status"] == "failed"
     assert history["steps"][0]["exit"] == 125
 
@@ -5505,6 +5509,16 @@ def test_verify_finalizes_and_discards_graph_when_post_pytest_path_authority_fai
     discard.assert_called_once_with()
     payload = json.loads(capsys.readouterr().out)
     assert payload["diagnosis"] == "testmon_changed_path_authority_unavailable"
+
+
+def test_testmon_changed_path_authority_refuses_missing_commit_binding() -> None:
+    changed_paths = MagicMock()
+
+    with patch("devtools.verify._changed_executable_paths", changed_paths):
+        with pytest.raises(PytestResourceError, match="changed-path authority is unavailable"):
+            verify._changed_paths_from_testmon_authority(None, "head")
+
+    changed_paths.assert_not_called()
 
 
 def test_verify_accepts_zero_testmon_selection_after_matching_coverage(

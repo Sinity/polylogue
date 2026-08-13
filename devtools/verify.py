@@ -3513,7 +3513,23 @@ def _discard_testmon_dependency_authority() -> None:
 # ── main ────────────────────────────────────────────────────────────
 
 
-_ACTIVE_VERIFY_RUN: VerifyRun | None = None
+_ACTIVE_VERIFY_RUN: tuple[VerifyRun, float, VerificationScope] | None = None
+
+
+def _planned_verification_scope(args: argparse.Namespace, *, full_pytest: bool) -> VerificationScope:
+    """Return the immutable scope requested before the runner starts."""
+    if args.quick or args.commit:
+        return VerificationScope.NON_TEST
+    if full_pytest or args.seed_testmon:
+        return VerificationScope.NARROW_TERMINAL if args.skip_slow else VerificationScope.RELEASE_BASELINE
+    return VerificationScope.AFFECTED
+
+
+def _changed_paths_from_testmon_authority(base_commit: str | None, head_commit: str | None) -> tuple[str, ...]:
+    """Require immutable refs before deriving affected executable paths."""
+    if base_commit is None or head_commit is None:
+        raise PytestResourceError("testmon changed-path authority is unavailable")
+    return _changed_executable_paths(base_commit, head_commit)
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -3592,6 +3608,7 @@ def _main(argv: list[str] | None = None) -> int:
     head = _git_head()
     full_pytest = bool(args.all or args.full)
     affected_testmon = not (args.quick or args.commit or args.seed_testmon or full_pytest)
+    planned_verification_scope = _planned_verification_scope(args, full_pytest=full_pytest)
     testmon_base_commit = _git_commit("origin/master") if affected_testmon else None
     testmon_head_commit = head if affected_testmon else None
     if affected_testmon and (testmon_base_commit is None or testmon_head_commit is None):
@@ -3621,7 +3638,7 @@ def _main(argv: list[str] | None = None) -> int:
         environment_fingerprint=environment_fingerprint,
         worktree_fingerprint=checkout_fingerprint,
     )
-    _ACTIVE_VERIFY_RUN = verify_run
+    _ACTIVE_VERIFY_RUN = (verify_run, t0, planned_verification_scope)
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False
     prepared_seed_attempt: dict[str, Any] | None = None
@@ -3713,10 +3730,8 @@ def _main(argv: list[str] | None = None) -> int:
                 refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
                 if refreshed_stamp is not None:
                     pending_testmon_stamp = refreshed_stamp
-            assert testmon_base_commit is not None
-            assert testmon_head_commit is not None
             try:
-                executable_paths = _changed_executable_paths(testmon_base_commit, testmon_head_commit)
+                executable_paths = _changed_paths_from_testmon_authority(testmon_base_commit, testmon_head_commit)
             except PytestResourceError as exc:
                 changed_path_authority_failed = True
                 executable_paths = ()
@@ -3989,8 +4004,8 @@ def _main(argv: list[str] | None = None) -> int:
             "release_baseline_allowed": seed_receipt["release_baseline_allowed"],
         }
 
+    verification_scope = planned_verification_scope
     if args.quick or args.commit:
-        verification_scope = VerificationScope.NON_TEST
         # Non-test verification is intentionally not release authority, but it
         # is still a typed verification receipt.  ``None`` made merge-gate
         # treat an explicit quick receipt as malformed instead of as a valid
@@ -3999,9 +4014,6 @@ def _main(argv: list[str] | None = None) -> int:
     elif full_pytest or args.seed_testmon:
         narrow_terminal = bool(args.skip_slow)
         authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
-        verification_scope = (
-            VerificationScope.NARROW_TERMINAL if narrow_terminal else VerificationScope.RELEASE_BASELINE
-        )
         if full_pytest:
             release_baseline_allowed = exit_code == 0 and (not narrow_terminal or authorized_narrow_terminal)
         else:
@@ -4009,7 +4021,6 @@ def _main(argv: list[str] | None = None) -> int:
                 not narrow_terminal or authorized_narrow_terminal
             )
     else:
-        verification_scope = VerificationScope.AFFECTED
         release_baseline_allowed = _testmon_release_baseline_permission()
     history_entry["verification_scope"] = verification_scope.value
     history_entry["release_baseline_allowed"] = release_baseline_allowed
@@ -4067,7 +4078,14 @@ def _main(argv: list[str] | None = None) -> int:
     return exit_code
 
 
-def _finalize_verify_runner_exception(run: VerifyRun, exc: Exception, *, use_json: bool) -> int:
+def _finalize_verify_runner_exception(
+    run: VerifyRun,
+    exc: Exception,
+    *,
+    run_started: float,
+    verification_scope: VerificationScope,
+    use_json: bool,
+) -> int:
     """Leave typed, durable failed evidence when verification orchestration raises."""
     diagnosis = "verify_runner_exception"
     run.finish_interrupted_steps(
@@ -4081,9 +4099,9 @@ def _finalize_verify_runner_exception(run: VerifyRun, exc: Exception, *, use_jso
         final_worktree_fingerprint = "unavailable"
     payload = run.finish(
         exit_code=125,
-        duration_s=0.0,
+        duration_s=time.monotonic() - run_started,
         diagnosis=diagnosis,
-        verification_scope=VerificationScope.AFFECTED.value,
+        verification_scope=verification_scope.value,
         release_baseline_allowed=False,
         final_worktree_fingerprint=final_worktree_fingerprint,
     )
@@ -4106,6 +4124,13 @@ def main(argv: list[str] | None = None) -> int:
         if _ACTIVE_VERIFY_RUN is None:
             raise
         raw_argv = sys.argv[1:] if argv is None else argv
-        return _finalize_verify_runner_exception(_ACTIVE_VERIFY_RUN, exc, use_json="--json" in raw_argv)
+        run, run_started, verification_scope = _ACTIVE_VERIFY_RUN
+        return _finalize_verify_runner_exception(
+            run,
+            exc,
+            run_started=run_started,
+            verification_scope=verification_scope,
+            use_json="--json" in raw_argv,
+        )
     finally:
         _ACTIVE_VERIFY_RUN = None
