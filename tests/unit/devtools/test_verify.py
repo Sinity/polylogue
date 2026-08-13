@@ -2077,6 +2077,35 @@ def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="tracked.py")
 
 
+def test_checkout_mutation_monitor_prepares_paths_before_backend_startup_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    original_watched_directories = monitor._watched_directories
+    discovery_threads: list[threading.Thread] = []
+
+    def observed_discovery() -> list[Path]:
+        discovery_threads.append(threading.current_thread())
+        return original_watched_directories()
+
+    def portable_watch(*_paths: Path, **kwargs: object) -> object:
+        yield set()
+        stop_event = kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait()
+
+    monkeypatch.setattr(monitor, "_watched_directories", observed_discovery)
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+
+    monitor.start()
+    observation = monitor.finish()
+
+    assert discovery_threads[0] is threading.main_thread()
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
 def test_checkout_mutation_monitor_rejects_source_topology_changed_during_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4937,6 +4966,36 @@ def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
     assert checkout_step["diagnosis"] == "checkout_fingerprint_unavailable"
     assert checkout_step["initial_worktree_fingerprint"] == fingerprints[0]
     assert checkout_step["final_worktree_fingerprint"] == fingerprints[1]
+
+
+def test_verify_classifies_unavailable_mutation_monitor_separately(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _UnavailableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=True)
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.CheckoutMutationMonitor", _UnavailableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 125
+    payload = json.loads(capsys.readouterr().out)
+    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert checkout_step["diagnosis"] == "checkout_mutation_monitor_unavailable"
 
 
 def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(

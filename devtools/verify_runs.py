@@ -293,7 +293,20 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
             self._ready.set()
             return
-        self._thread = threading.Thread(target=self._watch, name="checkout-mutation-monitor", daemon=True)
+        # Repository enumeration and Git authority discovery are synchronous
+        # preflight, not native watcher startup. Keeping them outside the
+        # backend deadline prevents a slow CI checkout from consuming the
+        # entire readiness budget before watchfiles can initialize.
+        watched_directories = self._watched_directories()
+        if self._unavailable:
+            self._ready.set()
+            return
+        self._thread = threading.Thread(
+            target=self._watch,
+            args=(watched_directories,),
+            name="checkout-mutation-monitor",
+            daemon=True,
+        )
         self._thread.start()
         if not self._ready.wait(timeout=self._WATCH_START_TIMEOUT_S):
             with self._state_lock:
@@ -320,11 +333,8 @@ class CheckoutMutationMonitor:
                 observed_path=self._observed_path,
             )
 
-    def _watch(self) -> None:
+    def _watch(self, watched_directories: Sequence[Path]) -> None:
         try:
-            watched_directories = self._watched_directories()
-            if self._unavailable:
-                return
             for changes in watchfiles.watch(
                 *watched_directories,
                 watch_filter=None,
@@ -338,12 +348,15 @@ class CheckoutMutationMonitor:
                 recursive=False,
             ):
                 # An empty timeout batch proves the backend initialized before
-                # a verification command starts, closing the startup race.
-                if not self._ready.is_set() and not self._directory_topology_is_stable(watched_directories):
-                    with self._state_lock:
-                        self._unavailable = True
-                    return
-                self._ready.set()
+                # a verification command starts, closing the startup race. The
+                # active watcher protects the following topology recheck, so
+                # readiness need not wait for a second repository enumeration.
+                if not self._ready.is_set():
+                    self._ready.set()
+                    if not self._directory_topology_is_stable(watched_directories):
+                        with self._state_lock:
+                            self._unavailable = True
+                        return
                 for _change, raw_path in changes:
                     self._record_change(Path(raw_path))
                     if self._changed or self._unavailable:

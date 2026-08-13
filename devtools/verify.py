@@ -3861,24 +3861,32 @@ def _main(argv: list[str] | None = None) -> int:
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
     mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
     checkout_stable = True
-    if (
-        changed_path_authority_failed
-        or head is None
+    checkout_fingerprint_unavailable = (
+        head is None
         or final_head is None
-        or "unavailable" in {checkout_fingerprint, final_checkout_fingerprint}
-        or mutation_observation.unavailable
-    ):
+        or "unavailable"
+        in {
+            checkout_fingerprint,
+            final_checkout_fingerprint,
+        }
+    )
+    if changed_path_authority_failed or checkout_fingerprint_unavailable or mutation_observation.unavailable:
         checkout_stable = False
+        diagnosis = (
+            "testmon_changed_path_authority_unavailable"
+            if changed_path_authority_failed
+            else (
+                "checkout_fingerprint_unavailable"
+                if checkout_fingerprint_unavailable
+                else "checkout_mutation_monitor_unavailable"
+            )
+        )
         step_results.append(
             {
                 "name": "checkout stability",
                 "duration_s": 0.0,
                 "exit": 125,
-                "diagnosis": (
-                    "testmon_changed_path_authority_unavailable"
-                    if changed_path_authority_failed
-                    else "checkout_fingerprint_unavailable"
-                ),
+                "diagnosis": diagnosis,
                 "initial_git_head": head,
                 "final_git_head": final_head,
                 "initial_worktree_fingerprint": checkout_fingerprint,
@@ -3887,7 +3895,7 @@ def _main(argv: list[str] | None = None) -> int:
         )
         if exit_code == 0:
             exit_code = 125
-        sys.stderr.write("verify: checkout fingerprint unavailable; evidence is not exact-head.\n")
+        sys.stderr.write(f"verify: {diagnosis.replace('_', ' ')}; evidence is not exact-head.\n")
     elif final_head != head or mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
         checkout_stable = False
         step_results.append(
