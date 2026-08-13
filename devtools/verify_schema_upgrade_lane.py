@@ -5,7 +5,7 @@ Background
 
 Polylogue has two schema-evolution regimes:
 
-* Durable tiers (``source.db`` and ``user.db``) may use explicit additive SQL
+* Durable tiers (``source.db``, ``user.db``, and ``audit.db``) may use explicit additive SQL
   migrations with a backup gate.
 * Derived/rebuildable tiers (``index.db`` and ``embeddings.db``) do not use
   migration chains. They are rebuilt or blue-green replaced from durable source
@@ -86,7 +86,7 @@ from polylogue.storage.sqlite.lifecycle import IndexDeltaDeclarationReport, inde
 ROOT = _get_root()
 STORAGE_SQLITE_DIR = ROOT / "polylogue" / "storage" / "sqlite"
 MIGRATIONS_DIR = STORAGE_SQLITE_DIR / "migrations"
-ALLOWED_MIGRATION_TIERS = {"source", "user"}
+ALLOWED_MIGRATION_TIERS = {"source", "user", "audit"}
 
 # Upgrade-shaped helper name patterns. Matched against ``def <name>``
 # at the top level of any module under ``polylogue/storage/sqlite/``.
@@ -345,7 +345,8 @@ def main(argv: list[str] | None = None) -> int:
     helpers = _collect_upgrade_helpers()
     invalid_migrations = _invalid_migration_paths()
     durable_change_train_reports = {
-        tier.value: durable_change_train_policy_report(tier) for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
+        tier.value: durable_change_train_policy_report(tier)
+        for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
     }
     durable_migration_collisions = durable_migration_collision_report(_durable_migration_claims_on_disk())
     delta_report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)

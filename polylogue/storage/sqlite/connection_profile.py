@@ -540,11 +540,12 @@ def open_daemon_connection(
     return conn
 
 
-def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
-    """Return a validated descriptor URI on platforms that expose one."""
-    descriptor_metadata = os.fstat(opened_main_fd)
+def descriptor_alias_path(opened_fd: int) -> Path | None:
+    """Return a validated portable pathname alias for an opened descriptor."""
+
+    descriptor_metadata = os.fstat(opened_fd)
     for directory in ("/dev/fd", "/proc/self/fd"):
-        candidate = f"{directory}/{opened_main_fd}"
+        candidate = Path(directory) / str(opened_fd)
         try:
             alias_metadata = os.stat(candidate)
         except OSError:
@@ -553,8 +554,14 @@ def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
             descriptor_metadata.st_dev,
             descriptor_metadata.st_ino,
         ):
-            return f"file:{candidate}{suffix}"
+            return candidate
     return None
+
+
+def _descriptor_database_uri(opened_main_fd: int, suffix: str) -> str | None:
+    """Return a validated descriptor URI on platforms that expose one."""
+    alias = descriptor_alias_path(opened_main_fd)
+    return None if alias is None else f"file:{alias}{suffix}"
 
 
 def open_readonly_connection(
@@ -649,6 +656,7 @@ __all__ = [
     "WRITE_MMAP_SIZE_BYTES",
     "check_mapped_bytes_budget_against_cgroup_limit",
     "connection_context",
+    "descriptor_alias_path",
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
     "open_daemon_connection",

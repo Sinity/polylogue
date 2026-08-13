@@ -310,7 +310,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["format"] == "polylogue-backup-verification-receipt-v2"
     attestations = {item["tier"]: item for item in receipt["attestations"]}
-    assert set(attestations) == {"source", "user"}
+    assert set(attestations) == {"audit", "source", "user"}
     assert attestations["user"]["algorithm"] == "hmac-sha256"
     assert len(attestations["user"]["mac"]) == 64
     key_path = attestation_key_path(workspace_env["archive_root"] / "user.db")
@@ -631,7 +631,7 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     assert inventory == [
         {
             "blob_hash": blob_hash,
-            "protection": ["reserved"],
+            "protection": ["referenced", "reserved"],
             "size_bytes": len(payload),
         }
     ]

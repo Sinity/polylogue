@@ -728,8 +728,8 @@ polylogue ops diagnostics workload --json | jq .fts_trigger_state.all_present
 
 If FTS remains non-ready after daemon convergence, the underlying issue is
 structural (missing columns, corrupted index file, or a broken write path).
-Stop the daemon, restore from backup or rebuild the affected index tier, and
-open an issue with the probe output attached.
+Stop the daemon, restore or rebuild the affected index tier, and open an issue
+with the probe output attached.
 
 ### Inspecting a raw-authority census
 

@@ -44,6 +44,7 @@ import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
@@ -225,6 +226,19 @@ def compute_target_digest(targets: tuple[MutationTarget, ...]) -> str:
     return _sha256_document([target.canonical_dict() for target in targets])
 
 
+def compute_parameter_digest(raw_plan: MutationPlan) -> str:
+    """Hash stable caller intent without the clock-bound preview envelope."""
+
+    return _sha256_document(
+        {
+            "operation": raw_plan.operation,
+            "destructive_class": raw_plan.destructive_class,
+            "affected_tiers": list(raw_plan.affected_tiers),
+            "context": {key: raw_plan.context[key] for key in sorted(raw_plan.context)},
+        }
+    )
+
+
 def compute_typed_plan_hash(
     *,
     operation: str,
@@ -237,6 +251,7 @@ def compute_typed_plan_hash(
     destructive_class: DestructiveClass,
     required_confirmation: ConfirmationStrength,
     affected_tiers: tuple[str, ...],
+    context: Mapping[str, object],
 ) -> str:
     """Hash every authority-relevant field of a typed mutation plan."""
 
@@ -252,6 +267,7 @@ def compute_typed_plan_hash(
             "destructive_class": destructive_class,
             "required_confirmation": required_confirmation,
             "affected_tiers": list(affected_tiers),
+            "context": {key: context[key] for key in sorted(context)},
         }
     )
 
@@ -363,6 +379,7 @@ def build_typed_plan(
     required_confirmation: ConfirmationStrength,
     prepared_at_ms: int,
     expires_at_ms: int,
+    context: Mapping[str, object] | None = None,
 ) -> MutationPlan:
     """Construct a plan whose hash covers the complete typed authority input."""
 
@@ -378,6 +395,7 @@ def build_typed_plan(
         destructive_class=destructive_class,
         required_confirmation=required_confirmation,
         affected_tiers=affected_tiers,
+        context=context or {},
     )
     return MutationPlan(
         operation=operation,
@@ -387,6 +405,7 @@ def build_typed_plan(
         reversible=destructive_class in {"additive", "reversible"},
         prepared_at=datetime.fromtimestamp(prepared_at_ms / 1000, UTC).isoformat(),
         plan_hash=plan_hash,
+        context=dict(context or {}),
         operation_version=operation_version,
         archive_instance_id=archive_instance_id,
         archive_identity_digest=archive_identity_digest,
@@ -398,6 +417,28 @@ def build_typed_plan(
         prepared_at_ms=prepared_at_ms,
         expires_at_ms=expires_at_ms,
     )
+
+
+def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
+    """Reject a reconstructed preview whose typed authority fields were changed."""
+
+    target_refs = tuple(target.ref for target in plan.targets)
+    target_digest = compute_target_digest(plan.targets)
+    plan_hash = compute_typed_plan_hash(
+        operation=plan.operation,
+        operation_version=plan.operation_version,
+        archive_instance_id=plan.archive_instance_id,
+        archive_identity_digest=plan.archive_identity_digest,
+        parameter_digest=plan.parameter_digest,
+        target_digest=target_digest,
+        required_capabilities=plan.required_capabilities,
+        destructive_class=plan.destructive_class,
+        required_confirmation=plan.required_confirmation,
+        affected_tiers=plan.affected_tiers,
+        context=plan.context,
+    )
+    if plan.target_refs != target_refs or plan.target_digest != target_digest or plan.plan_hash != plan_hash:
+        raise AuthorizationMismatchError("preview plan payload does not match its authority hash")
 
 
 def build_plan(
@@ -546,10 +587,32 @@ class OperationExecutor:
         audit: AuditRepository | None = None,
         now_ms: Callable[[], int] | None = None,
         token_factory: Callable[[], str] | None = None,
+        archive_root: Path | None = None,
     ) -> None:
         self._audit = audit
         self._now_ms = now_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        self._archive_root = archive_root
+
+    @classmethod
+    def for_archive_root(
+        cls,
+        archive_root: Path,
+        *,
+        now_ms: Callable[[], int] | None = None,
+        token_factory: Callable[[], str] | None = None,
+    ) -> OperationExecutor:
+        """Compose production mutation execution with the archive's audit tier."""
+
+        from polylogue.operations.audit import AuditRepository
+
+        audit = AuditRepository.for_archive_root(
+            archive_root,
+            attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+        )
+        audit.reconcile_continuity()
+        audit.recover_abandoned_attempts()
+        return cls(audit=audit, now_ms=now_ms, token_factory=token_factory, archive_root=archive_root)
 
     def prepare(self, actuator: MutationActuator[ArgsT], args: ArgsT) -> MutationPlan:
         """PREPARE: resolve exact targets from live state. Never mutates."""
@@ -566,6 +629,7 @@ class OperationExecutor:
         archive_identity_digest: str,
         parameter_digest: str,
         expires_at_ms: int | None = None,
+        raw_plan: MutationPlan | None = None,
     ) -> MutationPreview:
         """Prepare and durably record a versioned, capability-bound preview."""
 
@@ -574,7 +638,7 @@ class OperationExecutor:
             raise SurfaceDeniedError(f"{binding.spec.name!r} is not allowed on {principal.surface!r}")
         plan = self._typed_plan_from_actuator(
             binding,
-            binding.actuator.prepare(args),
+            raw_plan or binding.actuator.prepare(args),
             archive_instance_id=archive_instance_id,
             archive_identity_digest=archive_identity_digest,
             parameter_digest=parameter_digest,
@@ -584,6 +648,31 @@ class OperationExecutor:
             return MutationPreview(preview_ref=f"preview:{plan.plan_hash}", plan=plan)
         preview_ref = self._audit.create_preview(plan, principal)
         return MutationPreview(preview_ref=preview_ref, plan=plan)
+
+    def prepare_bound_for_archive(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        args: ArgsT,
+        principal: MutationPrincipal,
+        *,
+        archive_root: Path,
+    ) -> MutationPreview:
+        """Prepare a production mutation with live archive and audit authority."""
+
+        if self._audit is None:
+            raise MutationTransactionError("production mutation preparation requires a durable audit repository")
+        from polylogue.storage.archive_identity import ArchiveIdentity
+
+        raw_plan = binding.actuator.prepare(args)
+        return self.prepare_bound(
+            binding,
+            args,
+            principal,
+            archive_instance_id=self._audit.ensure_archive_authority(now_ms=self._now_ms()),
+            archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+            parameter_digest=compute_parameter_digest(raw_plan),
+            raw_plan=raw_plan,
+        )
 
     def authorize_bound(
         self,
@@ -596,6 +685,7 @@ class OperationExecutor:
         """Issue a random one-time token bound to the persisted preview."""
 
         binding.validate()
+        validate_mutation_plan_integrity(preview.plan)
         plan = preview.plan
         required = set(plan.required_capabilities)
         if not required.issubset(principal.capabilities):
@@ -623,7 +713,9 @@ class OperationExecutor:
             surface=principal.surface,
         )
         if self._audit is not None:
-            authorization_id = self._audit.issue_authorization(preview, principal, authorization)
+            authorization_id = self._audit.issue_authorization(
+                preview, principal, authorization, issued_at_ms=self._now_ms()
+            )
             authorization = replace(authorization, authorization_id=authorization_id)
         return authorization
 
@@ -637,10 +729,21 @@ class OperationExecutor:
         """Consume a bound token, journal intent, apply, and finalize honestly."""
 
         binding.validate()
+        validate_mutation_plan_integrity(preview.plan)
         if authorization.preview_ref != preview.preview_ref or authorization.token is None:
             raise AuthorizationMismatchError("authorization is not bound to this preview")
-        if authorization.expires_at_ms is not None and self._now_ms() >= authorization.expires_at_ms:
+        if (
+            self._audit is None
+            and authorization.expires_at_ms is not None
+            and self._now_ms() >= authorization.expires_at_ms
+        ):
             raise TokenExpiredError("authorization token is expired")
+        if self._archive_root is not None:
+            from polylogue.storage.archive_identity import ArchiveIdentity
+
+            live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
+            if live_identity != preview.plan.archive_identity_digest:
+                raise PlanStaleError("archive identity changed after the bound preview was prepared")
         fresh_plan = self._typed_plan_from_actuator(
             binding,
             binding.actuator.prepare(args),
@@ -700,6 +803,16 @@ class OperationExecutor:
             outcome=outcome,
             domain_receipt_ref=domain_receipt_ref,
             reason=reason,
+        )
+
+    def find_interrupted_operation(self, *, operation_name: str, parameter_digest: str) -> str | None:
+        """Find the uniquely identified interrupted durable attempt for a recovery route."""
+
+        if self._audit is None:
+            raise MutationTransactionError("interrupted-operation lookup requires a durable audit repository")
+        return self._audit.find_interrupted_operation(
+            operation_name=operation_name,
+            parameter_digest=parameter_digest,
         )
 
     def _typed_plan_from_actuator(
@@ -774,6 +887,7 @@ class OperationExecutor:
             required_confirmation=required_confirmation,
             prepared_at_ms=self._now_ms(),
             expires_at_ms=expires_at_ms,
+            context=plan.context,
         )
 
     def authorize(
@@ -870,8 +984,10 @@ __all__ = [
     "TokenExpiredError",
     "build_plan",
     "build_typed_plan",
+    "compute_parameter_digest",
     "compute_plan_hash",
     "compute_target_digest",
     "compute_typed_plan_hash",
     "make_target_ref",
+    "validate_mutation_plan_integrity",
 ]

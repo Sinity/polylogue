@@ -1,4 +1,4 @@
-"""Durable source/user migration change-train authority."""
+"""Durable source/user/audit migration change-train authority."""
 
 from __future__ import annotations
 
@@ -69,6 +69,7 @@ from polylogue.storage.sqlite.migration_runner import (
 DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
     ArchiveTier.SOURCE: 26,
     ArchiveTier.USER: 10,
+    ArchiveTier.AUDIT: 1,
 }
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
@@ -77,6 +78,14 @@ _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
 _SourceContinuityMutationKind = Literal["blob_ref_liveness", "raw_authority_recovery"]
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
+
+
+def _is_audit_continuity_receipt(path: Path) -> bool:
+    """Return whether a maintenance receipt is not a durable train manifest."""
+
+    return path.name in {"audit-adoption.json", "audit-continuity.json"} or path.name.startswith("audit-restore.")
+
+
 _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER = ".bootstrap.pending"
 
 
@@ -330,7 +339,7 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or any(marker_root.glob("*.json")):
+    if marker_path.exists() or any(not _is_audit_continuity_receipt(path) for path in marker_root.glob("*.json")):
         raise DurableChangeTrainError(f"cannot record fresh durable bootstrap over existing train state: {marker_root}")
     if pending_path.is_file():
         _validate_fresh_durable_bootstrap_intent(archive_root)
@@ -363,7 +372,7 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or any(marker_root.glob("*.json")):
+    if marker_path.exists() or any(not _is_audit_continuity_receipt(path) for path in marker_root.glob("*.json")):
         raise DurableChangeTrainError(
             f"cannot record fresh durable bootstrap intent over existing train state: {marker_root}"
         )
@@ -482,7 +491,7 @@ def _fresh_durable_bootstrap_versions(archive_root: Path, marker_root: Path) -> 
 
 
 def _durable_identity_digest(identity: object) -> str:
-    """Digest only the durable source/user identity for bootstrap receipts."""
+    """Digest the durable source/user/audit identity for bootstrap receipts."""
     from polylogue.storage.archive_identity import ArchiveIdentity
 
     if not isinstance(identity, ArchiveIdentity):
@@ -507,7 +516,7 @@ def _adopt_pre_marker_durable_bootstrap(archive_root: Path) -> None:
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     if (manifest_root / _FRESH_DURABLE_BOOTSTRAP_MARKER).is_file():
         return
-    if any(manifest_root.glob("*.json")):
+    if any(not _is_audit_continuity_receipt(path) for path in manifest_root.glob("*.json")):
         return
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
         tier_path = archive_root / f"{tier.value}.db"
@@ -1453,6 +1462,15 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_failure_disposition_apply(cast(Callable[..., object], value), archive_root)
+                elif reference.endswith(":AuditRepository.reconcile_continuity"):
+                    from polylogue.operations.audit import AuditRepository
+
+                    AuditRepository.for_archive_root(archive_root).reconcile_continuity()
+                    detail = "reconciled matching source/audit continuity heads"
+                elif reference.endswith(":AuditContinuityCoordinator"):
+                    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
+
+                    detail = AuditContinuityCoordinator(archive_root).runtime_probe()
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -1962,6 +1980,8 @@ def _released_train_manifests_by_target(
     if not manifest_root.is_dir():
         return manifests_by_target
     for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
+        if _is_audit_continuity_receipt(path):
+            continue
         train = load_durable_change_train_manifest(path)
         if train.target_version in manifests_by_target:
             raise DurableChangeTrainError(
@@ -2282,6 +2302,9 @@ def _reconcile_durable_change_train_startup_locked(
     live_evidence_cache: dict[ArchiveTier, _DurableForwardVersionEvidence] | None = None,
 ) -> tuple[Path, ...]:
     """Reconcile persisted trains while the caller holds archive ownership."""
+    from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
+
+    validate_audit_adoption_receipt(archive_root)
     deferred_tiers = _recover_pending_source_continuity_intents(archive_root)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     reconciled: list[Path] = []
@@ -2291,7 +2314,9 @@ def _reconcile_durable_change_train_startup_locked(
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
-    manifest_paths = tuple(sorted(manifest_root.glob("*.json")))
+    manifest_paths = tuple(
+        path for path in sorted(manifest_root.glob("*.json")) if not _is_audit_continuity_receipt(path)
+    )
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:
@@ -2357,7 +2382,9 @@ def _reconcile_durable_change_train_startup_locked(
         if current_version <= adoption_floor:
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
-        tier_manifest_paths = tuple(manifest_root.glob(f"{tier.value}-*.json"))
+        tier_manifest_paths = tuple(
+            path for path in manifest_root.glob(f"{tier.value}-*.json") if not _is_audit_continuity_receipt(path)
+        )
         bootstrap_version = fresh_bootstrap_versions.get(tier)
         if bootstrap_version is not None and current_version < bootstrap_version:
             raise DurableChangeTrainError(

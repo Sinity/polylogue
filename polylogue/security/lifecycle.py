@@ -146,6 +146,14 @@ class LifecycleRequestRow:
     history: tuple[Mapping[str, JSONValue], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class LifecycleRequestSubmission:
+    """The durable lifecycle assertion and whether this call created it."""
+
+    assertion_id: str
+    created: bool
+
+
 def _request_assertion_id(target_ref: str, mode: str) -> str:
     digest = hashlib.sha256()
     for part in ("excision-request", target_ref, mode):
@@ -169,11 +177,31 @@ def submit_lifecycle_request(
     target returns the same ``assertion_id`` and does not reset its state --
     only :func:`drive_lifecycle_request` advances it.
     """
+    return submit_lifecycle_request_with_outcome(
+        conn,
+        target_ref=target_ref,
+        mode=mode,
+        reason=reason,
+        actor=actor,
+        now_ms=now_ms,
+    ).assertion_id
+
+
+def submit_lifecycle_request_with_outcome(
+    conn: sqlite3.Connection,
+    *,
+    target_ref: str,
+    mode: LifecycleMode,
+    reason: str,
+    actor: str = "user:local",
+    now_ms: int,
+) -> LifecycleRequestSubmission:
+    """Create a request or report that its exact durable assertion already exists."""
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
 
     assertion_id = _request_assertion_id(target_ref, mode)
     if read_assertion_envelope(conn, assertion_id) is not None:
-        return assertion_id
+        return LifecycleRequestSubmission(assertion_id=assertion_id, created=False)
     upsert_assertion(
         conn,
         assertion_id=assertion_id,
@@ -195,7 +223,7 @@ def submit_lifecycle_request(
         context_policy={"inject": False},
         now_ms=now_ms,
     )
-    return assertion_id
+    return LifecycleRequestSubmission(assertion_id=assertion_id, created=True)
 
 
 def read_lifecycle_request(conn: sqlite3.Connection, assertion_id: str) -> LifecycleRequestRow | None:
@@ -388,6 +416,7 @@ __all__ = [
     "ExcisionLifecycleContract",
     "LifecycleInvalidationOutcome",
     "LifecycleRequestRow",
+    "LifecycleRequestSubmission",
     "SinexContractFake",
     "apply_primary_invalidation_if_confirmed",
     "drive_lifecycle_request",
@@ -395,4 +424,5 @@ __all__ = [
     "primary_may_invalidate_locally",
     "read_lifecycle_request",
     "submit_lifecycle_request",
+    "submit_lifecycle_request_with_outcome",
 ]

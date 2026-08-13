@@ -1,0 +1,304 @@
+{
+  "$defs": {
+    "DurableRecoveryPayload": {
+      "additionalProperties": false,
+      "description": "Typed recovery evidence for a blocked durable publication.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Code"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target"
+        }
+      },
+      "required": [
+        "state",
+        "code",
+        "target",
+        "detail"
+      ],
+      "title": "DurableRecoveryPayload",
+      "type": "object"
+    },
+    "MigrateTierErrorPayload": {
+      "additionalProperties": false,
+      "description": "Blocked result for one durable-tier migration route.",
+      "properties": {
+        "backup_manifest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Backup Manifest"
+        },
+        "durable_recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DurableRecoveryPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "title": "Error",
+          "type": "string"
+        },
+        "ok": {
+          "const": false,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "stopped_daemon_evidence_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stopped Daemon Evidence Ref"
+        },
+        "tier": {
+          "title": "Tier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "tier",
+        "path",
+        "backup_manifest",
+        "stopped_daemon_evidence_ref",
+        "error",
+        "durable_recovery"
+      ],
+      "title": "MigrateTierErrorPayload",
+      "type": "object"
+    },
+    "MigrateTierSuccessPayload": {
+      "additionalProperties": false,
+      "description": "Successful result for one durable-tier migration route.",
+      "properties": {
+        "adoption_receipt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Adoption Receipt"
+        },
+        "applied_versions": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Applied Versions",
+          "type": "array"
+        },
+        "backup_manifest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Backup Manifest"
+        },
+        "backup_receipt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Backup Receipt"
+        },
+        "forward_version_receipt": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Forward Version Receipt"
+        },
+        "from_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "From Version"
+        },
+        "initialized": {
+          "title": "Initialized",
+          "type": "boolean"
+        },
+        "ok": {
+          "const": true,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "restore_receipt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Restore Receipt"
+        },
+        "stopped_daemon_evidence_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stopped Daemon Evidence Ref"
+        },
+        "tier": {
+          "title": "Tier",
+          "type": "string"
+        },
+        "to_version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "To Version"
+        },
+        "train_manifest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Train Manifest"
+        },
+        "train_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Train State"
+        }
+      },
+      "required": [
+        "ok",
+        "tier",
+        "path",
+        "initialized",
+        "adoption_receipt",
+        "restore_receipt",
+        "backup_manifest",
+        "stopped_daemon_evidence_ref",
+        "train_manifest",
+        "train_state",
+        "backup_receipt",
+        "from_version",
+        "to_version",
+        "applied_versions",
+        "forward_version_receipt"
+      ],
+      "title": "MigrateTierSuccessPayload",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/migrate-tier-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Result from `polylogue ops maintenance migrate-tier --output-format json`, including durable adoption and restore receipt references.\n\nGenerated from `polylogue.cli.commands.maintenance._migrate_tier.MigrateTierResultPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "discriminator": {
+    "mapping": {
+      "False": "#/$defs/MigrateTierErrorPayload",
+      "True": "#/$defs/MigrateTierSuccessPayload"
+    },
+    "propertyName": "ok"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/MigrateTierSuccessPayload"
+    },
+    {
+      "$ref": "#/$defs/MigrateTierErrorPayload"
+    }
+  ],
+  "title": "Migrate Tier Result",
+  "x-polylogue-cli-surfaces": [
+    "polylogue ops maintenance migrate-tier --output-format json"
+  ],
+  "x-polylogue-source-model": "MigrateTierResultPayload"
+}

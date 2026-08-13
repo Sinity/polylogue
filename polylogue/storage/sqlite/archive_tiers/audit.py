@@ -6,7 +6,9 @@ remain in their owning tiers and are linked by typed receipt references.
 
 from __future__ import annotations
 
-AUDIT_SCHEMA_VERSION = 1
+from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
+
+AUDIT_SCHEMA_VERSION = 2
 
 AUDIT_DDL = """
 CREATE TABLE IF NOT EXISTS archive_authority (
@@ -214,6 +216,22 @@ CREATE TABLE IF NOT EXISTS operation_events (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_operation_events_type_time
 ON operation_events(event_type, occurred_at_ms);
+
+-- The audit head is deliberately independent of filesystem identity.  source.db
+-- records the authoritative committed generation; every audit mutation advances
+-- this row in the same audit transaction as its domain rows.
+CREATE TABLE IF NOT EXISTS audit_continuity_head (
+    singleton   INTEGER PRIMARY KEY CHECK(singleton = 1),
+    generation  INTEGER NOT NULL CHECK(generation >= 0),
+    head_sha256 TEXT NOT NULL CHECK(length(head_sha256) = 64),
+    mutation_id TEXT,
+    advanced_at_ms INTEGER NOT NULL CHECK(advanced_at_ms >= 0)
+) STRICT;
+INSERT OR IGNORE INTO audit_continuity_head(
+    singleton, generation, head_sha256, mutation_id, advanced_at_ms
+) VALUES (1, 0, '__AUDIT_CONTINUITY_GENESIS_HEAD__', NULL, 0);
 """
+
+AUDIT_DDL = AUDIT_DDL.replace("__AUDIT_CONTINUITY_GENESIS_HEAD__", AUDIT_CONTINUITY_GENESIS_HEAD_SHA256)
 
 __all__ = ["AUDIT_DDL", "AUDIT_SCHEMA_VERSION"]

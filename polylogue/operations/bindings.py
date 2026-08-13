@@ -103,9 +103,26 @@ def validate_operation_bindings(
     return catalog
 
 
+def runtime_operation_binding(actuator: MutationActuator[ArgsT]) -> OperationBinding[ArgsT, object]:
+    """Resolve and validate the declared runtime binding for one actuator."""
+
+    from polylogue.operations.specs import build_runtime_operation_catalog
+
+    operation = getattr(actuator, "operation", None)
+    if not isinstance(operation, str) or not operation:
+        raise BindingValidationError("runtime actuator has no declared operation name")
+    spec = build_runtime_operation_catalog().by_name().get(operation)
+    if spec is None:
+        raise BindingValidationError(f"no runtime OperationSpec for actuator {operation!r}")
+    binding: OperationBinding[ArgsT, object] = OperationBinding(spec, actuator)
+    binding.validate()
+    return binding
+
+
 __all__ = [
     "BindingValidationError",
     "OperationBinding",
     "OperationBindingCatalog",
+    "runtime_operation_binding",
     "validate_operation_bindings",
 ]

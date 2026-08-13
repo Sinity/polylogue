@@ -11,6 +11,7 @@ from typing import Literal
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -311,6 +312,7 @@ def initialize_archive_database(
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
+    from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
     from polylogue.storage.archive_identity import (
         ArchiveLocation,
         OwnedArchiveLocation,
@@ -334,6 +336,21 @@ def initialize_active_archive_root(root: Path) -> None:
         allow_reentrant=True,
     ) as owned:
 
+        def assert_regular_audit_leaf() -> None:
+            """Reject an audit pathname that could redirect durable authority outside this root."""
+
+            audit_path = root / archive_tier_spec(ArchiveTier.AUDIT).filename
+            try:
+                audit_path.lstat()
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                raise RuntimeError(f"cannot inspect audit tier leaf: {audit_path}") from exc
+            try:
+                assert_verified_audit_leaf(audit_path)
+            except AuditLeafError as exc:
+                raise RuntimeError(str(exc)) from exc
+
         def assert_owned_root() -> None:
             """Refuse pathname writes after the owned root has been replaced."""
             assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
@@ -341,14 +358,34 @@ def initialize_active_archive_root(root: Path) -> None:
         # Classify the archive after acquiring ownership. Another process may
         # publish a marker or durable train while the probe is in flight.
         assert_owned_root()
+        assert_regular_audit_leaf()
         durable_tier_exists = any(
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
-        has_durable_train_state = any(manifest_root.glob("*.json"))
+        pending_audit_adoption = audit_adoption_receipt_path(root).exists()
+        has_durable_train_state = any(
+            path.name not in {"audit-adoption.json", "audit-continuity.json"}
+            and not path.name.startswith("audit-restore.")
+            for path in manifest_root.glob("*.json")
+        )
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
+
+        def classify_paths() -> tuple[bool, bool]:
+            durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
+            adoption = (
+                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
+                and manifest_root.is_dir()
+                and not has_durable_train_state
+                and not has_bootstrap_marker
+                and not has_pending_bootstrap
+            )
+            return durable_exists, adoption
+
+        durable_tier_exists, pre_marker_adoption = classify_paths()
         if has_pending_bootstrap:
             _validate_fresh_durable_bootstrap_intent(root)
             if has_durable_train_state:
@@ -365,23 +402,39 @@ def initialize_active_archive_root(root: Path) -> None:
         recovering_fresh_durable_bootstrap = fresh_durable_bootstrap or (
             has_pending_bootstrap and not has_bootstrap_marker
         )
-        pre_marker_adoption = (
-            (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-            and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
-            and manifest_root.is_dir()
-            and not has_durable_train_state
-            and not has_bootstrap_marker
-            and not has_pending_bootstrap
-        )
         if fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
+        if pending_audit_adoption:
+            assert_owned_root()
+            recover_pending_audit_adoption(root)
+            # Receipt-backed recovery can add audit.db to a legacy archive.
+            # Recompute the path-sensitive classification before deciding
+            # whether startup must create the missing bootstrap marker.
+            durable_tier_exists, pre_marker_adoption = classify_paths()
+        established_archive = has_bootstrap_marker or (
+            (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
+            and (root / archive_tier_spec(ArchiveTier.USER).filename).is_file()
+        )
+        if (
+            durable_tier_exists
+            and not recovering_fresh_durable_bootstrap
+            and established_archive
+            and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
+        ):
+            raise RuntimeError(
+                "established archive is missing audit.db; use maintenance migrate-tier audit "
+                "--adopt-established-audit with a verified full_evidence backup"
+            )
         if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
             initialize_archive_database(root / spec.filename, spec.tier)
+        # Mutation composition performs source/audit reconciliation immediately
+        # before it consumes authority. Ordinary archive opens stay read-only
+        # with respect to continuity, including their steady-state path.
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)

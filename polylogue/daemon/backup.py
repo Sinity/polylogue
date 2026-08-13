@@ -966,7 +966,7 @@ def _write_successful_verification_receipt(backup_root: Path, verification: dict
     artifacts = verified_evidence.get("tier_artifacts")
     if isinstance(artifacts, list):
         for artifact in artifacts:
-            if not isinstance(artifact, dict) or artifact.get("tier") not in {"source", "user"}:
+            if not isinstance(artifact, dict) or artifact.get("tier") not in {"source", "user", "audit"}:
                 continue
             fingerprint = artifact.get("source_fingerprint")
             source_path = fingerprint.get("path") if isinstance(fingerprint, dict) else None

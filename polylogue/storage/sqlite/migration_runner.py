@@ -539,7 +539,7 @@ def _validated_receipt_artifacts(
     receipt: dict[str, object],
     *,
     target_tier: str,
-    live_tier_path: Path,
+    live_tier_path: Path | None,
     file_evidence: dict[str, dict[str, object]],
 ) -> dict[str, dict[str, object]]:
     included = _json_str_list(manifest.get("included_tiers"))
@@ -844,6 +844,459 @@ def validate_migration_backup_live_fingerprint(
     return receipt_path
 
 
+def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root: Path) -> tuple[Path, Path]:
+    """Authorize creation of a missing audit tier in an established archive.
+
+    Unlike a normal tier migration there is no live ``audit.db`` connection to
+    attest.  The route therefore requires the complete pre-audit file set,
+    validates the existing source/user attestations, and compares every
+    retained tier's recorded source fingerprint with the still-offline live
+    archive.  This is intentionally stricter than ordinary migration backup
+    validation: an adoption is only safe when the backup is full evidence for
+    this exact established archive, not merely a restorable subset.
+    """
+    manifest_path = _backup_manifest_path(path)
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        raise MigrationError(f"audit adoption requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
+        raise MigrationError("audit adoption requires a verified full_evidence backup")
+    included = set(_json_str_list(manifest.get("included_tiers")))
+    required_tiers = {"source", "index", "embeddings", "user"}
+    permitted_tiers = required_tiers | {"ops"}
+    included_tiers = {name.removesuffix(".db") for name in included}
+    if (
+        not required_tiers.issubset(included_tiers)
+        or included_tiers - permitted_tiers
+        or len(included_tiers) != len(included)
+    ):
+        raise MigrationError("audit adoption backup must contain every non-optional established tier and no audit tier")
+    receipt_path = _receipt_path(manifest_path)
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        raise MigrationError(
+            f"audit adoption requires a successful backup verification receipt; missing {receipt_path}"
+        )
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
+        raise MigrationError("audit adoption requires a successful backup verification receipt")
+    archive_root = archive_root.resolve()
+    try:
+        if backup_root.samefile(archive_root):
+            raise MigrationError("audit adoption backup root aliases the live archive root")
+    except OSError as exc:
+        raise MigrationError("cannot compare audit adoption backup root with the live archive") from exc
+    for authority_tier in ("source", "user"):
+        try:
+            verify_verification_receipt(
+                receipt,
+                tier=authority_tier,
+                live_tier_path=archive_root / f"{authority_tier}.db",
+            )
+        except BackupAttestationError as exc:
+            raise MigrationError(f"audit adoption backup authentication failed: {exc}") from exc
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
+        raise MigrationError("audit adoption backup receipt does not match manifest size")
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
+        raise MigrationError("audit adoption backup receipt does not match manifest bytes")
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier="audit",
+        live_tier_path=archive_root / "audit.db",
+        file_evidence=file_evidence,
+    )
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("audit adoption backup receipt does not match the closed artifact inventory")
+    for tier in sorted(included_tiers):
+        live_path = archive_root / f"{tier}.db"
+        artifact = artifacts[tier]
+        artifact_path = backup_root / f"{tier}.db"
+        if not live_path.is_file():
+            raise MigrationError(f"audit adoption live tier is missing: {live_path}")
+        try:
+            if artifact_path.samefile(live_path):
+                raise MigrationError(f"audit adoption backup tier artifact aliases the live tier: {tier}.db")
+        except OSError as exc:
+            raise MigrationError(f"cannot compare audit adoption backup tier with live tier: {tier}.db") from exc
+        fingerprint = artifact.get("source_fingerprint")
+        if not isinstance(fingerprint, dict):
+            raise MigrationError(f"audit adoption backup lacks a live source fingerprint for {tier}.db")
+        if Path(str(fingerprint.get("path") or "")).resolve(strict=False) != live_path.resolve(strict=False):
+            raise MigrationError(f"audit adoption backup belongs to a different archive tier: {tier}.db")
+        wal_path = live_path.with_name(f"{live_path.name}-wal")
+        if wal_path.exists() and wal_path.stat().st_size:
+            raise MigrationError(f"audit adoption backup has live WAL divergence for {tier}.db")
+        if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
+            raise MigrationError(f"audit adoption backup is stale for {tier}.db")
+        if str(fingerprint.get("sha256")) != _sha256_file(live_path):
+            raise MigrationError(f"audit adoption backup is stale for {tier}.db")
+        if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+            raise MigrationError(f"audit adoption backup is stale for {tier}.db")
+    return manifest_path, receipt_path
+
+
+def validate_full_evidence_backup_for_adopted_audit_restore(
+    path: Path,
+    *,
+    archive_root: Path,
+    allow_source_continuity_rebind: bool = False,
+    source_continuity_rebind_mutation_id: str | None = None,
+    source_continuity_rebind_prepared_restore: Mapping[str, object] | None = None,
+) -> tuple[Path, Path]:
+    """Authorize replacing adopted ``audit.db`` from one exact backup.
+
+    The audit file may be absent or unreadable, so its stable path authority is
+    verified without opening it. Every other captured tier must still match
+    the scratch-verified full-evidence snapshot byte for byte, except that a
+    retry after continuity promotion may differ only in source.db's control
+    row.
+    """
+    manifest_path = _backup_manifest_path(path)
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        raise MigrationError(f"adopted-audit restore requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
+        raise MigrationError("adopted-audit restore requires a verified full_evidence backup")
+    included = set(_json_str_list(manifest.get("included_tiers")))
+    required_tiers = {"source", "index", "embeddings", "user", "audit"}
+    permitted_tiers = required_tiers | {"ops"}
+    included_tiers = {name.removesuffix(".db") for name in included}
+    if (
+        not required_tiers.issubset(included_tiers)
+        or included_tiers - permitted_tiers
+        or len(included_tiers) != len(included)
+    ):
+        raise MigrationError("adopted-audit restore backup must contain every non-optional tier including audit")
+    receipt_path = _receipt_path(manifest_path)
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        raise MigrationError(
+            f"adopted-audit restore requires a successful backup verification receipt; missing {receipt_path}"
+        )
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
+        raise MigrationError("adopted-audit restore requires a successful backup verification receipt")
+    archive_root = archive_root.resolve()
+    try:
+        if backup_root.samefile(archive_root):
+            raise MigrationError("adopted-audit restore backup root aliases the live archive root")
+    except OSError as exc:
+        raise MigrationError("cannot compare adopted-audit restore backup root with the live archive") from exc
+    for authority_tier in ("source", "user", "audit"):
+        try:
+            verify_verification_receipt(
+                receipt, tier=authority_tier, live_tier_path=archive_root / f"{authority_tier}.db"
+            )
+        except BackupAttestationError as exc:
+            raise MigrationError(f"adopted-audit restore backup authentication failed: {exc}") from exc
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
+        raise MigrationError("adopted-audit restore receipt does not match manifest size")
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
+        raise MigrationError("adopted-audit restore receipt does not match manifest bytes")
+    artifacts = _validated_receipt_artifacts(
+        backup_root, manifest, receipt, target_tier="audit", live_tier_path=None, file_evidence=file_evidence
+    )
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("adopted-audit restore receipt does not match the closed artifact inventory")
+    for tier in sorted(included_tiers):
+        live_path = archive_root / f"{tier}.db"
+        artifact_path = backup_root / f"{tier}.db"
+        if live_path.is_file():
+            try:
+                if artifact_path.samefile(live_path):
+                    raise MigrationError(f"adopted-audit restore backup tier artifact aliases the live tier: {tier}.db")
+            except OSError as exc:
+                raise MigrationError(
+                    f"cannot compare adopted-audit restore backup tier with live tier: {tier}.db"
+                ) from exc
+        if tier not in {"source", "user"}:
+            continue
+        fingerprint = artifacts[tier].get("source_fingerprint")
+        if not isinstance(fingerprint, dict):
+            raise MigrationError(f"adopted-audit restore backup lacks a live source fingerprint for {tier}.db")
+        if Path(str(fingerprint.get("path") or "")).resolve(strict=False) != live_path.resolve(strict=False):
+            raise MigrationError(f"adopted-audit restore backup belongs to a different archive tier: {tier}.db")
+        if not live_path.is_file():
+            raise MigrationError(f"adopted-audit restore live tier is missing: {live_path}")
+        if tier == "source" and allow_source_continuity_rebind:
+            if not source_continuity_rebind_mutation_id:
+                raise MigrationError("adopted-audit restore lacks an operation-owned source continuity rebind")
+            if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+                raise MigrationError("adopted-audit restore backup is stale for source.db")
+            # A retry can retain this operation's committed source WAL after
+            # a crash. Validate SQLite's logical WAL view, not only its file.
+            _validate_source_continuity_rebind_delta(
+                artifact_path,
+                live_path,
+                expected_mutation_id=source_continuity_rebind_mutation_id,
+                prepared_restore=source_continuity_rebind_prepared_restore,
+            )
+            continue
+        wal_path = live_path.with_name(f"{live_path.name}-wal")
+        if wal_path.exists() and wal_path.stat().st_size:
+            raise MigrationError(f"adopted-audit restore has live WAL divergence for {tier}.db")
+        if _json_int(fingerprint.get("size_bytes")) != live_path.stat().st_size:
+            raise MigrationError(f"adopted-audit restore backup is stale for {tier}.db")
+        if str(fingerprint.get("sha256")) != _sha256_file(live_path):
+            raise MigrationError(f"adopted-audit restore backup is stale for {tier}.db")
+        if _json_int(fingerprint.get("user_version")) != _sqlite_user_version(live_path):
+            raise MigrationError(f"adopted-audit restore backup is stale for {tier}.db")
+    return manifest_path, receipt_path
+
+
+def _authenticated_backup_audit_semantic_sha256(backup_manifest: Path, *, audit_path: Path) -> str:
+    """Read the pre-migration audit digest from a receipt-authenticated backup image."""
+
+    manifest_path = _backup_manifest_path(backup_manifest)
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        raise MigrationError(f"pre-continuity binding requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1" or "audit.db" not in _json_str_list(
+        manifest.get("included_tiers")
+    ):
+        raise MigrationError("pre-continuity binding requires a backup containing audit.db")
+    receipt_path = _receipt_path(manifest_path)
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
+        raise MigrationError("pre-continuity binding requires a successful backup verification receipt")
+    try:
+        verify_verification_receipt(receipt, tier="audit", live_tier_path=audit_path)
+    except BackupAttestationError as exc:
+        raise MigrationError(f"pre-continuity binding backup authentication failed: {exc}") from exc
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
+        raise MigrationError("pre-continuity binding receipt does not match manifest size")
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
+        raise MigrationError("pre-continuity binding receipt does not match manifest bytes")
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("pre-continuity binding receipt does not match the closed artifact inventory")
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier="audit",
+        live_tier_path=None,
+        file_evidence=file_evidence,
+    )
+    if "audit" not in artifacts:
+        raise MigrationError("pre-continuity binding backup does not contain an audit artifact")
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    from polylogue.storage.sqlite.audit_continuity import audit_semantic_sha256
+
+    return audit_semantic_sha256(backup_root / "audit.db")
+
+
+def _bind_populated_precontinuity_audit(conn: sqlite3.Connection, *, backup_manifest: Path | None) -> None:
+    """Bind a legacy populated audit journal once both published schema halves exist."""
+
+    archive_root = _connection_main_path(conn).parent
+    # Durable tier migrations also run against deliberately partial archives:
+    # source-only repair images, user-tier fixtures, and train scratch roots.
+    # Pre-continuity binding is meaningful only after both halves exist.  A
+    # present-but-invalid pair still reaches the verified coordinator below
+    # and fails closed; absence is a legitimate non-applicable state here.
+    entries: dict[str, os.stat_result | None] = {}
+    for name in ("source.db", "audit.db"):
+        path = archive_root / name
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            entries[name] = None
+            continue
+        except OSError as exc:
+            raise MigrationError(f"cannot inspect pre-continuity {name}: {path}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MigrationError(f"invalid pre-continuity {name} entry: {path}")
+        entries[name] = metadata
+    if entries["source.db"] is None or entries["audit.db"] is None:
+        return
+    from polylogue.storage.sqlite.audit_continuity import (
+        AuditContinuityCoordinator,
+        AuditContinuityError,
+        audit_semantic_sha256,
+    )
+
+    coordinator = AuditContinuityCoordinator(archive_root)
+    try:
+        if not coordinator.needs_precontinuity_binding():
+            return
+    except AuditContinuityError as exc:
+        raise MigrationError("cannot inspect pre-continuity audit binding state") from exc
+    if backup_manifest is None:
+        raise MigrationError("populated pre-continuity audit journal requires a verified backup for continuity binding")
+    audit_path = archive_root / "audit.db"
+    expected = _authenticated_backup_audit_semantic_sha256(backup_manifest, audit_path=audit_path)
+    try:
+        actual = audit_semantic_sha256(audit_path)
+    except AuditContinuityError as exc:
+        raise MigrationError("cannot hash populated audit journal for continuity binding") from exc
+    if actual != expected:
+        raise MigrationError("populated audit journal differs from its authenticated pre-migration backup")
+    try:
+        coordinator.bind_precontinuity_audit(
+            mutation_id=f"precontinuity-audit:{expected}",
+            now_ms=int(time.time() * 1000),
+            audit_semantic_sha256=expected,
+        )
+    except AuditContinuityError as exc:
+        raise MigrationError("cannot bind populated pre-continuity audit journal") from exc
+
+
+def _validate_source_continuity_rebind_delta(
+    backup_path: Path,
+    live_path: Path,
+    *,
+    expected_mutation_id: str,
+    prepared_restore: Mapping[str, object] | None,
+) -> None:
+    """Allow a retrying restore to differ only in the source continuity table."""
+
+    try:
+        with closing(sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
+            connection.execute(
+                "ATTACH DATABASE ? AS backup_source", (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro",)
+            )
+            control = connection.execute(
+                "SELECT pending_mutation_id, pending_payload_json, pending_payload_sha256 "
+                "FROM main.audit_continuity_control WHERE singleton = 1"
+            ).fetchone()
+            if control is None:
+                raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+            backup_head = connection.execute(
+                "SELECT committed_generation, committed_head_sha256 "
+                "FROM backup_source.audit_continuity_control WHERE singleton = 1"
+            ).fetchone()
+            if backup_head is None or not isinstance(backup_head[0], int) or not isinstance(backup_head[1], str):
+                raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+            expected_prepared: dict[str, object] | None = None
+            if prepared_restore is not None:
+                from polylogue.storage.sqlite.audit_continuity import AuditMutation, prepared_audit_continuity_command
+
+                operation_id = prepared_restore.get("operation_id")
+                created_at_ms = prepared_restore.get("rebind_created_at_ms")
+                restore_sha256 = prepared_restore.get("restore_sha256")
+                audit_image_sha256 = prepared_restore.get("audit_artifact_sha256")
+                if (
+                    not isinstance(operation_id, str)
+                    or not isinstance(created_at_ms, int)
+                    or created_at_ms < 0
+                    or not isinstance(restore_sha256, str)
+                    or not isinstance(audit_image_sha256, str)
+                ):
+                    raise MigrationError("adopted-audit restore rebind lacks immutable prepared evidence")
+                expected_prepared = prepared_audit_continuity_command(
+                    AuditMutation(
+                        "rebind",
+                        f"audit-restore:{operation_id}",
+                        created_at_ms,
+                        {
+                            "kind": "verified_restore",
+                            "prepared_restore_sha256": restore_sha256,
+                            "audit_image_sha256": audit_image_sha256,
+                        },
+                    ),
+                    prior_generation=int(backup_head[0]),
+                    prior_head_sha256=str(backup_head[1]),
+                )
+            pending_mutation_id, pending_payload_json, pending_payload_sha256 = control
+            if pending_mutation_id is not None:
+                if (
+                    pending_mutation_id != expected_mutation_id
+                    or not isinstance(pending_payload_json, str)
+                    or not isinstance(pending_payload_sha256, str)
+                ):
+                    raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
+                try:
+                    prepared = json.loads(pending_payload_json)
+                except json.JSONDecodeError as exc:
+                    raise MigrationError("adopted-audit restore source continuity rebind is malformed") from exc
+                if (
+                    not isinstance(prepared, dict)
+                    or hashlib.sha256(
+                        json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                    ).hexdigest()
+                    != pending_payload_sha256
+                    or expected_prepared is None
+                    or prepared != expected_prepared
+                ):
+                    raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
+            else:
+                source_head = connection.execute(
+                    "SELECT committed_generation, committed_head_sha256 "
+                    "FROM main.audit_continuity_control WHERE singleton = 1"
+                ).fetchone()
+                expected_target: tuple[int, str] | None = None
+                if expected_prepared is not None:
+                    next_generation = expected_prepared["next_generation"]
+                    next_head = expected_prepared["next_head_sha256"]
+                    if isinstance(next_generation, int) and isinstance(next_head, str):
+                        expected_target = (next_generation, next_head)
+                # A crash after source promotion may leave audit.db absent or
+                # unreadable. The verified image is republished before its
+                # head is consulted by the restore coordinator, which then
+                # authenticates the exact mutation id. Here we can only admit
+                # the source control-row delta while proving all other source
+                # rows remain byte-for-byte equivalent below.
+                if source_head != backup_head and (
+                    source_head is None or expected_target is None or source_head != expected_target
+                ):
+                    raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
+            schema_sql = """
+                SELECT type, name, tbl_name, sql
+                FROM {schema}.sqlite_schema
+                WHERE name NOT LIKE 'sqlite_%'
+                  AND name != 'audit_continuity_control'
+                ORDER BY type, name
+            """
+            live_schema = connection.execute(schema_sql.format(schema="main")).fetchall()
+            backup_schema = connection.execute(schema_sql.format(schema="backup_source")).fetchall()
+            if live_schema != backup_schema:
+                raise MigrationError("adopted-audit restore backup is stale for source.db")
+            table_names = [str(row[1]) for row in live_schema if row[0] == "table"]
+            for table_name in table_names:
+                quoted = _quote_sqlite_identifier(table_name)
+                live_count = int(connection.execute(f"SELECT COUNT(*) FROM main.{quoted}").fetchone()[0])
+                backup_count = int(connection.execute(f"SELECT COUNT(*) FROM backup_source.{quoted}").fetchone()[0])
+                if live_count != backup_count:
+                    raise MigrationError("adopted-audit restore backup is stale for source.db")
+                columns = [str(row[1]) for row in connection.execute(f"PRAGMA main.table_info({quoted})")]
+                if not columns:
+                    raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+                grouped_columns = ", ".join(_quote_sqlite_identifier(column) for column in columns)
+                for left, right in (("main", "backup_source"), ("backup_source", "main")):
+                    differs = connection.execute(
+                        f"SELECT 1 FROM (SELECT {grouped_columns}, COUNT(*) AS multiplicity FROM {left}.{quoted} "
+                        f"GROUP BY {grouped_columns} EXCEPT SELECT {grouped_columns}, COUNT(*) AS multiplicity "
+                        f"FROM {right}.{quoted} GROUP BY {grouped_columns}) LIMIT 1"
+                    ).fetchone()
+                    if differs is not None:
+                        raise MigrationError("adopted-audit restore backup is stale for source.db")
+    except sqlite3.DatabaseError as exc:
+        raise MigrationError("cannot compare adopted-audit restore source continuity delta") from exc
+
+
 def validate_backup_manifest_covers_derived_tier(
     path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection
 ) -> Path:
@@ -927,6 +1380,7 @@ def migrate_archive_tier(
     # computed here is re-derived from a fresh read once the lock is held.
     precheck_version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
     if precheck_version == target_version:
+        _bind_populated_precontinuity_audit(conn, backup_manifest=backup_manifest)
         return MigrationResult(
             tier=tier,
             from_version=precheck_version,
@@ -1080,6 +1534,7 @@ def migrate_archive_tier(
         conn.commit()
         if foreign_keys_were_on:
             conn.execute("PRAGMA foreign_keys = ON")
+    _bind_populated_precontinuity_audit(conn, backup_manifest=backup_manifest)
     return MigrationResult(
         tier=tier,
         from_version=start_version,
@@ -3452,6 +3907,8 @@ __all__ = [
     "validate_durable_change_train_manifest",
     "validate_backup_manifest_covers_derived_tier",
     "validate_migration_backup_live_fingerprint",
+    "validate_full_evidence_backup_for_audit_adoption",
+    "validate_full_evidence_backup_for_adopted_audit_restore",
     "validate_migration_backup_manifest",
     "write_durable_change_train_manifest",
 ]

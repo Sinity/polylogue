@@ -18,7 +18,7 @@ from polylogue.operations.mutation_transaction import (
     TargetAuthorityPolicy,
     build_plan,
 )
-from polylogue.operations.specs import OperationKind, OperationSpec
+from polylogue.operations.specs import OperationKind, OperationSpec, build_runtime_operation_catalog
 
 
 @dataclass
@@ -119,3 +119,18 @@ def test_catalog_requires_every_executor_routed_spec_and_resolves_only_registere
 def test_catalog_rejects_missing_binding() -> None:
     with pytest.raises(BindingValidationError, match="missing"):
         validate_operation_bindings((_spec(),), ())
+
+
+def test_runtime_executor_routes_have_specific_capabilities_and_surfaces() -> None:
+    specs = build_runtime_operation_catalog().by_name().values()
+    routed = [spec for spec in specs if spec.executor_status == "executor-routed"]
+
+    assert routed
+    assert all(spec.target_authority for spec in routed)
+    assert all(spec.allowed_surfaces for spec in routed)
+    assert all(
+        capability != "archive.legacy_runtime"
+        for spec in routed
+        for policy in spec.target_authority
+        for capability in policy.required_capabilities
+    )

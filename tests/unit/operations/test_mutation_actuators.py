@@ -31,6 +31,7 @@ import pytest
 
 from polylogue.core.enums import AssertionKind, Provider
 from polylogue.insights.feedback import LearningCorrection
+from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,
     AnnotationDeleteArgs,
@@ -82,7 +83,12 @@ from polylogue.operations.mutation_actuators import (
     WorkspaceSaveActuator,
     WorkspaceSaveArgs,
 )
-from polylogue.operations.mutation_transaction import ConfirmationRequiredError, OperationExecutor, PlanStaleError
+from polylogue.operations.mutation_transaction import (
+    ConfirmationRequiredError,
+    MutationPrincipal,
+    OperationExecutor,
+    PlanStaleError,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_write import (
@@ -140,22 +146,26 @@ class TestSessionDeleteActuator:
     def test_full_lifecycle_deletes_the_session_row(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
+        initialize_active_archive_root(archive_root)
         session_id = _seed_archive_session(archive_root, native_id="beta")
 
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             actuator = SessionDeleteActuator()
-            executor = OperationExecutor()
+            executor = OperationExecutor.for_archive_root(archive_root)
             args = SessionDeleteArgs(archive=archive, session_ids=(session_id,))
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
-            )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            binding = runtime_operation_binding(actuator)
+            principal = MutationPrincipal("test", frozenset({"archive.delete_session"}), "api", "write")
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+            authorization = executor.authorize_bound(binding, preview, principal)
+            receipt = executor.execute_bound(binding, preview, authorization, args)
 
         assert receipt.status == "applied"
         assert receipt.affected_count == 1
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
+            assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
     def test_execute_without_authorization_confirm_flag_refuses(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

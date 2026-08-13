@@ -86,9 +86,9 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
 
 - Tier version constants under `storage/sqlite/archive_tiers/` are the
   authority. The canonical fresh schema is described directly by each tier DDL.
-- **Durable tiers** (`source.db`, `user.db`) may use explicit additive
+- **Durable tiers** (`source.db`, `user.db`, `audit.db`) may use explicit additive
   migrations. Migration SQL lives under
-  `storage/sqlite/migrations/{source,user}/NNN_name.sql`, advances
+  `storage/sqlite/migrations/{source,user,audit}/NNN_name.sql`, advances
   `PRAGMA user_version` one step at a time, and requires a verified backup
   manifest containing the affected tier before it runs. Verification restores
   the backup into scratch, checks every included SQLite tier and referenced
@@ -685,10 +685,11 @@ rebuilds or blue-green-replaces the tier from durable source/user evidence.
 Files that are not configured archive paths are not classified or handled by
 the archive runtime.
 
-For **durable tiers** (`source.db`, `user.db`) the boundary is different, because
-`user.db` holds irreplaceable human assertions that cannot be rebuilt from
-source. These tiers use explicit *additive* numbered SQL migrations under
-`storage/sqlite/migrations/{source,user}/NNN_*.sql`, applied one `PRAGMA
+For **durable tiers** (`source.db`, `user.db`, `audit.db`) the boundary is different, because
+`user.db` holds irreplaceable human assertions and `audit.db` holds immutable
+mutation authority and receipt evidence; neither can be rebuilt from source.
+These tiers use explicit *additive* numbered SQL migrations under
+`storage/sqlite/migrations/{source,user,audit}/NNN_*.sql`, applied one `PRAGMA
 user_version` step at a time by `migration_runner.py` behind a **verified backup
 manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/
 `ADD COLUMN`/bounded backfill; destructive durable-tier changes require a

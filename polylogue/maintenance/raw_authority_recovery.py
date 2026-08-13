@@ -29,11 +29,13 @@ from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     DestructiveClass,
     MutationPlan,
+    MutationPrincipal,
     MutationReceipt,
     MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
     build_plan,
+    compute_parameter_digest,
     make_target_ref,
 )
 from polylogue.paths import render_root
@@ -116,18 +118,31 @@ def _file_fingerprint(path: Path) -> dict[str, object]:
         raise RawAuthorityRecoveryError(f"recovery tier is not readable: {path}") from exc
     digest = hashlib.sha256()
     try:
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
+        if path.name == "source.db":
+            # Audit continuity is an executor-owned authority side effect, not
+            # a raw-authority recovery input. Hash the logical source image
+            # while excluding that mutable WAL control row so PREPARE's own
+            # audit writes cannot invalidate its bound recovery plan.
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+                for line in connection.iterdump():
+                    if "audit_continuity_control" not in line:
+                        digest.update(line.encode("utf-8"))
+                        digest.update(b"\n")
+        else:
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    except (OSError, sqlite3.Error) as exc:
         raise RawAuthorityRecoveryError(f"could not fingerprint recovery tier: {path}") from exc
-    return {
+    fingerprint: dict[str, object] = {
         "path": str(path.resolve(strict=False)),
-        "size_bytes": stat.st_size,
         "sha256": digest.hexdigest(),
         "device": stat.st_dev,
         "inode": stat.st_ino,
     }
+    if path.name != "source.db":
+        fingerprint["size_bytes"] = stat.st_size
+    return fingerprint
 
 
 def _pointer_fingerprint(root: Path) -> dict[str, object]:
@@ -185,10 +200,15 @@ def _table_digest(conn: sqlite3.Connection, name: str) -> str:
 
 
 def _protected_digest(conn: sqlite3.Connection, *, excluded: tuple[str, ...]) -> str:
+    # OperationExecutor journals its own authorization transitions in this
+    # source-tier control table. Those transitions are verified by audit
+    # continuity itself and cannot make the recovery target set safe or
+    # unsafe, so they must not self-invalidate a bound recovery plan.
+    volatile_control_tables = {"audit_continuity_control"}
     tables = sorted(
         str(row[0])
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
-        if str(row[0]) not in excluded
+        if str(row[0]) not in excluded and str(row[0]) not in volatile_control_tables
     )
     return _digest({name: _table_digest(conn, name) for name in tables})
 
@@ -1492,19 +1512,6 @@ def apply_raw_authority_recovery(
         or str(backup_manifest.resolve(strict=False)) != selected.backup_authority.get("manifest_path")
     ):
         raise RawAuthorityRecoveryError("apply backup manifest does not match the plan authority")
-    existing = _receipt_for_plan(selected)
-    if existing is not None:
-        _require_apply_preconditions(Path(selected.archive_root))
-        _validate_existing_receipt(selected, existing)
-        _refresh_source_train_continuity(selected)
-        return RawAuthorityRecoveryReport(
-            plan=selected,
-            applied=False,
-            status="already_satisfied",
-            receipt_path=Path(selected.receipt_path),
-            after_counts=cast(dict[str, int], existing.get("after_counts")),
-            postflight=cast(dict[str, object], existing.get("postflight")),
-        )
     if selected.backup_authority is None:
         raise RawAuthorityRecoveryError("apply requires a dry-run plan with verified backup authority")
     operation = RecoveryOperation(selected.operation)
@@ -1522,40 +1529,74 @@ def apply_raw_authority_recovery(
         if operation is RecoveryOperation.RESET_CENSUS
         else PruneOrphanedIndexRevisionSeedsActuator()
     )
-    executor = OperationExecutor()
+    from polylogue.operations.bindings import runtime_operation_binding
+
     try:
         location = ArchiveLocation.resolve(root)
-        # A final receipt may be missing after a process crash or I/O failure.
-        # Only exact committed postflight evidence can skip a fresh executor
-        # authorization. An uncommitted intent is evidence of interruption,
-        # not authority to perform the destructive mutation.
-        if _intent_for_plan(selected) is not None:
-            with OwnedArchiveLocation.acquire(
-                location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
-            ) as owned:
-                current_location = ArchiveLocation.resolve(root)
-                assert_owns_archive_location(owned, current_location)
-                with RebuildLease(root):
-                    if _committed_postflight(selected) is not None:
-                        return _apply_plan(selected)
-        prepared = executor.prepare(actuator, args)
-        if prepared.context.get("recovery_plan_digest") != selected.plan_digest:
-            raise PlanStaleError("recovery plan is stale before lease acquisition")
-        authorization = executor.authorize(
-            actuator,
-            prepared,
-            actor="cli:maintenance",
-            role="maintenance",
-            capability="archive.raw_authority_recovery",
-            confirmation_strength="confirm_flag",
-        )
         with OwnedArchiveLocation.acquire(
             location, owner_id=f"raw-authority-recovery:{selected.operation_id}"
         ) as owned:
             current_location = ArchiveLocation.resolve(root)
             assert_owns_archive_location(owned, current_location)
+            _require_apply_preconditions(root)
             with RebuildLease(root):
-                result = executor.execute(actuator, prepared, authorization, args)
+                existing = _receipt_for_plan(selected)
+                if existing is not None:
+                    _validate_existing_receipt(selected, existing)
+                    _refresh_source_train_continuity(selected)
+                    return RawAuthorityRecoveryReport(
+                        plan=selected,
+                        applied=False,
+                        status="already_satisfied",
+                        receipt_path=Path(selected.receipt_path),
+                        after_counts=cast(dict[str, int], existing.get("after_counts")),
+                        postflight=cast(dict[str, object], existing.get("postflight")),
+                    )
+                # A final receipt may be missing after a process crash or I/O failure.
+                # Only exact committed postflight evidence can skip a fresh executor
+                # authorization. An uncommitted intent is evidence of interruption,
+                # not authority to perform the destructive mutation.
+                if _intent_for_plan(selected) is not None and _committed_postflight(selected) is not None:
+                    executor = OperationExecutor.for_archive_root(root)
+                    recovered = _apply_plan(selected)
+                    raw_plan = build_plan(
+                        operation=actuator.operation,
+                        destructive_class=actuator.destructive_class,
+                        target_refs=(
+                            make_target_ref("source", operation.value)
+                            if operation is RecoveryOperation.RESET_CENSUS
+                            else make_target_ref("index", operation.value),
+                        ),
+                        affected_tiers=("source",) if operation is RecoveryOperation.RESET_CENSUS else ("index",),
+                        reversible=False,
+                        context={"recovery_plan_digest": selected.plan_digest, "operation_id": selected.operation_id},
+                    )
+                    operation_id = executor.find_interrupted_operation(
+                        operation_name=actuator.operation,
+                        parameter_digest=compute_parameter_digest(raw_plan),
+                    )
+                    if operation_id is None:
+                        raise RawAuthorityRecoveryError("committed recovery has no matching interrupted audit attempt")
+                    executor.reconcile_operation(
+                        operation_id,
+                        outcome="applied",
+                        domain_receipt_ref=str(recovered.receipt_path) if recovered.receipt_path is not None else None,
+                        reason="exact raw-authority postflight proved the prior domain commit",
+                    )
+                    return recovered
+                executor = OperationExecutor.for_archive_root(root)
+                binding = runtime_operation_binding(actuator)
+                principal = MutationPrincipal(
+                    "cli:maintenance",
+                    frozenset({"archive.raw_authority_recovery"}),
+                    "maintenance",
+                    "maintenance",
+                )
+                preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+                if preview.plan.context.get("recovery_plan_digest") != selected.plan_digest:
+                    raise PlanStaleError("recovery plan is stale after ownership acquisition")
+                authorization = executor.authorize_bound(binding, preview, principal)
+                result = executor.execute_bound(binding, preview, authorization, args)
     except (
         ArchiveLocationError,
         ArchiveOwnershipError,

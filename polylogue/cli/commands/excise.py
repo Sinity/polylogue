@@ -125,8 +125,6 @@ def excise_command(
     root = archive_root()
 
     if mode != "standalone":
-        from polylogue.security.lifecycle import submit_lifecycle_request
-
         target_ref = f"session:{session_id}"
         if dry_run:
             _emit(
@@ -161,26 +159,33 @@ def excise_command(
                 env.ui.console.print("Aborted.")
                 return
 
-        import sqlite3
+        from polylogue.operations.bindings import runtime_operation_binding
+        from polylogue.operations.mutation_actuators import SessionLifecycleRequestActuator, SessionLifecycleRequestArgs
+        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+        from polylogue.security.lifecycle import LifecycleMode
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-        user_db = root / "user.db"
-        initialize_archive_database(user_db, ArchiveTier.USER)
-        conn = sqlite3.connect(user_db)
-        try:
-            with conn:
-                assertion_id = submit_lifecycle_request(
-                    conn,
-                    target_ref=target_ref,
-                    mode=mode,  # type: ignore[arg-type]
-                    reason=reason,
-                    actor=actor,
-                    now_ms=_now_ms(),
-                )
-        finally:
-            conn.close()
+        initialize_active_archive_root(root)
+        lifecycle_actuator = SessionLifecycleRequestActuator()
+        lifecycle_args = SessionLifecycleRequestArgs(
+            archive_root=root,
+            session_id=session_id,
+            mode=cast(LifecycleMode, mode),
+            reason=reason,
+            actor=actor,
+            now_ms=_now_ms(),
+        )
+        executor = OperationExecutor.for_archive_root(root)
+        lifecycle_binding = runtime_operation_binding(lifecycle_actuator)
+        lifecycle_principal = MutationPrincipal(actor, frozenset({"archive.request_session_lifecycle"}), "cli", "write")
+        lifecycle_preview = executor.prepare_bound_for_archive(
+            lifecycle_binding, lifecycle_args, lifecycle_principal, archive_root=root
+        )
+        lifecycle_authorization = executor.authorize_bound(
+            lifecycle_binding, lifecycle_preview, lifecycle_principal, confirmation_strength="confirm_flag"
+        )
+        receipt = executor.execute_bound(lifecycle_binding, lifecycle_preview, lifecycle_authorization, lifecycle_args)
+        assertion_id = cast(str, receipt.domain_receipt["assertion_id"])
         _emit(
             env,
             status="ok",
@@ -195,12 +200,12 @@ def excise_command(
         )
         return
 
+    from polylogue.operations.bindings import runtime_operation_binding
     from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
-    from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
     from polylogue.security.excision import plan_session_excision
 
     actuator = SessionExcisionActuator()
-    executor = OperationExecutor()
     excision_args = SessionExcisionArgs(
         archive_root=root,
         session_id=session_id,
@@ -312,16 +317,12 @@ def excise_command(
     # EXECUTE revalidates the hash immediately before mutating -- a stale or
     # tampered authorization refuses (``PlanStaleError``) rather than excising
     # the wrong target set.
-    executor_plan = executor.prepare(actuator, excision_args)
-    authorization = executor.authorize(
-        actuator,
-        executor_plan,
-        actor=actor,
-        role="write",
-        capability="archive.excise_session",
-        confirmation_strength="confirm_flag",
-    )
-    executor_receipt = executor.execute(actuator, executor_plan, authorization, excision_args)
+    executor = OperationExecutor.for_archive_root(root)
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(actor, frozenset({"archive.excise_session"}), "cli", "write")
+    preview = executor.prepare_bound_for_archive(binding, excision_args, principal, archive_root=root)
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+    executor_receipt = executor.execute_bound(binding, preview, authorization, excision_args)
     if executor_receipt.status == "blocked":
         _emit(
             env,
@@ -349,7 +350,7 @@ def excise_command(
         affected_count=executor_receipt.affected_count,
         output_format=output_format,
         plain_message=detail_message,
-        detail=executor_receipt.receipt_ref,
+        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or executor_receipt.receipt_ref,
     )
 
 

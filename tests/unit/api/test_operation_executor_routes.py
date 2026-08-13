@@ -18,9 +18,9 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 
 
 def _seed_archive(archive_root: Path, *, native_id: str) -> str:
+    initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
-    initialize_active_archive_root(archive_root)
     raw_id = f"raw-{native_id}"
     session_id = f"codex-session:{native_id}"
     with sqlite3.connect(source_db) as conn:
@@ -53,13 +53,13 @@ async def test_facade_rebuild_and_update_index_use_executor_and_real_routes(
     session_id = _seed_archive(archive_root, native_id="route-index")
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     calls: list[str] = []
-    original_execute = OperationExecutor.execute
+    original_execute_bound = OperationExecutor.execute_bound
 
-    def record_execute(self: OperationExecutor, actuator, plan, authorization, args):  # type: ignore[no-untyped-def]
-        calls.append(actuator.operation)
-        return original_execute(self, actuator, plan, authorization, args)
+    def record_execute_bound(self: OperationExecutor, binding, preview, authorization, args):  # type: ignore[no-untyped-def]
+        calls.append(binding.actuator.operation)
+        return original_execute_bound(self, binding, preview, authorization, args)
 
-    monkeypatch.setattr(OperationExecutor, "execute", record_execute)
+    monkeypatch.setattr(OperationExecutor, "execute_bound", record_execute_bound)
     try:
         assert await archive.rebuild_index() is True
         assert await archive.update_index([session_id]) is True
@@ -78,13 +78,13 @@ async def test_facade_rebuild_insights_uses_executor_and_real_materializer(
     session_id = _seed_archive(archive_root, native_id="route-insights")
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     calls: list[str] = []
-    original_execute = OperationExecutor.execute
+    original_execute_bound = OperationExecutor.execute_bound
 
-    def record_execute(self: OperationExecutor, actuator, plan, authorization, args):  # type: ignore[no-untyped-def]
-        calls.append(actuator.operation)
-        return original_execute(self, actuator, plan, authorization, args)
+    def record_execute_bound(self: OperationExecutor, binding, preview, authorization, args):  # type: ignore[no-untyped-def]
+        calls.append(binding.actuator.operation)
+        return original_execute_bound(self, binding, preview, authorization, args)
 
-    monkeypatch.setattr(OperationExecutor, "execute", record_execute)
+    monkeypatch.setattr(OperationExecutor, "execute_bound", record_execute_bound)
     try:
         counts = await archive.rebuild_insights(session_ids=[session_id])
     finally:

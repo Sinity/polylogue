@@ -19,19 +19,77 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from typing import Annotated, Literal
 
 import click
+from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
+    AuditContinuityError,
     DurablePublicationError,
     acquire_durable_archive_ownership,
+    adopt_missing_audit_tier,
     execute_durable_change_train,
     initialize_missing_durable_tier,
+    restore_adopted_audit_tier,
 )
 from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, MigrationError
+
+
+class DurableRecoveryPayload(BaseModel):
+    """Typed recovery evidence for a blocked durable publication."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: str
+    code: str | None
+    target: str | None
+    detail: str | None
+
+
+class MigrateTierSuccessPayload(BaseModel):
+    """Successful result for one durable-tier migration route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[True]
+    tier: str
+    path: str
+    initialized: bool
+    adoption_receipt: str | None
+    restore_receipt: str | None
+    backup_manifest: str | None
+    stopped_daemon_evidence_ref: str | None
+    train_manifest: str | None
+    train_state: str | None
+    backup_receipt: str | None
+    from_version: int | None
+    to_version: int | None
+    applied_versions: list[int]
+    forward_version_receipt: dict[str, object] | None
+
+
+class MigrateTierErrorPayload(BaseModel):
+    """Blocked result for one durable-tier migration route."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ok: Literal[False]
+    tier: str
+    path: str
+    backup_manifest: str | None
+    stopped_daemon_evidence_ref: str | None
+    error: str
+    durable_recovery: DurableRecoveryPayload | None
+
+
+class MigrateTierResultPayload(
+    RootModel[Annotated[MigrateTierSuccessPayload | MigrateTierErrorPayload, Field(discriminator="ok")]]
+):
+    """Published success/error union for the migrate-tier JSON surface."""
 
 
 def _daemon_pidfile_is_live(pidfile: Path) -> bool:
@@ -65,11 +123,26 @@ def _require_stopped_daemon(root: Path) -> str:
     is_flag=True,
     help="Initialize this durable tier only when its database file is absent; never replaces an existing file.",
 )
+@click.option(
+    "--adopt-established-audit",
+    is_flag=True,
+    help=(
+        "Create missing audit.db for an established archive only with a freshly verified full_evidence backup; "
+        "writes an immutable adoption receipt."
+    ),
+)
+@click.option(
+    "--restore-adopted-audit",
+    is_flag=True,
+    help="Atomically restore adopted audit.db from a scratch-verified full_evidence backup and append continuity.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def migrate_tier_command(
     tier: str,
     backup_manifest: Path | None,
     initialize_missing: bool,
+    adopt_established_audit: bool,
+    restore_adopted_audit: bool,
     output_format: str,
 ) -> None:
     """Apply additive migrations for one durable archive tier.
@@ -85,10 +158,41 @@ def migrate_tier_command(
     stopped_daemon_evidence_ref: str | None = None
     initialized = False
     initialized_version: int | None = None
+    adoption_receipt: Path | None = None
+    restore_receipt: Path | None = None
     try:
+        if sum((initialize_missing, adopt_established_audit, restore_adopted_audit)) > 1:
+            raise MigrationError(
+                "choose only one of --initialize-missing, --adopt-established-audit, or --restore-adopted-audit"
+            )
+        if (adopt_established_audit or restore_adopted_audit) and archive_tier is not ArchiveTier.AUDIT:
+            option = "--adopt-established-audit" if adopt_established_audit else "--restore-adopted-audit"
+            raise MigrationError(f"{option} is only valid for the audit tier")
+        if (adopt_established_audit or restore_adopted_audit) and backup_manifest is None:
+            option = "--adopt-established-audit" if adopt_established_audit else "--restore-adopted-audit"
+            raise MigrationError(f"{option} requires --backup-manifest")
         with acquire_durable_archive_ownership(path.parent, owner_id=f"migrate-tier:{os.getpid()}") as archive_owner:
             stopped_daemon_evidence_ref = _require_stopped_daemon(path.parent)
-            if initialize_missing:
+            if adopt_established_audit:
+                assert backup_manifest is not None
+                initialized_version, adoption_receipt = adopt_missing_audit_tier(
+                    path,
+                    backup_manifest=backup_manifest,
+                    directory_fd=archive_owner.directory_fd,
+                    stopped_daemon_check=lambda: _require_stopped_daemon(path.parent),
+                )
+                initialized = True
+                execution = None
+            elif restore_adopted_audit:
+                assert backup_manifest is not None
+                restore_receipt = restore_adopted_audit_tier(
+                    path,
+                    backup_manifest=backup_manifest,
+                    directory_fd=archive_owner.directory_fd,
+                    stopped_daemon_check=lambda: _require_stopped_daemon(path.parent),
+                )
+                execution = None
+            elif initialize_missing:
                 initialized_version = initialize_missing_durable_tier(
                     path,
                     archive_tier,
@@ -105,25 +209,21 @@ def migrate_tier_command(
                     single_writer_evidence_ref="proof:archive-ownership-lock",
                     release_archive_ownership=archive_owner.release,
                 )
-    except (sqlite3.Error, MigrationError, ArchiveOwnershipError) as exc:
+    except (sqlite3.Error, MigrationError, ArchiveOwnershipError, AuditContinuityError) as exc:
         if output_format == "json":
-            click.echo(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "tier": tier,
-                        "path": str(path),
-                        "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
-                        "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
-                        "error": str(exc),
-                        "durable_recovery": (
-                            exc.cleanup.as_dict() if isinstance(exc, DurablePublicationError) and exc.cleanup else None
-                        ),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
+            cleanup = exc.cleanup if isinstance(exc, DurablePublicationError) else None
+            error_payload = MigrateTierErrorPayload(
+                ok=False,
+                tier=tier,
+                path=str(path),
+                backup_manifest=str(backup_manifest) if backup_manifest is not None else None,
+                stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+                error=str(exc),
+                durable_recovery=(
+                    DurableRecoveryPayload.model_validate(cleanup.as_dict()) if cleanup is not None else None
+                ),
             )
+            click.echo(json.dumps(error_payload.model_dump(mode="json"), indent=2, sort_keys=True))
         else:
             click.echo(f"Migration blocked for {tier}: {exc}", err=True)
             if isinstance(exc, DurablePublicationError) and exc.cleanup is not None:
@@ -137,24 +237,24 @@ def migrate_tier_command(
 
     result = execution.migration_result if execution is not None else None
     receipt = execution.forward_version_receipt if execution is not None else None
-    payload = {
-        "ok": True,
-        "tier": tier,
-        "path": str(path),
-        "initialized": initialized,
-        "backup_manifest": str(backup_manifest) if backup_manifest is not None else None,
-        "stopped_daemon_evidence_ref": stopped_daemon_evidence_ref,
-        "train_manifest": (
+    success_payload = MigrateTierSuccessPayload(
+        ok=True,
+        tier=tier,
+        path=str(path),
+        initialized=initialized,
+        adoption_receipt=str(adoption_receipt) if adoption_receipt is not None else None,
+        restore_receipt=str(restore_receipt) if restore_receipt is not None else None,
+        backup_manifest=str(backup_manifest) if backup_manifest is not None else None,
+        stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+        train_manifest=(
             str(execution.manifest_path) if execution is not None and execution.manifest_path is not None else None
         ),
-        "train_state": execution.train.state.value if execution is not None and execution.train is not None else None,
-        "backup_receipt": str(result.backup_receipt)
-        if result is not None and result.backup_receipt is not None
-        else None,
-        "from_version": result.from_version if result is not None else 0 if initialized else None,
-        "to_version": result.to_version if result is not None else initialized_version,
-        "applied_versions": list(result.applied_versions) if result is not None else [],
-        "forward_version_receipt": (
+        train_state=execution.train.state.value if execution is not None and execution.train is not None else None,
+        backup_receipt=str(result.backup_receipt) if result is not None and result.backup_receipt is not None else None,
+        from_version=result.from_version if result is not None else 0 if initialized else None,
+        to_version=result.to_version if result is not None else initialized_version,
+        applied_versions=list(result.applied_versions) if result is not None else [],
+        forward_version_receipt=(
             {
                 "tier": receipt.tier.value,
                 "historical_train_id": receipt.historical_train_id,
@@ -167,11 +267,17 @@ def migrate_tier_command(
             if receipt is not None
             else None
         ),
-    }
+    )
     if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        click.echo(json.dumps(success_payload.model_dump(mode="json"), indent=2, sort_keys=True))
         return
 
+    if adoption_receipt is not None:
+        click.echo(f"Adopted missing audit tier at schema version {initialized_version}; receipt: {adoption_receipt}.")
+        return
+    if restore_receipt is not None:
+        click.echo(f"Restored adopted audit tier; continuity receipt: {restore_receipt}.")
+        return
     if initialized:
         click.echo(f"Initialized missing {tier} tier at schema version {initialized_version}.")
         return

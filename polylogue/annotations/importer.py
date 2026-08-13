@@ -23,9 +23,11 @@ from polylogue.annotations.schema import (
 from polylogue.annotations.write import assertion_id_for_schema_annotation, upsert_annotation_assertion
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import EvidenceRef, parse_public_ref
+from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     MutationPlan,
+    MutationPrincipal,
     MutationReceipt,
     OperationExecutor,
     build_plan,
@@ -468,18 +470,18 @@ async def import_annotation_batch(
         abstained_count=abstained_count,
         created_at_ms=created_at_ms,
     )
-    executor = OperationExecutor()
+    executor = OperationExecutor.for_archive_root(user_db_path.parent)
     actuator = AnnotationBatchImportActuator()
-    plan = executor.prepare(actuator, args)
-    authorization = executor.authorize(
-        actuator,
-        plan,
-        actor=request.actor_ref,
-        role="write",
-        capability="annotations.import_annotation_batch",
-        confirmation_strength="role_only",
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(
+        request.actor_ref,
+        frozenset({"archive.annotation.import_batch"}),
+        "internal",
+        "write",
     )
-    receipt = executor.execute(actuator, plan, authorization, args)
+    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=user_db_path.parent)
+    authorization = executor.authorize_bound(binding, preview, principal)
+    receipt = executor.execute_bound(binding, preview, authorization, args)
     batch = cast(AnnotationBatch, receipt.domain_receipt["batch"])
     imported_outcomes = cast(
         tuple[AnnotationImportRowOutcome, ...],

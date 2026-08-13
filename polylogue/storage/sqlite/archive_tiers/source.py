@@ -20,8 +20,9 @@ from polylogue.core.enums import (
 )
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
+from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 31
+SOURCE_SCHEMA_VERSION = 32
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -856,6 +857,30 @@ CREATE TABLE IF NOT EXISTS verified_blob_receipts (
     verified_at_ms   INTEGER NOT NULL CHECK(verified_at_ms >= 0),
     PRIMARY KEY(blob_hash)
 ) STRICT;
+
+-- The source tier is the durable cross-tier write-ahead command log for
+-- audit.db.  A singleton row gives exactly one committed head and at most one
+-- canonical, replayable pending mutation.  A pending command is never prose:
+-- its JSON is the typed operation input used to complete an interrupted audit
+-- write on startup.
+CREATE TABLE IF NOT EXISTS audit_continuity_control (
+    singleton            INTEGER PRIMARY KEY CHECK(singleton = 1),
+    committed_generation INTEGER NOT NULL CHECK(committed_generation >= 0),
+    committed_head_sha256 TEXT NOT NULL CHECK(length(committed_head_sha256) = 64),
+    pending_mutation_id  TEXT UNIQUE,
+    pending_payload_json TEXT,
+    pending_payload_sha256 TEXT CHECK(pending_payload_sha256 IS NULL OR length(pending_payload_sha256) = 64),
+    prepared_at_ms       INTEGER,
+    CHECK(
+        (pending_mutation_id IS NULL AND pending_payload_json IS NULL AND pending_payload_sha256 IS NULL AND prepared_at_ms IS NULL)
+        OR
+        (pending_mutation_id IS NOT NULL AND pending_payload_json IS NOT NULL AND pending_payload_sha256 IS NOT NULL AND prepared_at_ms IS NOT NULL AND prepared_at_ms >= 0)
+    )
+) STRICT;
+INSERT OR IGNORE INTO audit_continuity_control(
+    singleton, committed_generation, committed_head_sha256,
+    pending_mutation_id, pending_payload_json, pending_payload_sha256, prepared_at_ms
+) VALUES (1, 0, '{AUDIT_CONTINUITY_GENESIS_HEAD_SHA256}', NULL, NULL, NULL, NULL);
 
 """
 

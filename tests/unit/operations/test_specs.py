@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 from polylogue.operations import (
     OperationKind,
     build_declared_operation_catalog,
@@ -68,6 +69,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-delete-session",
         "mutate-bulk-tag-sessions",
         "mutate-session-excision",
+        "mutate-session-lifecycle-request",
         "mutate-identity-reset",
     }
     assert specs["acquire-raw-sessions"].kind is OperationKind.MATERIALIZATION
@@ -150,6 +152,17 @@ def test_raw_authority_recovery_specs_declare_their_exact_target_kinds() -> None
     assert [(policy.key, policy.target_kinds) for policy in prune_policy] == [
         ("raw-authority-recovery-index", ("index",))
     ]
+
+
+def test_user_mutation_policy_tracks_the_supported_target_registry_and_identity_recovery() -> None:
+    """Bound facade writes accept every user-state target the core registry admits."""
+
+    specs = build_runtime_operation_catalog().by_name()
+    add_mark_policy = specs["mutate-add-mark"].target_authority[0]
+    identity_reset_policy = specs["mutate-identity-reset"].target_authority[0]
+
+    assert set(TARGET_KIND_NAMES).issubset(add_mark_policy.target_kinds)
+    assert identity_reset_policy.allowed_recovery == ("reconcile_required",)
 
 
 def test_declared_operation_catalog_contains_runtime_and_control_plane_operations() -> None:

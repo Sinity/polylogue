@@ -13,17 +13,15 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _seed_session(archive_root: Path, *, native_id: str) -> str:
     archive_root.mkdir(parents=True, exist_ok=True)
+    initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     source_conn = sqlite3.connect(source_db)
     source_conn.execute("PRAGMA foreign_keys = ON")
@@ -130,6 +128,37 @@ class TestExciseStandalone:
         finally:
             index_conn.close()
         assert count == 1
+
+    def test_dry_run_does_not_construct_a_mutating_audit_executor(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="dry-run-no-executor")
+        with (
+            patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root),
+            patch("polylogue.operations.mutation_transaction.OperationExecutor.for_archive_root") as factory,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "excise", "--session", session_id, "--reason", "r", "--dry-run", "--json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        factory.assert_not_called()
+
+    def test_declined_confirmation_does_not_construct_a_mutating_audit_executor(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="declined-no-executor")
+        with (
+            patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root),
+            patch("polylogue.operations.mutation_transaction.OperationExecutor.for_archive_root") as factory,
+        ):
+            result = CliRunner().invoke(
+                cli,
+                ["ops", "excise", "--session", session_id, "--reason", "r"],
+                input="n\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        factory.assert_not_called()
 
     def test_without_yes_aborts_in_json_mode(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
@@ -246,6 +275,10 @@ class TestExciseMirrorPrimary:
         assert row is not None
         assert row[0] == "excision_request"
         assert row[1] == f"session:{session_id}"
+        with sqlite3.connect(archive_root / "audit.db") as audit_connection:
+            assert audit_connection.execute(
+                "SELECT status FROM operation_runs WHERE operation_name = 'mutate-session-lifecycle-request'"
+            ).fetchone() == ("completed",)
 
         # Local content is untouched by mirror/primary mode.
         index_conn = sqlite3.connect(archive_root / "index.db")
@@ -256,6 +289,101 @@ class TestExciseMirrorPrimary:
         finally:
             index_conn.close()
         assert count == 1
+
+    def test_replayed_primary_request_is_an_audited_noop(self, tmp_path: Path) -> None:
+        """The CLI route records the existing lifecycle assertion as idempotent.
+
+        Anti-vacuity: unconditionally applied actuator receipts make the
+        second completed audit run report one affected target instead of zero.
+        """
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="primary-replay")
+        command = [
+            "ops",
+            "excise",
+            "--session",
+            session_id,
+            "--reason",
+            "leak",
+            "--mode",
+            "primary",
+            "--yes",
+            "--json",
+        ]
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            first = runner.invoke(cli, command)
+            replay = runner.invoke(cli, command)
+
+        assert first.exit_code == replay.exit_code == 0
+        with sqlite3.connect(archive_root / "audit.db") as connection:
+            assert connection.execute("SELECT state FROM operation_targets ORDER BY rowid").fetchall() == [
+                ("applied",),
+                ("already_satisfied",),
+            ]
+            assert connection.execute(
+                "SELECT affected_count FROM operation_runs ORDER BY requested_at_ms, operation_id"
+            ).fetchall() == [(1,), (0,)]
+
+    def test_primary_refuses_missing_audit_without_writing_a_lifecycle_request(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="primary-missing-audit")
+        (archive_root / "audit.db").unlink()
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "ops",
+                    "excise",
+                    "--session",
+                    session_id,
+                    "--reason",
+                    "leak",
+                    "--mode",
+                    "primary",
+                    "--yes",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "missing audit.db" in str(result.exception)
+        with sqlite3.connect(archive_root / "user.db") as connection:
+            assert connection.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'excision_request'").fetchone() == (
+                0,
+            )
+
+    def test_primary_refuses_broken_audit_continuity_without_writing_a_lifecycle_request(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="primary-broken-continuity")
+        with sqlite3.connect(archive_root / "audit.db") as connection:
+            connection.execute("UPDATE audit_continuity_head SET head_sha256 = ? WHERE singleton = 1", ("0" * 64,))
+            connection.commit()
+
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "ops",
+                    "excise",
+                    "--session",
+                    session_id,
+                    "--reason",
+                    "leak",
+                    "--mode",
+                    "primary",
+                    "--yes",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "continuity head regressed" in str(result.exception)
+        with sqlite3.connect(archive_root / "user.db") as connection:
+            assert connection.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'excision_request'").fetchone() == (
+                0,
+            )
 
 
 class TestExciseLineageSafety:
