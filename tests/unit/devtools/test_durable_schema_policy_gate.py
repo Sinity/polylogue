@@ -62,7 +62,6 @@ def test_policy_json_names_every_duplicate_owner(
         "-- migration-safety: additive-no-backup\nCREATE TABLE second (id INTEGER);\n",
         owner_ref="owner:second",
     )
-    monkeypatch.setattr(verify_schema_upgrade_lane, "_collect_upgrade_helpers", lambda: [])
     monkeypatch.setattr(verify_schema_upgrade_lane, "_invalid_migration_paths", lambda: [])
     monkeypatch.setattr(
         verify_schema_upgrade_lane,

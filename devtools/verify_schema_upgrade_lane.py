@@ -14,18 +14,12 @@ Polylogue has two schema-evolution regimes:
 What this lint checks
 ---------------------
 
-1. Scan derived-tier storage modules for upgrade-shaped helpers
-   (``build_vN_to_vM``, ``_apply_version_upgrade_plan``, ``migrate_v*``,
-   etc.). The names match the historical Polylogue conventions called
-   out in ``docs/internals.md`` and in the witness archive
-   (``.local/witnesses/new/*schema_upgrades*``).
-
-2. Fail if any legacy helper exists for a derived tier, or when the current
-   index schema version lacks a delta-class declaration. Durable-tier migrations
+1. Fail when the current index schema version lacks a delta-class declaration.
+   Durable-tier migrations
    must live under ``polylogue/storage/sqlite/migrations/{source,user}/`` as
    numbered SQL resources.
 
-3. Validate every entry in the index-tier benign-DDL convergence registry
+2. Validate every entry in the index-tier benign-DDL convergence registry
    (``polylogue.storage.sqlite.archive_tiers.index_convergence.
    INDEX_BENIGN_DDL_REGISTRY``, polylogue-jc1b): each entry's SQL must be
    exactly one of ``CREATE TABLE IF NOT EXISTS``, ``CREATE INDEX IF NOT
@@ -35,8 +29,8 @@ What this lint checks
    is the sanctioned same-version-open path being asked to do something a
    version bump should gate instead, and is rejected here.
 
-The lint is intentionally narrow. It detects helper names associated
-with in-place upgrades; it does not try to infer arbitrary SQL patches.
+The lint validates structured schema carriers and executable SQL shapes. It
+does not infer architecture from Python function names.
 
 Wired into ``devtools verify --lab`` rather than the fast default path
 because the policy boundary is a lab/architectural concern, not a
@@ -53,7 +47,6 @@ not evidence that no reparse is needed.
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import re
 import sys
@@ -80,58 +73,11 @@ from polylogue.storage.sqlite.durable_change_train import (
 from polylogue.storage.sqlite.lifecycle import IndexDeltaDeclarationReport, index_delta_declaration_report
 
 ROOT = _get_root()
-STORAGE_SQLITE_DIR = ROOT / "polylogue" / "storage" / "sqlite"
-MIGRATIONS_DIR = STORAGE_SQLITE_DIR / "migrations"
+MIGRATIONS_DIR = ROOT / "polylogue" / "storage" / "sqlite" / "migrations"
 ALLOWED_MIGRATION_TIERS = {"source", "user", "audit"}
-
-# Upgrade-shaped helper name patterns. Matched against ``def <name>``
-# at the top level of any module under ``polylogue/storage/sqlite/``.
-#
-# Patterns are derived from the historical naming used by upgrade
-# helpers that have since been removed (preserved in the witness
-# archive under ``.local/witnesses/new/*schema_upgrades*``) and from
-# the ``build_vN_to_vM`` / ``_apply_version_upgrade_plan`` naming
-# called out as the policy-violating shape in ``docs/internals.md``.
-_HELPER_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^build_v\d+_to_v\d+$"),
-    re.compile(r"^_?apply_version_upgrade(_plan)?$"),
-    re.compile(r"^_?upgrade_v\d+_to_v\d+$"),
-    re.compile(r"^_?migrate_v\d+(_to_v\d+)?$"),
-    re.compile(r"^ensure_schema_upgrades_v\d+$"),
-)
 
 _DURABLE_MIGRATION_SQL_RE = re.compile(r"^\d{3,}_[a-z0-9_]+\.sql$")
 _DURABLE_MIGRATION_SIDECAR_RE = re.compile(r"^\d{3,}\.train\.json$")
-
-
-@dataclass(frozen=True, slots=True)
-class HelperHit:
-    name: str
-    path: Path
-    lineno: int
-
-
-def _is_helper_name(name: str) -> bool:
-    return any(pattern.match(name) for pattern in _HELPER_PATTERNS)
-
-
-def _collect_upgrade_helpers() -> list[HelperHit]:
-    """Return upgrade-shaped helpers outside the durable migration runner."""
-    hits: list[HelperHit] = []
-    if not STORAGE_SQLITE_DIR.exists():
-        return hits
-    for path in sorted(STORAGE_SQLITE_DIR.rglob("*.py")):
-        rel_parts = path.relative_to(STORAGE_SQLITE_DIR).parts
-        if rel_parts[:1] == ("migrations",) or path.name == "migrations.py":
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _is_helper_name(node.name):
-                hits.append(HelperHit(name=node.name, path=path, lineno=node.lineno))
-    return hits
 
 
 # Index-tier benign-DDL registry entries (polylogue-jc1b) must be exactly one
@@ -242,7 +188,6 @@ def durable_migration_collision_report(
 
 def _format_report(
     *,
-    helpers: list[HelperHit],
     invalid_migrations: list[Path],
     delta_report: IndexDeltaDeclarationReport,
     benign_ddl_violations: list[BenignDDLViolation],
@@ -264,7 +209,6 @@ def _format_report(
     durable_migration_collisions = durable_migration_collisions or {}
     collision_entries = cast(tuple[object, ...], durable_migration_collisions.get("collisions", ()))
     lines = [
-        f"derived-tier upgrade helpers found: {len(helpers)}",
         f"invalid durable migration resources found: {len(invalid_migrations)}",
         f"durable change-train reservations found: {len(durable_reservations)}",
         f"durable change-train violations found: {len(durable_violations)}",
@@ -272,14 +216,6 @@ def _format_report(
         f"undeclared index schema deltas found: {len(delta_report['missing_versions'])}",
         f"invalid index benign-DDL registry entries found: {len(benign_ddl_violations)}",
     ]
-    if helpers:
-        lines.append("")
-        lines.append("Discovered upgrade helpers:")
-        for hit in helpers:
-            rel = hit.path.relative_to(ROOT)
-            lines.append(f"  {rel}:{hit.lineno} def {hit.name}")
-        lines.append("")
-        lines.append("Policy violation: derived tiers must rebuild or blue-green replace, not migrate in place.")
     if invalid_migrations:
         lines.append("")
         lines.append("Invalid migration resources:")
@@ -318,8 +254,7 @@ def _format_report(
         lines.append("Durable migration slot collisions:")
         lines.extend(f"  {collision}" for collision in collision_entries)
     if (
-        not helpers
-        and not invalid_migrations
+        not invalid_migrations
         and bool(delta_report["ok"])
         and not benign_ddl_violations
         and not durable_violations
@@ -338,7 +273,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = parser.parse_args(argv)
 
-    helpers = _collect_upgrade_helpers()
     invalid_migrations = _invalid_migration_paths()
     durable_change_train_reports = {
         tier.value: durable_change_train_policy_report(tier)
@@ -349,8 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     benign_ddl_violations = _invalid_benign_ddl_entries()
 
     ok = (
-        not helpers
-        and not invalid_migrations
+        not invalid_migrations
         and bool(delta_report["ok"])
         and not benign_ddl_violations
         and all(bool(report.get("ok")) for report in durable_change_train_reports.values())
@@ -359,9 +292,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         payload = {
-            "upgrade_helpers": [
-                {"name": hit.name, "path": str(hit.path.relative_to(ROOT)), "line": hit.lineno} for hit in helpers
-            ],
             "invalid_migration_resources": [str(path.relative_to(ROOT)) for path in invalid_migrations],
             "durable_change_trains": durable_change_train_reports,
             "durable_migration_collisions": durable_migration_collisions,
@@ -375,7 +305,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(
             _format_report(
-                helpers=helpers,
                 invalid_migrations=invalid_migrations,
                 delta_report=delta_report,
                 benign_ddl_violations=benign_ddl_violations,
