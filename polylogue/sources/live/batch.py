@@ -3721,7 +3721,7 @@ class LiveBatchProcessor:
         append_result = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
         if append_result is None:
             return None
-        append_payload, native_id_hint = append_result
+        append_payload, native_id_hint, acquisition_native_id_hint = append_result
         tail_hash = sha256(complete_payload).hexdigest()
         return _AppendPlan(
             path=path,
@@ -3741,12 +3741,13 @@ class LiveBatchProcessor:
             accepted_prefix_hash=accepted_prefix_hash,
             authority_bytes_read=last_complete_newline,
             native_id_hint=native_id_hint,
+            acquisition_native_id_hint=acquisition_native_id_hint,
         )
 
     def _append_payload_for_provider(
         self, path: Path, source_name: str, payload: bytes
-    ) -> tuple[bytes, str | None] | None:
-        """Return the literal append payload plus an optional identity hint.
+    ) -> tuple[bytes, str | None, str | None] | None:
+        """Return literal bytes plus logical and acquisition identity hints.
 
         polylogue-u19l: this used to prepend a synthetic ``session_meta``
         line ahead of ``payload`` for Codex before hashing/storing it, so the
@@ -3759,8 +3760,8 @@ class LiveBatchProcessor:
 
         Now the identity is resolved here exactly as before, but returned as
         a sidecar hint instead of being spliced into the hashed bytes.
-        Callers persist it to ``raw_sessions.native_id`` (``_AppendPlan.
-        native_id_hint`` -> ``append_ingest.py``) and pass it back as the
+        Callers persist the Codex acquisition hint to
+        ``raw_sessions.native_id`` and pass the logical hint back as the
         parser's ``fallback_id`` at replay time
         (``revision_backfill.parse_retained_raw_sessions``), which is exactly
         equivalent for Codex: ``_parse_records`` only ever falls back to
@@ -3806,12 +3807,16 @@ class LiveBatchProcessor:
                 "identity recovered from archived session / prior session_meta "
                 "line and carried as native_id_hint, not spliced into hashed bytes",
             )
-            return payload, identity
+            return payload, identity, identity
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(
             path, payload, existing_id=identity
         ):
             return None
-        return payload, identity
+        # Claude append raws have historically used native_id=NULL. Its own
+        # records carry sessionId, so the resolved identity is needed for
+        # governance but must not change deterministic acquisition identity
+        # for a retry of pre-upgrade bytes.
+        return payload, identity, None
 
     def _existing_provider_session_id(self, path: Path, *, expected_origin: str) -> str | None:
         identity = self._existing_archive_session_native_id(path, expected_origin=expected_origin)

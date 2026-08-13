@@ -253,6 +253,36 @@ def _seed_live_append_plan(
     return path, plan, _append_owner(archive_root), processor
 
 
+def _seed_claude_live_append_plan(
+    archive_root: Path,
+    *,
+    native_id: str,
+    append: bytes,
+) -> tuple[Path, _AppendPlan, object, LiveBatchProcessor]:
+    root = archive_root / "claude-projects"
+    root.mkdir()
+    path = root / f"{native_id}.jsonl"
+    baseline = (
+        f'{{"parentUuid":null,"type":"user","message":{{"role":"user","content":"zero"}},'
+        f'"uuid":"message-0","timestamp":"2026-06-02T00:00:00Z","sessionId":"{native_id}"}}\n'
+    ).encode()
+    path.write_bytes(baseline)
+    index_db = archive_root / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    seeded = asyncio.run(processor.ingest_files([path], emit_event=False))
+    assert seeded.succeeded_file_count == 1
+    with path.open("ab") as handle:
+        handle.write(append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    return path, plan, _append_owner(archive_root), processor
+
+
 def test_live_append_replay_streams_retained_jsonl_raw(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -318,6 +348,131 @@ def test_live_append_acquires_with_unreadable_active_pointer(
         plan.last_complete_newline,
         "byte_proven",
     )
+
+
+def test_source_only_file_history_append_binds_before_artifact_classification(tmp_path: Path) -> None:
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    native_id = "source-only-history"
+    append = (
+        f'{{"type":"file-history-snapshot","sessionId":"{native_id}",'
+        '"uuid":"history-1","snapshot":{},"timestamp":"2026-06-02T00:00:01Z"}\n'
+    ).encode()
+    _path, plan, owner, _processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id=native_id,
+        append=append,
+    )
+    assert plan.native_id_hint == native_id
+    assert plan.acquisition_native_id_hint is None
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        result = ingest_append_plans(cast(Any, owner), [plan])
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+    assert result.deferred == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        append_row = conn.execute(
+            """
+            SELECT logical_source_key, revision_kind, predecessor_raw_id,
+                   baseline_raw_id, append_start_offset, append_end_offset,
+                   revision_authority, native_id
+            FROM raw_sessions
+            WHERE source_index = -1
+            """
+        ).fetchone()
+        artifact_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()
+    assert append_row is not None
+    assert append_row[:2] == (f"claude-code:{native_id}", "append")
+    assert append_row[2] is not None
+    assert append_row[3] is not None
+    assert append_row[4:] == (
+        plan.start_offset,
+        plan.last_complete_newline,
+        "byte_proven",
+        None,
+    )
+    assert artifact_count == (0,)
+
+
+def test_source_only_quarantined_append_is_deferred(tmp_path: Path) -> None:
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    path = tmp_path / "quarantined-source-only.jsonl"
+    payload = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+        b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    path.write_bytes(payload)
+    plan = replace(
+        _append_plan(path, payload, payload_hash=sha256(payload).hexdigest()),
+        native_id_hint="quarantined-source-only",
+        acquisition_native_id_hint="quarantined-source-only",
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == []
+    assert result.failed == []
+    assert result.deferred == [plan]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT logical_source_key, revision_kind, revision_authority FROM raw_sessions"
+        ).fetchone() == ("codex:quarantined-source-only", "append", "quarantined")
+
+
+def test_claude_append_retry_preserves_legacy_null_acquisition_identity(tmp_path: Path) -> None:
+    native_id = "claude-legacy-append"
+    append = (
+        f'{{"parentUuid":"message-0","type":"assistant","message":{{"role":"assistant",'
+        f'"content":[{{"type":"text","text":"one"}}]}},"uuid":"message-1",'
+        f'"timestamp":"2026-06-02T00:00:01Z","sessionId":"{native_id}"}}\n'
+    ).encode()
+    _path, plan, owner, _processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id=native_id,
+        append=append,
+    )
+    assert plan.native_id_hint == native_id
+    assert plan.acquisition_native_id_hint is None
+
+    legacy_plan = replace(plan, native_id_hint=None, acquisition_native_id_hint=None)
+    first = ingest_append_plans(cast(Any, owner), [legacy_plan])
+    assert first.succeeded == [legacy_plan]
+    assert first.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        before_retry = conn.execute("SELECT raw_id, native_id FROM raw_sessions WHERE source_index = -1").fetchall()
+    assert len(before_retry) == 1
+    assert before_retry[0][1] is None
+
+    retry = ingest_append_plans(cast(Any, owner), [plan])
+
+    assert retry.succeeded == [plan]
+    assert retry.failed == []
+    assert retry.deferred == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        after_retry = conn.execute(
+            "SELECT raw_id, native_id, revision_authority FROM raw_sessions WHERE source_index = -1"
+        ).fetchall()
+    assert after_retry == [(before_retry[0][0], None, "byte_proven")]
 
 
 def test_derived_only_live_append_candidate_uses_source_acquisition(tmp_path: Path) -> None:

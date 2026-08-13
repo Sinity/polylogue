@@ -133,14 +133,14 @@ class _AppendPlan:
     ctime_ns: int | None = None
     accepted_prefix_hash: str | None = None
     authority_bytes_read: int = 0
-    # polylogue-u19l: the resolved provider session identity for this append,
-    # when the provider's own record stream cannot self-describe it (Codex
-    # append deltas have no ``session_meta`` record of their own). Carried as
-    # sidecar metadata -- persisted to ``raw_sessions.native_id`` and used to
-    # override the replay ``fallback_id`` -- instead of being injected into
-    # the hashed/stored payload bytes, so the stored blob stays a literal
-    # slice of the live file. ``None`` for providers/plans that don't need it.
+    # The resolved logical session identity used to bind this append and as a
+    # parser fallback when its own record stream cannot self-describe it.
     native_id_hint: str | None = None
+    # Acquisition identity is deliberately separate from logical identity.
+    # Codex append rows introduced this sidecar together with literal delta
+    # bytes. Claude append rows predate it with native_id=NULL, so retaining
+    # NULL keeps deterministic raw IDs stable across upgrades and retries.
+    acquisition_native_id_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

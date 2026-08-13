@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail, jsonl_session_artifact
@@ -83,6 +83,28 @@ def _bind_append_revision(
     return logical_source_key, authority
 
 
+def _write_append_raw_payload(
+    archive: Any,
+    *,
+    provider: Provider,
+    plan: _AppendPlan,
+    acquired_at_ms: int,
+) -> str:
+    """Capture literal append bytes with their migration-stable raw identity."""
+    return cast(
+        str,
+        archive.write_raw_payload(
+            provider=provider,
+            payload=plan.payload,
+            source_path=str(plan.path),
+            source_index=-1,
+            acquired_at_ms=acquired_at_ms,
+            native_id=plan.acquisition_native_id_hint,
+            post_parse=True,
+        ),
+    )
+
+
 def reset_transient_raw_parse_state(
     archive: Any,
     raw_id: str,
@@ -156,6 +178,30 @@ def _ingest_append_plans_archive(
                 session_artifact = None
                 try:
                     provider = Provider.from_string(plan.source_name)
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        if plan.native_id_hint is None:
+                            raise ValueError("source-only append has no durable session identity")
+                        t0 = time.perf_counter()
+                        raw_id = _write_append_raw_payload(
+                            archive,
+                            provider=provider,
+                            plan=plan,
+                            acquired_at_ms=acquired_at_ms,
+                        )
+                        _add_timing(timings, "append.source_raw_write", t0)
+                        _logical_source_key, authority = _bind_append_revision(
+                            archive,
+                            raw_id,
+                            provider=provider,
+                            session_id=plan.native_id_hint,
+                            plan=plan,
+                        )
+                        if authority is RawRevisionAuthority.QUARANTINED:
+                            deferred.append(plan)
+                        else:
+                            succeeded.append(plan)
+                        continue
                     path_artifact = classify_artifact_path(
                         str(plan.path),
                         provider=provider,
@@ -217,38 +263,13 @@ def _ingest_append_plans_archive(
                         succeeded.append(plan)
                         continue
                     t0 = time.perf_counter()
-                    raw_id = archive.write_raw_payload(
+                    raw_id = _write_append_raw_payload(
+                        archive,
                         provider=provider,
-                        payload=plan.payload,
-                        source_path=str(plan.path),
-                        source_index=-1,
+                        plan=plan,
                         acquired_at_ms=acquired_at_ms,
-                        # polylogue-u19l: persist the resolved provider
-                        # session identity as sidecar metadata instead of
-                        # splicing a synthetic session_meta record into the
-                        # hashed/stored payload (batch.py's
-                        # _append_payload_for_provider), so the stored blob
-                        # stays a literal slice of the live file.
-                        native_id=plan.native_id_hint,
-                        post_parse=True,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
-                    degraded = degraded_reason()
-                    if degraded is not None and degraded.derived_only:
-                        if plan.native_id_hint is None:
-                            raise ValueError("source-only append has no durable session identity")
-                        _bind_append_revision(
-                            archive,
-                            raw_id,
-                            provider=provider,
-                            session_id=plan.native_id_hint,
-                            plan=plan,
-                        )
-                        # Keep the byte-contiguous append chain replayable
-                        # even when this delta is runtime-only or cannot be
-                        # parsed while the derived tier is unavailable.
-                        succeeded.append(plan)
-                        continue
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session
                     # identity over the bare filename stem. For Codex this is
