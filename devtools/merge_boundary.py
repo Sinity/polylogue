@@ -79,7 +79,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import merge_gate, pr_scope
-from devtools.testmon_state import TerminalAuthorization, VerificationScope
+from devtools.verification_contracts import TerminalAuthorization, VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
 _LEDGER_PENDING_PATH = _LEDGER_PATH.with_name(f"{_LEDGER_PATH.name}.pending")

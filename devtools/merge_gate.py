@@ -75,7 +75,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
-from devtools.testmon_state import TerminalAuthorization, VerificationScope
+from devtools.verification_contracts import TerminalAuthorization, VerificationScope
 from devtools.verify_runs import VERIFICATION_INVOCATION_ID_ENV as VERIFICATION_INVOCATION_ID_ENV
 from devtools.verify_runs import VERIFICATION_RECEIPT_PATH_ENV as VERIFICATION_RECEIPT_PATH_ENV
 

@@ -42,7 +42,7 @@ from devtools.verify_runs import (
 from devtools.verify_runs import pytest_basetemp_claim_path as _basetemp_claim_path
 
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
-# before the first `from polylogue...` import below: a shared/editable venv's
+# before test execution can import product modules: a shared/editable venv's
 # `.pth` entry can point at a different checkout than the one this pytest
 # process is actually running from (e.g. a linked git worktree reusing the
 # main checkout's `.venv`), and whichever tree `import polylogue` resolves to
@@ -56,12 +56,6 @@ try:
     _CHECKOUT_GUARD_ERROR: CheckoutImportMismatchError | None = None
 except CheckoutImportMismatchError as _checkout_exc:
     _CHECKOUT_GUARD_ERROR = _checkout_exc
-
-from polylogue.archive.models import Session
-from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
-from polylogue.storage.runtime import RawSessionRecord
-from tests.infra.builders import make_conv, make_msg
-from tests.infra.timeout_policy import timeout_marker_error
 
 pytest_plugins = (
     "tests.infra.corpus_fixtures",
@@ -84,8 +78,10 @@ _NESTED_BASETEMP_POLICY_ENV = ("POLYLOGUE_PYTEST_BASETEMP_ROOT", "POLYLOGUE_PYTE
 if TYPE_CHECKING:
     from click.testing import CliRunner
 
+    from polylogue.archive.models import Session
     from polylogue.config import Source
     from polylogue.storage.repository import SessionRepository
+    from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite import SQLiteBackend
     from tests.infra.storage_records import SessionBuilder
 
@@ -257,6 +253,8 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Reject unbounded or effectively disabled per-test timeout markers."""
+    from tests.infra.timeout_policy import timeout_marker_error
+
     for item in items:
         marker = item.get_closest_marker("timeout")
         if marker is None:
@@ -584,7 +582,7 @@ _TESTS_ROOT = str(Path(__file__).resolve().parent)
 # survive the host-configuration scrub below.  They are test-run evidence
 # plumbing, not operator configuration; removing them after collection makes
 # setup/call reports disappear from the event ledger while teardown still gets
-# recorded, which makes interrupted seed shards look falsely successful.
+# recorded, which makes interrupted native runs look falsely successful.
 _MANAGED_VERIFY_ENV = frozenset(
     {
         "POLYLOGUE_VERIFY_RUN_ID",
@@ -1283,6 +1281,8 @@ def sample_session() -> Session:
 
     Replaces duplicate fixtures in: test_projections.py
     """
+    from tests.infra.builders import make_conv, make_msg
+
     messages = [
         make_msg(id="m1", role="user", text="User question", timestamp="2024-01-01T10:00:00"),
         make_msg(id="m2", role="assistant", text="Assistant response", timestamp="2024-01-01T10:01:00"),
@@ -1335,6 +1335,7 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
     import hashlib
     from datetime import datetime, timezone
 
+    from polylogue.scenarios import build_default_corpus_specs
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.storage.runtime import RawSessionRecord
 
@@ -1390,6 +1391,7 @@ def synthetic_source(
             source = synthetic_source("claude-code", count=3)
     """
     from polylogue.config import Source
+    from polylogue.scenarios import CorpusSpec
     from polylogue.schemas.synthetic import SyntheticCorpus
     from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 

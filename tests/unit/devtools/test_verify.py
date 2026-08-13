@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import platform
 import shutil
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -21,26 +19,7 @@ import pytest
 import watchfiles
 
 from devtools import run_tests, verify, verify_runs
-from devtools.testmon_state import (
-    BaselineStatus,
-    BindingMode,
-    CollectionStatus,
-    GraphInspection,
-    GraphStatus,
-    file_fingerprint,
-)
-from devtools.testmon_state import (
-    TestmonBinding as _TestmonBinding,
-)
-from devtools.testmon_state import (
-    TestmonIdentity as _TestmonIdentity,
-)
-from devtools.testmon_state import (
-    TestmonSeedStamp as _TestmonSeedStamp,
-)
-from devtools.testmon_state import (
-    testmon_runtime_identity as _testmon_runtime_identity,
-)
+from devtools.testmon_bootstrap import executable_python_paths
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -49,34 +28,18 @@ from devtools.verify import (
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
-    TESTMON_AFFECTED_STAMP,
-    TESTMON_DATA,
-    TESTMON_SEED_ATTEMPT,
-    TESTMON_SEED_PROTOCOL_VERSION,
-    TESTMON_SEED_SHARD_SIZE,
-    TESTMON_SEED_STAMP,
     _anchor_verification_paths,
-    _checkpoint_testmon_seed_shard,
-    _finalize_testmon_seed_attempt,
-    _flatten_seed_outcomes,
     _format_completion_notification,
-    _matching_testmon_coverage,
+    _native_lane_failure_requires_stop,
     _parse_pytest_test_count,
-    _prepare_testmon_seed_attempt,
-    _prepare_testmon_seed_shards,
     _pytest_command_metadata,
     _pytest_metadata_from_report,
     _pytest_stall_timeout_s,
     _pytest_timeout_s,
     _read_pytest_report,
-    _record_testmon_affected_coverage,
+    _release_baseline_allowed,
     _run,
-    _seed_node_outcomes_from_events,
-    _seed_shard_command,
     _stop_after_failed_step,
-    _testmon_database_state,
-    _testmon_preflight,
-    _testmon_seed_can_resume,
     build_verify_steps,
     main,
 )
@@ -108,17 +71,10 @@ from devtools.verify_runs import (
 
 @pytest.fixture(autouse=True)
 def _isolate_verify_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep supervisor and testmon receipts private to each test."""
+    """Keep supervisor and native testmon state private to each test."""
     monkeypatch.chdir(tmp_path)
-    for name in (
-        "TESTMON_DATA",
-        "TESTMON_SEED_STAMP",
-        "TESTMON_SEED_ATTEMPT",
-        "TESTMON_AFFECTED_STAMP",
-    ):
-        isolated = tmp_path / ".cache" / "testmon" / getattr(verify, name).name
-        monkeypatch.setattr(verify, name, isolated)
-        monkeypatch.setattr(sys.modules[__name__], name, isolated)
+    isolated = tmp_path / ".cache" / "testmon" / "testmondata"
+    monkeypatch.setattr(verify, "TESTMON_DATA", isolated)
 
 
 def _pytest_marker_expr(command: list[str]) -> str:
@@ -126,78 +82,6 @@ def _pytest_marker_expr(command: list[str]) -> str:
     assert marker_indexes
     assert marker_indexes[-1] + 1 < len(command)
     return command[marker_indexes[-1] + 1]
-
-
-def _testmon_runtime_identity_fields(checkout_root: Path = ROOT) -> dict[str, str]:
-    runtime_identity = _testmon_runtime_identity(checkout_root)
-    assert runtime_identity is not None
-    dependency_environment, pytest_harness = runtime_identity
-    return {"dependency_environment": dependency_environment, "pytest_harness": pytest_harness}
-
-
-def _write_real_testmon_state(nodeids: tuple[str, ...] = ("tests/test_a.py::test_one",)) -> Path:
-    TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(TESTMON_DATA) as conn:
-        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
-        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
-        conn.execute("CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT, failed INTEGER)")
-        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
-        for index, nodeid in enumerate(nodeids, start=1):
-            conn.execute("INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)", (index, nodeid, f"sha-{index}"))
-            conn.execute("INSERT INTO test_execution(id, test_name, failed) VALUES (?, ?, 0)", (index, nodeid))
-            conn.execute("INSERT INTO test_execution_file_fp VALUES (?, ?)", (index, index))
-    stamp = _TestmonSeedStamp(
-        TESTMON_SEED_PROTOCOL_VERSION,
-        CollectionStatus.COMPLETE,
-        nodeids,
-        0,
-        BaselineStatus.GREEN,
-        True,
-        0,
-        GraphInspection(GraphStatus.COMPLETE, len(nodeids), len(nodeids), (), 0, 0, None, ()),
-        _TestmonIdentity(
-            "current-head",
-            "covered",
-            "python",
-            True,
-            False,
-            None,
-            "narrow-terminal",
-            **_testmon_runtime_identity_fields(),
-        ),
-        _TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())),
-        file_fingerprint(TESTMON_DATA),
-        "seed",
-        ".cache/verify/runs/seed",
-    )
-    TESTMON_SEED_STAMP.parent.mkdir(parents=True, exist_ok=True)
-    artifact_dir = ROOT / ".cache" / "verify" / "runs" / "seed"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "seed",
-                "checkout_root": str(ROOT.resolve()),
-                "artifact_dir": ".cache/verify/runs/seed",
-            }
-        )
-    )
-    TESTMON_SEED_STAMP.write_text(json.dumps(stamp.as_dict()))
-    return TESTMON_DATA
-
-
-def _write_run_receipt(root: Path, run_id: str) -> None:
-    artifact_dir = root / ".cache" / "verify" / "runs" / run_id
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "checkout_root": str(root.resolve()),
-                "artifact_dir": f".cache/verify/runs/{run_id}",
-            }
-        )
-    )
 
 
 def test_quick_verify_omits_pytest() -> None:
@@ -218,490 +102,63 @@ def test_quick_verify_omits_pytest() -> None:
     ]
 
 
-def test_default_verify_uses_adaptive_pytest_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
-
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    assert "--testmon" in command
-    assert "--testmon-noselect" not in command
-    assert "--testmon-forceselect" in command
-    assert "-n" in command
-    assert command[command.index("-n") + 1] == "8"
-    assert "--dist=loadgroup" in command
-
-
-def test_broad_default_verify_uses_parallel_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, broad_testmon=True)
-
-    label, command = steps[-1]
-    assert label == "pytest testmon (broad)"
-    assert "--testmon" in command
-    assert "--testmon-forceselect" in command
-    assert command[command.index("-n") + 1] == "8"
-
-
-def test_pytest_step_requests_structured_json_report() -> None:
-    """Every pytest invocation must emit the report consumed by verify and dashboards (#1026)."""
-    for kwargs in (
-        {"seed_testmon": True},
-        {"full_pytest": True},
-        {},  # default testmon
-    ):
-        steps = build_verify_steps(quick=False, lab=False, skip_slow=False, **kwargs)
-        pytest_steps = [(label, command) for label, command in steps if label.startswith("pytest")]
-        assert pytest_steps, kwargs
-        # Every pytest lane emits a structured JSON report.
-        for label, command in pytest_steps:
-            assert "--json-report" in command, f"{label}: {command}"
-            assert any(arg.startswith("--json-report-file=") for arg in command), label
-            assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
-        # The canonical report path consumed by verify/dashboards is emitted by
-        # the primary lane; the #1775 isolated lane writes its own file.
-        expected_target = f"--json-report-file={PYTEST_REPORT_PATH}"
-        assert any(expected_target in command for _label, command in pytest_steps), kwargs
-
-
-def test_seed_testmon_runs_full_collection_without_selection(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
-
-    label, command = steps[-1]
-    assert label == "pytest seed-testmon collect"
-    assert "--collect-only" in command
-    assert command[command.index("--ignore=tests/benchmarks")] == "--ignore=tests/benchmarks"
-    assert "--testmon" not in command
-    assert "-n" in command
-    assert command[command.index("-n") + 1] == "0"
-
-
-def test_seed_testmon_caps_adaptive_workers(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 12)
-
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
-
-    label, command = steps[-1]
-    assert label == "pytest seed-testmon collect"
-    assert command[command.index("-n") + 1] == "0"
-
-
-def test_seed_shards_are_deterministic_and_use_managed_xdist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _environment: 64)
-    expected = sorted(f"tests/test_seed.py::test_{index:03d}" for index in range(TESTMON_SEED_SHARD_SIZE + 2))
-    prepared = _prepare_testmon_seed_shards(
-        {"resume": False, "expected_nodeids": []},
-        selection={
-            "selected_count": len(expected),
-            "selected_nodeids": list(reversed(expected)),
-            "selected_nodeids_omitted": 0,
-        },
-    )
-
-    shards = prepared["shards"]
-    assert [shard["nodeid_count"] for shard in shards] == [TESTMON_SEED_SHARD_SIZE, 2]
-    assert shards[0]["nodeids"] == expected[:TESTMON_SEED_SHARD_SIZE]
-    assert shards[1]["nodeids"] == expected[TESTMON_SEED_SHARD_SIZE:]
-    nodeids_file = tmp_path / "seed-shard.args"
-    command = _seed_shard_command(["pytest", "--collect-only", "-n", "0"], shards[0], nodeids_file=nodeids_file)
-    assert "--collect-only" not in command
-    assert command[command.index("-n") + 1] == "10"
-    assert "--testmon" in command
-    assert "--testmon-noselect" in command
-    assert "--dist=loadgroup" in command
-    assert command.count("-n") == 1
-    assert command[command.index("-n") + 1] == "10"
-    assert command[-1] == f"@{nodeids_file}"
-    assert nodeids_file.read_text().splitlines() == expected[:TESTMON_SEED_SHARD_SIZE]
-
-
-def test_seed_outcomes_normalize_xdist_group_suffix(tmp_path: Path) -> None:
-    expected = ["tests/test_seed.py::test_grouped"]
-    events = tmp_path / "events.jsonl"
-    events.write_text(
-        json.dumps(
-            {
-                "event": "test_report",
-                "nodeid": f"{expected[0]}@web-reader",
-                "when": "call",
-                "outcome": "passed",
-            }
-        )
-        + "\n"
-    )
-
-    outcomes = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=expected,
-        database={"node_outcomes": {}},
-        pytest_step=None,
-    )
-
-    assert outcomes == [
-        {
-            "nodeid": expected[0],
-            "outcome": "passed",
-            "reason": "test call passed",
-            "started": False,
-            "finished": False,
-            "phases": [{"when": "call", "outcome": "passed", "duration_s": None}],
-        }
-    ]
-
-
-def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("mode", "selection_flag"),
+    [("affected", "--testmon-forceselect"), ("bootstrap", "--testmon-noselect"), ("full", "--testmon-noselect")],
+)
+def test_native_testmon_uses_exactly_two_semantic_lanes(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    selection_flag: str,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    expected = ["tests/test_seed.py::test_b", "tests/test_seed.py::test_a"]
-    ordered = sorted(expected)
-    prepared = _prepare_testmon_seed_shards(
-        {"resume": False, "expected_nodeids": []},
-        selection={"selected_count": 2, "selected_nodeids": expected, "selected_nodeids_omitted": 0},
-    )
-    prepared["shards"] = [
-        {
-            **prepared["shards"][0],
-            "nodeids": [ordered[0]],
-            "nodeid_count": 1,
-            "nodeid_digest": hashlib.sha256(ordered[0].encode()).hexdigest(),
-        },
-        {
-            **prepared["shards"][0],
-            "index": 2,
-            "nodeids": [ordered[1]],
-            "nodeid_count": 1,
-            "nodeid_digest": hashlib.sha256(ordered[1].encode()).hexdigest(),
-            "status": "pending",
-            "node_outcomes": [],
-        },
-    ]
-    _atomic_payload = {
-        **prepared,
-        "expected_nodeids": ordered,
-        "expected_count": 2,
-        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
-    }
-    artifact_dir = tmp_path / "shard-1"
-    artifact_dir.mkdir()
-    (artifact_dir / "selection.json").write_text(
-        json.dumps(
-            {
-                "selected_count": 1,
-                "selected_nodeids": [f"{ordered[0]}@web-reader"],
-                "selected_nodeids_omitted": 0,
-            }
-        )
-    )
-    (artifact_dir / "events.jsonl").write_text(
-        json.dumps(
-            {
-                "event": "test_report",
-                "nodeid": f"{ordered[0]}@web-reader",
-                "when": "call",
-                "outcome": "xfailed",
-            }
-        )
-        + "\n"
-    )
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
 
-    checkpointed = _checkpoint_testmon_seed_shard(
-        prepared=_atomic_payload,
-        shard_index=1,
-        step={"name": "pytest seed-testmon shard 1/2", "exit": 0, "artifact_dir": str(artifact_dir)},
-    )
-
-    assert checkpointed["shards"][0]["status"] == "complete"
-    assert checkpointed["shards"][1]["status"] == "pending"
-    assert json.loads(TESTMON_SEED_ATTEMPT.read_text())["shards"][0]["node_outcomes"][0]["outcome"] == "xfailed"
-    resumed = _prepare_testmon_seed_attempt(
-        identity={
-            "git_head": "head",
-            "git_tree": "tree",
-            "worktree_fingerprint": "fingerprint",
-            "python": "python",
-            "skip_slow": False,
-            "lab": False,
-            **_testmon_runtime_identity_fields(Path.cwd()),
-        },
-        run=VerifyRun(tier="seed-testmon", argv=[], git_head="head", polylogue_import_path="polylogue"),
-        resume=True,
-    )
-    assert resumed["shards"][0]["status"] == "complete"
-    assert resumed["shards"][1]["status"] == "pending"
-
-
-def test_seed_shard_checkpoint_does_not_trust_preexisting_testmon_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    expected = ["tests/test_seed.py::test_only_database_row"]
-    prepared = _prepare_testmon_seed_shards(
-        {"resume": False, "expected_nodeids": []},
-        selection={"selected_count": 1, "selected_nodeids": expected, "selected_nodeids_omitted": 0},
-    )
-    artifact_dir = tmp_path / "shard-1"
-    artifact_dir.mkdir()
-    (artifact_dir / "selection.json").write_text(
-        json.dumps({"selected_count": 1, "selected_nodeids": expected, "selected_nodeids_omitted": 0})
-    )
-    (artifact_dir / "events.jsonl").write_text("")
-    monkeypatch.setattr(
-        "devtools.verify._testmon_database_state",
-        lambda _nodeids: {
-            "recorded_count": 1,
-            "failed_count": 0,
-            "dependency_edge_count": 0,
-            "missing_nodeids": [],
-            "failed_nodeids": [],
-            "node_outcomes": {expected[0]: "passed"},
-            "error": None,
-            "graph_status": "complete",
-            "orphan_execution_edges": 0,
-            "orphan_fingerprint_edges": 0,
-        },
-    )
-
-    checkpointed = _checkpoint_testmon_seed_shard(
-        prepared=prepared,
-        shard_index=1,
-        step={"name": "pytest seed-testmon shard 1/1", "exit": 0, "artifact_dir": str(artifact_dir)},
-    )
-
-    shard = checkpointed["shards"][0]
-    assert shard["status"] == "incomplete"
-    assert shard["node_outcomes"][0]["outcome"] == "missing"
-
-
-def test_seed_outcome_does_not_infer_call_success_from_teardown(
-    tmp_path: Path,
-) -> None:
-    nodeid = "tests/test_seed.py::test_call_missing"
-    events = tmp_path / "events.jsonl"
-    events.write_text(
-        json.dumps({"event": "test_started", "nodeid": nodeid})
-        + "\n"
-        + json.dumps({"event": "test_report", "nodeid": nodeid, "when": "teardown", "outcome": "passed"})
-        + "\n"
-        + json.dumps({"event": "test_finished", "nodeid": nodeid})
-        + "\n"
-    )
-
-    without_database = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=[nodeid],
-        database={"node_outcomes": {}},
-        pytest_step={"exit": 0},
-    )
-    assert without_database[0]["outcome"] == "missing"
-
-    with_failed_database = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=[nodeid],
-        database={"node_outcomes": {nodeid: "failed"}},
-        pytest_step={"exit": 1},
-    )
-    assert with_failed_database[0]["outcome"] == "failed"
-
-
-def test_seed_shard_failure_remains_visible_and_blocks_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    expected = ["tests/test_seed.py::test_failed"]
-    prepared = _prepare_testmon_seed_shards(
-        {
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": False,
-                "lab": False,
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": False,
-            "run_id": "sharded-failure",
-            "artifact_dir": ".cache/verify/runs/sharded-failure",
-        },
-        selection={"selected_count": 1, "selected_nodeids": expected, "selected_nodeids_omitted": 0},
-    )
-    artifact_dir = tmp_path / "shard-failure"
-    artifact_dir.mkdir()
-    (artifact_dir / "selection.json").write_text(
-        json.dumps({"selected_count": 1, "selected_nodeids": expected, "selected_nodeids_omitted": 0})
-    )
-    (artifact_dir / "events.jsonl").write_text(
-        json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "failed"}) + "\n"
-    )
-    TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(TESTMON_DATA) as connection:
-        connection.execute("create table environment (id integer primary key, environment_name text)")
-        connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
-        connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
-        connection.execute("create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)")
-        connection.execute("insert into test_execution values (1, ?, 1)", (expected[0],))
-        connection.execute("insert into file_fp values (1, 'test_seed.py', 'sha')")
-        connection.execute("insert into test_execution_file_fp values (1, 1)")
-    _write_run_receipt(tmp_path, "sharded-failure")
-
-    checkpointed = _checkpoint_testmon_seed_shard(
-        prepared=prepared,
-        shard_index=1,
-        step={"name": "pytest seed-testmon shard 1/1", "exit": 1, "artifact_dir": str(artifact_dir)},
-    )
-    receipt = _finalize_testmon_seed_attempt(
-        prepared=checkpointed,
-        step_results=[{"name": "pytest seed-testmon shard 1/1", "exit": 1, "artifact_dir": str(artifact_dir)}],
-        exit_code=1,
-    )
-
-    assert receipt["shards"][0]["status"] == "complete"
-    assert receipt["unsuccessful_nodeids"] == expected
-    assert receipt["release_baseline_allowed"] is False
-
-
-def test_resumed_seed_uses_affected_selection_for_remaining_tests() -> None:
     steps = build_verify_steps(
         quick=False,
         lab=False,
         skip_slow=False,
-        seed_testmon=True,
-        resume_testmon_seed=True,
+        testmon_mode=mode,
+        testmon_environment="env-digest",
     )
 
-    label, command = steps[-1]
-    assert label == "pytest seed-testmon collect (resume)"
-    assert "--collect-only" in command
-    assert "--testmon" not in command
+    pytest_steps = [(label, command) for label, command in steps if label.startswith("pytest")]
+    assert [label for label, _command in pytest_steps] == [
+        f"pytest native parallel ({mode})",
+        f"pytest native serial ({mode})",
+    ]
+    parallel = pytest_steps[0][1]
+    serial = pytest_steps[1][1]
+    assert "not load_sensitive and not tui" in _pytest_marker_expr(parallel)
+    assert "load_sensitive or tui" in _pytest_marker_expr(serial)
+    assert parallel[parallel.index("-n") + 1] == "8"
+    assert serial[serial.index("-n") + 1] == "0"
+    for _label, command in pytest_steps:
+        assert "--testmon" in command
+        assert "--testmon-env=env-digest" in command
+        assert selection_flag in command
+        assert "--json-report" in command
+        assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
 
 
-def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 8)
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, full_pytest=True)
+def test_native_marker_policy_composes_slow_and_scale_tiers() -> None:
+    default_steps = build_verify_steps(
+        quick=False,
+        lab=False,
+        skip_slow=True,
+        testmon_environment="env-digest",
+    )
+    lab_steps = build_verify_steps(
+        quick=False,
+        lab=True,
+        skip_slow=False,
+        testmon_environment="env-digest",
+    )
 
-    # #1775: the full diagnostic runs as two lanes — a parallel bulk lane plus a
-    # single-process isolated lane for load-sensitive/tui tests. Neither uses
-    # testmon; the bulk lane keeps xdist parallelism, the isolated lane forces -n 0.
-    labels = [label for label, _command in steps]
-    assert labels[-2:] == ["pytest full (parallel)", "pytest load-sensitive (isolated)"]
-
-    bulk_label, bulk_command = steps[-2]
-    assert bulk_label == "pytest full (parallel)"
-    assert "--testmon" not in bulk_command
-    assert "-n" in bulk_command
-    assert bulk_command[bulk_command.index("-n") + 1] == "8"
-    assert "--dist=loadgroup" in bulk_command
-
-    isolated_label, isolated_command = steps[-1]
-    assert isolated_label == "pytest load-sensitive (isolated)"
-    assert "--testmon" not in isolated_command
-    assert isolated_command[isolated_command.index("-n") + 1] == "0"
-
-
-def test_seed_collection_refuses_parallel_worker_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "4")
-
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False, seed_testmon=True)
-
-    label, command = steps[-1]
-    assert label == "pytest seed-testmon collect"
-    assert command[command.index("-n") + 1] == "0"
-
-
-def test_seed_defaults_to_managed_scratch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
-    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=8192)
-    for name in (
-        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
-        "POLYLOGUE_PYTEST_TMPFS",
-        "POLYLOGUE_PYTEST_TMPFS_MAX_MB",
-        "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB",
-        "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
-
-    with (
-        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed) as run,
-        patch("devtools.verify._read_pytest_report", return_value=None),
-    ):
-        rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "--testmon-noselect"])
-
-    assert rc == 0
-    assert metadata["pytest_tmpfs"] is False
-    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_TMPFS"] == "0"
-    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
-    assert run.call_args.kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] == "50000"
-
-
-def test_default_testmon_worker_count_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "3")
-
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
-
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    assert command[command.index("-n") + 1] == "3"
-
-
-def test_marker_filters_keep_testmon_selection_forced() -> None:
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
-
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    marker_expr = _pytest_marker_expr(command)
-    assert "not benchmark" in marker_expr
-    assert "not scale_medium" in marker_expr
-    assert "not scale_large" in marker_expr
-    assert "--testmon-forceselect" in command
-
-
-def test_skip_slow_composes_with_forced_testmon_selection() -> None:
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=True)
-
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    # Scale-tier policy (#1183): the default verify gate filters out
-    # ``scale_medium``/``scale_large``; ``--skip-slow`` composes with that
-    # filter via ``and`` rather than replacing it.
-    marker_expr = _pytest_marker_expr(command)
-    assert "not benchmark" in marker_expr
-    assert "not slow" in marker_expr
-    assert "not scale_medium" in marker_expr
-    assert "not scale_large" in marker_expr
-    assert "--testmon-forceselect" in command
-
-
-def test_default_verify_excludes_medium_and_large_scale_markers() -> None:
-    """Default verify pytest step deselects the medium/large scale tiers (#1183)."""
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
-
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    marker_expr = _pytest_marker_expr(command)
-    assert "not benchmark" in marker_expr
-    assert "not scale_medium" in marker_expr
-    assert "not scale_large" in marker_expr
-    # ``scale_small`` is *not* excluded — it runs in the default gate.
-    assert "scale_small" not in marker_expr
-
-
-def test_lab_verify_includes_medium_scale_marker() -> None:
-    """``--lab`` lets ``scale_medium`` into the pytest step but still gates ``scale_large`` (#1183)."""
-    steps = build_verify_steps(quick=False, lab=True, skip_slow=False)
-
-    pytest_step = next((label, command) for label, command in steps if label.startswith("pytest"))
-    label, command = pytest_step
-    marker_expr = _pytest_marker_expr(command)
-    assert "not benchmark" in marker_expr
-    assert "not scale_large" in marker_expr
-    assert "not scale_medium" not in marker_expr
-    assert "scale_small" not in marker_expr
+    default_expr = _pytest_marker_expr(next(command for label, command in default_steps if "parallel" in label))
+    lab_expr = _pytest_marker_expr(next(command for label, command in lab_steps if "parallel" in label))
+    assert all(term in default_expr for term in ("not benchmark", "not slow", "not scale_medium", "not scale_large"))
+    assert "not scale_medium" not in lab_expr
+    assert "not scale_large" in lab_expr
 
 
 def test_lab_verify_delegates_to_lab_smoke() -> None:
@@ -715,175 +172,6 @@ def test_lab_verify_delegates_to_lab_smoke() -> None:
         "lab smoke",
         [sys.executable, "-m", "devtools", "lab", "smoke", "run", "archive-smoke", "--tier", "0"],
     )
-
-
-def test_testmon_preflight_requires_seed_when_database_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
-
-    assert message is not None
-    assert "devtools verify --seed-testmon" in message
-
-
-def test_testmon_preflight_requires_seed_stamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("partial")
-
-    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
-
-    assert message is not None
-    assert ".cache/testmon/seed.json" in message
-
-
-def test_testmon_preflight_accepts_seeded_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    _write_real_testmon_state()
-
-    assert _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is None
-
-
-def test_testmon_preflight_rejects_stale_database_fingerprint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    _write_real_testmon_state()
-    TESTMON_DATA.write_bytes(TESTMON_DATA.read_bytes() + b"stale")
-
-    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
-
-    assert message is not None
-    assert "stale" in message
-    assert capsys.readouterr().err == ""
-
-
-def test_testmon_preflight_rejects_malformed_sqlite_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("mutated")
-    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.parent.mkdir(parents=True, exist_ok=True)
-    seed_stamp.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "usable",
-            }
-        )
-    )
-
-    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
-
-    assert message is not None
-    assert "stale" in message or "malformed" in message
-    assert capsys.readouterr().err == ""
-
-
-def test_testmon_preflight_rejects_incomplete_seed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("partial")
-    seed_stamp = tmp_path / ".cache" / "testmon" / "seed.json"
-    seed_stamp.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "incomplete",
-                "git_head": "current-head",
-                "testmon_data": hashlib.sha256(b"partial").hexdigest(),
-            }
-        )
-    )
-
-    message = _testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False)
-
-    assert message is not None
-    assert "stale" in message or "malformed" in message
-
-
-def test_matching_incomplete_seed_is_resumable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("partial")
-    identity = {
-        "git_head": "head",
-        "git_tree": "tree-hash",
-        "worktree_fingerprint": "tree",
-        "python": "3.13",
-        "skip_slow": True,
-        "lab": False,
-        "terminal_authorization": None,
-    }
-    TESTMON_SEED_ATTEMPT.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "incomplete",
-                "identity": identity,
-                "expected_nodeids": ["tests/unit/test_example.py::test_one"],
-                "expected_count": 1,
-                "expected_digest": hashlib.sha256(b"tests/unit/test_example.py::test_one").hexdigest(),
-                "run_id": "interrupted",
-                "started_at": "2026-08-05T12:00:00+00:00",
-                "testmon_data_before": "partial",
-            }
-        )
-    )
-
-    assert _testmon_seed_can_resume(identity) is True
-    assert _testmon_seed_can_resume({**identity, "git_head": "other", "git_tree": "tree-hash"}) is True
-    assert _testmon_seed_can_resume({**identity, "git_tree": "different-tree"}) is False
-    assert _testmon_seed_can_resume({**identity, "worktree_fingerprint": "changed"}) is False
-    assert _testmon_seed_can_resume({**identity, "skip_slow": False}) is False
-
-
-def test_two_interrupted_resumes_flatten_all_carried_outcomes(tmp_path: Path) -> None:
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.chdir(tmp_path)
-    try:
-        expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
-        TESTMON_DATA.parent.mkdir(parents=True)
-        TESTMON_DATA.write_text("partial")
-        identity = {
-            "git_head": "head",
-            "git_tree": "tree-hash",
-            "worktree_fingerprint": "tree",
-            "python": "3.13",
-            "skip_slow": False,
-            "lab": False,
-            "terminal_authorization": None,
-        }
-        TESTMON_SEED_ATTEMPT.write_text(
-            json.dumps(
-                {
-                    "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                    "status": "incomplete",
-                    "identity": identity,
-                    "expected_nodeids": expected,
-                    "expected_count": len(expected),
-                    "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
-                    "node_outcomes": [{"nodeid": expected[0], "outcome": "passed"}],
-                }
-            )
-        )
-        first = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="head", root=tmp_path)
-        _prepare_testmon_seed_attempt(identity=identity, run=first, resume=True)
-        first_payload = json.loads(TESTMON_SEED_ATTEMPT.read_text())
-        first_payload["status"] = "incomplete"
-        first_payload["node_outcomes"] = [{"nodeid": expected[1], "outcome": "passed"}]
-        TESTMON_SEED_ATTEMPT.write_text(json.dumps(first_payload))
-
-        second = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="head", root=tmp_path)
-        prepared = _prepare_testmon_seed_attempt(identity=identity, run=second, resume=True)
-
-        assert {item["nodeid"] for item in prepared["prior_node_outcomes"]} == set(expected)
-        assert {item["outcome"] for item in prepared["prior_node_outcomes"]} == {"passed"}
-        assert _flatten_seed_outcomes(prepared) == prepared["prior_node_outcomes"]
-    finally:
-        monkeypatch.undo()
 
 
 def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
@@ -1384,45 +672,6 @@ def test_run_recovers_xdist_collection_facts_after_containment_failure(tmp_path:
     assert selection["worker_id"] == "runner"
 
 
-def test_verify_main_records_containment_failure_as_terminal_history(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    history_path = tmp_path / "verify-history.jsonl"
-    monkeypatch.setattr(verify, "HISTORY_PATH", history_path)
-
-    with (
-        patch("devtools.verify._anchor_verification_paths"),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify.build_verify_steps", return_value=[("pytest containment", ["pytest", "-n", "0"])]),
-        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
-        patch(
-            "devtools.verify._run_pytest_with_heartbeat",
-            side_effect=verify.PytestContainmentError("owned child still running"),
-        ),
-        patch("devtools.verify.cleanup_managed_pytest_basetemp") as cleanup,
-        patch("devtools.verify._notify"),
-    ):
-        rc = main(["--json"])
-
-    history = json.loads(history_path.read_text(encoding="utf-8"))
-    run_json = next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json"))
-    run_payload = json.loads(run_json.read_text(encoding="utf-8"))
-    payload = json.loads(capsys.readouterr().out)
-
-    assert rc == 125
-    cleanup.assert_not_called()
-    assert payload["diagnosis"] == "pytest_containment_unproven"
-    assert history["exit_code"] == 125
-    assert history["diagnosis"] == "pytest_containment_unproven"
-    assert run_payload["status"] == "failed"
-    assert run_payload["steps"][0]["status"] == "failed"
-
-
 def test_print_history_accepts_verify_and_focused_run_records(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1557,200 +806,6 @@ def test_compare_against_last_selects_prior_run_independently_per_step(monkeypat
     assert "pytest testmon" in flags[0]
 
 
-def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("partial")
-    artifact_dir = tmp_path / ".cache" / "verify" / "runs" / "interrupted"
-    step_dir = artifact_dir / "steps" / "17-pytest-seed-testmon"
-    step_dir.mkdir(parents=True)
-    expected = ["tests/unit/test_example.py::test_one"]
-    (step_dir / "selection.json").write_text(
-        json.dumps({"selected_nodeids": expected, "selected_nodeids_omitted": 0, "selected_count": 1})
-    )
-    identity = {
-        "git_head": "head",
-        "git_tree": "tree-hash",
-        "worktree_fingerprint": "tree",
-        "python": "3.13",
-        "skip_slow": True,
-        "lab": False,
-        "terminal_authorization": None,
-    }
-    TESTMON_SEED_ATTEMPT.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "running",
-                "identity": identity,
-                "expected_nodeids": [],
-                "artifact_dir": str(artifact_dir.relative_to(tmp_path)),
-            }
-        )
-    )
-
-    assert _testmon_seed_can_resume({**identity, "git_head": "fixed", "git_tree": "tree-hash"}) is True
-
-    run = VerifyRun(tier="seed-testmon", argv=["--seed-testmon"], git_head="fixed")
-    prepared = _prepare_testmon_seed_attempt(
-        identity={**identity, "git_head": "fixed", "git_tree": "tree-hash"}, run=run, resume=True
-    )
-
-    assert prepared["expected_nodeids"] == expected
-    assert prepared["expected_count"] == 1
-    assert prepared["expected_digest"] == hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
-    persisted = json.loads(TESTMON_SEED_ATTEMPT.read_text())
-    assert persisted["expected_digest"] == prepared["expected_digest"]
-
-
-def test_seed_resume_rejects_selection_artifact_outside_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_text("partial")
-    outside = tmp_path.parent / "outside-testmon-artifacts"
-    step_dir = outside / "steps" / "17-pytest-seed-testmon"
-    step_dir.mkdir(parents=True)
-    (step_dir / "selection.json").write_text(
-        json.dumps(
-            {
-                "selected_nodeids": ["tests/unit/test_example.py::test_one"],
-                "selected_nodeids_omitted": 0,
-                "selected_count": 1,
-            }
-        )
-    )
-    identity = {
-        "git_head": "head",
-        "worktree_fingerprint": "tree",
-        "python": "3.13",
-        "skip_slow": True,
-        "lab": False,
-    }
-    TESTMON_SEED_ATTEMPT.write_text(
-        json.dumps(
-            {
-                "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-                "status": "running",
-                "identity": identity,
-                "expected_nodeids": [],
-                "artifact_dir": str(outside),
-            }
-        )
-    )
-
-    assert _testmon_seed_can_resume(identity) is False
-
-
-def test_resumed_seed_does_not_reuse_an_unexecuted_database_row(tmp_path: Path) -> None:
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.chdir(tmp_path)
-    try:
-        expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
-        artifact_dir = tmp_path / "artifacts"
-        artifact_dir.mkdir()
-        (artifact_dir / "selection.json").write_text(
-            json.dumps({"selected_count": 1, "selected_nodeids": [expected[0]], "selected_nodeids_omitted": 0})
-        )
-        (artifact_dir / "events.jsonl").write_text(
-            json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"}) + "\n"
-        )
-        TESTMON_DATA.parent.mkdir(parents=True)
-        with sqlite3.connect(TESTMON_DATA) as connection:
-            connection.execute("create table environment (id integer primary key, environment_name text)")
-            connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
-            connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
-            connection.execute(
-                "create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)"
-            )
-            connection.executemany("insert into test_execution values (?, ?, 0)", [(1, expected[0]), (2, expected[1])])
-            connection.executemany("insert into file_fp values (?, ?, ?)", [(1, "a.py", "a"), (2, "b.py", "b")])
-            connection.executemany("insert into test_execution_file_fp values (?, ?)", [(1, 1), (2, 2)])
-        prepared = {
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": False,
-                "lab": False,
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": True,
-            "expected_nodeids": expected,
-            "run_id": "resume",
-            "artifact_dir": ".cache/verify/runs/resume",
-        }
-        _write_run_receipt(tmp_path, "resume")
-
-        receipt = _finalize_testmon_seed_attempt(
-            prepared=prepared,
-            step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
-            exit_code=0,
-        )
-
-        assert receipt["status"] == "incomplete"
-        assert {item["nodeid"]: item["outcome"] for item in receipt["node_outcomes"]} == {
-            expected[0]: "passed",
-            expected[1]: "missing",
-        }
-
-        (artifact_dir / "selection.json").write_text(json.dumps({}))
-        (artifact_dir / "events.jsonl").write_text(
-            "\n".join(
-                json.dumps({"event": "test_report", "nodeid": nodeid, "when": "call", "outcome": "passed"})
-                for nodeid in expected
-            )
-            + "\n"
-        )
-        missing_selection = _finalize_testmon_seed_attempt(
-            prepared=prepared,
-            step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
-            exit_code=0,
-        )
-        assert missing_selection["status"] == "incomplete"
-    finally:
-        monkeypatch.undo()
-
-
-def test_testmon_database_state_reports_missing_and_failed_nodes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    TESTMON_DATA.parent.mkdir(parents=True)
-    with sqlite3.connect(TESTMON_DATA) as conn:
-        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
-        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
-        conn.execute(
-            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
-        )
-        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
-        conn.executemany(
-            "INSERT INTO test_execution(test_name, failed) VALUES (?, ?)",
-            [("tests/test_a.py::test_ok", 0), ("tests/test_b.py::test_failed", 1)],
-        )
-        conn.executemany(
-            "INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)",
-            [(1, "a.py", "a"), (2, "b.py", "b")],
-        )
-        conn.executemany("INSERT INTO test_execution_file_fp VALUES (?, ?)", [(1, 1), (2, 2)])
-
-    state = _testmon_database_state(
-        ["tests/test_a.py::test_ok", "tests/test_b.py::test_failed", "tests/test_c.py::test_missing"]
-    )
-
-    assert state["recorded_count"] == 2
-    assert state["failed_nodeids"] == ["tests/test_b.py::test_failed"]
-    assert state["missing_nodeids"] == ["tests/test_c.py::test_missing"]
-    assert state["node_outcomes"] == {
-        "tests/test_a.py::test_ok": "passed",
-        "tests/test_b.py::test_failed": "failed",
-        "tests/test_c.py::test_missing": "missing",
-    }
-
-
 def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], check=True)
     subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
@@ -1816,7 +871,8 @@ def test_changed_paths_keep_start_time_base_when_remote_ref_advances(
     assert pinned_base == base
     subprocess.run(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=tmp_path, check=True)
 
-    assert verify._changed_executable_paths(pinned_base, feature_head) == ("polylogue/example.py",)
+    changed = verify._changed_test_relevant_paths(pinned_base, feature_head)
+    assert executable_python_paths(tmp_path, changed) == ("polylogue/example.py",)
 
 
 def test_changed_paths_include_untracked_executable_files(
@@ -1838,7 +894,8 @@ def test_changed_paths_include_untracked_executable_files(
     untracked.write_text("value = 1\n", encoding="utf-8")
     monkeypatch.setattr(verify, "ROOT", tmp_path)
 
-    assert verify._changed_executable_paths(head, head) == ("devtools/new_command.py",)
+    changed = verify._changed_test_relevant_paths(head, head)
+    assert executable_python_paths(tmp_path, changed) == ("devtools/new_command.py",)
 
 
 def test_changed_paths_include_executable_rename_sources(
@@ -1865,7 +922,8 @@ def test_changed_paths_include_executable_rename_sources(
     ).stdout.strip()
     monkeypatch.setattr(verify, "ROOT", tmp_path)
 
-    assert verify._changed_executable_paths(base, head) == ("polylogue/example.py",)
+    changed = verify._changed_test_relevant_paths(base, head)
+    assert executable_python_paths(tmp_path, changed) == ("polylogue/example.py",)
 
 
 def test_changed_paths_parse_non_ascii_names_without_git_quoting(
@@ -1886,7 +944,8 @@ def test_changed_paths_parse_non_ascii_names_without_git_quoting(
     source.write_text("value = 2\n", encoding="utf-8")
     monkeypatch.setattr(verify, "ROOT", tmp_path)
 
-    assert verify._changed_executable_paths(base, base) == ("polylogue/café.py",)
+    changed = verify._changed_test_relevant_paths(base, base)
+    assert executable_python_paths(tmp_path, changed) == ("polylogue/café.py",)
 
 
 def test_git_head_uses_bounded_authoritative_probe() -> None:
@@ -2475,573 +1534,6 @@ def test_checkout_mutation_monitor_fails_closed_when_portable_watcher_fails(
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
-
-
-def test_seed_receipt_classifies_every_node_terminal_outcome(
-    tmp_path: Path,
-) -> None:
-    artifact_dir = tmp_path / "artifacts"
-    artifact_dir.mkdir()
-    expected = [
-        "tests/test_seed.py::test_passed",
-        "tests/test_seed.py::test_failed",
-        "tests/test_seed.py::test_error",
-        "tests/test_seed.py::test_timeout",
-        "tests/test_seed.py::test_worker_crash",
-        "tests/test_seed.py::test_missing",
-    ]
-    (artifact_dir / "selection.json").write_text(
-        json.dumps(
-            {
-                "selected_count": len(expected),
-                "deselected_count": 0,
-                "selected_nodeids": expected,
-                "selected_nodeids_omitted": 0,
-            }
-        )
-    )
-    events = [
-        {"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"},
-        {
-            "event": "test_report",
-            "nodeid": expected[1],
-            "when": "call",
-            "outcome": "failed",
-            "longrepr": "assert false",
-        },
-        {
-            "event": "test_report",
-            "nodeid": expected[2],
-            "when": "setup",
-            "outcome": "failed",
-            "longrepr": "fixture exploded",
-        },
-        {
-            "event": "test_report",
-            "nodeid": expected[3],
-            "when": "call",
-            "outcome": "failed",
-            "longrepr": "Failed: Timeout > 10s",
-        },
-        {"event": "test_started", "nodeid": expected[4]},
-    ]
-    (artifact_dir / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
-    TESTMON_DATA.parent.mkdir(parents=True)
-    with sqlite3.connect(TESTMON_DATA) as conn:
-        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
-        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
-        conn.execute(
-            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
-        )
-        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
-        conn.executemany(
-            "INSERT INTO test_execution(test_name, failed) VALUES (?, ?)",
-            [(nodeid, int(nodeid != expected[0])) for nodeid in expected[:-1]],
-        )
-        conn.executemany(
-            "INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)",
-            [(index, f"file-{index}.py", f"sha-{index}") for index, _nodeid in enumerate(expected[:-1], start=1)],
-        )
-        conn.executemany(
-            "INSERT INTO test_execution_file_fp VALUES (?, ?)",
-            [(index, index) for index, _nodeid in enumerate(expected[:-1], start=1)],
-        )
-
-    _write_run_receipt(tmp_path, "run-mixed")
-    receipt = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": False,
-                "lab": False,
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-mixed",
-            "artifact_dir": ".cache/verify/runs/run-mixed",
-        },
-        step_results=[
-            {
-                "name": "pytest seed-testmon",
-                "artifact_dir": str(artifact_dir),
-                "exit": 1,
-                "diagnosis": "xdist_worker_crash",
-            }
-        ],
-        exit_code=1,
-    )
-
-    assert receipt["status"] == "incomplete"
-    assert {item["nodeid"]: item["outcome"] for item in receipt["node_outcomes"]} == {
-        expected[0]: "passed",
-        expected[1]: "failed",
-        expected[2]: "error",
-        expected[3]: "timeout",
-        expected[4]: "worker_crash",
-        expected[5]: "missing",
-    }
-    assert receipt["node_outcome_counts"] == {
-        "error": 1,
-        "failed": 1,
-        "missing": 1,
-        "passed": 1,
-        "timeout": 1,
-        "worker_crash": 1,
-    }
-
-
-def test_seed_node_outcomes_preserve_interrupted_active_node(tmp_path: Path) -> None:
-    events = tmp_path / "events.jsonl"
-    events.write_text(json.dumps({"event": "test_started", "nodeid": "tests/test_a.py::test_active"}) + "\n")
-
-    outcomes = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=["tests/test_a.py::test_active"],
-        database={"node_outcomes": {"tests/test_a.py::test_active": "missing"}},
-        pytest_step={"diagnosis": "terminated by signal"},
-    )
-
-    assert outcomes[0]["outcome"] == "interrupted"
-
-
-def test_seed_node_outcomes_keep_unconfirmed_teardown_incomplete(tmp_path: Path) -> None:
-    """A terminal teardown does not prove that the missing call phase passed."""
-    events = tmp_path / "events.jsonl"
-    events.write_text(
-        "\n".join(
-            [
-                json.dumps({"event": "test_started", "nodeid": "tests/test_a.py::test_finished"}),
-                json.dumps(
-                    {
-                        "event": "test_report",
-                        "nodeid": "tests/test_a.py::test_finished",
-                        "when": "teardown",
-                        "outcome": "passed",
-                    }
-                ),
-                json.dumps({"event": "test_finished", "nodeid": "tests/test_a.py::test_finished"}),
-            ]
-        )
-        + "\n"
-    )
-
-    outcomes = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=["tests/test_a.py::test_finished"],
-        database={"node_outcomes": {"tests/test_a.py::test_finished": "missing"}},
-        pytest_step={"diagnosis": "pytest_failed"},
-    )
-
-    assert outcomes[0]["outcome"] == "missing"
-    assert outcomes[0]["reason"] == "passing teardown without call report or testmon result"
-
-
-def test_seed_resource_timeout_has_a_distinct_typed_terminal_outcome(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A supervisor resource stop must not collapse into generic incompleteness."""
-    monkeypatch.chdir(tmp_path)
-    expected = ["tests/test_seed.py::test_active"]
-    artifact_dir = tmp_path / "artifacts"
-    artifact_dir.mkdir()
-    (artifact_dir / "selection.json").write_text(
-        json.dumps(
-            {
-                "selected_count": len(expected),
-                "deselected_count": 0,
-                "selected_nodeids": expected,
-                "selected_nodeids_omitted": 0,
-            }
-        )
-    )
-    (artifact_dir / "events.jsonl").write_text(json.dumps({"event": "test_started", "nodeid": expected[0]}) + "\n")
-    TESTMON_DATA.parent.mkdir(parents=True)
-    with sqlite3.connect(TESTMON_DATA) as connection:
-        connection.execute("create table environment (id integer primary key, environment_name text)")
-        connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
-        connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
-        connection.execute("create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)")
-    _write_run_receipt(tmp_path, "run-resource-timeout")
-
-    receipt = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": False,
-                "lab": False,
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-resource-timeout",
-            "artifact_dir": ".cache/verify/runs/run-resource-timeout",
-        },
-        step_results=[
-            {
-                "name": "pytest seed-testmon",
-                "artifact_dir": str(artifact_dir),
-                "exit": 124,
-                "diagnosis": "pytest_terminated",
-                "termination_reason": "pytest tmpfs budget exceeded: 512.0 MiB > 500 MiB",
-            }
-        ],
-        exit_code=124,
-    )
-
-    assert receipt["status"] == "incomplete"
-    assert receipt["outcome"] == "resource-timeout"
-    assert receipt["release_baseline_allowed"] is False
-
-
-def test_seed_node_outcomes_accept_setup_skip_as_terminal_skip(tmp_path: Path) -> None:
-    events = tmp_path / "events.jsonl"
-    events.write_text(
-        json.dumps(
-            {
-                "event": "test_report",
-                "nodeid": "tests/test_a.py::test_setup_skip",
-                "when": "setup",
-                "outcome": "skipped",
-            }
-        )
-        + "\n"
-    )
-
-    outcomes = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=["tests/test_a.py::test_setup_skip"],
-        database={"node_outcomes": {"tests/test_a.py::test_setup_skip": "missing"}},
-        pytest_step={},
-        use_database_fallback=False,
-    )
-
-    assert outcomes == [
-        {
-            "nodeid": "tests/test_a.py::test_setup_skip",
-            "outcome": "skipped",
-            "reason": "test setup or teardown skipped",
-            "started": False,
-            "finished": False,
-            "phases": [{"when": "setup", "outcome": "skipped", "duration_s": None}],
-        }
-    ]
-
-
-def test_seed_node_outcomes_preserve_call_and_fixture_xfail_xpass(tmp_path: Path) -> None:
-    """Durable pytest reports, including fixture ``pytest.xfail()``, finish seed nodes."""
-    events = tmp_path / "events.jsonl"
-    nodes = [
-        "tests/test_a.py::test_call_xfailed",
-        "tests/test_a.py::test_call_xpassed",
-        "tests/test_a.py::test_setup_xfailed",
-    ]
-    events.write_text(
-        "\n".join(
-            json.dumps(event)
-            for event in (
-                {"event": "test_report", "nodeid": nodes[0], "when": "call", "outcome": "xfailed"},
-                {"event": "test_report", "nodeid": nodes[1], "when": "call", "outcome": "xpassed"},
-                {"event": "test_report", "nodeid": nodes[2], "when": "setup", "outcome": "xfailed"},
-            )
-        )
-        + "\n"
-    )
-
-    outcomes = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=nodes,
-        database={"node_outcomes": {}},
-        pytest_step={},
-        use_database_fallback=False,
-    )
-
-    assert {item["nodeid"]: item["outcome"] for item in outcomes} == dict(
-        zip(nodes, ("xfailed", "xpassed", "xfailed"), strict=True)
-    )
-
-
-def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> None:
-    events = tmp_path / "events.jsonl"
-    events.write_text(
-        json.dumps(
-            {"event": "test_report", "nodeid": "tests/test_a.py::test_repaired", "when": "call", "outcome": "passed"}
-        )
-        + "\n"
-    )
-    outcomes = _seed_node_outcomes_from_events(
-        events,
-        expected_nodeids=[
-            "tests/test_a.py::test_repaired",
-            "tests/test_b.py::test_prior",
-            "tests/test_c.py::test_expected_failure",
-        ],
-        database={"node_outcomes": {"tests/test_b.py::test_prior": "passed"}},
-        pytest_step={},
-        use_database_fallback=False,
-        prior_node_outcomes={
-            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"},
-            "tests/test_c.py::test_expected_failure": {
-                "nodeid": "tests/test_c.py::test_expected_failure",
-                "outcome": "xfailed",
-            },
-        },
-    )
-
-    assert {item["nodeid"]: item["outcome"] for item in outcomes} == {
-        "tests/test_a.py::test_repaired": "passed",
-        "tests/test_b.py::test_prior": "passed",
-        "tests/test_c.py::test_expected_failure": "xfailed",
-    }
-
-
-def test_seed_completion_requires_full_failure_free_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    artifact_dir = tmp_path / "artifacts"
-    artifact_dir.mkdir()
-    expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
-    (artifact_dir / "selection.json").write_text(
-        json.dumps(
-            {
-                "selected_count": 2,
-                "deselected_count": 0,
-                "selected_nodeids": expected,
-                "selected_nodeids_omitted": 0,
-            }
-        )
-    )
-    (artifact_dir / "events.jsonl").write_text(
-        "".join(
-            json.dumps({"event": "test_report", "nodeid": nodeid, "when": "call", "outcome": "passed"}) + "\n"
-            for nodeid in expected
-        )
-    )
-    TESTMON_DATA.parent.mkdir(parents=True)
-    with sqlite3.connect(TESTMON_DATA) as conn:
-        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
-        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
-        conn.execute(
-            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, failed INTEGER NOT NULL)"
-        )
-        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
-        conn.executemany(
-            "INSERT INTO test_execution(test_name, failed) VALUES (?, 0)",
-            [(nodeid,) for nodeid in expected],
-        )
-        conn.executemany(
-            "INSERT INTO file_fp(id, filename, fsha) VALUES (?, ?, ?)",
-            [(index, f"file-{index}.py", f"sha-{index}") for index, _nodeid in enumerate(expected, start=1)],
-        )
-        conn.executemany(
-            "INSERT INTO test_execution_file_fp VALUES (?, ?)",
-            [(index, index) for index, _nodeid in enumerate(expected, start=1)],
-        )
-
-    _write_run_receipt(tmp_path, "run-1")
-    _write_run_receipt(tmp_path, "run-stale-db")
-    _write_run_receipt(tmp_path, "run-orphaned")
-    receipt = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": False,
-                "lab": False,
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-1",
-            "artifact_dir": ".cache/verify/runs/run-1",
-        },
-        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
-        exit_code=0,
-    )
-
-    assert receipt["status"] == "complete"
-    assert receipt["expected_count"] == 2
-    stamp = json.loads((tmp_path / ".cache" / "testmon" / "seed.json").read_text())
-    assert stamp["status"] == "usable"
-    assert stamp["collection"]["expected_count"] == 2
-
-    _write_run_receipt(tmp_path, "run-authorized")
-    authorized_receipt = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "git_tree": "tree-hash",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": True,
-                "lab": False,
-                "terminal_authorization": "narrow-terminal",
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-authorized",
-            "artifact_dir": ".cache/verify/runs/run-authorized",
-        },
-        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 0}],
-        exit_code=0,
-    )
-    assert authorized_receipt["status"] == "complete"
-    assert authorized_receipt["release_baseline_allowed"] is True
-
-    _write_run_receipt(tmp_path, "run-red")
-    with sqlite3.connect(TESTMON_DATA) as connection:
-        connection.execute("update test_execution set failed = 1 where test_name = ?", (expected[0],))
-    red_receipt = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": False,
-                "lab": False,
-                **_testmon_runtime_identity_fields(Path.cwd()),
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-red",
-            "artifact_dir": ".cache/verify/runs/run-red",
-        },
-        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir), "exit": 1}],
-        exit_code=1,
-    )
-    assert red_receipt["status"] == "reusable"
-    assert red_receipt["release_baseline_allowed"] is False
-    persisted_attempt = json.loads((tmp_path / ".cache" / "testmon" / "seed-attempt.json").read_text())
-    assert persisted_attempt["release_baseline_allowed"] is False
-    assert not (tmp_path / ".cache" / "testmon" / "seed.json").exists()
-
-    (artifact_dir / "events.jsonl").write_text("")
-    stale_database = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": True,
-                "lab": False,
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-stale-db",
-            "artifact_dir": ".cache/verify/runs/run-stale-db",
-        },
-        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir)}],
-        exit_code=0,
-    )
-    assert stale_database["status"] == "incomplete"
-
-    with sqlite3.connect(TESTMON_DATA) as connection:
-        connection.execute("insert into test_execution_file_fp values (999, 1)")
-    orphaned = _finalize_testmon_seed_attempt(
-        prepared={
-            "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-            "status": "running",
-            "identity": {
-                "git_head": "head",
-                "worktree_fingerprint": "tree",
-                "python": "python",
-                "skip_slow": True,
-                "lab": False,
-            },
-            "resume": False,
-            "expected_nodeids": [],
-            "run_id": "run-orphaned",
-            "artifact_dir": ".cache/verify/runs/run-orphaned",
-        },
-        step_results=[{"name": "pytest seed-testmon", "artifact_dir": str(artifact_dir)}],
-        exit_code=0,
-    )
-    assert orphaned["status"] == "incomplete"
-
-
-def test_resumed_seed_persists_full_selection_before_stamp_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    expected = ["tests/test_a.py::test_one", "tests/test_b.py::test_two"]
-    artifact_dir = tmp_path / "artifacts"
-    artifact_dir.mkdir()
-    (artifact_dir / "selection.json").write_text(
-        json.dumps({"selected_count": 1, "selected_nodeids": [expected[0]], "selected_nodeids_omitted": 0})
-    )
-    (artifact_dir / "events.jsonl").write_text(
-        json.dumps({"event": "test_report", "nodeid": expected[0], "when": "call", "outcome": "passed"}) + "\n"
-    )
-    TESTMON_DATA.parent.mkdir(parents=True)
-    with sqlite3.connect(TESTMON_DATA) as connection:
-        connection.execute("create table environment (id integer primary key, environment_name text)")
-        connection.execute("create table file_fp (id integer primary key, filename text, fsha text)")
-        connection.execute("create table test_execution (id integer primary key, test_name text, failed integer)")
-        connection.execute("create table test_execution_file_fp (test_execution_id integer, fingerprint_id integer)")
-        connection.executemany("insert into test_execution values (?, ?, 0)", [(1, expected[0]), (2, expected[1])])
-        connection.executemany("insert into file_fp values (?, ?, ?)", [(1, "a.py", "a"), (2, "b.py", "b")])
-        connection.executemany("insert into test_execution_file_fp values (?, ?)", [(1, 1), (2, 2)])
-    _write_run_receipt(tmp_path, "resumed")
-    prepared = {
-        "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-        "status": "running",
-        "identity": {
-            "git_head": "head",
-            "git_tree": "tree-hash",
-            "worktree_fingerprint": "tree",
-            "python": "python",
-            "skip_slow": False,
-            "lab": False,
-            "terminal_authorization": None,
-            **_testmon_runtime_identity_fields(Path.cwd()),
-        },
-        "resume": True,
-        "expected_nodeids": expected,
-        "expected_count": len(expected),
-        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
-        "prior_node_outcomes": [{"nodeid": expected[1], "outcome": "passed"}],
-        "run_id": "resumed",
-        "artifact_dir": ".cache/verify/runs/resumed",
-    }
-    original_write = verify._atomic_write_json
-
-    def crash_before_stamp(path: Path, payload: object) -> None:
-        if path == TESTMON_SEED_STAMP:
-            raise RuntimeError("simulated crash before seed publication")
-        assert isinstance(payload, dict)
-        original_write(path, payload)
-
-    with patch("devtools.verify._atomic_write_json", side_effect=crash_before_stamp):
-        with pytest.raises(RuntimeError, match="before seed publication"):
-            _finalize_testmon_seed_attempt(
-                prepared=prepared,
-                step_results=[{"name": "pytest seed-testmon (resume)", "artifact_dir": str(artifact_dir)}],
-                exit_code=0,
-            )
-
-    persisted = json.loads(TESTMON_SEED_ATTEMPT.read_text())
-    assert persisted["status"] == "complete"
-    assert persisted["expected_count"] == len(expected)
-    assert persisted["selection"]["selected_count"] == len(expected)
-    assert persisted["selection"]["selected_nodeids_omitted"] == 0
-    assert not TESTMON_SEED_STAMP.exists()
 
 
 def test_classify_late_sigterm_after_pytest_success_summary() -> None:
@@ -4094,6 +2586,7 @@ def test_pytest_workload_receipt_uses_allocated_basetemp_peak() -> None:
         tmpfs_budget_mb=1,
         basetemp_cleanup=None,
         concurrency=1,
+        timeout_s=3600,
     )
 
     execute = next(phase for phase in receipt["phases"] if phase["name"] == "execute")
@@ -4135,15 +2628,6 @@ def test_cleanup_managed_pytest_basetemp_keeps_seed_cache(tmp_path: Path) -> Non
 
     assert cleaned is None
     assert seeded.exists()
-
-
-def test_testmon_preflight_allows_seed_and_full_without_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-
-    assert _testmon_preflight(seed_testmon=True, full_pytest=False, quick=False, commit=False) is None
-    assert _testmon_preflight(seed_testmon=False, full_pytest=True, quick=False, commit=False) is None
 
 
 def test_parse_pytest_test_count_from_summary() -> None:
@@ -4459,7 +2943,7 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
-        rc, _elapsed, metadata = _run("pytest seed-testmon", ["pytest", "--testmon", "-n", "4"])
+        rc, _elapsed, metadata = _run("pytest native parallel (bootstrap)", ["pytest", "--testmon", "-n", "4"])
 
     assert rc == 0
     assert apply_policy.call_args.kwargs["worker_count"] == 4
@@ -4472,12 +2956,10 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
     ("label", "full_suite"),
     [
         ("pytest focused", False),
-        ("pytest testmon", False),
-        ("pytest testmon (broad)", True),
-        ("pytest seed-testmon", True),
-        ("pytest seed-testmon shard 1/4", True),
-        ("pytest full (parallel)", True),
-        ("pytest load-sensitive (isolated)", True),
+        ("pytest native parallel (affected)", False),
+        ("pytest native serial (affected)", False),
+        ("pytest native parallel (bootstrap)", True),
+        ("pytest native serial (full)", True),
     ],
 )
 def test_run_scopes_measured_full_suite_basetemp_demand(tmp_path: Path, label: str, full_suite: bool) -> None:
@@ -5180,309 +3662,6 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
         assert durable_payload["final_worktree_fingerprint"] == "stable"
 
 
-def test_transient_checkout_mutation_discards_testmon_graph_before_publication(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class _ChangedMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
-        def finish(self) -> CheckoutMutationObservation:
-            return CheckoutMutationObservation(changed=True, unavailable=False, observed_path="polylogue/example.py")
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "CheckoutMutationMonitor", _ChangedMonitor)
-    monkeypatch.setattr(
-        verify,
-        "assert_polylogue_matches_checkout",
-        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
-    )
-    TESTMON_DATA.parent.mkdir(parents=True)
-    TESTMON_DATA.write_bytes(b"transient dependency graph")
-    TESTMON_SEED_STAMP.write_text("{}", encoding="utf-8")
-    affected_publish = MagicMock()
-    selection_publish = MagicMock()
-
-    with (
-        patch("devtools.verify._anchor_verification_paths"),
-        patch("devtools.verify.maybe_bootstrap_testmon_seed", return_value=None),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest", "--testmon"])]),
-        patch("devtools.verify._run", return_value=(0, 0.01, {"selected_count": 1})),
-        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
-        patch("devtools.verify._record_testmon_affected_coverage", affected_publish),
-        patch("devtools.verify._refresh_testmon_selection_attempt", selection_publish),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
-        patch("devtools.verify._warn_low_memory"),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
-    ):
-        assert main(["--json"]) == 125
-
-    assert not TESTMON_DATA.exists()
-    assert not TESTMON_SEED_STAMP.exists()
-    affected_publish.assert_not_called()
-    selection_publish.assert_not_called()
-    assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_changed_during_verification"
-
-
-def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
-    calls: list[str] = []
-
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        calls.append(label)
-        return (1 if label.startswith("pytest") else 0), 0.01, {}
-
-    with (
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-    ):
-        rc = main(["--json"])
-
-    assert rc == 1
-    assert calls[-1].startswith("pytest")
-    payload = capsys.readouterr().out
-    assert '"exit_code": 1' in payload
-
-
-@pytest.mark.parametrize(
-    ("shard_results", "expected_exit", "expected_diagnosis", "expected_statuses"),
-    [
-        (
-            [(124, "pytest_timeout"), (0, "pytest_passed")],
-            124,
-            "pytest_timeout",
-            ["incomplete", "pending"],
-        ),
-        (
-            [(1, "pytest_failed"), (0, "pytest_passed")],
-            1,
-            "pytest_failed",
-            ["complete", "complete"],
-        ),
-        (
-            [(1, "pytest_failed"), (124, "pytest_timeout")],
-            124,
-            "pytest_timeout",
-            ["complete", "incomplete"],
-        ),
-        (
-            [(1, "pytest_failed"), (0, "pytest_passed")],
-            1,
-            "pytest_failed",
-            ["incomplete", "pending"],
-        ),
-    ],
-)
-def test_seed_testmon_stops_only_after_infrastructure_failed_shard(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    shard_results: list[tuple[int, str]],
-    expected_exit: int,
-    expected_diagnosis: str,
-    expected_statuses: list[str],
-) -> None:
-    nodeids = ["tests/test_seed.py::test_one", "tests/test_seed.py::test_two"]
-    collection_dir = tmp_path / "collection"
-    collection_dir.mkdir()
-    (collection_dir / "selection.json").write_text(
-        json.dumps(
-            {
-                "selected_count": len(nodeids),
-                "selected_nodeids": nodeids,
-                "selected_nodeids_omitted": 0,
-            }
-        )
-    )
-    calls: list[str] = []
-    checkpointed: list[int] = []
-    finalized_shard_statuses: list[str] = []
-
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        del command, kwargs
-        calls.append(label)
-        if label == "pytest seed-testmon collect":
-            return 0, 0.01, {"artifact_dir": str(collection_dir)}
-        if label.startswith("pytest seed-testmon shard "):
-            shard_index = int(label.rsplit(" ", 1)[1].split("/", 1)[0])
-            shard_exit, diagnosis = shard_results[shard_index - 1]
-            return shard_exit, 0.01, {"diagnosis": diagnosis}
-        pytest.fail(f"unexpected seed step: {label}")
-
-    def fake_checkpoint(*, prepared: dict[str, object], shard_index: int, step: dict[str, object]) -> dict[str, object]:
-        del step
-        checkpointed.append(shard_index)
-        raw_shards = prepared["shards"]
-        assert isinstance(raw_shards, list)
-        assert all(isinstance(shard, dict) for shard in raw_shards)
-        shards = [dict(shard) for shard in raw_shards]
-        shards[shard_index - 1]["status"] = expected_statuses[shard_index - 1]
-        return {**prepared, "shards": shards}
-
-    def fake_finalize(
-        *, prepared: dict[str, object], step_results: list[dict[str, object]], exit_code: int
-    ) -> dict[str, object]:
-        del step_results
-        assert exit_code == expected_exit
-        raw_shards = prepared["shards"]
-        assert isinstance(raw_shards, list)
-        assert all(isinstance(shard, dict) for shard in raw_shards)
-        finalized_shard_statuses.extend(str(shard["status"]) for shard in raw_shards)
-        return {
-            "status": "incomplete" if "incomplete" in expected_statuses else "complete",
-            "outcome": "resource_timeout" if expected_exit == 124 else "red-baseline",
-            "resume": False,
-            "expected_count": len(nodeids),
-            "release_baseline_allowed": False,
-        }
-
-    monkeypatch.setattr(verify, "TESTMON_SEED_SHARD_SIZE", 1)
-    with (
-        patch("devtools.verify._anchor_verification_paths"),
-        patch("devtools.verify.maybe_bootstrap_testmon_seed", return_value=None),
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch(
-            "devtools.verify.build_verify_steps",
-            return_value=[("pytest seed-testmon collect", ["pytest", "--collect-only"])],
-        ),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_committed_tree", return_value="tree"),
-        patch(
-            "devtools.verify._testmon_seed_identity",
-            return_value={"git_head": "head", "git_tree": "tree", "skip_slow": False, "lab": False},
-        ),
-        patch("devtools.verify._testmon_seed_can_resume", return_value=False),
-        patch("devtools.verify._checkpoint_testmon_seed_shard", side_effect=fake_checkpoint),
-        patch("devtools.verify._finalize_testmon_seed_attempt", side_effect=fake_finalize),
-        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
-        patch("devtools.verify._warn_low_memory"),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-    ):
-        rc = main(["--seed-testmon", "--json"])
-
-    assert rc == expected_exit
-    executed_shards = sum(status != "pending" for status in expected_statuses)
-    assert calls == [
-        "pytest seed-testmon collect",
-        *(f"pytest seed-testmon shard {index}/2" for index in range(1, executed_shards + 1)),
-    ]
-    assert checkpointed == list(range(1, executed_shards + 1))
-    assert finalized_shard_statuses == expected_statuses
-    output = json.loads(capsys.readouterr().out)
-    assert output["exit_code"] == expected_exit
-    assert output["diagnosis"] == expected_diagnosis
-
-
-@pytest.mark.parametrize(
-    ("argv", "expected_scope", "expected_permission"),
-    [
-        (["--all", "--skip-slow"], "narrow-terminal", False),
-        (["--all", "--skip-slow", "--terminal-authorization", "narrow-terminal"], "narrow-terminal", True),
-    ],
-)
-def test_verify_main_types_skip_slow_terminal_authority(
-    capsys: pytest.CaptureFixture[str], argv: list[str], expected_scope: str, expected_permission: bool
-) -> None:
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        del label, command, kwargs
-        return 0, 0.01, {}
-
-    with (
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify.build_verify_steps", return_value=[("pytest full", ["pytest"])]),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._save_history") as save_history,
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-    ):
-        assert main([*argv, "--json"]) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["verification_scope"] == expected_scope
-    assert payload["release_baseline_allowed"] is expected_permission
-    assert payload["terminal_authorization"] == ("narrow-terminal" if expected_permission else None)
-    assert save_history.call_args.args[0]["checkout_root"] == str(ROOT.resolve())
-
-
-def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:
-    with (
-        patch("devtools.verify.build_verify_steps", side_effect=PytestResourceError("only 0.50 GiB available")),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify._run") as run,
-        patch("devtools.verify._save_history") as save_history,
-    ):
-        rc = main(["--json"])
-
-    assert rc == 125
-    run.assert_not_called()
-    assert save_history.call_args.args[0]["diagnosis"] == "pytest_resource_preflight_failed"
-    assert "only 0.50 GiB available" in capsys.readouterr().err
-
-
-def test_verify_starts_checkout_monitor_before_broad_change_classification(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    events: list[str] = []
-
-    class _OrderingMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            events.append("monitor-started")
-
-        def finish(self) -> CheckoutMutationObservation:
-            events.append("monitor-finished")
-            return CheckoutMutationObservation(changed=False, unavailable=False)
-
-    def classify(_base: str, _head: str) -> bool:
-        assert events == ["monitor-started"]
-        events.append("classified")
-        return False
-
-    with (
-        patch("devtools.verify.CheckoutMutationMonitor", _OrderingMonitor),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
-        patch("devtools.verify._default_testmon_is_broad_change", side_effect=classify),
-        patch("devtools.verify.build_verify_steps", return_value=[]),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-    ):
-        assert main(["--json"]) == 0
-
-    assert events == ["monitor-started", "classified", "monitor-finished"]
-    assert json.loads(capsys.readouterr().out)["exit_code"] == 0
-
-
 def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> None:
     events: list[str] = []
 
@@ -5508,45 +3687,6 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> 
     assert events == ["monitor-started", "monitor-finished"]
 
 
-def test_verify_finalizes_runner_exception_after_open_step(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    history: dict[str, Any] = {}
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        verify,
-        "assert_polylogue_matches_checkout",
-        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
-    )
-    monkeypatch.setattr(verify, "maybe_bootstrap_testmon_seed", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(verify, "_git_head", lambda: "head")
-    monkeypatch.setattr(verify, "worktree_fingerprint", lambda _root: "stable")
-    monitor = MagicMock()
-    monitor.finish.return_value = CheckoutMutationObservation(changed=False, unavailable=False)
-    monkeypatch.setattr(verify, "CheckoutMutationMonitor", lambda _root: monitor)
-    monkeypatch.setattr(verify, "_save_history", lambda payload: history.update(payload))
-    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
-
-    def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
-        run = kwargs["run"]
-        run.start_step(label="ruff check", cmd=command)
-        raise RuntimeError("verification runner exploded")
-
-    monkeypatch.setattr(verify, "_run", explode)
-    monotonic_values = iter((100.0, 107.5))
-    monkeypatch.setattr("devtools.verify.time.monotonic", lambda: next(monotonic_values))
-
-    assert verify.main(["--quick", "--json"]) == 125
-    assert history["exit_code"] == 125
-    assert history["diagnosis"] == "verify_runner_exception"
-    assert history["duration_s"] == 7.5
-    assert history["verification_scope"] == "non-test"
-    assert history["steps"][0]["status"] == "failed"
-    assert history["steps"][0]["exit"] == 125
-
-
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5557,136 +3697,114 @@ def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirector
     assert Path.cwd() == ROOT.resolve()
 
 
-def test_verify_rejects_zero_testmon_selection_for_executable_change(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    changed_executable_paths = MagicMock(return_value=("polylogue/example.py",))
-
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        del command, kwargs
-        return 0, 0.01, ({"selected_count": 0} if label.startswith("pytest") else {})
-
-    with (
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="pinned-base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify._changed_executable_paths", changed_executable_paths),
-        patch("devtools.verify._matching_testmon_coverage", return_value=None),
-    ):
-        rc = main(["--json"])
-
-    assert rc == 5
-    payload = json.loads(capsys.readouterr().out)
-    pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
-    assert pytest_step["diagnosis"] == "zero_testmon_selection_for_executable_change"
-    assert pytest_step["zero_selection_changed_paths"] == ["polylogue/example.py"]
-    changed_executable_paths.assert_called_once_with("pinned-base", "head")
-
-
-def test_verify_finalizes_and_discards_graph_when_post_pytest_path_authority_fails(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monitor = MagicMock()
-    monitor.finish.return_value = CheckoutMutationObservation(changed=False, unavailable=False)
-    discard = MagicMock()
-
-    with (
-        patch("devtools.verify._run", return_value=(0, 0.01, {"selected_count": 1})),
-        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._changed_executable_paths", side_effect=PytestResourceError("git unavailable")),
-        patch("devtools.verify._discard_testmon_dependency_authority", discard),
-        patch("devtools.verify.CheckoutMutationMonitor", return_value=monitor),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-    ):
-        rc = main(["--json"])
-
-    assert rc == 125
-    monitor.finish.assert_called_once_with()
-    discard.assert_called_once_with()
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["diagnosis"] == "testmon_changed_path_authority_unavailable"
-
-
-def test_testmon_changed_path_authority_refuses_missing_commit_binding() -> None:
-    changed_paths = MagicMock()
-
-    with patch("devtools.verify._changed_executable_paths", changed_paths):
-        with pytest.raises(PytestResourceError, match="changed-path authority is unavailable"):
-            verify._changed_paths_from_testmon_authority(None, "head")
-
-    changed_paths.assert_not_called()
-
-
-def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        del command, kwargs
-        return 0, 0.01, ({"selected_count": 0} if label.startswith("pytest") else {})
-
-    with (
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
-        patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
-        patch("devtools.verify._matching_testmon_coverage", return_value="successful_affected_run"),
-    ):
-        rc = main(["--json"])
-
-    assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
-    pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
-    assert pytest_step["zero_selection_coverage"] == "successful_affected_run"
-
-
-def test_testmon_coverage_receipts_are_content_exact() -> None:
-    paths = ("polylogue/example.py",)
-    _write_real_testmon_state()
-    assert _matching_testmon_coverage(paths) is None
-
-    TESTMON_SEED_STAMP.unlink()
-    with patch("devtools.verify.worktree_fingerprint", return_value="affected"):
-        _record_testmon_affected_coverage(
-            executable_paths=paths,
-            selected_count=3,
-            run_id="run-1",
-        )
-        assert TESTMON_AFFECTED_STAMP.exists()
-        assert _matching_testmon_coverage(paths) == "successful_affected_run"
-        assert _matching_testmon_coverage(("polylogue/other.py",)) is None
-
-    with patch("devtools.verify.worktree_fingerprint", return_value="changed"):
-        assert _matching_testmon_coverage(paths) is None
-
-    TESTMON_AFFECTED_STAMP.write_text(json.dumps({"identity": {"worktree_fingerprint": "affected"}}))
-    with patch("devtools.verify.worktree_fingerprint", return_value="affected"):
-        assert _matching_testmon_coverage(paths) is None
-
-
 def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:
     assert _stop_after_failed_step("ruff check") is False
     assert _stop_after_failed_step("verify layering") is False
-    assert _stop_after_failed_step("pytest testmon") is True
+    assert _stop_after_failed_step("pytest native serial (affected)") is False
     assert _stop_after_failed_step("lab smoke") is True
     assert _stop_after_failed_step("bench slo") is True
+    assert _native_lane_failure_requires_stop({"exit": 1, "diagnosis": "pytest_failed"}) is False
+    assert _native_lane_failure_requires_stop({"exit": 2, "diagnosis": "pytest_collection_failed"}) is True
+
+
+def test_verify_continues_serial_lane_after_parallel_test_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+    lane_timeouts: list[float] = []
+
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    preparation = SimpleNamespace(
+        environment_name="env",
+        selection_mode="affected",
+        removed_paths=(),
+        copied_from=None,
+    )
+    native_state = SimpleNamespace(
+        valid=True,
+        environment=SimpleNamespace(nodeids=("tests/test_parallel.py::test_owner",)),
+        missing_executable_paths=(),
+        reason="current",
+    )
+
+    def fake_run(label: str, _command: list[str], **_kwargs: object) -> tuple[int, float, dict[str, object]]:
+        calls.append(label)
+        lane_timeouts.append(cast(float, _kwargs["timeout_s"]))
+        if "parallel" in label:
+            return 1, 0.01, {"diagnosis": "pytest_failed"}
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch("devtools.verify.prepare_native_testmon_environment", return_value=preparation),
+        patch("devtools.verify._native_environment_after_run", return_value=native_state),
+        patch(
+            "devtools.verify.build_verify_steps",
+            return_value=[
+                ("pytest native parallel (affected)", ["pytest"]),
+                ("pytest native serial (affected)", ["pytest"]),
+            ],
+        ),
+        patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify._remaining_invocation_budget", side_effect=(3500.0, 3200.0)),
+        patch("devtools.verify.aggregate_native_testmon_run", return_value={"terminal_green": False}),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 1
+
+    assert calls == ["pytest native parallel (affected)", "pytest native serial (affected)"]
+    assert lane_timeouts == [3500.0, 3200.0]
+    assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is False
+
+
+def test_release_authority_requires_current_complete_green_invocation() -> None:
+    aggregate = {
+        "complete_corpus_covered": True,
+        "terminal_green": True,
+        "cleanup": {"complete": True},
+        "containment": {"complete": True},
+        "deadline": {"met": True},
+    }
+
+    assert _release_baseline_allowed(
+        selection_mode="bootstrap",
+        exit_code=0,
+        checkout_stable=True,
+        aggregate=aggregate,
+    )
+    assert not _release_baseline_allowed(
+        selection_mode="affected",
+        exit_code=0,
+        checkout_stable=True,
+        aggregate=aggregate,
+    )
+    for broken in (
+        {**aggregate, "complete_corpus_covered": False},
+        {**aggregate, "terminal_green": False},
+        {**aggregate, "cleanup": {"complete": False}},
+        {**aggregate, "containment": {"complete": False}},
+        {**aggregate, "deadline": {"met": False}},
+    ):
+        assert not _release_baseline_allowed(
+            selection_mode="full",
+            exit_code=0,
+            checkout_stable=True,
+            aggregate=broken,
+        )
 
 
 def test_completion_notification_uses_pytest_count() -> None:
@@ -5710,34 +3828,6 @@ def test_completion_notification_omits_unknown_pytest_count() -> None:
     )
 
     assert summary == "PASS (118s)"
-
-
-def test_default_testmon_step_pairs_marker_filter_with_forceselect() -> None:
-    """#1632: any pytest -m marker filter in the default lane MUST be paired with --testmon-forceselect.
-
-    Without ``--testmon-forceselect``, a marker selector deactivates
-    pytest-testmon's affected-test selection and the run silently
-    expands to the whole suite — PR #1550 fixed exactly this regression
-    after a full week of every default verify running 9.5K tests
-    instead of the affected subset. This invariant is the regression
-    guard so the footgun cannot re-land silently again.
-    """
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=False)
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    if "-m" in command:
-        assert "--testmon-forceselect" in command, (
-            f"marker filter without --testmon-forceselect re-introduces the #1550 silent-deselection footgun: {command}"
-        )
-
-
-def test_skip_slow_testmon_step_keeps_forceselect_with_compound_marker() -> None:
-    """``--skip-slow`` composes the marker; the pairing invariant must still hold."""
-    steps = build_verify_steps(quick=False, lab=False, skip_slow=True)
-    label, command = steps[-1]
-    assert label == "pytest testmon"
-    assert "-m" in command
-    assert "--testmon-forceselect" in command
 
 
 def test_verify_does_not_notify_on_pass() -> None:

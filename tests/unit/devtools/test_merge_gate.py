@@ -258,9 +258,7 @@ def test_check_rejects_successful_non_test_receipt(monkeypatch: pytest.MonkeyPat
     assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
 
 
-@pytest.mark.parametrize(
-    "command", ["devtools verify --all", "devtools verify --full", "devtools verify --seed-testmon"]
-)
+@pytest.mark.parametrize("command", ["devtools verify --all", "devtools verify --full"])
 def test_check_blocks_full_receipt_without_release_baseline_permission(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
 ) -> None:

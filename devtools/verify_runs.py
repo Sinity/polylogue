@@ -964,6 +964,30 @@ def aggregate_pytest_statistics(
                 ),
                 default=None,
             ),
+            "peak_tree_swap_pss_kb": max(
+                (int(row["tree_swap_pss_kb"]) for row in resources if isinstance(row.get("tree_swap_pss_kb"), int)),
+                default=None,
+            ),
+            "tree_read_bytes_delta": (
+                max(
+                    (int(row["tree_read_bytes"]) for row in resources if isinstance(row.get("tree_read_bytes"), int)),
+                    default=0,
+                )
+                - min(
+                    (int(row["tree_read_bytes"]) for row in resources if isinstance(row.get("tree_read_bytes"), int)),
+                    default=0,
+                )
+            ),
+            "tree_write_bytes_delta": (
+                max(
+                    (int(row["tree_write_bytes"]) for row in resources if isinstance(row.get("tree_write_bytes"), int)),
+                    default=0,
+                )
+                - min(
+                    (int(row["tree_write_bytes"]) for row in resources if isinstance(row.get("tree_write_bytes"), int)),
+                    default=0,
+                )
+            ),
         },
         "cleanup": {
             "complete": True
@@ -972,6 +996,234 @@ def aggregate_pytest_statistics(
             "termination_reason": containment.get("termination_reason"),
             "escalated_to_sigkill": containment.get("escalated_to_sigkill"),
             "exit_code": containment.get("exit_code", (step_result or {}).get("exit")),
+        },
+    }
+
+
+_GREEN_TERMINAL_OUTCOMES = frozenset({"passed", "skipped", "xfailed", "xpassed"})
+
+
+def _safe_step_dir(root: Path, raw: object) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _terminal_outcomes_by_node(step_dir: Path) -> dict[str, str]:
+    canonical = _read_json_object(step_dir / PYTEST_CANONICAL_REPORT_NAME)
+    raw_tests = canonical.get("tests") if canonical is not None else None
+    if isinstance(raw_tests, list):
+        outcomes = {
+            str(test["nodeid"]): str(test["outcome"])
+            for test in raw_tests
+            if isinstance(test, dict) and isinstance(test.get("nodeid"), str) and isinstance(test.get("outcome"), str)
+        }
+        if outcomes:
+            return outcomes
+
+    reports: dict[str, dict[str, str]] = {}
+    events_path = step_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if not isinstance(row, dict) or row.get("event") != "test_report":
+                    continue
+                nodeid = row.get("nodeid")
+                when = row.get("when")
+                outcome = row.get("outcome")
+                if isinstance(nodeid, str) and when in {"setup", "call", "teardown"} and isinstance(outcome, str):
+                    reports.setdefault(nodeid, {})[str(when)] = outcome
+    fallback_outcomes: dict[str, str] = {}
+    for nodeid, phases in reports.items():
+        setup = phases.get("setup")
+        call = phases.get("call")
+        teardown = phases.get("teardown")
+        if setup == "failed" or teardown == "failed":
+            fallback_outcomes[nodeid] = "error"
+        elif call is not None:
+            fallback_outcomes[nodeid] = call
+        elif setup in {"skipped", "xfailed", "xpassed"}:
+            fallback_outcomes[nodeid] = setup
+        elif teardown in {"skipped", "xfailed", "xpassed"}:
+            fallback_outcomes[nodeid] = teardown
+        else:
+            fallback_outcomes[nodeid] = "interrupted"
+    return fallback_outcomes
+
+
+def aggregate_native_testmon_run(
+    root: Path,
+    *,
+    steps: Sequence[Mapping[str, Any]],
+    environment_name: str,
+    corpus_nodeids: Sequence[str],
+    selection_mode: str,
+    invocation_duration_s: float,
+    budget_s: float,
+) -> dict[str, Any]:
+    """Build one compact, durable aggregate for the two semantic pytest lanes."""
+    lanes: list[dict[str, Any]] = []
+    selected_union: set[str] = set()
+    outcome_by_node: dict[str, str] = {}
+    duplicate_outcomes: set[str] = set()
+    outcomes: dict[str, int] = {}
+    collection_wall_s = 0.0
+    peak_rss_kb: int | None = None
+    peak_pss_kb: int | None = None
+    peak_swap_pss_kb: int | None = None
+    peak_storage_bytes: int | None = None
+    read_bytes = 0
+    write_bytes = 0
+    cleanup_complete = True
+    containment_complete = True
+    selection_complete = True
+    for step in steps:
+        lane = step.get("semantic_lane")
+        if lane not in {"parallel", "serial"}:
+            continue
+        step_dir = _safe_step_dir(root, step.get("artifact_dir"))
+        selection = _read_json_object(step_dir / "selection.json") if step_dir is not None else None
+        containment_receipt = _read_json_object(step_dir / "containment.json") if step_dir is not None else None
+        selected = selection.get("selected_nodeids") if selection is not None else None
+        omitted = selection.get("selected_nodeids_omitted") if selection is not None else None
+        if not isinstance(selected, list) or not all(isinstance(nodeid, str) for nodeid in selected) or omitted != 0:
+            selection_complete = False
+            selected = []
+        selected_union.update(selected)
+        lane_outcomes = _terminal_outcomes_by_node(step_dir) if step_dir is not None else {}
+        for nodeid, outcome in lane_outcomes.items():
+            if nodeid in outcome_by_node:
+                duplicate_outcomes.add(nodeid)
+            outcome_by_node[nodeid] = outcome
+        statistics = step.get("statistics")
+        resources = statistics.get("resources") if isinstance(statistics, Mapping) else None
+        storage = statistics.get("storage") if isinstance(statistics, Mapping) else None
+        cleanup = statistics.get("cleanup") if isinstance(statistics, Mapping) else None
+
+        def _peak(current: int | None, value: object) -> int | None:
+            return max(current or 0, value) if isinstance(value, int) else current
+
+        if isinstance(resources, Mapping):
+            peak_rss_kb = _peak(peak_rss_kb, resources.get("peak_tree_rss_kb"))
+            peak_pss_kb = _peak(peak_pss_kb, resources.get("peak_tree_pss_kb"))
+            peak_swap_pss_kb = _peak(peak_swap_pss_kb, resources.get("peak_tree_swap_pss_kb"))
+            lane_read = resources.get("tree_read_bytes_delta")
+            lane_write = resources.get("tree_write_bytes_delta")
+            read_bytes += lane_read if isinstance(lane_read, int) else 0
+            write_bytes += lane_write if isinstance(lane_write, int) else 0
+        if isinstance(storage, Mapping):
+            peak_storage_bytes = _peak(peak_storage_bytes, storage.get("basetemp_allocated_bytes_max"))
+        lane_cleanup = cleanup.get("complete") if isinstance(cleanup, Mapping) else None
+        cleanup_complete = cleanup_complete and lane_cleanup is True
+        lane_containment_complete = bool(
+            containment_receipt is not None
+            and containment_receipt.get("status") == "finished"
+            and containment_receipt.get("controller_group_alive") is False
+            and containment_receipt.get("termination_reason") is None
+            and containment_receipt.get("escalated_to_sigkill") is False
+            and not bool(step.get("termination_reason"))
+            and step.get("containment_escalated_to_sigkill") is not True
+        )
+        containment_complete = containment_complete and lane_containment_complete
+        collection_duration = step.get("collection_duration_s")
+        if isinstance(collection_duration, (int, float)):
+            collection_wall_s += float(collection_duration)
+        lanes.append(
+            {
+                "lane": lane,
+                "exit_code": step.get("exit"),
+                "duration_s": step.get("duration_s"),
+                "collection_duration_s": collection_duration,
+                "selected_count": step.get("selected_count"),
+                "terminal_count": len(lane_outcomes),
+                "cleanup_complete": lane_cleanup,
+                "containment_mode": step.get("containment_mode"),
+                "containment_complete": lane_containment_complete,
+            }
+        )
+
+    for outcome in outcome_by_node.values():
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    native_corpus = tuple(sorted(set(corpus_nodeids)))
+    complete_mode = selection_mode in {"bootstrap", "full"}
+    # testmon synchronizes every collected node before pytest applies markers.
+    # The correctness corpus for this invocation is therefore the complete
+    # selection union from the two complementary semantic lanes, while the
+    # native database corpus remains useful environment evidence of its own.
+    corpus = tuple(sorted(selected_union)) if complete_mode else native_corpus
+    corpus_set = set(corpus)
+    lane_names = [lane["lane"] for lane in lanes]
+    complete_corpus_covered = (
+        complete_mode
+        and selection_complete
+        and bool(corpus)
+        and set(outcome_by_node) == corpus_set
+        and not duplicate_outcomes
+        and len(lane_names) == 2
+        and lane_names.count("parallel") == 1
+        and lane_names.count("serial") == 1
+    )
+    missing_terminal = tuple(sorted(corpus_set - set(outcome_by_node))) if complete_mode else ()
+    non_green = tuple(
+        sorted(nodeid for nodeid in corpus if outcome_by_node.get(nodeid) not in _GREEN_TERMINAL_OUTCOMES)
+    )
+    terminal_green = complete_corpus_covered and not missing_terminal and not non_green
+    return {
+        "schema_version": 1,
+        "environment": {
+            "name": environment_name,
+            "digest": environment_name.removeprefix("polylogue-"),
+            "native_corpus_count": len(native_corpus),
+            "native_corpus_digest": hashlib.sha256("\n".join(native_corpus).encode()).hexdigest(),
+        },
+        "corpus": {
+            "count": len(corpus),
+            "digest": hashlib.sha256("\n".join(corpus).encode()).hexdigest(),
+        },
+        "selection_mode": selection_mode,
+        "lanes": lanes,
+        "outcomes": outcomes,
+        "selected_union_count": len(selected_union),
+        "terminal_union_count": len(outcome_by_node),
+        "missing_terminal_count": len(missing_terminal),
+        "missing_terminal_sample": list(missing_terminal[:20]),
+        "non_green_count": len(non_green),
+        "non_green_sample": list(non_green[:20]),
+        "duplicate_outcome_count": len(duplicate_outcomes),
+        "complete_corpus_covered": complete_corpus_covered,
+        "terminal_green": terminal_green,
+        "wall_s": round(invocation_duration_s, 4),
+        "collection_wall_s": round(collection_wall_s, 4),
+        "resources": {
+            "peak_tree_rss_kb": peak_rss_kb,
+            "peak_tree_pss_kb": peak_pss_kb,
+            "peak_tree_swap_pss_kb": peak_swap_pss_kb,
+            "peak_storage_bytes": peak_storage_bytes,
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+        },
+        "cleanup": {"complete": cleanup_complete},
+        "containment": {"complete": containment_complete},
+        "deadline": {
+            "budget_s": budget_s,
+            "met": invocation_duration_s <= budget_s,
         },
     }
 
@@ -1130,7 +1382,7 @@ class VerifyRun:
                 if not str(step.get("name", "")).startswith("pytest"):
                     break
                 # An interrupted runner never returns through the normal
-                # post-subprocess merge. Fold shards here, before every
+                # post-subprocess merge. Fold worker evidence here, before every
                 # aggregation path, so completed worker evidence survives.
                 with contextlib.suppress(OSError):
                     merge_worker_events(step_dir / "events", step_dir / "events.jsonl")
@@ -1185,6 +1437,7 @@ class VerifyRun:
         final_worktree_fingerprint: str | None = None,
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
+        pytest_aggregate: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -1198,6 +1451,8 @@ class VerifyRun:
             self._payload["checkout_mutation_path"] = checkout_mutation_path
         if checkout_diagnosis is not None:
             self._payload["checkout_diagnosis"] = checkout_diagnosis
+        if pytest_aggregate is not None:
+            self._payload["pytest_aggregate"] = dict(pytest_aggregate)
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed

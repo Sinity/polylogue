@@ -307,18 +307,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab testmon-proof",
-        "verification lab",
-        "Prove real testmon affected selection against a semantic production mutation.",
-        "devtools.testmon_mutation_proof",
-        use_when=(
-            "Validate the affected-test harness itself: a disposable copy of a real Polylogue module "
-            "and existing route test is seeded, semantically mutated, edge-severed, restored, and checked "
-            "for bounded unrelated-change selection."
-        ),
-        examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
-    ),
-    CommandSpec(
         "bench ingest-amplification",
         "benchmarking",
         "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",

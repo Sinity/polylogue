@@ -55,9 +55,8 @@ targeting `master`.
 2. Create a branch from `origin/master`.
 3. Work on the branch. Git hooks enforce format and lint on commit, and
    run `devtools verify --quick` on push.
-4. Run `devtools verify` before creating the PR. The default pytest step uses
-   pytest-testmon affected-test selection; run `devtools verify --seed-testmon`
-   first if the dependency database is not seeded.
+4. Run `devtools verify` before creating the PR. It automatically builds or
+   repairs native pytest-testmon state, then uses affected-test selection.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
@@ -295,27 +294,24 @@ local pytest selection is accelerated by pytest-testmon.
 
 ```bash
 devtools verify            # static/generated gates + pytest-testmon affected tests
-devtools verify --seed-testmon --skip-slow  # seed/update affected-test DB
 devtools verify --all      # explicit full non-integration pytest diagnostic
 devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
 The quick gate runs on `git push` via the active pre-push hook. It's a fast
-check, not a substitute for the default baseline. The default command fails
-fast when `.cache/testmon/testmondata` and `.cache/testmon/seed.json` are
-missing; do not rely on silent full-suite fallback.
+check, not a substitute for the default baseline. The default command safely
+repairs missing or invalid native testmon state and automatically builds a new
+environment when collection semantics change.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates and then invokes pytest-testmon for affected-test selection from
 the current source, dependency, and Python-version state. The default pytest
 step combines marker filters with `--testmon-forceselect` so scale-tier
-deselection does not silently expand the run back to the whole suite; affected
-testmon runs are single-process by default to avoid xdist collection skew.
-Polylogue does not maintain a parallel changed-file router for helper/config
-paths; use `devtools verify --seed-testmon` when you intentionally want to
-refresh the dependency database and `devtools verify --all` for an explicit full
-diagnostic.
+deselection does not silently expand the run back to the whole suite. It uses
+one parallel lane and one serial `load_sensitive`/`tui` lane over the same
+native environment. Use `devtools verify --all` for an explicit full
+diagnostic; there is no manual seed or repair command.
 
 Add `devtools release build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)

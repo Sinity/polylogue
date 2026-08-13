@@ -56,7 +56,6 @@ They are not a proof ledger or end-user archive workflow.
 | Command | Role |
 | --- | --- |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
-| `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab policy bead-graph` | Run before shipping a bead-state delta. With no source option it checks live `bd` state; `--export .beads/issues.jsonl` validates the branch snapshot without importing it into the shared database. The gate reads dependency records only and does not make prose, labels, or campaign-specific edge lists machine authority. |
@@ -148,7 +147,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets. |
 | `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
-| `devtools lab testmon-proof` | Prove real testmon affected selection against a semantic production mutation. |
 
 ### Verification
 
