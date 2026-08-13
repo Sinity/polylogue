@@ -155,6 +155,18 @@ def test_empty_fresh_archive_can_use_the_genesis_continuity_head(tmp_path: Path)
     assert AuditContinuityCoordinator(tmp_path).is_available()
 
 
+def test_semantic_hash_reads_audit_without_creating_backup_sidecars(tmp_path: Path) -> None:
+    """Read-only continuity validation never changes an immutable backup image."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    for suffix in ("-wal", "-shm", "-journal"):
+        audit_path.with_name(f"audit.db{suffix}").unlink(missing_ok=True)
+
+    assert len(audit_semantic_sha256(audit_path)) == 64
+    assert not any(audit_path.with_name(f"audit.db{suffix}").exists() for suffix in ("-wal", "-shm", "-journal"))
+
+
 def test_second_mutation_refuses_while_first_command_is_pending(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 

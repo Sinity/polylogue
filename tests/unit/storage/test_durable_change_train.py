@@ -1967,6 +1967,11 @@ def test_adopted_audit_restore_republishes_before_reading_a_promoted_unreadable_
                     stopped_daemon_check=lambda: "proof:test-daemon-stopped",
                 )
 
+    with sqlite3.connect(archive_root / "source.db") as source:
+        promoted_source_tuple = source.execute(
+            "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
+        ).fetchone()
+
     # The source promotion survived while the live authority image became
     # unreadable. The retry must publish the verified backup before reading
     # its continuity head.
@@ -1985,8 +1990,77 @@ def test_adopted_audit_restore_republishes_before_reading_a_promoted_unreadable_
             source.execute(
                 "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
             ).fetchone()
+            == promoted_source_tuple
+        )
+        assert (
+            source.execute(
+                "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
+            ).fetchone()
             == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
         )
+
+
+def test_adopted_audit_restore_rejects_an_unrelated_higher_promoted_source_head(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cleared pending row cannot authorize an arbitrary higher source generation."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    pre_adoption = backup_archive(
+        output_dir=archive_root.parent / "higher-head-pre", profile="full_evidence", verify=True
+    )
+    assert pre_adoption.ok and pre_adoption.output_path is not None, pre_adoption.error
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:higher-head-adopt") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+    verified = backup_archive(output_dir=archive_root.parent / "higher-head-post", profile="full_evidence", verify=True)
+    assert verified.ok and verified.output_path is not None, verified.error
+    audit_path.write_bytes(b"corrupt before forged higher promoted head")
+    original_phase = AuditContinuityCoordinator._phase
+
+    def crash_after_source_promotion(self: AuditContinuityCoordinator, phase: str, mutation: object) -> None:
+        if getattr(mutation, "mutation_id", "").startswith("audit-restore:") and phase == "after_source_promotion":
+            raise RuntimeError("crash after restore source promotion")
+        original_phase(self, phase, mutation)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(AuditContinuityCoordinator, "_phase", crash_after_source_promotion)
+        with acquire_durable_archive_ownership(archive_root, owner_id="test:higher-head-crash") as owner:
+            with pytest.raises(RuntimeError, match="crash after restore source promotion"):
+                restore_adopted_audit_tier(
+                    audit_path,
+                    backup_manifest=Path(verified.output_path) / "manifest.json",
+                    directory_fd=owner.directory_fd,
+                    stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+                )
+
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute(
+            "UPDATE audit_continuity_control SET committed_generation = committed_generation + 7, "
+            "committed_head_sha256 = ? WHERE singleton = 1",
+            ("f" * 64,),
+        )
+        source.commit()
+    audit_path.write_bytes(b"unreadable after forged higher promoted head")
+
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:higher-head-retry") as owner:
+        with pytest.raises(MigrationError, match="rebind is not operation-owned"):
+            restore_adopted_audit_tier(
+                audit_path,
+                backup_manifest=Path(verified.output_path) / "manifest.json",
+                directory_fd=owner.directory_fd,
+                stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+            )
 
 
 @pytest.mark.parametrize("order", ((ArchiveTier.AUDIT, ArchiveTier.SOURCE), (ArchiveTier.SOURCE, ArchiveTier.AUDIT)))
@@ -2030,6 +2104,41 @@ def test_continuity_migrations_have_a_deployable_cross_tier_compatibility_window
             assert probe.runtime_probe().startswith("standby")
         else:
             assert probe.runtime_probe() == "reconciled matching source/audit continuity heads"
+
+
+@pytest.mark.parametrize(
+    ("entry_name", "entry_kind"),
+    (
+        ("audit.db", "directory"),
+        ("audit.db", "dangling_symlink"),
+        ("source.db", "symlink"),
+    ),
+)
+def test_precontinuity_binding_rejects_invalid_present_archive_entries(
+    tmp_path: Path, entry_name: str, entry_kind: str
+) -> None:
+    """Only truly absent durable entries can leave pre-continuity binding in standby."""
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "source.db"
+    entry_path = tmp_path / entry_name
+    with closing(sqlite3.connect(source_path)) as source:
+        if entry_kind == "directory":
+            entry_path.unlink()
+            entry_path.mkdir()
+        elif entry_kind == "dangling_symlink":
+            entry_path.unlink()
+            entry_path.symlink_to(tmp_path / "missing-audit.db")
+        else:
+            external = tmp_path.parent / "external-source.db"
+            external.write_bytes(entry_path.read_bytes())
+            entry_path.unlink()
+            entry_path.symlink_to(external)
+
+        with pytest.raises(MigrationError, match="invalid pre-continuity"):
+            migration_runner._bind_populated_precontinuity_audit(source, backup_manifest=None)
 
 
 def test_populated_precontinuity_audit_upgrade_binds_authenticated_existing_content(

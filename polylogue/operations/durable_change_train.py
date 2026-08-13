@@ -23,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_continuity import (
     AuditContinuityCoordinator,
     AuditContinuityError,
+    AuditMutation,
     audit_semantic_sha256,
 )
 from polylogue.storage.sqlite.durable_change_train import (
@@ -1342,6 +1343,7 @@ def restore_adopted_audit_tier(
         if payload.get("state") == "committed"
     }
     pending_restore_operation_ids: list[str] = []
+    pending_restore: dict[str, object] | None = None
     for _path, payload in restore_records:
         if payload.get("state") != "prepared":
             continue
@@ -1351,6 +1353,7 @@ def restore_adopted_audit_tier(
         if not isinstance(operation_id, str):
             raise MigrationError("adopted-audit restore has an invalid incomplete continuity record")
         pending_restore_operation_ids.append(operation_id)
+        pending_restore = payload
     if len(pending_restore_operation_ids) > 1:
         raise MigrationError("adopted-audit restore has multiple or invalid incomplete continuity records")
     has_pending_restore = bool(pending_restore_operation_ids)
@@ -1362,6 +1365,7 @@ def restore_adopted_audit_tier(
         archive_root=archive_root,
         allow_source_continuity_rebind=has_pending_restore,
         source_continuity_rebind_mutation_id=source_continuity_rebind_mutation_id,
+        source_continuity_rebind_prepared_restore=pending_restore,
     )
     artifact_sha256, artifact_size, artifact_version = _audit_restore_artifact_binding(verification_receipt)
     expected_application_id = adoption.get("audit_application_id")
@@ -1385,6 +1389,7 @@ def restore_adopted_audit_tier(
             archive_root=archive_root,
             allow_source_continuity_rebind=has_pending_restore,
             source_continuity_rebind_mutation_id=source_continuity_rebind_mutation_id,
+            source_continuity_rebind_prepared_restore=pending_restore,
         )
         if (
             current_manifest.resolve() != manifest_path.resolve()
@@ -1431,6 +1436,12 @@ def restore_adopted_audit_tier(
     else:
         generation = 1 + max(committed_generations, default=0)
         operation_id = secrets.token_hex(16)
+    existing_rebind_created_at_ms = pending_restore.get("rebind_created_at_ms") if pending_restore is not None else None
+    if existing_rebind_created_at_ms is not None and not isinstance(existing_rebind_created_at_ms, int):
+        raise MigrationError("incomplete adopted-audit restore lacks deterministic rebind timing evidence")
+    rebind_created_at_ms = (
+        existing_rebind_created_at_ms if isinstance(existing_rebind_created_at_ms, int) else int(time.time() * 1000)
+    )
     base_payload: dict[str, object] = {
         "format": _AUDIT_ADOPTION_RESTORE_FORMAT,
         "generation": generation,
@@ -1443,6 +1454,7 @@ def restore_adopted_audit_tier(
         "audit_artifact_sha256": artifact_sha256,
         "audit_artifact_size": artifact_size,
         "audit_artifact_user_version": artifact_version,
+        "rebind_created_at_ms": rebind_created_at_ms,
         "stopped_daemon_evidence_ref": stopped_evidence,
         "single_writer_evidence_ref": "proof:archive-ownership-lock",
     }
@@ -1496,21 +1508,41 @@ def restore_adopted_audit_tier(
         version, application_id, quick_check = _audit_live_metadata(path)
         if version != artifact_version or application_id != expected_application_id or quick_check != ("ok",):
             raise MigrationError("adopted-audit restore published artifact is not the verified SQLite image")
-        if has_pending_restore:
-            # The pending source-side rebind can only be inspected after this
-            # retry has restored a readable, verified audit authority image.
-            rebind_already_committed = (
-                coordinator.reconcile_pending_rebind(rebind_mutation_id)
-                if coordinator.has_pending_rebind(rebind_mutation_id)
-                else coordinator.has_committed_mutation(rebind_mutation_id)
-            )
-        if stopped_daemon_check() != stopped_evidence:
-            raise MigrationError("daemon stopped proof changed after adopted-audit restore publication")
-        revalidate_exact_backup()
         committed_path = prepared_path.with_name(prepared_path.name.replace(".prepared.json", ".committed.json"))
         prepared_restore_sha256 = prepared.get("restore_sha256")
         if not isinstance(prepared_restore_sha256, str):
             prepared_restore_sha256 = _canonical_json_sha256(prepared)
+        prepared_rebind_created_at_ms = prepared.get("rebind_created_at_ms")
+        if not isinstance(prepared_rebind_created_at_ms, int):
+            raise MigrationError("adopted-audit restore lacks deterministic rebind timing evidence")
+        rebind_mutation = AuditMutation(
+            "rebind",
+            rebind_mutation_id,
+            prepared_rebind_created_at_ms,
+            {
+                "kind": "verified_restore",
+                "prepared_restore_sha256": prepared_restore_sha256,
+                "audit_image_sha256": artifact_sha256,
+            },
+        )
+        if has_pending_restore:
+            with closing(sqlite3.connect(manifest_path.parent / "source.db")) as backup_source:
+                backup_head = backup_source.execute(
+                    "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
+                ).fetchone()
+            if backup_head is None:
+                raise MigrationError("adopted-audit restore backup lacks source continuity control")
+            try:
+                rebind_already_committed = coordinator.reconcile_restore_rebind(
+                    rebind_mutation,
+                    prior_generation=int(backup_head[0]),
+                    prior_head_sha256=str(backup_head[1]),
+                )
+            except AuditContinuityError as exc:
+                raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned") from exc
+        if stopped_daemon_check() != stopped_evidence:
+            raise MigrationError("daemon stopped proof changed after adopted-audit restore publication")
+        revalidate_exact_backup()
         committed = {
             **base_payload,
             "state": "committed",
@@ -1523,12 +1555,8 @@ def restore_adopted_audit_tier(
         if not rebind_already_committed:
             coordinator.seed_or_rebind(
                 mutation_id=rebind_mutation_id,
-                now_ms=int(time.time() * 1000),
-                evidence={
-                    "kind": "verified_restore",
-                    "restore_continuity_sha256": committed["continuity_sha256"],
-                    "audit_image_sha256": artifact_sha256,
-                },
+                now_ms=rebind_mutation.created_at_ms,
+                evidence=rebind_mutation.payload,
             )
         _write_immutable_audit_adoption_receipt(
             committed_path,

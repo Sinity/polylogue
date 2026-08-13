@@ -423,6 +423,21 @@ def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
     assert audit_path.read_bytes() == before
 
 
+def test_verified_audit_writer_rejects_a_wal_replacement_before_first_application_begin(tmp_path: Path) -> None:
+    """The production writer pins WAL/SHM before a caller can start its transaction."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    wal_path = audit_path.with_name("audit.db-wal")
+
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        with open_verified_audit_connection(audit_path) as connection:
+            replacement = tmp_path / "replacement-audit.db-wal"
+            replacement.write_bytes(wal_path.read_bytes())
+            replacement.replace(wal_path)
+            connection.execute("BEGIN IMMEDIATE")
+
+
 def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:
     """A second composition-root call recognizes the first executor's owner."""
     initialize_active_archive_root(tmp_path)

@@ -44,6 +44,9 @@ class VerifiedAuditLeaf:
         self._identity: _AuditLeafIdentity | None = None
         self._anchored_path: Path | None = None
         self._writer_lock_held = False
+        self._sidecar_fds: dict[str, int] = {}
+        self._sidecar_identities: dict[str, _AuditLeafIdentity] = {}
+        self._first_transaction_guard_armed = False
 
     def __enter__(self) -> VerifiedAuditLeaf:
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -73,8 +76,9 @@ class VerifiedAuditLeaf:
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
         self.close()
 
-    @property
-    def sqlite_uri(self) -> str:
+    def sqlite_uri(self, *, readonly: bool = False) -> str:
+        if readonly:
+            return f"{self.anchored_path.as_uri()}?mode=ro&immutable=1"
         return f"{self.anchored_path.as_uri()}?mode=rw"
 
     @property
@@ -113,7 +117,15 @@ class VerifiedAuditLeaf:
         self._identity = None
         self._anchored_path = None
         self._writer_lock_held = False
+        sidecar_fds, self._sidecar_fds = self._sidecar_fds, {}
+        self._sidecar_identities = {}
+        self._first_transaction_guard_armed = False
         errors: list[OSError] = []
+        for descriptor in sidecar_fds.values():
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                errors.append(exc)
         if leaf_fd is not None:
             if writer_lock_held:
                 try:
@@ -240,6 +252,117 @@ class VerifiedAuditLeaf:
                 os.close(descriptor)
             if actual != expected:
                 raise AuditLeafError(f"audit tier sidecar changed while opening: {self._archive_root / filename}")
+        self._assert_pinned_sidecars()
+
+    def prepare_writable_sqlite(self, connection: sqlite3.Connection) -> None:
+        """Create and pin SQLite's WAL namespace before exposing a writer.
+
+        Opening ``audit.db`` alone does not create WAL/SHM.  Force that setup
+        while the verified main-leaf lock is held, then retain descriptors for
+        both files so a later pathname replacement is detectable before an
+        application transaction is authorized.
+        """
+
+        if not self._lock_writer:
+            raise RuntimeError("audit leaf is not a writer")
+        try:
+            journal_mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            if journal_mode is None or str(journal_mode[0]).lower() != "wal":
+                raise AuditLeafError("audit tier must use WAL before writable access")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.commit()
+            self._pin_writable_sidecars()
+            self.assert_unchanged()
+            self._first_transaction_guard_armed = True
+        except sqlite3.DatabaseError as exc:
+            raise AuditLeafError("cannot establish the audit SQLite WAL namespace") from exc
+
+    def install_transaction_guard(self, connection: sqlite3.Connection) -> None:
+        """Reject a sidecar replacement before SQLite starts an application tx."""
+
+        def authorize(
+            action: int, argument1: str | None, _argument2: str | None, _database: str | None, _trigger: str | None
+        ) -> int:
+            if action == sqlite3.SQLITE_TRANSACTION and argument1 == "BEGIN" and self._first_transaction_guard_armed:
+                self._assert_pinned_sidecars(allow_absent=False)
+                self._first_transaction_guard_armed = False
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(authorize)
+
+    def _pin_writable_sidecars(self) -> None:
+        if self._directory_fd is None:
+            raise RuntimeError("audit leaf descriptor is closed")
+        for suffix in ("-wal", "-shm"):
+            filename = f"{self._filename}{suffix}"
+            try:
+                expected = self._validate(
+                    os.stat(filename, dir_fd=self._directory_fd, follow_symlinks=False),
+                    description="audit tier sidecar",
+                    filename=filename,
+                )
+                descriptor = os.open(
+                    filename,
+                    os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=self._directory_fd,
+                )
+            except FileNotFoundError as exc:
+                raise AuditLeafError(
+                    f"audit tier did not create required WAL sidecar: {self._archive_root / filename}"
+                ) from exc
+            try:
+                actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
+            except BaseException:
+                os.close(descriptor)
+                raise
+            if actual != expected:
+                os.close(descriptor)
+                raise AuditLeafError(f"audit tier sidecar changed while pinning: {self._archive_root / filename}")
+            self._sidecar_fds[filename] = descriptor
+            self._sidecar_identities[filename] = actual
+
+    def _assert_pinned_sidecars(self, *, allow_absent: bool = True) -> None:
+        if self._directory_fd is None:
+            raise RuntimeError("audit leaf descriptor is closed")
+        for filename, identity in self._sidecar_identities.items():
+            try:
+                current = self._validate(
+                    os.stat(filename, dir_fd=self._directory_fd, follow_symlinks=False),
+                    description="audit tier sidecar",
+                    filename=filename,
+                )
+                pinned = self._validate(
+                    os.fstat(self._sidecar_fds[filename]), description="audit tier sidecar", filename=filename
+                )
+            except FileNotFoundError as exc:
+                if allow_absent:
+                    continue
+                raise AuditLeafError(
+                    f"audit tier sidecar disappeared during SQLite access: {self._archive_root / filename}"
+                ) from exc
+            except OSError as exc:
+                raise AuditLeafError(f"cannot inspect audit tier sidecar: {self._archive_root / filename}") from exc
+            if current != identity or pinned != identity:
+                raise AuditLeafError(
+                    f"audit tier sidecar changed during SQLite access: {self._archive_root / filename}"
+                )
+
+    def cleanup_pinned_writable_sidecars(self) -> None:
+        """Remove only the still-verified WAL/SHM pair created for this writer."""
+
+        if self._directory_fd is None:
+            raise RuntimeError("audit leaf descriptor is closed")
+        self._assert_pinned_sidecars(allow_absent=True)
+        for filename in self._sidecar_identities:
+            try:
+                os.unlink(filename, dir_fd=self._directory_fd)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise AuditLeafError(
+                    f"cannot clean verified audit tier sidecar: {self._archive_root / filename}"
+                ) from exc
+        os.fsync(self._directory_fd)
 
     @staticmethod
     def _stat_path(path: Path) -> os.stat_result:
@@ -282,13 +405,35 @@ def open_verified_audit_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Open one writable audit connection pinned to an owned leaf descriptor."""
 
     with VerifiedAuditLeaf(path.parent, filename=path.name, lock_writer=True) as leaf:
-        connection = sqlite3.connect(leaf.sqlite_uri, uri=True)
+        connection = sqlite3.connect(leaf.sqlite_uri(), uri=True)
+        clean_sidecars = False
+        try:
+            leaf.prepare_writable_sqlite(connection)
+            leaf.install_transaction_guard(connection)
+            yield connection
+            leaf.assert_unchanged()
+            clean_sidecars = True
+        finally:
+            if clean_sidecars:
+                connection.rollback()
+                connection.execute("PRAGMA journal_mode = DELETE")
+            connection.close()
+            if clean_sidecars:
+                leaf.cleanup_pinned_writable_sidecars()
+
+
+@contextmanager
+def open_verified_audit_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open one read-only audit connection without creating SQLite sidecars."""
+
+    with VerifiedAuditLeaf(path.parent, filename=path.name) as leaf:
+        connection = sqlite3.connect(leaf.sqlite_uri(readonly=True), uri=True)
         try:
             leaf.assert_unchanged()
             yield connection
+            leaf.assert_unchanged()
         finally:
             connection.close()
-            leaf.assert_unchanged()
 
 
 def assert_verified_audit_leaf(path: Path) -> None:
@@ -298,4 +443,10 @@ def assert_verified_audit_leaf(path: Path) -> None:
         return
 
 
-__all__ = ["AuditLeafError", "VerifiedAuditLeaf", "assert_verified_audit_leaf", "open_verified_audit_connection"]
+__all__ = [
+    "AuditLeafError",
+    "VerifiedAuditLeaf",
+    "assert_verified_audit_leaf",
+    "open_verified_audit_connection",
+    "open_verified_audit_read_connection",
+]

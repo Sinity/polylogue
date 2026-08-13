@@ -950,6 +950,7 @@ def validate_full_evidence_backup_for_adopted_audit_restore(
     archive_root: Path,
     allow_source_continuity_rebind: bool = False,
     source_continuity_rebind_mutation_id: str | None = None,
+    source_continuity_rebind_prepared_restore: Mapping[str, object] | None = None,
 ) -> tuple[Path, Path]:
     """Authorize replacing adopted ``audit.db`` from one exact backup.
 
@@ -1044,6 +1045,7 @@ def validate_full_evidence_backup_for_adopted_audit_restore(
                 artifact_path,
                 live_path,
                 expected_mutation_id=source_continuity_rebind_mutation_id,
+                prepared_restore=source_continuity_rebind_prepared_restore,
             )
             continue
         wal_path = live_path.with_name(f"{live_path.name}-wal")
@@ -1115,7 +1117,20 @@ def _bind_populated_precontinuity_audit(conn: sqlite3.Connection, *, backup_mani
     # Pre-continuity binding is meaningful only after both halves exist.  A
     # present-but-invalid pair still reaches the verified coordinator below
     # and fails closed; absence is a legitimate non-applicable state here.
-    if not (archive_root / "source.db").is_file() or not (archive_root / "audit.db").is_file():
+    entries: dict[str, os.stat_result | None] = {}
+    for name in ("source.db", "audit.db"):
+        path = archive_root / name
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            entries[name] = None
+            continue
+        except OSError as exc:
+            raise MigrationError(f"cannot inspect pre-continuity {name}: {path}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MigrationError(f"invalid pre-continuity {name} entry: {path}")
+        entries[name] = metadata
+    if entries["source.db"] is None or entries["audit.db"] is None:
         return
     from polylogue.storage.sqlite.audit_continuity import (
         AuditContinuityCoordinator,
@@ -1149,7 +1164,13 @@ def _bind_populated_precontinuity_audit(conn: sqlite3.Connection, *, backup_mani
         raise MigrationError("cannot bind populated pre-continuity audit journal") from exc
 
 
-def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path, *, expected_mutation_id: str) -> None:
+def _validate_source_continuity_rebind_delta(
+    backup_path: Path,
+    live_path: Path,
+    *,
+    expected_mutation_id: str,
+    prepared_restore: Mapping[str, object] | None,
+) -> None:
     """Allow a retrying restore to differ only in the source continuity table."""
 
     try:
@@ -1163,6 +1184,42 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path,
             ).fetchone()
             if control is None:
                 raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+            backup_head = connection.execute(
+                "SELECT committed_generation, committed_head_sha256 "
+                "FROM backup_source.audit_continuity_control WHERE singleton = 1"
+            ).fetchone()
+            if backup_head is None or not isinstance(backup_head[0], int) or not isinstance(backup_head[1], str):
+                raise MigrationError("cannot compare adopted-audit restore source continuity delta")
+            expected_prepared: dict[str, object] | None = None
+            if prepared_restore is not None:
+                from polylogue.storage.sqlite.audit_continuity import AuditMutation, prepared_audit_continuity_command
+
+                operation_id = prepared_restore.get("operation_id")
+                created_at_ms = prepared_restore.get("rebind_created_at_ms")
+                restore_sha256 = prepared_restore.get("restore_sha256")
+                audit_image_sha256 = prepared_restore.get("audit_artifact_sha256")
+                if (
+                    not isinstance(operation_id, str)
+                    or not isinstance(created_at_ms, int)
+                    or created_at_ms < 0
+                    or not isinstance(restore_sha256, str)
+                    or not isinstance(audit_image_sha256, str)
+                ):
+                    raise MigrationError("adopted-audit restore rebind lacks immutable prepared evidence")
+                expected_prepared = prepared_audit_continuity_command(
+                    AuditMutation(
+                        "rebind",
+                        f"audit-restore:{operation_id}",
+                        created_at_ms,
+                        {
+                            "kind": "verified_restore",
+                            "prepared_restore_sha256": restore_sha256,
+                            "audit_image_sha256": audit_image_sha256,
+                        },
+                    ),
+                    prior_generation=int(backup_head[0]),
+                    prior_head_sha256=str(backup_head[1]),
+                )
             pending_mutation_id, pending_payload_json, pending_payload_sha256 = control
             if pending_mutation_id is not None:
                 if (
@@ -1181,9 +1238,8 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path,
                         json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
                     ).hexdigest()
                     != pending_payload_sha256
-                    or not isinstance(prepared.get("command"), dict)
-                    or prepared["command"].get("kind") != "rebind"
-                    or prepared["command"].get("mutation_id") != expected_mutation_id
+                    or expected_prepared is None
+                    or prepared != expected_prepared
                 ):
                     raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
             else:
@@ -1191,10 +1247,12 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path,
                     "SELECT committed_generation, committed_head_sha256 "
                     "FROM main.audit_continuity_control WHERE singleton = 1"
                 ).fetchone()
-                backup_head = connection.execute(
-                    "SELECT committed_generation, committed_head_sha256 "
-                    "FROM backup_source.audit_continuity_control WHERE singleton = 1"
-                ).fetchone()
+                expected_target: tuple[int, str] | None = None
+                if expected_prepared is not None:
+                    next_generation = expected_prepared["next_generation"]
+                    next_head = expected_prepared["next_head_sha256"]
+                    if isinstance(next_generation, int) and isinstance(next_head, str):
+                        expected_target = (next_generation, next_head)
                 # A crash after source promotion may leave audit.db absent or
                 # unreadable. The verified image is republished before its
                 # head is consulted by the restore coordinator, which then
@@ -1202,12 +1260,7 @@ def _validate_source_continuity_rebind_delta(backup_path: Path, live_path: Path,
                 # the source control-row delta while proving all other source
                 # rows remain byte-for-byte equivalent below.
                 if source_head != backup_head and (
-                    source_head is None
-                    or backup_head is None
-                    or not isinstance(source_head[0], int)
-                    or not isinstance(source_head[1], str)
-                    or len(str(source_head[1])) != 64
-                    or int(source_head[0]) <= int(backup_head[0])
+                    source_head is None or expected_target is None or source_head != expected_target
                 ):
                     raise MigrationError("adopted-audit restore source continuity rebind is not operation-owned")
             schema_sql = """
