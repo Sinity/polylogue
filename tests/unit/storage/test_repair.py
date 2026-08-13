@@ -23,6 +23,7 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
@@ -826,6 +827,73 @@ def test_raw_materialization_validation_failure_cannot_reuse_deferred_authority(
     assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
     backlog = repair_mod.raw_materialization_replay_backlog(config)
     assert backlog["candidate_count"] == 0
+
+
+def test_raw_materialization_replays_successful_raw_with_historical_validation_failure(tmp_path: Path) -> None:
+    """Index reset replays a successful raw while retaining its failed-validation history."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"historical-validation"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"repair retained validation"}]}}\n'
+            ),
+            source_path="historical-validation.jsonl",
+            acquired_at_ms=1,
+        )
+
+    assert repair_mod.repair_raw_materialization(_config(tmp_path)).success is True
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.finalize_raw_parse_state(
+            raw_id,
+            state=RawSessionStateUpdate(
+                parsed_at=None,
+                parse_error=None,
+                validation_status="failed",
+                validation_error="validator rejected an earlier observation",
+            ),
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path="historical-validation.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_state = conn.execute(
+            "SELECT parsed_at_ms, parse_error, validation_status, validation_error FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+        assert raw_state is not None
+        assert raw_state[0] is not None
+        assert raw_state[1:] == (None, "failed", "validator rejected an earlier observation")
+        assert conn.execute(
+            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("terminal_corrupt_input", "decode_failed")
+
+    # A reset removes only the derived projection; durable raw evidence and
+    # its historical validation diagnosis remain available to replay.
+    (tmp_path / "index.db").unlink()
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+
+    replay = repair_mod.repair_raw_materialization(_config(tmp_path))
+
+    assert replay.success is True
+    assert replay.repaired_count == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
 
 
 @pytest.mark.parametrize("artifact_kind", ["deferred_hot_jsonl_capture", "deferred_claude_code_partial_jsonl"])
