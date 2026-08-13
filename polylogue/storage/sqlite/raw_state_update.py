@@ -53,10 +53,7 @@ def compile_raw_state_update(
         warnings = state.detection_warnings
         set_clauses.append("detection_warnings_json = ?")
         params.append(json.dumps([warnings[:2000]]) if isinstance(warnings, str) and warnings else "[]")
-    if state.validation_status is not UNSET:
-        set_clauses.append("validated_at_ms = ?")
-        params.append(now_ms if isinstance(state.validation_status, ValidationStatus) else None)
-    elif state.validation_error is not UNSET:
+    if state.validation_status is not UNSET or state.validation_error is not UNSET:
         set_clauses.append("validated_at_ms = ?")
         params.append(now_ms)
     return tuple(set_clauses), tuple(params)

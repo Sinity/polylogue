@@ -862,11 +862,11 @@ def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_
     assert parsed_at_ms is not None
     assert (parse_error, validated_at_ms, validation_status, validation_error, drift_count, mode) == (
         None,
-        None,
-        None,
-        None,
-        0,
-        None,
+        1,
+        "failed",
+        "schema validation failed",
+        3,
+        "strict",
     )
     assert stale_artifact == ("terminal_unsupported_shape",)
     assert after.cursor_ahead_status == "unknown"
