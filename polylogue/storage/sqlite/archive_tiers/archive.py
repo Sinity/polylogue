@@ -4601,6 +4601,33 @@ class ArchiveStore:
             raise ValueError(f"session id prefix {token!r} is ambiguous")
         return str(rows[0]["session_id"])
 
+    def resolve_exact_session_ids(
+        self,
+        session_ids: Sequence[str],
+        *,
+        page_size: int = 256,
+    ) -> dict[str, str]:
+        """Resolve canonical session IDs in bounded set-oriented SQLite reads.
+
+        This intentionally handles only exact stored IDs. Callers that accept
+        abbreviated or provider-alias IDs retain ``resolve_session_id`` as the
+        compatibility fallback for the unresolved subset.
+        """
+        if page_size <= 0:
+            raise ValueError("page_size must be positive")
+        resolved: dict[str, str] = {}
+        for offset in range(0, len(session_ids), page_size):
+            page = session_ids[offset : offset + page_size]
+            if not page:
+                continue
+            placeholders = ", ".join("?" for _ in page)
+            rows = self._conn.execute(
+                f"SELECT session_id FROM sessions WHERE session_id IN ({placeholders})",
+                tuple(page),
+            ).fetchall()
+            resolved.update({str(row["session_id"]): str(row["session_id"]) for row in rows})
+        return resolved
+
     def search_blocks(self, query: str) -> list[str]:
         """Search indexed block text and return block ids."""
         return search_archive_blocks(self._conn, query)

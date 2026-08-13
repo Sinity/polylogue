@@ -72,6 +72,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
 )
 from polylogue.logging import get_logger
+from polylogue.operations.delete_authorization import DELETE_PREVIEW_MAX_SESSION_IDS
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
     semantic_card_placement_for_messages,
@@ -5135,6 +5136,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             raw_session_ids = body["session_ids"]
             if not isinstance(raw_session_ids, list) or not raw_session_ids:
                 raise ValueError("invalid session_ids")
+            if len(raw_session_ids) > DELETE_PREVIEW_MAX_SESSION_IDS:
+                self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "selection_exceeds_preview_work_budget")
+                return None
             if any(not isinstance(session_id, str) or not session_id for session_id in raw_session_ids):
                 raise ValueError("invalid session_ids")
             session_ids = tuple(raw_session_ids)

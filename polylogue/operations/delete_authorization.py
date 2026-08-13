@@ -32,6 +32,13 @@ from polylogue.storage.archive_identity import ArchiveIdentity
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _DELETE_CAPABILITY = "archive.delete_session"
+# A preview persists one durable target row and one exact effect identity per
+# session, then revalidates every target at consumption. Ten 1,000-target
+# audit pages keeps that single-writer transaction bounded without regressing
+# the established multi-hundred-session CLI delete workflow. Larger selections
+# must be split into independent preview/authorize/delete operations.
+DELETE_PREVIEW_MAX_SESSION_IDS = 10_000
+_DELETE_PREVIEW_RESOLUTION_PAGE_SIZE = 256
 
 
 class DeleteAuthorizationError(ValueError):
@@ -74,14 +81,25 @@ def _binding() -> OperationBinding[SessionDeleteArgs, object]:
 
 
 def _canonical_session_ids(archive: ArchiveStore, requested: tuple[str, ...]) -> tuple[str, ...]:
+    if len(requested) > DELETE_PREVIEW_MAX_SESSION_IDS:
+        raise DeleteAuthorizationError("selection_exceeds_preview_work_budget")
+    if len(set(requested)) != len(requested):
+        raise DeleteAuthorizationError("selection_is_not_canonical")
+
+    exact_matches = archive.resolve_exact_session_ids(
+        requested,
+        page_size=_DELETE_PREVIEW_RESOLUTION_PAGE_SIZE,
+    )
     canonical: list[str] = []
+    canonical_set: set[str] = set()
     for session_id in requested:
         try:
-            resolved = archive.resolve_session_id(session_id)
+            resolved = exact_matches.get(session_id) or archive.resolve_session_id(session_id)
         except KeyError as exc:
             raise DeleteAuthorizationError("selection_is_stale") from exc
-        if resolved in canonical:
+        if resolved in canonical_set:
             raise DeleteAuthorizationError("selection_is_not_canonical")
+        canonical_set.add(resolved)
         canonical.append(resolved)
     return tuple(canonical)
 

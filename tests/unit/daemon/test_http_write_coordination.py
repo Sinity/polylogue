@@ -299,6 +299,84 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
+def test_cli_delete_real_daemon_route_refuses_selection_beyond_preview_work_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The durable preview route must bound target work independently of request bytes.
+
+    This sends 10,001 ordinary IDs through the real UDS client and daemon
+    handler. Before the repair, the route entered the sole-writer gate and
+    attempted resolution until it encountered a stale ID, because no target
+    work budget existed. The repaired route rejects the request before any
+    archive lookup or durable preview write.
+    """
+    from polylogue.daemon_client import DaemonResponseError
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    _seed_delete_authority_archive(archive_root, 0)
+    selection = [f"codex-session:over-budget-{index}" for index in range(10_001)]
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        with pytest.raises(DaemonResponseError) as error:
+            client.request_mutation_json("POST", "/api/cli/delete/prepare", {"session_ids": selection})  # type: ignore[attr-defined]
+
+    assert error.value.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    assert error.value.code == "selection_exceeds_preview_work_budget"
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM operation_previews").fetchone() == (0,)
+
+
+def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path: Path) -> None:
+    """A real archive selection must not spend one SQLite query per canonical ID.
+
+    The production preparation helper is given 513 persisted sessions and its
+    real SQLite connection records resolution queries. The repair batches
+    exact canonical IDs in fixed-size pages, so this requires three or fewer
+    selection queries. The prior per-ID resolver produced 513 queries, and
+    the former list membership duplicate check made the canonicality pass
+    quadratic as the preview grew.
+    """
+    from polylogue.operations.delete_authorization import _canonical_session_ids
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 513)
+
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        statements: list[str] = []
+        archive._conn.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+        assert _canonical_session_ids(archive, session_ids) == session_ids
+
+    session_selects = [statement for statement in statements if "FROM sessions" in statement]
+    assert len(session_selects) <= 3
+
+
+def test_cli_delete_preparation_rejects_a_late_duplicate_before_archive_resolution(tmp_path: Path) -> None:
+    """Set canonicality rejects a large duplicate selection without quadratic work.
+
+    This invokes the production preparation helper with a real temporary
+    SQLite archive. A duplicate after 513 distinct IDs must fail before any
+    resolver query. The pre-repair list membership loop resolved every prior
+    target and compared each canonical ID against a growing list.
+    """
+    from polylogue.operations.delete_authorization import DeleteAuthorizationError, _canonical_session_ids
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 513)
+
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        statements: list[str] = []
+        archive._conn.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+        with pytest.raises(DeleteAuthorizationError, match="selection_is_not_canonical"):
+            _canonical_session_ids(archive, session_ids + (session_ids[0],))
+
+    assert not [statement for statement in statements if "FROM sessions" in statement]
+
+
 def test_cli_delete_interruption_consumes_authorization_without_deleting(tmp_path: Path) -> None:
     """An interrupted apply leaves a consumed unknown audit attempt, never a retryable token."""
 
