@@ -34,7 +34,7 @@ those terms instead of introducing a parallel scoring scheme:
 | --- | --- | --- |
 | Category, outcome, differentiator | **claim** recognition | Did the reader state the same claim the copy makes, unprompted? |
 | Boundary/non-claim | **non-claims** | Did the reader notice the one thing the copy explicitly says it does *not* establish? |
-| False beliefs | **falsifier** | Any nonzero false-belief count falsifies the arm regardless of its other scores — this is the harness's explicit falsifier, matching the demo-packet contract's requirement that every proof declare one. |
+| False beliefs | **falsifier** | Any nonzero false-belief count falsifies the arm regardless of its other scores, so a superficially clearer arm cannot advance by teaching readers something false. |
 | Independent scorer, not the participant | **oracle** | The score comes from a scorer applying the rubric, not the participant's self-report of how well they think they did. |
 | A comparative baseline (>=2 arms, one of them `current`) | **comparative baseline** | A single-arm "reads fine" result is not comparative; the harness always configures at least a current-vs-candidate pair. |
 
