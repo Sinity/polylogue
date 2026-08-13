@@ -8,29 +8,44 @@ selection and event streams, resource samples, and postmortem classification.
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import functools
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import stat
 import subprocess
+import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TextIO, TypeVar
+
+import watchfiles
 
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
+_XDG_STATE_HOME = os.environ.get("XDG_STATE_HOME", "").strip()
+DEVTOOLS_STATE_DIR = (
+    (Path(_XDG_STATE_HOME) if _XDG_STATE_HOME else Path.home() / ".local" / "state") / "polylogue" / "devtools"
+)
+VERIFY_HISTORY_PATH = DEVTOOLS_STATE_DIR / "verify-history.jsonl"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
+VERIFICATION_INVOCATION_ID_ENV = "POLYLOGUE_VERIFICATION_INVOCATION_ID"
+VERIFICATION_RECEIPT_PATH_ENV = "POLYLOGUE_VERIFICATION_RECEIPT_PATH"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
+CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
+PYTEST_CANONICAL_REPORT_NAME = "pytest-report.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 DEFAULT_BASETEMP_SIZE_SAMPLE_INTERVAL_S = 15.0
 DEFAULT_TMPFS_SIZE_SAMPLE_INTERVAL_S = 2.0
@@ -45,6 +60,7 @@ MAX_ADAPTIVE_PYTEST_WORKERS = 12
 PYTEST_BASETEMP_MIN_FREE_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB"
 DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB = 1024
 PYTEST_BASETEMP_REQUIRED_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_REQUIRED_MB"
+PYTEST_EXPLICIT_BASETEMP_ENV = "POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"
 PYTEST_MEMORY_ENVELOPE_WORKERS = 4
 PYTEST_MEMORY_ENVELOPE_PSS_KB = 4_353_168
 PYTEST_MEMORY_ENVELOPE_TMPFS_KB = 1_472_636
@@ -66,6 +82,560 @@ PYTEST_CGROUP_OVERHEAD_FLOOR_KB = max(
 
 class PytestResourceError(RuntimeError):
     """Raised when the host cannot safely start a managed pytest run."""
+
+
+def _trailing_history_record(descriptor: int, *, end: int) -> tuple[int, bytes]:
+    """Read only the final unterminated JSONL record and its start offset."""
+    cursor = end
+    suffix: list[bytes] = []
+    while cursor > 0:
+        start = max(0, cursor - 64 * 1024)
+        os.lseek(descriptor, start, os.SEEK_SET)
+        chunk = os.read(descriptor, cursor - start)
+        delimiter = chunk.rfind(b"\n")
+        if delimiter >= 0:
+            return start + delimiter + 1, chunk[delimiter + 1 :] + b"".join(reversed(suffix))
+        suffix.append(chunk)
+        cursor = start
+    return 0, b"".join(reversed(suffix))
+
+
+def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
+    """Append one complete invocation to the cross-worktree run history.
+
+    ``O_APPEND`` plus an advisory lock keeps concurrent worktrees from
+    overwriting or interleaving their records, including short writes.
+    Detailed artifacts remain checkout-local; this history is the compact
+    durable index used to find and compare them.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        end = os.lseek(descriptor, 0, os.SEEK_END)
+        if end:
+            os.lseek(descriptor, end - 1, os.SEEK_SET)
+            if os.read(descriptor, 1) != b"\n":
+                trailing_start, trailing = _trailing_history_record(descriptor, end=end)
+                try:
+                    json.loads(trailing)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    os.ftruncate(descriptor, trailing_start)
+                else:
+                    # A complete JSON record can lose only its framing newline
+                    # during an interrupted append. Preserve it before adding
+                    # the next durable record.
+                    os.lseek(descriptor, 0, os.SEEK_END)
+                    os.write(descriptor, b"\n")
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("verification history append made no progress")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+
+
+def pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
+    """Return the last xdist worker request from a final pytest command."""
+    request: str | None = None
+    for index, argument in enumerate(cmd):
+        if argument in {"-n", "--numprocesses"}:
+            if index + 1 < len(cmd):
+                request = cmd[index + 1]
+        elif argument.startswith("--numprocesses="):
+            request = argument.removeprefix("--numprocesses=")
+        elif argument.startswith("-n") and len(argument) > 2:
+            request = argument[2:].removeprefix("=")
+    return request
+
+
+def _read_only_git_env() -> dict[str, str]:
+    """Prevent observational Git commands from refreshing checkout authority."""
+    return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+
+def worktree_fingerprint(root: Path | None = None) -> str:
+    """Fingerprint tracked changes plus exact non-ignored untracked content."""
+    checkout_root = (root or Path.cwd()).resolve()
+    digest = hashlib.sha256()
+    try:
+        tracked_flags = subprocess.run(
+            ["git", "ls-files", "-v", "-z"],
+            capture_output=True,
+            timeout=30,
+            cwd=checkout_root,
+            env=_read_only_git_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if tracked_flags.returncode != 0 or tracked_flags.stderr.strip():
+        return "unavailable"
+    for record in tracked_flags.stdout.split(b"\0"):
+        if not record:
+            continue
+        tag = record[:1]
+        if tag.islower() or tag == b"S":
+            # assume-unchanged and skip-worktree can hide worktree bytes from
+            # both status and diff, so Git cannot authorize exact evidence.
+            return "unavailable"
+    for command in (
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        ["git", "diff", "--binary", "HEAD", "--"],
+    ):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=30,
+                cwd=checkout_root,
+                env=_read_only_git_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return "unavailable"
+        if result.returncode != 0 or result.stderr.strip():
+            return "unavailable"
+        digest.update(result.stdout)
+        digest.update(b"\0")
+    try:
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=30,
+            cwd=checkout_root,
+            env=_read_only_git_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    if untracked.returncode != 0 or untracked.stderr.strip():
+        return "unavailable"
+    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
+        try:
+            path_text = os.fsdecode(raw_path)
+            path = checkout_root / path_text
+            mode = path.lstat().st_mode
+            digest.update(raw_path)
+            digest.update(b"\0")
+            if stat.S_ISLNK(mode):
+                digest.update(b"symlink\0")
+                digest.update(os.fsencode(os.readlink(path)))
+            elif stat.S_ISREG(mode):
+                digest.update(b"file\0")
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                digest.update(f"mode:{stat.S_IFMT(mode):o}".encode())
+            digest.update(b"\0")
+        except OSError:
+            return "unavailable"
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class CheckoutMutationObservation:
+    """Whether an exact-head verification interval observed a checkout write."""
+
+    changed: bool
+    unavailable: bool
+    observed_path: str | None = None
+
+
+class CheckoutMutationMonitor:
+    """Fail closed when watchfiles cannot observe the checkout interval.
+
+    Endpoint hashes establish the state of the checkout, while this monitor
+    records writes that occur and are later reverted before the final sample.
+    Watches exclude verifier-owned disposable directories so receipts do not
+    invalidate themselves.
+    """
+
+    _IGNORED_TOP_LEVEL = frozenset(
+        {
+            ".cache",
+            ".git",
+            ".hypothesis",
+            ".local",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+        }
+    )
+    _WATCH_START_TIMEOUT_S = 1.0
+    _WATCH_SETTLE_S = 0.2
+    _WATCH_RUST_TIMEOUT_MS = 25
+    _POLLING_DISABLED_VALUES = frozenset({"false", "disable", "disabled"})
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self._changed = False
+        self._observed_path: str | None = None
+        self._unavailable = False
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()
+        self._tracked_paths: frozenset[Path] = frozenset()
+        self._tracked_directories: frozenset[Path] = frozenset()
+        self._ignored_roots: frozenset[Path] = frozenset()
+        self._git_index_path: Path | None = None
+        self._git_authority_paths: dict[Path, str] = {}
+        self._directory_topology_fingerprint: frozenset[str] | None = None
+
+    def start(self) -> None:
+        """Start and prove the portable interval watcher before verification."""
+        if self._polling_backend_requested():
+            with self._state_lock:
+                self._unavailable = True
+            self._ready.set()
+            return
+        self._thread = threading.Thread(target=self._watch, name="checkout-mutation-monitor", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout=self._WATCH_START_TIMEOUT_S):
+            with self._state_lock:
+                self._unavailable = True
+            self._stop.set()
+            self._thread.join(timeout=self._WATCH_START_TIMEOUT_S)
+
+    def finish(self) -> CheckoutMutationObservation:
+        """Stop monitoring only after the caller took its final fingerprint."""
+        # The final fingerprint is already sampled. Give watchfiles one short
+        # backend turn to surface any event emitted before that sample, then
+        # stop the generator cleanly through its portable stop event.
+        self._stop.wait(self._WATCH_SETTLE_S)
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+            if self._thread.is_alive():
+                with self._state_lock:
+                    self._unavailable = True
+        with self._state_lock:
+            return CheckoutMutationObservation(
+                changed=self._changed,
+                unavailable=self._unavailable,
+                observed_path=self._observed_path,
+            )
+
+    def _watch(self) -> None:
+        try:
+            watched_directories = self._watched_directories()
+            if self._unavailable:
+                return
+            for changes in watchfiles.watch(
+                *watched_directories,
+                watch_filter=None,
+                debounce=0,
+                step=1,
+                stop_event=self._stop,
+                rust_timeout=self._WATCH_RUST_TIMEOUT_MS,
+                yield_on_timeout=True,
+                raise_interrupt=False,
+                force_polling=False,
+                recursive=False,
+            ):
+                # An empty timeout batch proves the backend initialized before
+                # a verification command starts, closing the startup race.
+                if not self._ready.is_set() and not self._directory_topology_is_stable(watched_directories):
+                    with self._state_lock:
+                        self._unavailable = True
+                    return
+                self._ready.set()
+                for _change, raw_path in changes:
+                    self._record_change(Path(raw_path))
+                    if self._changed or self._unavailable:
+                        return
+            if not self._stop.is_set():
+                with self._state_lock:
+                    self._unavailable = True
+        except Exception:
+            with self._state_lock:
+                self._unavailable = True
+        finally:
+            self._ready.set()
+
+    @classmethod
+    def _polling_backend_requested(cls) -> bool:
+        """Reject watchfiles modes that cannot witness every interval mutation."""
+        forced = os.getenv("WATCHFILES_FORCE_POLLING")
+        if forced:
+            return forced.lower() not in cls._POLLING_DISABLED_VALUES
+        uname = platform.uname()
+        return uname.system.lower() == "linux" and "microsoft-standard" in uname.release.lower()
+
+    def _watched_directories(self) -> list[Path]:
+        """Watch existing source directories shallowly and omit disposable trees."""
+        self._tracked_paths = self._git_tracked_paths()
+        self._tracked_directories = frozenset(
+            parent for tracked_path in self._tracked_paths for parent in tracked_path.parents if parent != Path(".")
+        )
+        self._ignored_roots = self._ignored_directory_roots()
+        directories: list[Path] = []
+
+        def walk_error(_error: OSError) -> None:
+            with self._state_lock:
+                self._unavailable = True
+
+        for current, child_directories, _files in os.walk(self.root, onerror=walk_error):
+            current_path = Path(current)
+            relative_current = current_path.relative_to(self.root)
+            retained_children: list[str] = []
+            for child in child_directories:
+                relative_child = relative_current / child
+                disposable = child in self._IGNORED_TOP_LEVEL or self._is_within_ignored_root(
+                    relative_child,
+                    self._ignored_roots,
+                )
+                if disposable and relative_child not in self._tracked_directories:
+                    continue
+                retained_children.append(child)
+            child_directories[:] = retained_children
+            directories.append(current_path)
+        self._git_index_path = self._resolve_git_index_path()
+        if self._git_index_path is not None:
+            self._git_authority_paths[self._git_index_path] = ".git/index"
+        self._git_authority_paths.update(self._resolve_git_head_paths())
+        for authority_path in self._git_authority_paths:
+            watched_parent = authority_path.parent
+            while not watched_parent.exists() and watched_parent != watched_parent.parent:
+                watched_parent = watched_parent.parent
+            if watched_parent not in directories:
+                directories.append(watched_parent)
+        self._directory_topology_fingerprint = self._directory_topology(directories)
+        return directories
+
+    def _directory_topology(self, directories: Sequence[Path]) -> frozenset[str]:
+        """Fingerprint source directory membership without trusting pre-watch state."""
+        return frozenset(
+            relative.as_posix()
+            for directory in directories
+            if directory.exists()
+            and (relative := directory.resolve(strict=False)).is_relative_to(self.root)
+            and (relative := relative.relative_to(self.root)) is not None
+        )
+
+    def _directory_topology_is_stable(self, initial_directories: Sequence[Path]) -> bool:
+        """Reject source directories that changed while the watcher initialized."""
+        initial = self._directory_topology_fingerprint or self._directory_topology(initial_directories)
+        current = self._directory_topology(self._watched_directories())
+        return not self._unavailable and current == initial
+
+    def _git_tracked_paths(self) -> frozenset[Path]:
+        """Snapshot index membership so tracked paths never inherit ignore rules."""
+        result = self._git_command(["ls-files", "-z"])
+        if result is None:
+            return frozenset()
+        return frozenset(Path(os.fsdecode(raw)) for raw in result.stdout.split(b"\0") if raw)
+
+    def _resolve_git_index_path(self) -> Path | None:
+        """Resolve the worktree-specific index whose writes can change path authority."""
+        result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", "index"])
+        if result is None:
+            return None
+        raw_path = os.fsdecode(result.stdout).strip()
+        if not raw_path:
+            with self._state_lock:
+                self._unavailable = True
+            return None
+        return Path(raw_path)
+
+    def _resolve_git_head_paths(self) -> dict[Path, str]:
+        """Resolve the worktree HEAD file and its current symbolic ref."""
+        paths: dict[Path, str] = {}
+        head_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", "HEAD"])
+        symbolic_result = self._git_command(
+            ["symbolic-ref", "--quiet", "HEAD"],
+            allowed_returncodes=frozenset({0, 1}),
+        )
+        if head_result is None or symbolic_result is None:
+            return paths
+        raw_head_path = os.fsdecode(head_result.stdout).strip()
+        symbolic_ref = os.fsdecode(symbolic_result.stdout).strip()
+        if not raw_head_path or (symbolic_result.returncode == 0 and not symbolic_ref):
+            with self._state_lock:
+                self._unavailable = True
+            return paths
+        paths[Path(raw_head_path)] = ".git/HEAD"
+        packed_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", "packed-refs"])
+        if packed_result is None:
+            return paths
+        raw_packed_path = os.fsdecode(packed_result.stdout).strip()
+        if not raw_packed_path:
+            with self._state_lock:
+                self._unavailable = True
+            return paths
+        paths[Path(raw_packed_path)] = ".git/packed-refs"
+        if symbolic_result.returncode == 0:
+            ref_result = self._git_command(["rev-parse", "--path-format=absolute", "--git-path", symbolic_ref])
+            if ref_result is None:
+                return paths
+            raw_ref_path = os.fsdecode(ref_result.stdout).strip()
+            if not raw_ref_path:
+                with self._state_lock:
+                    self._unavailable = True
+                return paths
+            paths[Path(raw_ref_path)] = f".git/{symbolic_ref}"
+        return paths
+
+    def _git_command(
+        self,
+        args: list[str],
+        *,
+        allowed_returncodes: frozenset[int] = frozenset({0}),
+    ) -> subprocess.CompletedProcess[bytes] | None:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=self.root,
+                capture_output=True,
+                timeout=2,
+                check=False,
+                env=_read_only_git_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            with self._state_lock:
+                self._unavailable = True
+            return None
+        if result.returncode not in allowed_returncodes or result.stderr.strip():
+            with self._state_lock:
+                self._unavailable = True
+            return None
+        return result
+
+    def _ignored_directory_roots(self) -> frozenset[Path]:
+        """Return existing ignored directory roots without traversing their contents."""
+        result = self._git_command(["status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=normal"])
+        if result is None:
+            return frozenset()
+        ignored: set[Path] = set()
+        for record in result.stdout.split(b"\0"):
+            if not record.startswith(b"!! "):
+                continue
+            relative = Path(os.fsdecode(record[3:]).rstrip("/"))
+            if relative.parts and (self.root / relative).is_dir():
+                ignored.add(relative)
+        return frozenset(ignored)
+
+    @staticmethod
+    def _is_within_ignored_root(relative: Path, ignored_roots: frozenset[Path]) -> bool:
+        return any(relative == root or relative.is_relative_to(root) for root in ignored_roots)
+
+    def _record_change(self, candidate: Path) -> None:
+        if not candidate.is_absolute():
+            candidate = self.root / candidate
+        for authority_path, label in self._git_authority_paths.items():
+            if candidate != authority_path and authority_path.is_relative_to(candidate):
+                with self._state_lock:
+                    self._changed = True
+                    self._observed_path = label
+                return
+            if candidate.parent != authority_path.parent:
+                continue
+            if candidate.name == f"{authority_path.name}.lock":
+                # An uncommitted lock is not yet checkout authority. A
+                # completed transaction is witnessed when the lock replaces
+                # its authority file.
+                return
+            if candidate.name == authority_path.name:
+                with self._state_lock:
+                    self._changed = True
+                    self._observed_path = label
+                return
+        try:
+            relative = candidate.relative_to(self.root)
+        except ValueError:
+            return
+        if self._path_is_ignored(relative):
+            return
+        with self._state_lock:
+            self._changed = True
+            self._observed_path = relative.as_posix()
+
+    def _path_is_ignored(self, relative: Path) -> bool:
+        if relative in self._tracked_paths:
+            return False
+        if any(part in self._IGNORED_TOP_LEVEL for part in relative.parts):
+            return True
+        if self._is_within_ignored_root(relative, self._ignored_roots):
+            return True
+        try:
+            result = subprocess.run(
+                ["git", "check-ignore", "--quiet", "--no-index", "--", relative.as_posix()],
+                cwd=self.root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+                env=_read_only_git_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            with self._state_lock:
+                self._unavailable = True
+            return True
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        with self._state_lock:
+            self._unavailable = True
+        return True
+
+
+_MonitorParams = ParamSpec("_MonitorParams")
+_MonitorResult = TypeVar("_MonitorResult")
+_MONITOR_STATE = threading.local()
+
+
+def _checkout_monitor_stack() -> list[CheckoutMutationMonitor]:
+    stack = getattr(_MONITOR_STATE, "stack", None)
+    if stack is None:
+        stack = []
+        _MONITOR_STATE.stack = stack
+    return stack
+
+
+def start_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> None:
+    """Start a runner-owned monitor and register it for exceptional cleanup."""
+    stack = _checkout_monitor_stack()
+    stack.append(monitor)
+    try:
+        monitor.start()
+    except BaseException:
+        with contextlib.suppress(Exception):
+            finish_checkout_mutation_monitor(monitor)
+        raise
+
+
+def finish_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> CheckoutMutationObservation:
+    """Finish one monitor and retire its runner cleanup obligation."""
+    stack = _checkout_monitor_stack()
+    try:
+        return monitor.finish()
+    finally:
+        for index in range(len(stack) - 1, -1, -1):
+            if stack[index] is monitor:
+                del stack[index]
+                break
+
+
+def finalize_checkout_mutation_monitors(
+    function: Callable[_MonitorParams, _MonitorResult],
+) -> Callable[_MonitorParams, _MonitorResult]:
+    """Guarantee that monitors started by a runner finish on every exit."""
+
+    @functools.wraps(function)
+    def wrapped(*args: _MonitorParams.args, **kwargs: _MonitorParams.kwargs) -> _MonitorResult:
+        stack = _checkout_monitor_stack()
+        baseline_depth = len(stack)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            while len(stack) > baseline_depth:
+                finish_checkout_mutation_monitor(stack[-1])
+
+    return wrapped
 
 
 @dataclass(frozen=True)
@@ -142,9 +712,230 @@ def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-").lower() or "step"
 
 
-def git_dirty() -> bool:
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 4)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    fraction = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 4)
+
+
+def _distribution(values: list[float]) -> dict[str, float | int | None]:
+    return {
+        "count": len(values),
+        "p50_s": _percentile(values, 0.50),
+        "p95_s": _percentile(values, 0.95),
+        "p99_s": _percentile(values, 0.99),
+        "max_s": round(max(values), 4) if values else None,
+        "sum_s": round(sum(values), 4) if values else 0.0,
+    }
+
+
+def aggregate_pytest_statistics(
+    step_dir: Path,
+    *,
+    command: list[Any] | tuple[Any, ...] = (),
+    step_result: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Reduce the append-only pytest evidence into one durable step summary.
+
+    The raw event stream remains authoritative for forensics.  This summary is
+    deliberately derived and replaceable: it makes repeated performance work
+    cheap without introducing a second source of truth for test outcomes.
+    """
+    events: list[dict[str, Any]] = []
+    events_path = step_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    events.append(row)
+
+    phases: dict[str, list[float]] = {"setup": [], "call": [], "teardown": []}
+    outcomes: dict[str, int] = {}
+    phase_outcomes: dict[str, dict[str, int]] = {"setup": {}, "call": {}, "teardown": {}}
+    nodes: set[str] = set()
+    workers: set[str] = set()
+    reports: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in events:
+        worker = row.get("worker_id")
+        if isinstance(worker, str):
+            workers.add(worker)
+        nodeid = row.get("nodeid")
+        if isinstance(nodeid, str) and nodeid:
+            nodes.add(nodeid)
+        event = row.get("event")
+        if event != "test_report" or not isinstance(nodeid, str) or not nodeid:
+            continue
+        when = row.get("when")
+        if when not in phases:
+            continue
+        key = (nodeid, when)
+        prior = reports.get(key)
+        # xdist sends the worker's original report to the controller. Prefer
+        # the worker event when both arrive, while accepting old/controller-only
+        # artifacts produced before that forwarding copy was suppressed.
+        if prior is None or (prior.get("worker_id") == "controller" and row.get("worker_id") != "controller"):
+            reports[key] = row
+
+    canonical_outcomes: dict[str, str] = {}
+    canonical_report_present = False
+    canonical_report_path = step_dir / PYTEST_CANONICAL_REPORT_NAME
+    if canonical_report_path.exists():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            canonical_report = json.loads(canonical_report_path.read_text(encoding="utf-8"))
+            canonical_tests = canonical_report.get("tests") if isinstance(canonical_report, dict) else None
+            if isinstance(canonical_tests, list):
+                canonical_report_present = True
+                for test in canonical_tests:
+                    if not isinstance(test, dict):
+                        continue
+                    nodeid = test.get("nodeid")
+                    outcome = test.get("outcome")
+                    if not isinstance(nodeid, str) or not nodeid or not isinstance(outcome, str):
+                        continue
+                    nodes.add(nodeid)
+                    canonical_outcomes[nodeid] = outcome
+                    for when in phases:
+                        phase = test.get(when)
+                        if not isinstance(phase, dict) or (nodeid, when) in reports:
+                            continue
+                        phase_outcome = phase.get("outcome")
+                        duration = phase.get("duration")
+                        reports[(nodeid, when)] = {
+                            "nodeid": nodeid,
+                            "when": when,
+                            "outcome": phase_outcome,
+                            "duration_s": duration,
+                            "worker_id": "canonical-report",
+                        }
+
+    reports_by_node: dict[str, dict[str, dict[str, Any]]] = {}
+    for (nodeid, when), row in reports.items():
+        reports_by_node.setdefault(nodeid, {})[when] = row
+        duration = row.get("duration_s")
+        if isinstance(duration, (int, float)):
+            phases[when].append(float(duration))
+        outcome = row.get("outcome")
+        if isinstance(outcome, str):
+            bucket = phase_outcomes[when]
+            bucket[outcome] = bucket.get(outcome, 0) + 1
+
+    for nodeid in nodes:
+        node_reports = reports_by_node.get(nodeid, {})
+        setup = node_reports.get("setup", {}).get("outcome")
+        call = node_reports.get("call", {}).get("outcome")
+        teardown = node_reports.get("teardown", {}).get("outcome")
+        canonical_outcome = canonical_outcomes.get(nodeid)
+        if canonical_outcome is not None:
+            terminal = canonical_outcome
+        elif setup == "failed" or teardown == "failed":
+            terminal = "error"
+        elif isinstance(call, str):
+            terminal = call
+        elif setup in {"skipped", "xfailed", "xpassed"}:
+            terminal = str(setup)
+        elif teardown in {"skipped", "xfailed", "xpassed"}:
+            terminal = str(teardown)
+        else:
+            # A test may have emitted its start event just before an interrupt
+            # or forced containment cleanup. Keep that missing terminal phase
+            # visible so outcome totals still account for every started node.
+            terminal = "interrupted"
+        outcomes[terminal] = outcomes.get(terminal, 0) + 1
+
+    resources: list[dict[str, Any]] = []
+    resources_path = step_dir / "resources.jsonl"
+    if resources_path.exists():
+        for line in resources_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    resources.append(row)
+    explicit_worker_count: int | None = None
+    worker_request = pytest_command_worker_request([str(value) for value in command])
+    if worker_request is not None:
+        with contextlib.suppress(ValueError):
+            explicit_worker_count = int(worker_request)
+    basetemp_sizes = [
+        int(size_value) * 1024 for row in resources if isinstance((size_value := row.get("basetemp_size_kb")), int)
+    ]
+    basetemp_allocated = [
+        int(allocated_value) * 1024
+        for row in resources
+        if isinstance((allocated_value := row.get("basetemp_allocated_kb")), int)
+    ]
+    containment: dict[str, Any] = {}
+    containment_path = step_dir / "containment.json"
+    if containment_path.exists():
+        with contextlib.suppress(json.JSONDecodeError):
+            raw = json.loads(containment_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                containment = raw
+
+    parent_cleanup = (step_result or {}).get("basetemp_cleanup")
+    return {
+        "schema_version": 1,
+        "canonical_report_status": "present" if canonical_report_present else "missing",
+        "command": [str(value) for value in command],
+        "node_count": len(nodes),
+        "outcomes": outcomes,
+        "phase_outcomes": phase_outcomes,
+        "phases": {name: _distribution(values) for name, values in phases.items()},
+        "xdist": {
+            "worker_ids": sorted(workers),
+            "worker_count": max(
+                0,
+                len(workers) - (1 if "controller" in workers else 0),
+                explicit_worker_count or 0,
+            ),
+        },
+        "storage": {
+            "basetemp_logical_bytes_max": max(basetemp_sizes, default=None),
+            "basetemp_allocated_bytes_max": max(basetemp_allocated, default=None),
+            "basetemp_root": next(
+                (row.get("basetemp") for row in reversed(resources) if isinstance(row.get("basetemp"), str)),
+                None,
+            ),
+        },
+        "resources": {
+            "peak_tree_rss_kb": max(
+                (int(row["tree_rss_kb"]) for row in resources if isinstance(row.get("tree_rss_kb"), int)),
+                default=None,
+            ),
+            "peak_tree_pss_kb": max(
+                (int(row["tree_pss_kb"]) for row in resources if isinstance(row.get("tree_pss_kb"), int)),
+                default=None,
+            ),
+            "peak_cgroup_memory_bytes": max(
+                (
+                    int(row["cgroup_memory_peak_bytes"])
+                    for row in resources
+                    if isinstance(row.get("cgroup_memory_peak_bytes"), int)
+                ),
+                default=None,
+            ),
+        },
+        "cleanup": {
+            "complete": True
+            if isinstance(parent_cleanup, str) and parent_cleanup
+            else containment.get("tmpfs_cleanup_complete"),
+            "termination_reason": containment.get("termination_reason"),
+            "escalated_to_sigkill": containment.get("escalated_to_sigkill"),
+            "exit_code": containment.get("exit_code", (step_result or {}).get("exit")),
+        },
+    }
+
+
+def git_dirty(cwd: Path | None = None) -> bool:
     try:
-        result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5, cwd=cwd)
     except (OSError, subprocess.TimeoutExpired):
         return True
     return bool(result.stdout.strip())
@@ -188,6 +979,7 @@ class PytestStepArtifacts:
     resources_path: Path
     postmortem_path: Path
     containment_path: Path
+    statistics_path: Path
 
 
 class VerifyRun:
@@ -202,6 +994,7 @@ class VerifyRun:
         root: Path | None = None,
         polylogue_import_path: str | None = None,
         environment_fingerprint: Mapping[str, Any] | None = None,
+        worktree_fingerprint: str | None = None,
     ) -> None:
         self.root = root or Path.cwd()
         self.run_id = make_run_id(tier=tier)
@@ -211,7 +1004,7 @@ class VerifyRun:
             "tier": tier,
             "argv": list(argv),
             "git_head": git_head,
-            "git_dirty": git_dirty(),
+            "git_dirty": git_dirty(self.root),
             # Receipt for the worktree-import hazard (devtools/checkout_guard.py):
             # the resolved `polylogue` package path this run actually used, so a
             # wrong-tree run is visible after the fact from the run artifact
@@ -219,6 +1012,7 @@ class VerifyRun:
             # caller and this fired for a different process boundary.
             "polylogue_import_path": polylogue_import_path,
             "environment_fingerprint": dict(environment_fingerprint) if environment_fingerprint is not None else None,
+            "worktree_fingerprint": worktree_fingerprint,
             # A VerifyRun can be constructed by maintenance/test helpers that
             # do not have a checkout fingerprint. Keep its current-run marker
             # attributable to this checkout either way.
@@ -229,6 +1023,9 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
+        invocation_id = os.environ.get(VERIFICATION_INVOCATION_ID_ENV)
+        if invocation_id:
+            self._payload["invocation_id"] = invocation_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 
@@ -238,6 +1035,9 @@ class VerifyRun:
 
     def write(self) -> None:
         _write_json(self.run_dir / "run.json", self._payload)
+        invocation_receipt = os.environ.get(VERIFICATION_RECEIPT_PATH_ENV)
+        if invocation_receipt:
+            _write_json(Path(invocation_receipt), self._payload)
         current_path = self.root / CURRENT_RUN_PATH
         if not _current_owner_is_other_live_run(current_path):
             _write_json(current_path, self._payload)
@@ -260,6 +1060,7 @@ class VerifyRun:
             resources_path=step_dir / "resources.jsonl",
             postmortem_path=step_dir / "postmortem.json",
             containment_path=step_dir / "containment.json",
+            statistics_path=step_dir / "statistics.json",
         )
         step_dir.mkdir(parents=True, exist_ok=True)
         self._payload["steps"].append(
@@ -275,14 +1076,59 @@ class VerifyRun:
         self.write()
         return artifacts
 
-    def finish_step(self, *, step_id: str, result: dict[str, Any]) -> None:
+    def finish_step(self, *, step_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
+        """Finalize one step and return its durable compact representation."""
         for step in self._payload["steps"]:
             if step.get("step_id") == step_id:
                 step.update(result)
                 step["finished_at"] = utc_now()
                 step["status"] = "success" if result.get("exit") == 0 else "failed"
+                step_dir = self.run_dir / "steps" / step_id
+                if not str(step.get("name", "")).startswith("pytest"):
+                    break
+                # An interrupted runner never returns through the normal
+                # post-subprocess merge. Fold shards here, before every
+                # aggregation path, so completed worker evidence survives.
+                with contextlib.suppress(OSError):
+                    merge_worker_events(step_dir / "events", step_dir / "events.jsonl")
+                statistics_path = step_dir / "statistics.json"
+                with contextlib.suppress(OSError, ValueError):
+                    statistics = aggregate_pytest_statistics(
+                        step_dir,
+                        command=step.get("cmd", []),
+                        step_result=result,
+                    )
+                    _write_json(statistics_path, statistics)
+                    with contextlib.suppress(OSError):
+                        shutil.copyfile(statistics_path, self.root / CURRENT_STATISTICS_PATH)
+                    step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
+                    # Keep the compact aggregate in the cross-worktree history
+                    # itself. The detailed artifact path is checkout-local and
+                    # may disappear when a merged lane is cleaned up.
+                    step["statistics"] = statistics
                 break
         self.write()
+        return next((dict(step) for step in self._payload["steps"] if step.get("step_id") == step_id), None)
+
+    def finish_interrupted_steps(
+        self,
+        *,
+        exit_code: int,
+        diagnosis: str,
+        termination_reason: str = "operator_interrupt",
+    ) -> None:
+        """Close every open step when the outer runner cannot continue."""
+        for step in self._payload["steps"]:
+            if step.get("status") == "running":
+                self.finish_step(
+                    step_id=str(step["step_id"]),
+                    result={
+                        "duration_s": None,
+                        "exit": exit_code,
+                        "diagnosis": diagnosis,
+                        "termination_reason": termination_reason,
+                    },
+                )
 
     def finish(
         self,
@@ -293,6 +1139,9 @@ class VerifyRun:
         verification_scope: str | None = None,
         release_baseline_allowed: bool | None = None,
         terminal_authorization: str | None = None,
+        final_worktree_fingerprint: str | None = None,
+        checkout_mutation_path: str | None = None,
+        checkout_diagnosis: str | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -300,6 +1149,12 @@ class VerifyRun:
         self._payload["status"] = "success" if exit_code == 0 else "failed"
         if diagnosis:
             self._payload["diagnosis"] = diagnosis
+        if final_worktree_fingerprint is not None:
+            self._payload["final_worktree_fingerprint"] = final_worktree_fingerprint
+        if checkout_mutation_path is not None:
+            self._payload["checkout_mutation_path"] = checkout_mutation_path
+        if checkout_diagnosis is not None:
+            self._payload["checkout_diagnosis"] = checkout_diagnosis
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed
@@ -310,6 +1165,11 @@ class VerifyRun:
 
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
+    # The merge-gate invocation receipt belongs to the top-level devtools
+    # process. Pytest and any nested harness commands must not inherit the
+    # token and overwrite that receipt with a child run.
+    updated.pop(VERIFICATION_INVOCATION_ID_ENV, None)
+    updated.pop(VERIFICATION_RECEIPT_PATH_ENV, None)
     updated["POLYLOGUE_VERIFY_RUN_ID"] = run.run_id
     updated["POLYLOGUE_PYTEST_RUN_ID"] = run.run_id
     updated["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(artifacts.events_dir)
@@ -338,6 +1198,8 @@ def copy_current_pytest_artifacts(root: Path, artifacts: PytestStepArtifacts, *,
         shutil.copyfile(artifacts.postmortem_path, root / CURRENT_POSTMORTEM_PATH)
     with contextlib.suppress(FileNotFoundError):
         shutil.copyfile(artifacts.containment_path, root / CURRENT_CONTAINMENT_PATH)
+    with contextlib.suppress(FileNotFoundError):
+        shutil.copyfile(artifacts.statistics_path, root / CURRENT_STATISTICS_PATH)
 
 
 def merge_worker_events(events_dir: Path, merged_path: Path) -> int:
@@ -548,18 +1410,22 @@ def _fs_usage(path: Path) -> dict[str, int] | None:
     return None
 
 
-def _dir_size_kb(path: Path) -> int | None:
+def _dir_usage_kb(path: Path) -> tuple[int | None, int | None]:
+    """Measure apparent and allocated bytes owned by one basetemp tree."""
     if not path.exists():
-        return None
-    total = 0
+        return None, None
+    logical_total = 0
+    allocated_total = 0
     try:
         for item in path.rglob("*"):
             with contextlib.suppress(OSError):
-                if item.is_file():
-                    total += item.stat().st_size
+                item_stat = item.lstat()
+                if not stat.S_ISDIR(item_stat.st_mode):
+                    logical_total += item_stat.st_size
+                    allocated_total += item_stat.st_blocks * 512
     except OSError:
-        return None
-    return int(total / 1024)
+        return None, None
+    return int(logical_total / 1024), int(allocated_total / 1024)
 
 
 def checkout_hash(root: Path) -> str:
@@ -569,6 +1435,7 @@ def checkout_hash(root: Path) -> str:
 DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
 _CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
+_PYTEST_BASETEMP_CLAIM_PREFIX = ".polylogue-pytest-claim-"
 
 
 def _is_beneath(path: Path, root: Path) -> bool:
@@ -578,6 +1445,73 @@ def _is_beneath(path: Path, root: Path) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def pytest_basetemp_claim_path(basetemp: Path, *, kind: str) -> Path:
+    """Return the durable, adjacent claim path for one pytest basetemp.
+
+    Pytest lazily clears an explicit ``--basetemp`` before first use, so an
+    ownership record inside that tree cannot survive normal initialization.
+    Claims live beside the tree and are keyed by its canonical filesystem
+    path, not by a reusable basename.  A configured symlink and an explicit
+    real-path spelling must therefore serialize through the same claim.
+    """
+    try:
+        canonical = basetemp.resolve()
+    except OSError:
+        canonical = basetemp.absolute()
+    digest = hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()[:20]
+    return canonical.parent / f"{_PYTEST_BASETEMP_CLAIM_PREFIX}{kind}-{digest}"
+
+
+def clear_managed_pytest_basetemp_claim(basetemp: Path) -> None:
+    """Remove the durable claim after a managed run's tree is reclaimed."""
+    with contextlib.suppress(OSError):
+        pytest_basetemp_claim_path(basetemp, kind="managed").unlink()
+
+
+def _try_acquire_pytest_basetemp_claim_lock(basetemp: Path) -> TextIO | None:
+    """Acquire the adjacent claim lock without waiting on another pytest run."""
+    lock_path = pytest_basetemp_claim_path(basetemp, kind="lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        handle.close()
+        return None
+    return handle
+
+
+def managed_pytest_basetemp_owner_alive(basetemp: Path) -> bool | None:
+    """Return whether a positive managed claim still names a live process."""
+    try:
+        raw_identity = pytest_basetemp_claim_path(basetemp, kind="managed").read_text(encoding="utf-8").strip()
+        raw_pid, separator, raw_start_ticks = raw_identity.partition(":")
+        pid = int(raw_pid)
+        start_ticks = int(raw_start_ticks) if separator else None
+    except (OSError, ValueError):
+        return None
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        current_start_ticks = int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return False
+    return start_ticks is None or current_start_ticks == start_ticks
+
+
+def pytest_tmpfs_budget_exceeded(sample: Mapping[str, Any], *, budget_kb: int) -> bool:
+    """Return whether a sampled basetemp exceeds its tmpfs allocation cap.
+
+    ``st_size`` remains forensic evidence because sparse files can expose a
+    large logical extent. Tmpfs capacity is consumed by allocated blocks, so
+    the admission limit must use that physical measure.
+    """
+    allocated_kb = sample.get("basetemp_allocated_kb")
+    return isinstance(allocated_kb, int) and allocated_kb > budget_kb
 
 
 def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -750,6 +1684,27 @@ def adaptive_pytest_runtime_policy(
     )
 
 
+def _tmpfs_admission_refusal(
+    *,
+    kind: str,
+    path: Path,
+    declared_demand_kb: int,
+    safe_budget_kb: int,
+    headroom_kb: int,
+) -> PytestResourceError:
+    """Describe all failed tmpfs admission constraints in one refusal."""
+    free_kb = _headroom_kb(path)
+    required_headroom_kb = headroom_kb + max(declared_demand_kb, safe_budget_kb)
+    available = f"{free_kb / 1024:.0f} MiB" if free_kb is not None else "unknown"
+    return PytestResourceError(
+        f"{kind} pytest basetemp declared demand exceeds its safe adaptive tmpfs budget "
+        f"({path}: declared demand={declared_demand_kb / 1024:.0f} MiB, "
+        f"safe tmpfs budget={safe_budget_kb / 1024:.0f} MiB, "
+        f"available filesystem space={available}, "
+        f"required filesystem headroom={required_headroom_kb / 1024:.0f} MiB)"
+    )
+
+
 def apply_managed_pytest_runtime_policy(
     env: Mapping[str, str], *, worker_count: int | None = None, full_suite: bool = True
 ) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
@@ -762,19 +1717,27 @@ def apply_managed_pytest_runtime_policy(
     unrelated command minutes or hours later.
     """
     normalized = normalize_pytest_basetemp_env(env)
+    explicit_basetemp = normalized.get(PYTEST_EXPLICIT_BASETEMP_ENV)
     default_full_suite_scratch = (
         full_suite
+        and explicit_basetemp is None
         and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
         and "POLYLOGUE_PYTEST_TMPFS" not in normalized
     )
     configured_root = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
-    manages_tmpfs = configured_tmpfs or (configured_root is None and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0")
+    explicit_tmpfs = explicit_basetemp is not None and _is_beneath(Path(explicit_basetemp), PYTEST_TMPFS_ROOT)
+    manages_tmpfs = (
+        explicit_tmpfs
+        or configured_tmpfs
+        or (explicit_basetemp is None and configured_root is None and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0")
+    )
     policy = adaptive_pytest_runtime_policy(
         worker_count=worker_count,
         shm_free_kb=None if manages_tmpfs else 0,
         full_suite=full_suite,
     )
+    rejected_candidates: tuple[str, ...] = ()
     if full_suite and policy.tmpfs_predicted_mb is not None:
         normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
     if manages_tmpfs:
@@ -791,23 +1754,69 @@ def apply_managed_pytest_runtime_policy(
             and effective_tmpfs_budget_kb is not None
             and effective_tmpfs_budget_kb < required_basetemp_kb
         ):
-            normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
+            if explicit_tmpfs:
+                path = Path(explicit_basetemp or PYTEST_TMPFS_ROOT)
+                raise _tmpfs_admission_refusal(
+                    kind="explicit",
+                    path=path,
+                    declared_demand_kb=required_basetemp_kb,
+                    safe_budget_kb=effective_tmpfs_budget_kb,
+                    headroom_kb=pytest_basetemp_min_free_kb(normalized),
+                )
             if configured_tmpfs:
                 # The configured tmpfs root has become unsafe for this run.
                 # Leaving it in place would make the resolver select it even
                 # though tmpfs has just been disabled, without its cap.
+                rejected_candidates = (
+                    str(
+                        _tmpfs_admission_refusal(
+                            kind="configured",
+                            path=Path(configured_root or PYTEST_TMPFS_ROOT),
+                            declared_demand_kb=required_basetemp_kb,
+                            safe_budget_kb=effective_tmpfs_budget_kb,
+                            headroom_kb=pytest_basetemp_min_free_kb(normalized),
+                        )
+                    ),
+                )
                 normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
+            normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     if default_full_suite_scratch:
         # Broad-suite demand grows with the fixture universe and has exceeded
         # the supervised 2 GiB ceiling while tests were still progressing.
         # Keep that ceiling for explicit tmpfs runs; use NVMe for the default
         # broad route instead of guessing the next aggregate peak.
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
-    selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
-    if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and selected_root != PYTEST_TMPFS_ROOT:
+    if explicit_basetemp is not None:
+        selected_root = Path(explicit_basetemp)
+        selected_label = "explicit"
+        free_kb = _headroom_kb(selected_root)
+        required_kb = pytest_basetemp_required_kb(normalized)
+        min_free_kb = max(pytest_basetemp_min_free_kb(normalized), required_kb or 0)
+        explicit_required_kb = min_free_kb
+        if _is_beneath(selected_root, PYTEST_TMPFS_ROOT) and normalized.get("POLYLOGUE_PYTEST_TMPFS") == "1":
+            explicit_required_kb = pytest_basetemp_min_free_kb(normalized) + max(
+                required_kb or 0,
+                pytest_tmpfs_budget_kb(normalized) or 0,
+            )
+        if free_kb is None or free_kb < explicit_required_kb:
+            raise PytestResourceError(
+                "explicit pytest basetemp does not have enough free space "
+                f"({selected_root}: {free_kb / 1024:.0f} MiB free, need >= {explicit_required_kb / 1024:.0f} MiB)"
+                if free_kb is not None
+                else f"explicit pytest basetemp is unreachable: {selected_root}"
+            )
+    else:
+        selected_root, selected_label = resolve_pytest_basetemp_root(
+            normalized, rejected_candidates=rejected_candidates
+        )
+        free_kb = _headroom_kb(selected_root)
+    if (
+        explicit_basetemp is None
+        and not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        and selected_root != PYTEST_TMPFS_ROOT
+    ):
         normalized["POLYLOGUE_PYTEST_BASETEMP_ROOT"] = str(selected_root)
         normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
-    free_kb = _headroom_kb(selected_root)
     required_kb = pytest_basetemp_required_kb(normalized)
     policy = replace(
         policy,
@@ -909,7 +1918,9 @@ def _basetemp_refusal(checked: list[str], min_free_kb: int) -> PytestResourceErr
     )
 
 
-def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
+def resolve_pytest_basetemp_root(
+    env: Mapping[str, str], *, rejected_candidates: tuple[str, ...] = ()
+) -> tuple[Path, str]:
     """Pick the ONE basetemp root pytest will use this run.
 
     Single resolution order, shared by ``tests/conftest.py`` (direct pytest
@@ -937,7 +1948,7 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
     required_kb = pytest_basetemp_required_kb(env)
     min_free_kb = max(pytest_basetemp_min_free_kb(env), required_kb or 0)
     normalized = normalize_pytest_basetemp_env(env)
-    checked: list[str] = []
+    checked = list(rejected_candidates)
 
     configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     if configured:
@@ -995,6 +2006,9 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
     refusal here would just be noise for a monitoring/cleanup path. Fall back
     to the top placement candidate, ignoring headroom, rather than raising.
     """
+    explicit = env.get(PYTEST_EXPLICIT_BASETEMP_ENV)
+    if explicit:
+        return Path(explicit)
     try:
         scratch_root, _label = resolve_pytest_basetemp_root(env)
     except PytestResourceError:
@@ -1012,7 +2026,8 @@ def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Pat
 
 def pytest_tmpfs_budget_kb(env: Mapping[str, str]) -> int | None:
     """Return the bounded per-run tmpfs budget shared by all pytest workers."""
-    configured_root = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+    explicit = env.get(PYTEST_EXPLICIT_BASETEMP_ENV)
+    configured_root = explicit or env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     configured_tmpfs = configured_root is not None and _is_beneath(Path(configured_root), PYTEST_TMPFS_ROOT)
     if env.get("POLYLOGUE_PYTEST_TMPFS") != "1" or (configured_root is not None and not configured_tmpfs):
         return None
@@ -1033,14 +2048,40 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
     basetemps immediately instead of waiting for the next pytest startup sweep.
     """
 
+    if env.get(PYTEST_EXPLICIT_BASETEMP_ENV):
+        return None
     basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
     if not basetemp.name.startswith("pytest-polylogue-") or "-seeded-" in basetemp.name:
         return None
-    with contextlib.suppress(OSError):
-        if basetemp.exists():
-            shutil.rmtree(basetemp)
-            if not basetemp.exists():
-                return basetemp
+    claim_lock = _try_acquire_pytest_basetemp_claim_lock(basetemp)
+    if claim_lock is None:
+        # A successor with the same inherited run id owns this path.  Leave
+        # both its claim and its fixture tree for that invocation to finish.
+        return None
+    try:
+        owner_alive = managed_pytest_basetemp_owner_alive(basetemp)
+        if owner_alive is True:
+            return None
+        # A serial pytest child may already have reclaimed this exact run-owned
+        # directory in sessionfinish. That is a completed cleanup, not an absent
+        # receipt for the durable summary to misclassify.
+        if not basetemp.exists():
+            if owner_alive is False:
+                clear_managed_pytest_basetemp_claim(basetemp)
+            return basetemp
+        # Reclaim only a positively claimed tree whose owner is confirmed dead.
+        # An unknown claim/tree may be caller-owned or belong to a newer runner.
+        if owner_alive is not False:
+            return None
+        with contextlib.suppress(OSError):
+            if basetemp.exists():
+                shutil.rmtree(basetemp)
+                if not basetemp.exists():
+                    clear_managed_pytest_basetemp_claim(basetemp)
+                    return basetemp
+    finally:
+        with contextlib.suppress(OSError):
+            claim_lock.close()
     return None
 
 
@@ -1091,11 +2132,12 @@ class ResourceSampler:
         self._basetemp_size_interval_s = _basetemp_size_sample_interval_s(env)
         self._last_basetemp_size_sample_at: float | None = None
         self._last_basetemp_size_kb: int | None = None
+        self._last_basetemp_allocated_kb: int | None = None
 
-    def _sample_basetemp_size_kb(self, *, event: str) -> int | None:
+    def _sample_basetemp_sizes(self, *, event: str) -> tuple[int | None, int | None]:
         """Return basetemp size without recursively walking it every sample."""
         if self._basetemp_size_interval_s <= 0:
-            return None
+            return None, None
         now = time.monotonic()
         should_sample = (
             self._last_basetemp_size_sample_at is None
@@ -1104,9 +2146,9 @@ class ResourceSampler:
             or now - self._last_basetemp_size_sample_at >= self._basetemp_size_interval_s
         )
         if should_sample:
-            self._last_basetemp_size_kb = _dir_size_kb(self._basetemp)
+            self._last_basetemp_size_kb, self._last_basetemp_allocated_kb = _dir_usage_kb(self._basetemp)
             self._last_basetemp_size_sample_at = now
-        return self._last_basetemp_size_kb
+        return self._last_basetemp_size_kb, self._last_basetemp_allocated_kb
 
     def sample(self, *, event: str) -> dict[str, Any]:
         pids = process_tree(self.root_pid)
@@ -1180,6 +2222,7 @@ class ResourceSampler:
         meminfo = _meminfo()
         cgroup_path = _cgroup_path(self.root_pid)
         cgroup_io = _cgroup_io_bytes(cgroup_path)
+        basetemp_logical_kb, basetemp_allocated_kb = self._sample_basetemp_sizes(event=event)
         sample: dict[str, Any] = {
             "updated_at": utc_now(),
             "event": event,
@@ -1214,7 +2257,8 @@ class ResourceSampler:
             "pressure_memory": _pressure("memory"),
             "shm": _fs_usage(Path("/dev/shm")),
             "basetemp": str(self._basetemp),
-            "basetemp_size_kb": self._sample_basetemp_size_kb(event=event),
+            "basetemp_size_kb": basetemp_logical_kb,
+            "basetemp_allocated_kb": basetemp_allocated_kb,
             "top_processes": sorted(processes, key=lambda row: int(row.get("rss_kb") or 0), reverse=True)[:8],
         }
         self.sample_count += 1

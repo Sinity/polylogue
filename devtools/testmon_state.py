@@ -78,7 +78,12 @@ class TerminalAuthorization(StrEnum):
     NARROW_TERMINAL = "narrow-terminal"
 
 
-_TERMINAL_NODE_OUTCOMES = frozenset({"passed", "failed", "error", "skipped"})
+# Pytest reports expected failures separately from ordinary skips/passes.  They
+# still finish the selected node and therefore make its dependency capture
+# reusable.  ``xpassed`` remains subject to pytest's configured strictness via
+# the process exit code; it is not independently recast as a failure here.
+TERMINAL_NODE_OUTCOMES = frozenset({"passed", "failed", "error", "skipped", "xfailed", "xpassed"})
+SUCCESSFUL_NODE_OUTCOMES = frozenset({"passed", "skipped", "xfailed", "xpassed"})
 
 
 def seed_shard_plan(
@@ -179,7 +184,7 @@ def validate_seed_shard_ledger(
             return None
         if status is SeedShardStatus.COMPLETE and (
             set(outcome_by_node) != set(nodeids)
-            or any(item.get("outcome") not in _TERMINAL_NODE_OUTCOMES for item in outcome_by_node.values())
+            or any(item.get("outcome") not in TERMINAL_NODE_OUTCOMES for item in outcome_by_node.values())
         ):
             return None
         if (
@@ -771,7 +776,7 @@ def attempt_is_checkout_bound(
         nodeids = [item.get("nodeid") for item in outcomes if isinstance(item, Mapping)]
         if len(nodeids) != len(outcomes) or set(nodeids) != set(expected) or len(set(nodeids)) != len(nodeids):
             return False
-        if any(item.get("outcome") not in {"passed", "failed", "error", "skipped"} for item in outcomes):
+        if any(item.get("outcome") not in TERMINAL_NODE_OUTCOMES for item in outcomes):
             return False
     return True
 
@@ -1048,7 +1053,7 @@ def stamp_from_attempt(
         not isinstance(nodeid, str) or not nodeid for nodeid in outcome_by_node
     ):
         return None
-    if any(outcome not in {"passed", "failed", "error", "skipped"} for outcome in outcome_by_node.values()):
+    if any(outcome not in TERMINAL_NODE_OUTCOMES for outcome in outcome_by_node.values()):
         return None
     exit_code = attempt.get("exit_code")
     if not isinstance(exit_code, int) or isinstance(exit_code, bool):
@@ -1066,7 +1071,7 @@ def stamp_from_attempt(
         BaselineStatus.GREEN
         if attempt.get("status") == "complete"
         and exit_code == 0
-        and all(outcome in {"passed", "skipped"} for outcome in outcome_by_node.values())
+        and all(outcome in SUCCESSFUL_NODE_OUTCOMES for outcome in outcome_by_node.values())
         and not graph.failed_nodeids
         else BaselineStatus.RED
     )
@@ -1133,6 +1138,8 @@ __all__ = [
     "SeedAttemptOutcome",
     "TestmonBinding",
     "TestmonIdentity",
+    "SUCCESSFUL_NODE_OUTCOMES",
+    "TERMINAL_NODE_OUTCOMES",
     "TestmonSeedStamp",
     "TerminalAuthorization",
     "VerificationScope",

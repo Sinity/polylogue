@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import MagicMock, patch
 
 import pytest
+import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.testmon_state import (
@@ -69,39 +77,39 @@ from devtools.verify import (
     _testmon_database_state,
     _testmon_preflight,
     _testmon_seed_can_resume,
-    _worktree_fingerprint,
     build_verify_steps,
     main,
 )
 from devtools.verify_runs import (
+    CheckoutMutationMonitor,
+    CheckoutMutationObservation,
     PytestResourceError,
+    PytestStepArtifacts,
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_runtime_policy,
     adaptive_pytest_worker_count,
+    aggregate_pytest_statistics,
+    append_verify_history,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
     pytest_basetemp_known_roots,
     pytest_basetemp_path,
+    pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     resolve_pytest_basetemp_root,
     xdist_uninterruptible_stall_reason,
+)
+from devtools.verify_runs import (
+    worktree_fingerprint as _worktree_fingerprint,
 )
 
 
 @pytest.fixture(autouse=True)
 def _isolate_verify_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep supervisor and testmon receipts private to each test.
-
-    These tests exercise the real checkout guard, so leaving a synthetic
-    ``.cache/testmon`` behind makes a later guard test observe a fixture
-    artifact as if it were a developer's checkout state.
-    """
+    """Keep supervisor and testmon receipts private to each test."""
     monkeypatch.chdir(tmp_path)
-    checkout_cache = ROOT / ".cache" / "testmon"
-    if checkout_cache.exists():
-        shutil.move(str(checkout_cache), str(tmp_path / "checkout-testmon-generated"))
     for name in (
         "TESTMON_DATA",
         "TESTMON_SEED_STAMP",
@@ -111,33 +119,6 @@ def _isolate_verify_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         isolated = tmp_path / ".cache" / "testmon" / getattr(verify, name).name
         monkeypatch.setattr(verify, name, isolated)
         monkeypatch.setattr(sys.modules[__name__], name, isolated)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _quarantine_checkout_testmon(tmp_path_factory: pytest.TempPathFactory) -> object:
-    """Prevent subprocess-backed verify tests from contaminating the checkout.
-
-    A few tests intentionally re-anchor verification to ``ROOT``.  Their child
-    pytest process therefore uses the real checkout's relative testmon path,
-    even though the parent test has a private working directory.  Keep any
-    pre-existing state safe for restoration and quarantine only state created
-    during this test module.
-    """
-    checkout_cache = ROOT / ".cache" / "testmon"
-    quarantine = tmp_path_factory.mktemp("checkout-testmon")
-    original: Path | None = None
-    if checkout_cache.exists():
-        original = quarantine / "original"
-        original.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(checkout_cache), str(original))
-    try:
-        yield
-    finally:
-        if checkout_cache.exists():
-            shutil.move(str(checkout_cache), str(quarantine / "generated"))
-        if original is not None and not checkout_cache.exists():
-            checkout_cache.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(original), str(checkout_cache))
 
 
 def _pytest_marker_expr(command: list[str]) -> str:
@@ -263,6 +244,7 @@ def test_default_verify_uses_adaptive_pytest_testmon(monkeypatch: pytest.MonkeyP
     assert "--testmon-forceselect" in command
     assert "-n" in command
     assert command[command.index("-n") + 1] == "8"
+    assert "--dist=loadgroup" in command
 
 
 def test_broad_default_verify_uses_parallel_testmon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -436,7 +418,7 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
                 "event": "test_report",
                 "nodeid": f"{ordered[0]}@web-reader",
                 "when": "call",
-                "outcome": "passed",
+                "outcome": "xfailed",
             }
         )
         + "\n"
@@ -450,7 +432,7 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
 
     assert checkpointed["shards"][0]["status"] == "complete"
     assert checkpointed["shards"][1]["status"] == "pending"
-    assert json.loads(TESTMON_SEED_ATTEMPT.read_text())["shards"][0]["node_outcomes"][0]["outcome"] == "passed"
+    assert json.loads(TESTMON_SEED_ATTEMPT.read_text())["shards"][0]["node_outcomes"][0]["outcome"] == "xfailed"
     resumed = _prepare_testmon_seed_attempt(
         identity={
             "git_head": "head",
@@ -628,6 +610,7 @@ def test_full_verify_includes_full_pytest_without_testmon(monkeypatch: pytest.Mo
     assert "--testmon" not in bulk_command
     assert "-n" in bulk_command
     assert bulk_command[bulk_command.index("-n") + 1] == "8"
+    assert "--dist=loadgroup" in bulk_command
 
     isolated_label, isolated_command = steps[-1]
     assert isolated_label == "pytest load-sensitive (isolated)"
@@ -952,6 +935,662 @@ def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
     assert json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text()) == payload
 
 
+def test_verify_run_writes_invocation_receipt_without_leaking_token_to_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = tmp_path / "invocation" / "run.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "invocation-1")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
+
+    payload = run.finish(
+        exit_code=0,
+        duration_s=0.1,
+        verification_scope="affected",
+        release_baseline_allowed=False,
+    )
+    child_env = verify_runs.env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
+
+    assert json.loads(receipt.read_text()) == payload
+    assert payload["invocation_id"] == "invocation-1"
+    assert verify_runs.VERIFICATION_INVOCATION_ID_ENV not in child_env
+    assert verify_runs.VERIFICATION_RECEIPT_PATH_ENV not in child_env
+
+
+def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "events.jsonl").write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "event": "test_report",
+                    "nodeid": "a",
+                    "when": "setup",
+                    "duration_s": 1.0,
+                    "outcome": "passed",
+                    "worker_id": "controller",
+                },
+                {
+                    "event": "test_report",
+                    "nodeid": "a",
+                    "when": "call",
+                    "duration_s": 2.0,
+                    "outcome": "passed",
+                    "worker_id": "gw0",
+                },
+                {
+                    "event": "test_report",
+                    "nodeid": "a",
+                    "when": "teardown",
+                    "duration_s": 0.5,
+                    "outcome": "passed",
+                    "worker_id": "gw0",
+                },
+            )
+        )
+        + "\n"
+    )
+    (step / "resources.jsonl").write_text(
+        json.dumps(
+            {
+                "basetemp": "/dev/shm/run",
+                "basetemp_size_kb": 12,
+                "tree_rss_kb": 100,
+                "tree_pss_kb": 80,
+                "cgroup_memory_peak_bytes": 200,
+                "xdist_worker_count": 1,
+            }
+        )
+        + "\n"
+    )
+    (step / "containment.json").write_text(json.dumps({"tmpfs_cleanup_complete": False, "exit_code": 0}))
+
+    result = aggregate_pytest_statistics(
+        step,
+        command=["pytest"],
+        step_result={"exit": 0, "basetemp_cleanup": "/realm/tmp/polylogue-pytest/pytest-polylogue-run"},
+    )
+
+    assert result["node_count"] == 1
+    assert result["phases"]["call"]["p50_s"] == 2.0
+    assert result["phases"]["setup"]["count"] == 1
+    assert result["storage"]["basetemp_logical_bytes_max"] == 12 * 1024
+    assert result["resources"]["peak_tree_pss_kb"] == 80
+    assert result["cleanup"]["complete"] is True
+
+
+def test_aggregate_pytest_statistics_deduplicates_xdist_reports_and_terminal_failures(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    rows = [
+        {
+            "event": "test_report",
+            "nodeid": "test_setup",
+            "when": "setup",
+            "outcome": "failed",
+            "duration_s": 1.0,
+            "worker_id": "gw0",
+        },
+        {
+            "event": "test_report",
+            "nodeid": "test_setup",
+            "when": "setup",
+            "outcome": "failed",
+            "duration_s": 1.0,
+            "worker_id": "controller",
+        },
+        {
+            "event": "test_report",
+            "nodeid": "test_teardown",
+            "when": "call",
+            "outcome": "passed",
+            "duration_s": 0.2,
+            "worker_id": "gw1",
+        },
+        {
+            "event": "test_report",
+            "nodeid": "test_teardown",
+            "when": "teardown",
+            "outcome": "failed",
+            "duration_s": 0.3,
+            "worker_id": "gw1",
+        },
+    ]
+    (step / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    result = aggregate_pytest_statistics(step, command=["pytest", "-n", "2"])
+
+    assert result["phases"]["setup"]["count"] == 1
+    assert result["xdist"]["worker_count"] == 2
+    assert result["outcomes"] == {"error": 2}
+
+    compact_result = aggregate_pytest_statistics(step, command=["pytest", "--numprocesses=3"])
+    assert compact_result["xdist"]["worker_count"] == 3
+
+
+def test_aggregate_pytest_statistics_accounts_for_started_node_without_a_phase(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    rows = [
+        {"event": "test_started", "nodeid": "tests/a.py::test_completed", "worker_id": "gw0"},
+        {
+            "event": "test_report",
+            "nodeid": "tests/a.py::test_completed",
+            "when": "call",
+            "outcome": "passed",
+            "duration_s": 0.1,
+            "worker_id": "gw0",
+        },
+        {"event": "test_started", "nodeid": "tests/a.py::test_interrupted", "worker_id": "gw1"},
+    ]
+    (step / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["node_count"] == 2
+    assert result["outcomes"] == {"passed": 1, "interrupted": 1}
+    assert sum(result["outcomes"].values()) == result["node_count"]
+
+
+def test_aggregate_pytest_statistics_uses_completed_report_to_fill_event_gaps(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/a.py::test_event",
+                "when": "call",
+                "outcome": "passed",
+                "duration_s": 0.1,
+                "worker_id": "gw0",
+            }
+        )
+        + "\n"
+    )
+    (step / "pytest-report.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/a.py::test_event",
+                        "outcome": "passed",
+                        "call": {"outcome": "passed", "duration": 0.1},
+                    },
+                    {
+                        "nodeid": "tests/a.py::test_redirected",
+                        "outcome": "xfailed",
+                        "setup": {"outcome": "passed", "duration": 0.2},
+                        "call": {"outcome": "skipped", "duration": 0.3},
+                        "teardown": {"outcome": "passed", "duration": 0.1},
+                    },
+                ]
+            }
+        )
+    )
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["canonical_report_status"] == "present"
+    assert result["node_count"] == 2
+    assert result["outcomes"] == {"passed": 1, "xfailed": 1}
+    assert result["phases"]["setup"]["count"] == 1
+    assert result["phases"]["call"]["count"] == 2
+
+
+def test_aggregate_pytest_statistics_recognizes_completed_empty_report(tmp_path: Path) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "pytest-report.json").write_text(json.dumps({"tests": []}))
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["canonical_report_status"] == "present"
+    assert result["node_count"] == 0
+    assert result["outcomes"] == {}
+
+
+def test_verify_run_statistics_only_cover_pytest_steps(tmp_path: Path) -> None:
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="ruff check", cmd=["ruff", "check"])
+
+    run.finish_step(step_id=artifacts.step_id, result={"exit": 0, "duration_s": 0.1})
+
+    step = run._payload["steps"][0]
+    assert "statistics" not in step
+    assert not artifacts.statistics_path.exists()
+
+
+def test_verify_run_embeds_compact_statistics_before_worktree_cleanup(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
+    artifacts.events_merged_path.write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/unit/example.py::test_one",
+                "when": "call",
+                "duration_s": 0.25,
+                "outcome": "passed",
+                "worker_id": "controller",
+            }
+        )
+        + "\n"
+    )
+
+    run.finish_step(step_id=artifacts.step_id, result={"exit": 0, "duration_s": 0.25})
+    payload = run.finish(exit_code=0, duration_s=0.25)
+    shutil.rmtree(run.run_dir)
+
+    statistics = payload["steps"][0]["statistics"]
+    assert statistics["node_count"] == 1
+    assert statistics["phases"]["call"]["p50_s"] == 0.25
+
+
+def test_interrupted_run_merges_worker_events_before_statistics(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
+    artifacts.events_dir.mkdir()
+    (artifacts.events_dir / "gw0-1.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "tests/unit/example.py::test_one",
+                "when": "call",
+                "outcome": "passed",
+                "duration_s": 0.2,
+                "worker_id": "gw0",
+            }
+        )
+        + "\n"
+    )
+
+    run.finish_interrupted_steps(exit_code=130, diagnosis="pytest_interrupted")
+
+    assert artifacts.events_merged_path.exists()
+    assert run._payload["steps"][0]["statistics"]["node_count"] == 1
+
+
+def test_run_returns_finalized_statistics_for_verify_history(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    history_path = tmp_path / "state" / "verify-history.jsonl"
+
+    def _complete_with_evidence(
+        *_args: object, artifacts: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert isinstance(artifacts, verify_runs.PytestStepArtifacts)
+        artifacts.events_merged_path.write_text(
+            json.dumps(
+                {
+                    "event": "test_report",
+                    "nodeid": "tests/unit/example.py::test_one",
+                    "when": "call",
+                    "duration_s": 0.25,
+                    "outcome": "passed",
+                    "worker_id": "controller",
+                }
+            )
+            + "\n"
+        )
+        artifacts.resources_path.write_text(json.dumps({"tree_rss_kb": 512}) + "\n")
+        return completed
+
+    with (
+        patch("devtools.verify._run_pytest_with_heartbeat", side_effect=_complete_with_evidence),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+        patch("devtools.verify.copy_current_pytest_artifacts"),
+    ):
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "-n", "0"], run=run)
+
+    assert rc == 0
+    append_verify_history(
+        {"tier": "quick", "steps": [{"name": "pytest testmon", "exit": rc, **metadata}]}, path=history_path
+    )
+    shutil.rmtree(run.run_dir)
+
+    durable_row = json.loads(history_path.read_text(encoding="utf-8"))
+    assert durable_row["steps"][0]["statistics"]["node_count"] == 1
+    assert durable_row["steps"][0]["statistics"]["resources"]["peak_tree_rss_kb"] == 512
+    assert metadata["statistics_path"].endswith("statistics.json")
+
+
+def test_interrupted_pytest_waits_for_forced_containment_quiescence() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [subprocess.TimeoutExpired(cmd="pytest", timeout=2.0), None]
+    launch = MagicMock()
+
+    with (
+        patch("devtools.verify._request_supervisor_termination") as request_termination,
+        patch("devtools.verify._force_kill_owned_run") as force_kill,
+        patch("devtools.verify.reap_exited_children") as reap,
+        patch(
+            "devtools.verify.read_receipt",
+            return_value={"status": "terminated", "controller_group_alive": False},
+        ),
+        patch("devtools.verify.descendant_process_identities", return_value=()),
+    ):
+        verify._await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=1.0,
+            preserved_runner_descendants=(),
+        )
+
+    request_termination.assert_called_once()
+    force_kill.assert_called_once_with(process, launch, preserved_runner_descendants=())
+    assert process.wait.call_count == 2
+    reap.assert_called_once()
+
+
+def test_interrupted_pytest_refuses_cleanup_without_containment_quiescence() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [
+        subprocess.TimeoutExpired(cmd="pytest", timeout=2.0),
+        subprocess.TimeoutExpired(cmd="pytest", timeout=1.0),
+    ]
+    launch = MagicMock()
+
+    with (
+        patch("devtools.verify._request_supervisor_termination"),
+        patch("devtools.verify._force_kill_owned_run") as force_kill,
+        patch("devtools.verify.reap_exited_children") as reap,
+        pytest.raises(verify.PytestContainmentError, match="did not quiesce"),
+    ):
+        verify._await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=1.0,
+            preserved_runner_descendants=(),
+        )
+
+    force_kill.assert_called_once_with(process, launch, preserved_runner_descendants=())
+    reap.assert_not_called()
+
+
+def test_interrupted_pytest_refuses_cleanup_when_controller_group_survives() -> None:
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.return_value = None
+    launch = MagicMock()
+
+    with (
+        patch("devtools.verify._request_supervisor_termination"),
+        patch("devtools.verify.reap_exited_children"),
+        patch(
+            "devtools.verify.read_receipt",
+            return_value={"status": "terminated", "controller_group_alive": True},
+        ),
+        patch("devtools.verify.descendant_process_identities", return_value=()),
+        pytest.raises(verify.PytestContainmentError, match="owned process tree"),
+    ):
+        verify._await_interrupted_pytest_containment(
+            process,
+            launch,
+            term_grace_s=1.0,
+            preserved_runner_descendants=(),
+        )
+
+
+def test_run_cleans_and_finalizes_only_after_contained_interrupt(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    order: list[str] = []
+    original_finish_step = run.finish_step
+
+    def _contained_interrupt(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        order.append("contained")
+        raise KeyboardInterrupt
+
+    def _cleanup(**_kwargs: object) -> None:
+        order.append("cleanup")
+        return None
+
+    def _finish_step(*, step_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
+        order.append("finalize")
+        return original_finish_step(step_id=step_id, result=result)
+
+    with (
+        patch("devtools.verify._run_pytest_with_heartbeat", side_effect=_contained_interrupt),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp", side_effect=_cleanup),
+        patch.object(run, "finish_step", side_effect=_finish_step),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest", "-n", "0"], run=run)
+
+    assert rc == 130
+    assert order == ["contained", "cleanup", "finalize"]
+
+
+def test_run_terminalizes_containment_failure_without_cleaning_basetemp(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+
+    with (
+        patch(
+            "devtools.verify._run_pytest_with_heartbeat",
+            side_effect=verify.PytestContainmentError("still running"),
+        ),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp") as cleanup,
+    ):
+        rc, _elapsed, metadata = _run("pytest focused", ["pytest", "-n", "0"], run=run)
+
+    cleanup.assert_not_called()
+    assert rc == 125
+    assert metadata["diagnosis"] == "pytest_containment_unproven"
+    assert run._payload["steps"][0]["status"] == "failed"
+    assert run._payload["steps"][0]["termination_reason"].startswith("pytest containment did not quiesce")
+
+
+def test_run_recovers_xdist_collection_facts_after_containment_failure(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+
+    def _write_worker_facts(*_args: object, artifacts: PytestStepArtifacts, **_kwargs: object) -> None:
+        artifacts.events_dir.mkdir(parents=True, exist_ok=True)
+        for worker_id, pid, duration in (("gw1", 11, 1.5), ("gw0", 10, 2.5)):
+            (artifacts.events_dir / f"{worker_id}-{pid}.collection.json").write_text(
+                json.dumps(
+                    {
+                        "worker_id": worker_id,
+                        "pid": pid,
+                        "selected_count": 3,
+                        "deselected_count": 2,
+                        "selected_nodeids": ["tests/unit/example.py::test_selected"],
+                        "collection_duration_s": duration,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        raise verify.PytestContainmentError("controller interrupted")
+
+    with patch("devtools.verify._run_pytest_with_heartbeat", side_effect=_write_worker_facts):
+        rc, _elapsed, metadata = _run("pytest focused", ["pytest", "-n", "2"], run=run)
+
+    assert rc == 125
+    assert metadata["selected_count"] == 3
+    assert metadata["deselected_count"] == 2
+    assert metadata["collection_duration_s"] == 2.5
+    selection = json.loads((run.run_dir / "steps" / "01-pytest-focused" / "selection.json").read_text())
+    assert selection["recovered_after_interruption"] is True
+    assert selection["worker_id"] == "runner"
+
+
+def test_verify_main_records_containment_failure_as_terminal_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    history_path = tmp_path / "verify-history.jsonl"
+    monkeypatch.setattr(verify, "HISTORY_PATH", history_path)
+
+    with (
+        patch("devtools.verify._anchor_verification_paths"),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest containment", ["pytest", "-n", "0"])]),
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
+        patch(
+            "devtools.verify._run_pytest_with_heartbeat",
+            side_effect=verify.PytestContainmentError("owned child still running"),
+        ),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp") as cleanup,
+        patch("devtools.verify._notify"),
+    ):
+        rc = main(["--json"])
+
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    run_json = next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json"))
+    run_payload = json.loads(run_json.read_text(encoding="utf-8"))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 125
+    cleanup.assert_not_called()
+    assert payload["diagnosis"] == "pytest_containment_unproven"
+    assert history["exit_code"] == 125
+    assert history["diagnosis"] == "pytest_containment_unproven"
+    assert run_payload["status"] == "failed"
+    assert run_payload["steps"][0]["status"] == "failed"
+
+
+def test_print_history_accepts_verify_and_focused_run_records(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_load_history",
+        lambda: [
+            {
+                "timestamp": "2026-08-12T20:00:00+00:00",
+                "tier": "quick",
+                "git_head": "a" * 40,
+                "total_duration_s": 2.0,
+                "exit_code": 0,
+                "steps": [{"name": "ruff", "duration_s": 1.0, "exit": 0}],
+            },
+            {
+                "finished_at": "2026-08-12T20:01:00+00:00",
+                "tier": "focused-test",
+                "git_head": "b" * 40,
+                "duration_s": 3.0,
+                "exit_code": 1,
+                "steps": [{"name": "pytest focused", "duration_s": None, "exit": 1}],
+            },
+            {
+                "finished_at": "2026-08-12T20:02:00+00:00",
+                "tier": "focused-test",
+                "git_head": "c" * 40,
+                "duration_s": "invalid",
+                "exit_code": None,
+                "steps": [{"name": "pytest interrupted", "duration_s": "invalid", "exit": None}],
+            },
+        ],
+    )
+
+    verify._print_history()
+
+    output = capsys.readouterr().out
+    assert "quick" in output
+    assert "focused-" in output
+    assert "pytest focused(0s FAIL)" in output
+    assert "pytest interrupted(0s FAIL)" in output
+
+
+def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path: Path) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda sequence: append_verify_history({"sequence": sequence}, path=history), range(64)))
+
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert sorted(row["sequence"] for row in rows) == list(range(64))
+
+
+def test_verify_history_repairs_or_frames_an_incomplete_trailing_record(tmp_path: Path) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text('{"sequence": 0}', encoding="utf-8")
+
+    append_verify_history({"sequence": 1}, path=history)
+
+    history.write_text(history.read_text(encoding="utf-8") + '{"interrupted":', encoding="utf-8")
+    append_verify_history({"sequence": 2}, path=history)
+
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert rows == [{"sequence": 0}, {"sequence": 1}, {"sequence": 2}]
+
+
+def test_verify_history_append_reads_only_the_trailing_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = tmp_path / "state" / "verify-history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_bytes(b'{"padding":"' + (b"x" * (5 * 1024 * 1024)) + b'"}\n{"interrupted":')
+    bytes_read = 0
+    real_read = os.read
+
+    def measured_read(descriptor: int, count: int) -> bytes:
+        nonlocal bytes_read
+        payload = real_read(descriptor, count)
+        bytes_read += len(payload)
+        return payload
+
+    monkeypatch.setattr(os, "read", measured_read)
+
+    append_verify_history({"sequence": 1}, path=history)
+
+    assert bytes_read < 128 * 1024
+    assert json.loads(history.read_text(encoding="utf-8").splitlines()[-1]) == {"sequence": 1}
+
+
+def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_load_history",
+        lambda: [
+            {"tier": "quick", "steps": [{"name": "ruff check", "duration_s": 1.0}]},
+            {"tier": "focused-test", "steps": [{"name": "pytest focused", "duration_s": 999.0}]},
+        ],
+    )
+
+    flags = verify._compare_against_last([{"name": "ruff check", "duration_s": 7.0}])
+
+    assert flags and "ruff check" in flags[0]
+
+
+def test_compare_against_last_selects_prior_run_independently_per_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_load_history",
+        lambda: [
+            {
+                "tier": "default",
+                "steps": [
+                    {"name": "ruff check", "duration_s": 1.0},
+                    {"name": "pytest testmon", "duration_s": 2.0},
+                ],
+            },
+            {"tier": "quick", "steps": [{"name": "ruff check", "duration_s": 1.0}]},
+        ],
+    )
+
+    flags = verify._compare_against_last(
+        [
+            {"name": "ruff check", "duration_s": 1.1},
+            {"name": "pytest testmon", "duration_s": 8.0},
+        ]
+    )
+
+    assert len(flags) == 1
+    assert "pytest testmon" in flags[0]
+
+
 def test_running_seed_recovers_ledger_from_selection_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     TESTMON_DATA.parent.mkdir(parents=True)
@@ -1162,6 +1801,602 @@ def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> 
     after = _worktree_fingerprint()
 
     assert before != after
+
+
+def test_worktree_fingerprint_rejects_partial_git_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    real_run = subprocess.run
+
+    def warning_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        result = cast(subprocess.CompletedProcess[bytes], real_run(*args, **kwargs))
+        command = args[0]
+        if isinstance(command, list) and command[:2] == ["git", "diff"]:
+            return subprocess.CompletedProcess(command, 0, result.stdout, b"warning: partial enumeration\n")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", warning_run)
+
+    assert _worktree_fingerprint(tmp_path) == "unavailable"
+
+
+def test_changed_paths_keep_start_time_base_when_remote_ref_advances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "example.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/example.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-qc", "feature"], cwd=tmp_path, check=True)
+    source.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "feature"], cwd=tmp_path, check=True)
+    feature_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/master", base], cwd=tmp_path, check=True)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    pinned_base = verify._git_commit("origin/master")
+    assert pinned_base == base
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=tmp_path, check=True)
+
+    assert verify._changed_executable_paths(pinned_base, feature_head) == ("polylogue/example.py",)
+
+
+def test_changed_paths_include_untracked_executable_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "README.md"
+    tracked.write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    untracked = tmp_path / "devtools" / "new_command.py"
+    untracked.parent.mkdir()
+    untracked.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    assert verify._changed_executable_paths(head, head) == ("devtools/new_command.py",)
+
+
+def test_changed_paths_include_executable_rename_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "example.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/example.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    subprocess.run(["git", "mv", "polylogue/example.py", "docs/example.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "move module"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    assert verify._changed_executable_paths(base, head) == ("polylogue/example.py",)
+
+
+def test_changed_paths_parse_non_ascii_names_without_git_quoting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "café.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/café.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    source.write_text("value = 2\n", encoding="utf-8")
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+
+    assert verify._changed_executable_paths(base, base) == ("polylogue/café.py",)
+
+
+def test_git_head_uses_bounded_authoritative_probe() -> None:
+    with patch("devtools.verify._git_commit", return_value="resolved-head") as resolve:
+        assert verify._git_head() == "resolved-head"
+
+    resolve.assert_called_once_with("HEAD")
+
+
+def test_checkout_mutation_monitor_detects_a_change_that_reverts_before_the_final_fingerprint(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    original = "VALUE = 1\n"
+    tracked.write_text(original, encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    tracked.write_text("VALUE = 2\n", encoding="utf-8")
+    tracked.write_text(original, encoding="utf-8")
+    observation = monitor.finish()
+
+    assert observation.changed is True
+    assert observation.unavailable is False
+    assert observation.observed_path == "tracked.py"
+
+
+def test_checkout_mutation_monitor_ignores_nested_disposable_cache_writes(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    package = tmp_path / "package"
+    package.mkdir()
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    cache_file = package / "__pycache__" / "module.pyc"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_bytes(b"cache")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_observes_tracked_file_inside_disposable_cache(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "package" / "__pycache__" / "authority.py"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "package/__pycache__/authority.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed tracked cache path"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    tracked.write_text("during\n", encoding="utf-8")
+    tracked.write_text("before\n", encoding="utf-8")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path="package/__pycache__/authority.py",
+    )
+
+
+def test_checkout_mutation_monitor_uses_gitignore_for_verifier_task_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text(".agent/*\n", encoding="utf-8")
+    history = tmp_path / ".agent" / "task-history" / "tasks.jsonl"
+    history.parent.mkdir(parents=True)
+
+    def portable_watch(*_paths: Path, **kwargs: object) -> object:
+        yield set()
+        yield {(watchfiles.Change.modified, str(history))}
+        stop_event = kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait()
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_observes_tracked_file_that_matches_gitignore(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text(".agent/*\n", encoding="utf-8")
+    tracked = tmp_path / ".agent" / "script.py"
+    tracked.parent.mkdir()
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", ".agent/script.py"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    tracked.write_text("during\n", encoding="utf-8")
+    tracked.write_text("before\n", encoding="utf-8")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=".agent/script.py",
+    )
+
+
+def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux_kernel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+    event_emitted = threading.Event()
+
+    def portable_watch(*paths: Path, **kwargs: object) -> object:
+        calls["paths"] = paths
+        calls["kwargs"] = kwargs
+        yield set()
+        event_emitted.set()
+        yield {(watchfiles.Change.modified, str(tracked))}
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    assert event_emitted.wait(timeout=1)
+    observation = monitor.finish()
+
+    assert calls["paths"] == (
+        tmp_path.resolve(),
+        (tmp_path / ".git").resolve(),
+        (tmp_path / ".git" / "refs" / "heads").resolve(),
+    )
+    assert calls["kwargs"] == {
+        "watch_filter": None,
+        "debounce": 0,
+        "step": 1,
+        "stop_event": monitor._stop,
+        "rust_timeout": monitor._WATCH_RUST_TIMEOUT_MS,
+        "yield_on_timeout": True,
+        "raise_interrupt": False,
+        "force_polling": False,
+        "recursive": False,
+    }
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="tracked.py")
+
+
+def test_checkout_mutation_monitor_rejects_source_topology_changed_during_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    source = tmp_path / "source" / "package"
+    source.mkdir(parents=True)
+    shutil.rmtree(source)
+
+    def portable_watch(*paths: Path, **_kwargs: object) -> object:
+        assert source not in paths
+        source.mkdir(parents=True)
+        yield set()
+        stop_event = _kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait(timeout=1)
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_rejects_forced_polling_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCHFILES_FORCE_POLLING", "1")
+
+    def unexpected_watch(*_paths: Path, **_kwargs: object) -> object:
+        raise AssertionError("polling mode must fail before watchfiles starts")
+        yield set()
+
+    monkeypatch.setattr(watchfiles, "watch", unexpected_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_rejects_wsl_auto_polling_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WATCHFILES_FORCE_POLLING", raising=False)
+    monkeypatch.setattr(
+        platform,
+        "uname",
+        lambda: SimpleNamespace(system="Linux", release="6.6.0-microsoft-standard-WSL2"),
+    )
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_source_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text(
+        "browser-extension/node_modules/\ncustom/generated-output/\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "package"
+    source.mkdir(parents=True)
+    for disposable in (".venv", ".git", ".cache"):
+        (tmp_path / disposable / "nested").mkdir(parents=True, exist_ok=True)
+    ignored_dependency = tmp_path / "browser-extension" / "node_modules" / "dependency"
+    ignored_dependency.mkdir(parents=True)
+    ignored_build = tmp_path / "custom" / "generated-output" / "deep" / "tree"
+    ignored_build.mkdir(parents=True)
+    calls: dict[str, object] = {}
+    allow_event = threading.Event()
+    new_source = tmp_path / "new_source"
+
+    def portable_watch(*paths: Path, **kwargs: object) -> object:
+        calls["paths"] = paths
+        calls["kwargs"] = kwargs
+        yield set()
+        assert allow_event.wait(timeout=1)
+        yield {(watchfiles.Change.added, str(new_source))}
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    new_source.mkdir()
+    allow_event.set()
+    observation = monitor.finish()
+
+    raw_paths = calls["paths"]
+    raw_kwargs = calls["kwargs"]
+    assert isinstance(raw_paths, tuple)
+    assert isinstance(raw_kwargs, dict)
+    watched = {Path(path) for path in raw_paths}
+    assert tmp_path.resolve() in watched
+    assert source in watched
+    git_dir = (tmp_path / ".git").resolve()
+    assert all(
+        path.is_relative_to(git_dir) or not any(part in {".venv", ".git", ".cache"} for part in path.parts)
+        for path in watched
+    )
+    assert all("node_modules" not in path.parts for path in watched)
+    assert all("generated-output" not in path.parts for path in watched)
+    assert tmp_path / "browser-extension" in watched
+    assert tmp_path / "custom" in watched
+    assert raw_kwargs["recursive"] is False
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="new_source")
+
+
+def test_checkout_mutation_monitor_remembers_deleted_ignored_root(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("browser-extension/node_modules/\n", encoding="utf-8")
+    ignored_root = tmp_path / "browser-extension" / "node_modules"
+    ignored_root.mkdir(parents=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    shutil.rmtree(ignored_root)
+    monitor._record_change(ignored_root)
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+@pytest.mark.uses_real_clock("waits for the real filesystem watcher to witness an index replacement")
+def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    baseline = tmp_path / "baseline.py"
+    baseline.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", "baseline.py"], cwd=tmp_path, check=True)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    hidden = tmp_path / "ignored" / "hidden.py"
+    hidden.parent.mkdir()
+    hidden.write_text("secret authority\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-f", "ignored/hidden.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "reset", "-q", "--", "ignored/hidden.py"], cwd=tmp_path, check=True)
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
+
+
+@pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a branch-ref replacement")
+def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "first"], cwd=tmp_path, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "second"], cwd=tmp_path, check=True)
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    subprocess.run(["git", "update-ref", branch, first], cwd=tmp_path, check=True)
+    subprocess.run(["git", "update-ref", branch, second], cwd=tmp_path, check=True)
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=f".git/{branch}",
+    )
+
+
+@pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a loose ref created from packed authority")
+def test_checkout_mutation_monitor_observes_packed_nested_branch_ref_change(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "first"], cwd=tmp_path, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-qc", "feature/nested"], cwd=tmp_path, check=True)
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "second"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--prune"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    subprocess.run(["git", "update-ref", "refs/heads/feature/nested", first], cwd=tmp_path, check=True)
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=".git/refs/heads/feature/nested",
+    )
+
+
+def test_worktree_fingerprint_rejects_assume_unchanged_tracked_content(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    source = tmp_path / "polylogue" / "hidden.py"
+    source.parent.mkdir()
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "polylogue/hidden.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "update-index", "--assume-unchanged", "polylogue/hidden.py"], cwd=tmp_path, check=True)
+    source.write_text("value = 2\n", encoding="utf-8")
+
+    assert _worktree_fingerprint(tmp_path) == "unavailable"
+
+
+def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git" / "index.lock")
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_treats_every_ready_index_event_as_authority_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "tracked.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    index = tmp_path / ".git" / "index"
+
+    def portable_watch(*_paths: Path, **_kwargs: object) -> object:
+        yield set()
+        yield {(watchfiles.Change.modified, str(index))}
+        stop_event = _kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait(timeout=1)
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
+
+
+def test_checkout_mutation_monitor_rejects_partial_git_enumeration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    real_run = subprocess.run
+
+    def warning_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        result = cast(subprocess.CompletedProcess[bytes], real_run(*args, **kwargs))
+        command = args[0]
+        if isinstance(command, list) and command[:2] == ["git", "status"]:
+            return subprocess.CompletedProcess(command, 0, result.stdout, b"warning: partial enumeration\n")
+        return result
+
+    monkeypatch.setattr(subprocess, "run", warning_run)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_rejects_filesystem_walk_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    real_walk = os.walk
+
+    def failing_walk(top: Path, *, onerror: object = None) -> object:
+        assert callable(onerror)
+        onerror(PermissionError("unreadable source directory"))
+        yield from real_walk(top)
+
+    monkeypatch.setattr(os, "walk", failing_walk)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_fails_closed_when_portable_watcher_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_watch(*_paths: Path, **_kwargs: object) -> object:
+        raise OSError("watcher unavailable")
+        yield set()
+
+    monkeypatch.setattr(watchfiles, "watch", broken_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
 
 
 def test_seed_receipt_classifies_every_node_terminal_outcome(
@@ -1423,6 +2658,39 @@ def test_seed_node_outcomes_accept_setup_skip_as_terminal_skip(tmp_path: Path) -
     ]
 
 
+def test_seed_node_outcomes_preserve_call_and_fixture_xfail_xpass(tmp_path: Path) -> None:
+    """Durable pytest reports, including fixture ``pytest.xfail()``, finish seed nodes."""
+    events = tmp_path / "events.jsonl"
+    nodes = [
+        "tests/test_a.py::test_call_xfailed",
+        "tests/test_a.py::test_call_xpassed",
+        "tests/test_a.py::test_setup_xfailed",
+    ]
+    events.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {"event": "test_report", "nodeid": nodes[0], "when": "call", "outcome": "xfailed"},
+                {"event": "test_report", "nodeid": nodes[1], "when": "call", "outcome": "xpassed"},
+                {"event": "test_report", "nodeid": nodes[2], "when": "setup", "outcome": "xfailed"},
+            )
+        )
+        + "\n"
+    )
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=nodes,
+        database={"node_outcomes": {}},
+        pytest_step={},
+        use_database_fallback=False,
+    )
+
+    assert {item["nodeid"]: item["outcome"] for item in outcomes} == dict(
+        zip(nodes, ("xfailed", "xpassed", "xfailed"), strict=True)
+    )
+
+
 def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text(
@@ -1433,18 +2701,27 @@ def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> 
     )
     outcomes = _seed_node_outcomes_from_events(
         events,
-        expected_nodeids=["tests/test_a.py::test_repaired", "tests/test_b.py::test_prior"],
+        expected_nodeids=[
+            "tests/test_a.py::test_repaired",
+            "tests/test_b.py::test_prior",
+            "tests/test_c.py::test_expected_failure",
+        ],
         database={"node_outcomes": {"tests/test_b.py::test_prior": "passed"}},
         pytest_step={},
         use_database_fallback=False,
         prior_node_outcomes={
-            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"}
+            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"},
+            "tests/test_c.py::test_expected_failure": {
+                "nodeid": "tests/test_c.py::test_expected_failure",
+                "outcome": "xfailed",
+            },
         },
     )
 
     assert {item["nodeid"]: item["outcome"] for item in outcomes} == {
         "tests/test_a.py::test_repaired": "passed",
         "tests/test_b.py::test_prior": "passed",
+        "tests/test_c.py::test_expected_failure": "xfailed",
     }
 
 
@@ -1887,12 +3164,12 @@ def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypat
     (basetemp / "artifact.txt").write_text("payload")
     calls = 0
 
-    def counted_size(_path: Path) -> int:
+    def counted_usage(_path: Path) -> tuple[int, int]:
         nonlocal calls
         calls += 1
-        return calls
+        return calls, calls + 1
 
-    monkeypatch.setattr("devtools.verify_runs._dir_size_kb", counted_size)
+    monkeypatch.setattr("devtools.verify_runs._dir_usage_kb", counted_usage)
     sampler = ResourceSampler(
         root_pid=os.getpid(),
         run_id="test-run",
@@ -1905,8 +3182,54 @@ def test_resource_sampler_throttles_basetemp_size_walk(tmp_path: Path, monkeypat
     second = sampler.sample(event="sample")
 
     assert first["basetemp_size_kb"] == 1
+    assert first["basetemp_allocated_kb"] == 2
     assert second["basetemp_size_kb"] == 1
     assert calls == 1
+
+
+def test_sparse_basetemp_enforces_allocated_tmpfs_bytes_and_retains_logical_evidence(tmp_path: Path) -> None:
+    env = {
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path),
+        "POLYLOGUE_PYTEST_TMPFS": "1",
+        "POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S": "1",
+    }
+    run_id = "sparse-physical-accounting"
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id=run_id, env=env)
+    basetemp.mkdir(parents=True)
+    with (basetemp / "sparse.bin").open("wb") as handle:
+        handle.seek(64 * 1024 * 1024)
+        handle.write(b"x")
+    sampler = ResourceSampler(
+        root_pid=os.getpid(), run_id=run_id, root=tmp_path, env=env, output_path=tmp_path / "resources.jsonl"
+    )
+
+    sample = sampler.sample(event="sample")
+    logical_kb = sample["basetemp_size_kb"]
+    allocated_kb = sample["basetemp_allocated_kb"]
+
+    assert isinstance(logical_kb, int)
+    assert isinstance(allocated_kb, int)
+    assert logical_kb > allocated_kb
+    assert not pytest_tmpfs_budget_exceeded(sample, budget_kb=allocated_kb + 1)
+    assert pytest_tmpfs_budget_exceeded(sample, budget_kb=allocated_kb - 1)
+
+
+def test_resource_sampler_does_not_charge_symlink_targets_to_managed_basetemp(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    run_id = "symlink-accounting"
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id=run_id, env=env)
+    basetemp.mkdir(parents=True)
+    outside_target = tmp_path / "outside-target.bin"
+    outside_target.write_bytes(b"x" * (4 * 1024 * 1024))
+    (basetemp / "external-link").symlink_to(outside_target)
+    sampler = ResourceSampler(
+        root_pid=os.getpid(), run_id=run_id, root=tmp_path, env=env, output_path=tmp_path / "resources.jsonl"
+    )
+
+    sample = sampler.sample(event="sample")
+
+    assert sample["basetemp_size_kb"] < 512
+    assert sample["basetemp_allocated_kb"] < 512
 
 
 def test_pytest_basetemp_path_tracks_tmpfs_opt_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2177,6 +3500,10 @@ def test_managed_pytest_policy_preserves_headroom_for_explicit_tmpfs_root(
 def test_full_suite_explicit_root_requires_measured_basetemp_space(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # The managed test harness itself uses /dev/shm, so keep this custom-root
+    # regression on a distinct disk route rather than accidentally admitting
+    # it as a configured tmpfs path.
+    monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", tmp_path / "other-shm")
     monkeypatch.setattr(verify_runs, "_meminfo", lambda: {"MemAvailable": 8 * 1024 * 1024})
     monkeypatch.setattr(verify_runs, "read_cgroup_memory_headroom_bytes", lambda: None)
     monkeypatch.setattr(verify_runs, "_pressure", lambda _kind: {"full_avg10": 0.0})
@@ -2319,7 +3646,7 @@ def test_inherited_512_mib_tmpfs_cap_reroutes_measured_demand_to_scratch(
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
 
-def test_explicit_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
+def test_configured_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
@@ -2339,6 +3666,36 @@ def test_explicit_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
     assert policy.basetemp_label == "scratch"
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+
+
+def test_configured_tmpfs_reroute_keeps_admission_evidence_when_scratch_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    configured = shm / "configured"
+    configured.mkdir()
+
+    def constrained_headroom(path: Path) -> int | None:
+        if path == scratch:
+            return 1 * 1024
+        return 8 * 1024 * 1024
+
+    monkeypatch.setattr(verify_runs, "_headroom_kb", constrained_headroom)
+
+    with pytest.raises(PytestResourceError) as excinfo:
+        apply_managed_pytest_runtime_policy(
+            {
+                "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(configured),
+                "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+            },
+            worker_count=4,
+        )
+
+    message = str(excinfo.value)
+    assert f"configured pytest basetemp declared demand exceeds its safe adaptive tmpfs budget ({configured}" in message
+    assert "safe tmpfs budget=512 MiB" in message
+    assert f"{scratch} (scratch): 1 MiB free" in message
 
 
 def test_focused_policy_keeps_full_suite_basetemp_demand_out_of_scratch_preflight(
@@ -2608,11 +3965,71 @@ def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> Non
     env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
     basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-1", env=env)
     (basetemp / "worker-output").mkdir(parents=True)
+    verify_runs.pytest_basetemp_claim_path(basetemp, kind="managed").write_text("999999:1", encoding="utf-8")
 
     cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-1", env=env)
 
     assert cleaned == basetemp
     assert not basetemp.exists()
+
+
+def test_pytest_basetemp_claim_path_canonicalizes_symlink_aliases(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+
+    real_basetemp = real_root / "pytest-polylogue-run"
+    linked_basetemp = linked_root / "pytest-polylogue-run"
+
+    assert verify_runs.pytest_basetemp_claim_path(real_basetemp, kind="lock") == verify_runs.pytest_basetemp_claim_path(
+        linked_basetemp, kind="lock"
+    )
+
+
+def test_cleanup_managed_pytest_basetemp_leaves_successor_claim_while_locked(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="reused-run", env=env)
+    basetemp.mkdir(parents=True)
+    (basetemp / "successor-fixture").write_text("live", encoding="utf-8")
+    claim_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="managed")
+    claim_path.write_text("999999:1", encoding="utf-8")
+    lock_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="lock")
+
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        assert cleanup_managed_pytest_basetemp(root=tmp_path, run_id="reused-run", env=env) is None
+
+    assert basetemp.exists()
+    assert claim_path.exists()
+
+
+def test_pytest_workload_receipt_uses_allocated_basetemp_peak() -> None:
+    receipt = verify._pytest_workload_receipt(
+        label="pytest sparse",
+        cmd=["pytest", "tests/unit/example.py"],
+        elapsed_s=1.0,
+        returncode=0,
+        termination_reason=None,
+        resource_summary={"peak_basetemp_size_kb": 64 * 1024, "peak_basetemp_allocated_kb": 8},
+        last_resource_sample={"tree_rss_kb": 0, "tree_pss_kb": 0, "tree_cpu_s": 0.0},
+        tmpfs_budget_mb=1,
+        basetemp_cleanup=None,
+        concurrency=1,
+    )
+
+    execute = next(phase for phase in receipt["phases"] if phase["name"] == "execute")
+    assert execute["temp_storage_bytes"] == 8 * 1024
+    assert "Logical basetemp peak retained as diagnostic evidence: 67108864 bytes." in receipt["notes"]
+
+
+def test_cleanup_managed_pytest_basetemp_recognizes_child_cleanup(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-cleaned-by-child", env=env)
+
+    cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-cleaned-by-child", env=env)
+
+    assert cleaned == basetemp
 
 
 def test_cleanup_managed_pytest_basetemp_does_not_receipt_residual_tree(
@@ -2671,6 +4088,7 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     )
 
     with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
@@ -2693,6 +4111,7 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     cleaned = tmp_path / "pytest-polylogue-run-1"
 
     with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=None),
         patch("devtools.verify.cleanup_managed_pytest_basetemp", return_value=cleaned) as cleanup,
@@ -2702,6 +4121,83 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     assert rc == 0
     cleanup.assert_called_once()
     assert metadata["basetemp_cleanup"] == str(cleaned)
+
+
+@pytest.mark.uses_real_clock("the heartbeat loop computes elapsed containment time")
+def test_heartbeat_persists_drained_output_before_interrupting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest buffered", cmd=["pytest"])
+    stdout_read, stdout_write = os.pipe()
+    stderr_read, stderr_write = os.pipe()
+    os.write(stdout_write, b"buffered stdout before interrupt\n")
+    os.close(stdout_write)
+    os.close(stderr_write)
+    stdout_pipe = os.fdopen(stdout_read, "rb", closefd=True)
+    stderr_pipe = os.fdopen(stderr_read, "rb", closefd=True)
+
+    class _Process:
+        pid = os.getpid()
+        stdout = stdout_pipe
+        stderr = stderr_pipe
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    class _InterruptingSelector:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def register(self, _fileobj: object, _events: int, _data: str) -> None:
+            return None
+
+        def get_map(self) -> dict[int, object]:
+            return {1: object()}
+
+        def select(self, timeout: float | None = None) -> list[tuple[SimpleNamespace, int]]:
+            del timeout
+            if self.calls == 0:
+                self.calls += 1
+                return [(SimpleNamespace(fd=stdout_pipe.fileno(), data="stdout", fileobj=stdout_pipe), 1)]
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            return None
+
+    launch = SimpleNamespace(
+        argv=["pytest"],
+        receipt_path=tmp_path / "containment.json",
+        request_path=tmp_path / "request.json",
+        mode="process-group",
+        unit=None,
+        cgroup_path=None,
+        fallback_argv=None,
+        runtime_cap_s=0.0,
+    )
+    try:
+        with (
+            patch("devtools.verify.enable_child_subreaper", return_value=True),
+            patch("devtools.verify.descendant_process_identities", return_value=()),
+            patch("devtools.verify.build_supervisor_launch", return_value=launch),
+            patch("devtools.verify.subprocess.Popen", return_value=_Process()),
+            patch("devtools.verify._wait_for_supervisor_start", return_value={"status": "started"}),
+            patch("devtools.verify.selectors.DefaultSelector", _InterruptingSelector),
+            patch("devtools.verify._await_interrupted_pytest_containment"),
+            patch("devtools.verify._write_pytest_progress"),
+            patch("devtools.verify.ResourceSampler", return_value=MagicMock()),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                verify._run_pytest_with_heartbeat(
+                    ["pytest"], cwd=str(tmp_path), env={}, t0=time.monotonic(), run=run, artifacts=artifacts
+                )
+    finally:
+        stdout_pipe.close()
+        stderr_pipe.close()
+
+    assert artifacts.stdout_path.read_text(encoding="utf-8") == "buffered stdout before interrupt\n"
+    assert artifacts.stderr_path.read_text(encoding="utf-8") == ""
+    assert artifacts.output_path.read_text(encoding="utf-8") == "buffered stdout before interrupt\n"
+    assert (tmp_path / PYTEST_OUTPUT_PATH).read_text(encoding="utf-8") == "buffered stdout before interrupt\n"
 
 
 def test_explicit_basetemp_root_retains_managed_resource_monitoring(
@@ -2729,6 +4225,144 @@ def test_explicit_basetemp_root_retains_managed_resource_monitoring(
     assert metadata["pytest_tmpfs"] is False
     assert metadata["pytest_tmpfs_budget_mb"] is None
     assert metadata["resource_sample_count"] >= 1
+
+
+def test_run_propagates_explicit_basetemp_to_resource_policy(tmp_path: Path) -> None:
+    explicit = tmp_path / "diagnostic-basetemp"
+    captured: dict[str, str] = {}
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+
+    def apply_policy(env: dict[str, str], **_kwargs: object) -> tuple[dict[str, str], None]:
+        captured.update(env)
+        return env, None
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", side_effect=apply_policy),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest", "--basetemp", str(explicit)])
+
+    assert rc == 0
+    assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
+
+
+def test_run_propagates_pytest_addopts_basetemp_to_resource_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    explicit = tmp_path / "diagnostic-basetemp"
+    captured: dict[str, str] = {}
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+    monkeypatch.setenv("PYTEST_ADDOPTS", f"--basetemp {explicit}")
+
+    def apply_policy(env: dict[str, str], **_kwargs: object) -> tuple[dict[str, str], None]:
+        captured.update(env)
+        return env, None
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", side_effect=apply_policy),
+        patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, _metadata = _run("pytest focused", ["pytest"])
+
+    assert rc == 0
+    assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
+
+
+def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
+    stale_statistics = tmp_path / verify_runs.CURRENT_STATISTICS_PATH
+    stale_statistics.parent.mkdir(parents=True)
+    stale_statistics.write_text('{"node_count": 99}\n', encoding="utf-8")
+
+    with patch("devtools.verify._run_pytest_with_heartbeat", side_effect=KeyboardInterrupt):
+        rc, _elapsed, metadata = _run("pytest focused", ["pytest"])
+
+    assert rc == 130
+    assert metadata["diagnosis"] == "pytest_interrupted"
+    assert not stale_statistics.exists()
+
+
+def test_explicit_basetemp_policy_uses_actual_path_for_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    explicit = tmp_path / "diagnostic-basetemp"
+    explicit.mkdir()
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 32 * 1024 * 1024)
+
+    _env, policy = apply_managed_pytest_runtime_policy(
+        {"POLYLOGUE_PYTEST_EXPLICIT_BASETEMP": str(explicit)}, worker_count=0, full_suite=False
+    )
+
+    assert policy is not None
+    assert policy.basetemp_root == str(explicit)
+    assert policy.basetemp_label == "explicit"
+
+
+def test_explicit_tmpfs_basetemp_requires_declared_demand_and_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    explicit = shm / "pytest-polylogue-diagnostic"
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 2500 * 1024)
+
+    with pytest.raises(PytestResourceError, match="need >= 3072 MiB"):
+        apply_managed_pytest_runtime_policy(
+            {verify_runs.PYTEST_EXPLICIT_BASETEMP_ENV: str(explicit)}, worker_count=4, full_suite=True
+        )
+
+
+def test_explicit_tmpfs_basetemp_reports_adaptive_and_filesystem_refusals_together(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=3072)
+    explicit = shm / "pytest-polylogue-diagnostic"
+    monkeypatch.setattr("devtools.verify_runs._headroom_kb", lambda _path: 2 * 1024 * 1024)
+
+    with pytest.raises(PytestResourceError) as excinfo:
+        apply_managed_pytest_runtime_policy(
+            {verify_runs.PYTEST_EXPLICIT_BASETEMP_ENV: str(explicit)}, worker_count=0, full_suite=True
+        )
+    message = str(excinfo.value)
+
+    assert "declared demand=1522 MiB" in message
+    assert "safe tmpfs budget=1082 MiB" in message
+    assert "available filesystem space=2048 MiB" in message
+    assert "required filesystem headroom=2546 MiB" in message
+
+
+def test_supervisor_never_cleans_an_explicit_tmpfs_basetemp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", tmp_path / "dev-shm")
+    explicit = verify_runs.PYTEST_TMPFS_ROOT / "pytest-polylogue-diagnostic"
+
+    cleanup_path = verify._supervised_tmpfs_cleanup_path(
+        root=tmp_path,
+        run_id="run-1",
+        env={verify_runs.PYTEST_EXPLICIT_BASETEMP_ENV: str(explicit), "POLYLOGUE_PYTEST_TMPFS": "1"},
+    )
+
+    assert cleanup_path is None
+
+
+def test_run_resource_refusal_returns_finalized_compact_statistics(tmp_path: Path) -> None:
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+
+    with patch(
+        "devtools.verify.apply_managed_pytest_runtime_policy",
+        side_effect=PytestResourceError("starved basetemp"),
+    ):
+        rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "-n", "0"], run=run)
+
+    assert rc == 125
+    assert metadata["statistics"]["node_count"] == 0
+    assert metadata["statistics_path"].endswith("statistics.json")
 
 
 def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
@@ -2872,6 +4506,7 @@ def test_run_reads_structured_pytest_report() -> None:
     with (
         patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed),
         patch("devtools.verify._read_pytest_report", return_value=report),
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, None)),
     ):
         rc, _elapsed, metadata = _run("pytest testmon", ["pytest", "--testmon", "-n", "8"])
 
@@ -3012,6 +4647,55 @@ def test_pytest_run_preserves_other_lane_reports(
     assert metadata["report_path"] is None
     assert metadata["report_status"] == "missing"
     assert metadata["junitxml_path"] == str(isolated_junit)
+
+
+def test_managed_pytest_run_reads_only_its_invocation_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    run = VerifyRun(tier="focused-test", argv=[], git_head="head", root=tmp_path)
+    seen_report: Path | None = None
+
+    def fake_pytest(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal seen_report
+        seen_report = verify._pytest_json_report_path(cmd)
+        assert seen_report is not None
+        assert seen_report.parent == run.run_dir
+        seen_report.write_text('{"summary":{"passed":1,"total":1}}', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "1 passed in 0.01s\n", "")
+
+    with patch("devtools.verify._run_pytest_with_heartbeat", side_effect=fake_pytest):
+        rc, _elapsed, metadata = _run(
+            "pytest focused",
+            [sys.executable, "-m", "pytest", f"--json-report-file={PYTEST_REPORT_PATH}"],
+            run=run,
+        )
+
+    assert rc == 0
+    assert seen_report is not None and not seen_report.exists()
+    assert metadata["report_path"].endswith("/pytest-report.json")
+
+
+def test_pytest_progress_is_durable_per_step_and_mirrored_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    artifact_dir = tmp_path / ".cache" / "verify" / "runs" / "run" / "steps" / "01-pytest"
+
+    verify._write_pytest_progress(
+        event="running",
+        cmd=["pytest"],
+        started_at=0.0,
+        elapsed_s=0.0,
+        artifact_dir=str(artifact_dir),
+    )
+
+    durable = json.loads((artifact_dir / "progress.json").read_text(encoding="utf-8"))
+    current = json.loads((tmp_path / PYTEST_PROGRESS_PATH).read_text(encoding="utf-8"))
+    assert durable == current
+    assert durable["event"] == "running"
 
 
 def test_pytest_run_terminates_after_runtime_budget(
@@ -3231,6 +4915,220 @@ def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[
     assert payload["release_baseline_allowed"] is False
 
 
+@pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
+def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
+    capsys: pytest.CaptureFixture[str],
+    fingerprints: tuple[str, str],
+) -> None:
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 125
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code"] == 125
+    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert checkout_step["diagnosis"] == "checkout_fingerprint_unavailable"
+    assert checkout_step["initial_worktree_fingerprint"] == fingerprints[0]
+    assert checkout_step["final_worktree_fingerprint"] == fingerprints[1]
+
+
+def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", side_effect=("start-head", "different-head")),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert checkout_step["diagnosis"] == "checkout_changed_during_verification"
+    assert checkout_step["initial_git_head"] == "start-head"
+    assert checkout_step["final_git_head"] == "different-head"
+
+
+@pytest.mark.parametrize(
+    ("fingerprints", "expected_diagnosis"),
+    [
+        (("unavailable", "stable"), "checkout_fingerprint_unavailable"),
+        (("stable", "changed"), "checkout_changed_during_verification"),
+    ],
+)
+def test_checkout_stability_failure_controls_every_broad_run_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fingerprints: tuple[str, str],
+    expected_diagnosis: str,
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation" / "run.json"
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "broad-invocation")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {"diagnosis": "pytest_passed"})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    run_payload = json.loads(next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json")).read_text())
+    current_payload = json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text())
+    receipt_payload = json.loads(receipt.read_text())
+
+    for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
+        assert durable_payload["diagnosis"] == expected_diagnosis
+        assert durable_payload["final_worktree_fingerprint"] == fingerprints[1]
+
+
+def test_transient_checkout_mutation_controls_every_broad_run_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _ChangedMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=True, unavailable=False)
+
+    history: dict[str, Any] = {}
+    receipt = tmp_path / "invocation" / "run.json"
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", _ChangedMonitor)
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "broad-invocation")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {"diagnosis": "pytest_passed"})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        assert main(["--quick", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    run_payload = json.loads(next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json")).read_text())
+    current_payload = json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text())
+    receipt_payload = json.loads(receipt.read_text())
+    for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
+        assert durable_payload["diagnosis"] == "checkout_changed_during_verification"
+        assert durable_payload["final_worktree_fingerprint"] == "stable"
+
+
+def test_transient_checkout_mutation_discards_testmon_graph_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _ChangedMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=True, unavailable=False, observed_path="polylogue/example.py")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", _ChangedMonitor)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    TESTMON_DATA.parent.mkdir(parents=True)
+    TESTMON_DATA.write_bytes(b"transient dependency graph")
+    TESTMON_SEED_STAMP.write_text("{}", encoding="utf-8")
+    affected_publish = MagicMock()
+    selection_publish = MagicMock()
+
+    with (
+        patch("devtools.verify._anchor_verification_paths"),
+        patch("devtools.verify.maybe_bootstrap_testmon_seed", return_value=None),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest", "--testmon"])]),
+        patch("devtools.verify._run", return_value=(0, 0.01, {"selected_count": 1})),
+        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+        patch("devtools.verify._record_testmon_affected_coverage", affected_publish),
+        patch("devtools.verify._refresh_testmon_selection_attempt", selection_publish),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
+        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
+        patch("devtools.verify._warn_low_memory"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        assert main(["--json"]) == 125
+
+    assert not TESTMON_DATA.exists()
+    assert not TESTMON_SEED_STAMP.exists()
+    affected_publish.assert_not_called()
+    selection_publish.assert_not_called()
+    assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_changed_during_verification"
+
+
 def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]) -> None:
     calls: list[str] = []
 
@@ -3240,7 +5138,10 @@ def test_verify_stops_after_failed_heavy_step(capsys: pytest.CaptureFixture[str]
 
     with (
         patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
@@ -3403,7 +5304,7 @@ def test_verify_main_types_skip_slow_terminal_authority(
         patch("devtools.verify._run", side_effect=fake_run),
         patch("devtools.verify.build_verify_steps", return_value=[("pytest full", ["pytest"])]),
         patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._save_history"),
+        patch("devtools.verify._save_history") as save_history,
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
     ):
@@ -3413,20 +5314,129 @@ def test_verify_main_types_skip_slow_terminal_authority(
     assert payload["verification_scope"] == expected_scope
     assert payload["release_baseline_allowed"] is expected_permission
     assert payload["terminal_authorization"] == ("narrow-terminal" if expected_permission else None)
+    assert save_history.call_args.args[0]["checkout_root"] == str(ROOT.resolve())
 
 
 def test_verify_refuses_unbudgeted_pytest_before_running_steps(capsys: pytest.CaptureFixture[str]) -> None:
     with (
         patch("devtools.verify.build_verify_steps", side_effect=PytestResourceError("only 0.50 GiB available")),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._testmon_preflight", return_value=None),
         patch("devtools.verify._run") as run,
+        patch("devtools.verify._save_history") as save_history,
     ):
         rc = main(["--json"])
 
     assert rc == 125
     run.assert_not_called()
+    assert save_history.call_args.args[0]["diagnosis"] == "pytest_resource_preflight_failed"
     assert "only 0.50 GiB available" in capsys.readouterr().err
+
+
+def test_verify_starts_checkout_monitor_before_broad_change_classification(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+
+    class _OrderingMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    def classify(_base: str, _head: str) -> bool:
+        assert events == ["monitor-started"]
+        events.append("classified")
+        return False
+
+    with (
+        patch("devtools.verify.CheckoutMutationMonitor", _OrderingMonitor),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._default_testmon_is_broad_change", side_effect=classify),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+        patch("devtools.verify._testmon_release_baseline_permission", return_value=False),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 0
+
+    assert events == ["monitor-started", "classified", "monitor-finished"]
+    assert json.loads(capsys.readouterr().out)["exit_code"] == 0
+
+
+def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises() -> None:
+    events: list[str] = []
+
+    class _ExceptionalExitMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    with (
+        patch("devtools.verify.CheckoutMutationMonitor", _ExceptionalExitMonitor),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify.worktree_fingerprint", side_effect=RuntimeError("fingerprint failed")),
+    ):
+        with pytest.raises(RuntimeError, match="fingerprint failed"):
+            main(["--quick", "--json"])
+
+    assert events == ["monitor-started", "monitor-finished"]
+
+
+def test_verify_finalizes_runner_exception_after_open_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(verify, "maybe_bootstrap_testmon_seed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "_git_head", lambda: "head")
+    monkeypatch.setattr(verify, "worktree_fingerprint", lambda _root: "stable")
+    monitor = MagicMock()
+    monitor.finish.return_value = CheckoutMutationObservation(changed=False, unavailable=False)
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", lambda _root: monitor)
+    monkeypatch.setattr(verify, "_save_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+
+    def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        run = kwargs["run"]
+        run.start_step(label="ruff check", cmd=command)
+        raise RuntimeError("verification runner exploded")
+
+    monkeypatch.setattr(verify, "_run", explode)
+    monotonic_values = iter((100.0, 107.5))
+    monkeypatch.setattr("devtools.verify.time.monotonic", lambda: next(monotonic_values))
+
+    assert verify.main(["--quick", "--json"]) == 125
+    assert history["exit_code"] == 125
+    assert history["diagnosis"] == "verify_runner_exception"
+    assert history["duration_s"] == 7.5
+    assert history["verification_scope"] == "non-test"
+    assert history["steps"][0]["status"] == "failed"
+    assert history["steps"][0]["exit"] == 125
 
 
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(
@@ -3442,6 +5452,8 @@ def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirector
 def test_verify_rejects_zero_testmon_selection_for_executable_change(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    changed_executable_paths = MagicMock(return_value=("polylogue/example.py",))
+
     def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         del command, kwargs
         return 0, 0.01, ({"selected_count": 0} if label.startswith("pytest") else {})
@@ -3449,11 +5461,13 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
     with (
         patch("devtools.verify._run", side_effect=fake_run),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="pinned-base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
         patch("devtools.verify._testmon_preflight", return_value=None),
-        patch("devtools.verify._changed_executable_paths", return_value=("polylogue/example.py",)),
+        patch("devtools.verify._changed_executable_paths", changed_executable_paths),
         patch("devtools.verify._matching_testmon_coverage", return_value=None),
     ):
         rc = main(["--json"])
@@ -3463,6 +5477,48 @@ def test_verify_rejects_zero_testmon_selection_for_executable_change(
     pytest_step = next(step for step in payload["steps"] if step["name"].startswith("pytest"))
     assert pytest_step["diagnosis"] == "zero_testmon_selection_for_executable_change"
     assert pytest_step["zero_selection_changed_paths"] == ["polylogue/example.py"]
+    changed_executable_paths.assert_called_once_with("pinned-base", "head")
+
+
+def test_verify_finalizes_and_discards_graph_when_post_pytest_path_authority_fails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monitor = MagicMock()
+    monitor.finish.return_value = CheckoutMutationObservation(changed=False, unavailable=False)
+    discard = MagicMock()
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {"selected_count": 1})),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
+        patch("devtools.verify._changed_executable_paths", side_effect=PytestResourceError("git unavailable")),
+        patch("devtools.verify._discard_testmon_dependency_authority", discard),
+        patch("devtools.verify.CheckoutMutationMonitor", return_value=monitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify._testmon_preflight", return_value=None),
+    ):
+        rc = main(["--json"])
+
+    assert rc == 125
+    monitor.finish.assert_called_once_with()
+    discard.assert_called_once_with()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["diagnosis"] == "testmon_changed_path_authority_unavailable"
+
+
+def test_testmon_changed_path_authority_refuses_missing_commit_binding() -> None:
+    changed_paths = MagicMock()
+
+    with patch("devtools.verify._changed_executable_paths", changed_paths):
+        with pytest.raises(PytestResourceError, match="changed-path authority is unavailable"):
+            verify._changed_paths_from_testmon_authority(None, "head")
+
+    changed_paths.assert_not_called()
 
 
 def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
@@ -3474,7 +5530,10 @@ def test_verify_accepts_zero_testmon_selection_after_matching_coverage(
 
     with (
         patch("devtools.verify._run", side_effect=fake_run),
+        patch("devtools.verify.build_verify_steps", return_value=[("pytest testmon", ["pytest"])]),
         patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._default_testmon_is_broad_change", return_value=False),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
@@ -3496,7 +5555,7 @@ def test_testmon_coverage_receipts_are_content_exact() -> None:
     assert _matching_testmon_coverage(paths) is None
 
     TESTMON_SEED_STAMP.unlink()
-    with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
+    with patch("devtools.verify.worktree_fingerprint", return_value="affected"):
         _record_testmon_affected_coverage(
             executable_paths=paths,
             selected_count=3,
@@ -3506,11 +5565,11 @@ def test_testmon_coverage_receipts_are_content_exact() -> None:
         assert _matching_testmon_coverage(paths) == "successful_affected_run"
         assert _matching_testmon_coverage(("polylogue/other.py",)) is None
 
-    with patch("devtools.verify._worktree_fingerprint", return_value="changed"):
+    with patch("devtools.verify.worktree_fingerprint", return_value="changed"):
         assert _matching_testmon_coverage(paths) is None
 
     TESTMON_AFFECTED_STAMP.write_text(json.dumps({"identity": {"worktree_fingerprint": "affected"}}))
-    with patch("devtools.verify._worktree_fingerprint", return_value="affected"):
+    with patch("devtools.verify.worktree_fingerprint", return_value="affected"):
         assert _matching_testmon_coverage(paths) is None
 
 

@@ -125,18 +125,23 @@ stale per-run dirs from every known root (`/dev/shm`, `/realm/tmp/polylogue-pyte
 `/tmp/polylogue-pytest`, plus any explicit configured root) — never based on
 age alone: each managed basetemp carries a PID plus process-start identity,
 and a directory whose exact owner process is still alive is never removed
-regardless of age. An owner that cannot be confirmed dead (no marker) gets a
-multi-hour grace period rather than the normal ~30-minute one. The sweeper
+regardless of age. A tree without a valid managed claim or whose owner cannot
+be confirmed dead is never removed. The thirty-minute age threshold applies
+only after a positive managed claim identifies a dead owner. The sweeper
 restores owner-write permission only after a tree is adjudicated stale, so
 published read-only fixture copies cannot leak tmpfs indefinitely. Shared
 `pytest-polylogue-*-seeded-*` caches are never touched by the sweep — they
 are shared, reused, and built once behind their own `.build.done` guard.
 
 Managed verification refuses to start below 1 GiB available memory instead of
-falling back to the pathological disk lane. Passing-test roots are reclaimed at
-teardown; the external supervisor and parent runner independently remove the
-whole run root on completion or termination, with startup stale-root cleanup as
-recovery after an uncatchable process kill or reboot.
+falling back to the pathological disk lane. Every per-test `tmp_path` tree is
+reclaimed in fixture teardown, including failures and interruptions; node
+failure evidence remains in the managed event, longrepr, summary, and resource
+receipts. The controller removes only the exact basetemp it created. An
+explicit `--basetemp` is retained for targeted filesystem diagnosis. The
+external supervisor and parent runner independently remove the whole run root
+on completion or termination, with startup stale-root cleanup as recovery
+after an uncatchable process kill or reboot.
 
 An affected run that selects zero tests is accepted only when no executable,
 test, dependency, or harness path changed. A zero selection after such a change
@@ -163,6 +168,9 @@ and a postmortem diagnosis. The latest run is mirrored to
 - `.cache/verify/current-pytest-resources.jsonl`
 - `.cache/verify/current-pytest-postmortem.json`
 - `.cache/verify/current-pytest-containment.json`
+- `.cache/verify/current-pytest-statistics.json` — derived phase
+  distributions, worker count, storage, resource peaks, and cleanup outcome;
+  the same file is retained under each run's `steps/*/statistics.json`.
 - `.cache/verify/current-pytest-output.log`
 
 The devtools process drains pytest output, prints periodic heartbeat lines, and
@@ -195,9 +203,13 @@ IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
 broad collection does not retain or write unbounded node-id lists in controller
 or worker processes.
 
-`devtools workspace tasks recent` shows the run id, diagnosis, and peak pytest
-RSS when the current run metadata is available. `devtools workspace tasks stats
---resources` aggregates recorded pytest memory peaks over time.
+The detailed artifacts above are checkout-local and disposable. Each `devtools
+verify` or `devtools test` invocation automatically appends its compact run
+summary to `$XDG_STATE_HOME/polylogue/devtools/verify-history.jsonl` (or the
+corresponding `~/.local/state` path), shared across linked worktrees without a
+separate recording command. `devtools verify --history` prints the recent
+cross-worktree runs. Setup, call, and teardown timings come only from pytest
+reports in the event stream.
 
 `devtools test` uses the same pytest progress plugin and process supervisor for
 focused selections. During or after a run, inspect

@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from devtools import testmon_bootstrap, testmon_state, verify
-from devtools.testmon_state import file_fingerprint, inspect_testmon_database
+from devtools.testmon_state import file_fingerprint, inspect_testmon_database, seed_shard_plan
+from devtools.verify_runs import CheckoutMutationObservation
 
 
 def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
@@ -19,6 +20,16 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class _StableMutationMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
     source = tmp_path / "source"
     source.mkdir()
     (source / "pyproject.toml").write_text('[project]\nname = "polylogue"\n', encoding="utf-8")
@@ -44,6 +55,12 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
     runtime_identity = testmon_state.testmon_runtime_identity(source)
     assert runtime_identity is not None
     dependency_environment, pytest_harness = runtime_identity
+    shards = seed_shard_plan(expected, shard_size=len(expected))
+    shards[0]["status"] = "complete"
+    shards[0]["node_outcomes"] = [
+        {"nodeid": expected[0], "outcome": "passed"},
+        {"nodeid": expected[1], "outcome": "failed"},
+    ]
     attempt = {
         "protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION,
         "status": "reusable",
@@ -65,6 +82,7 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
             {"nodeid": expected[0], "outcome": "passed"},
             {"nodeid": expected[1], "outcome": "failed"},
         ],
+        "shards": shards,
         "exit_code": 1,
         "run_id": "real-testmon",
         "artifact_dir": ".cache/verify/runs/real-testmon",
@@ -128,8 +146,13 @@ def test_real_testmon_graph_copies_and_rebinds_in_a_temporary_lane(
         return 0, 0.01, {"selected_count": 1}
 
     monkeypatch.setattr(verify, "_run", fake_run)
-    monkeypatch.setattr(verify, "_changed_executable_paths", lambda: ())
+    monkeypatch.setattr(verify, "_git_head", lambda: "head")
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_default_testmon_is_broad_change", lambda _base_commit, _head_commit: False)
+    monkeypatch.setattr(verify, "_changed_executable_paths", lambda _base_commit, _head_commit: ())
     monkeypatch.setattr(verify, "_stamp_head", lambda: None)
+    monkeypatch.setattr(verify, "worktree_fingerprint", lambda *_args: "stable")
+    monkeypatch.setattr(verify, "CheckoutMutationMonitor", _StableMutationMonitor)
 
     assert verify.main([]) == 1
     result = json.loads(capsys.readouterr().out)

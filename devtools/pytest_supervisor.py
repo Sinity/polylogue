@@ -931,7 +931,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_cap_s=args.runtime_cap_s,
         )
     finally:
-        cleanup_complete = cleanup_managed_tmpfs_path(args.cleanup_path)
+        receipt = read_receipt(args.receipt)
+        receipt_quiescent = receipt is not None and receipt.get("controller_group_alive") is False
+        cleanup_complete = cleanup_managed_tmpfs_path(args.cleanup_path) if receipt_quiescent else False
         if args.cleanup_path is not None:
             with contextlib.suppress(OSError):
                 update_receipt(

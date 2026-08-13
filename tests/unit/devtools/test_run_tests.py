@@ -2,15 +2,36 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from devtools import run_tests, verify
-from devtools.verify_runs import git_head
+from devtools.verify_runs import (
+    CURRENT_RUN_PATH,
+    CURRENT_STATISTICS_PATH,
+    VERIFICATION_INVOCATION_ID_ENV,
+    VERIFICATION_RECEIPT_PATH_ENV,
+    CheckoutMutationObservation,
+    git_head,
+    pytest_command_worker_request,
+)
+
+
+class _NoMutationMonitor:
+    def __init__(self, _root: Path) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+    def finish(self) -> CheckoutMutationObservation:
+        return CheckoutMutationObservation(changed=False, unavailable=False)
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -30,7 +51,7 @@ def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "4"])
     # No injected -n when the caller already chose one.
     assert cmd.count("-n") == 1
-    assert cmd[-2:] == ["-n", "4"]
+    assert cmd[-3:] == ["-n", "4", "--dist=loadgroup"]
 
 
 @pytest.mark.parametrize(
@@ -53,13 +74,26 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
         arg for arg in command if arg in {"-n", "--numprocesses"} or arg.startswith(("-n", "--numprocesses="))
     ]
     assert len(worker_flags) == 1
-    assert verify._pytest_command_worker_request(command) == expected_request
+    assert pytest_command_worker_request(command) == expected_request
 
 
 def test_build_pytest_cmd_honors_workers_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
     cmd = run_tests.build_pytest_cmd(["tests/unit"])
-    assert cmd[-2:] == ["-n", "8"]
+    assert cmd[-3:] == ["-n", "8", "--dist=loadgroup"]
+
+
+def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "4", "--dist=worksteal"])
+
+    assert cmd.count("--dist=worksteal") == 1
+    assert "--dist=loadgroup" not in cmd
+
+
+def test_build_pytest_cmd_does_not_add_distribution_for_serial_run() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit", "-n", "0"])
+
+    assert not any(arg.startswith("--dist") for arg in cmd)
 
 
 def test_subprocess_env_anchors_pytest_artifacts_to_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,6 +127,7 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
+    monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
@@ -102,6 +137,378 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert isinstance(captured["run"]._payload["git_dirty"], bool)
     assert captured["run"]._payload["verification_scope"] == "affected"
     assert captured["run"]._payload["release_baseline_allowed"] is False
+    assert captured["history"]["run_id"] == captured["run"].run_id
+    assert captured["history"]["status"] == "success"
+
+
+def test_main_preserves_relative_selection_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_run(_label: str, cmd: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["cmd"] = cmd
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.chdir(run_tests.ROOT / "tests" / "unit")
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr("devtools.run_tests._run", _fake_run)
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["core/test_identity_law.py::test_session_id_is_origin_native_id"]) == 0
+
+    assert "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id" in captured["cmd"]
+
+
+def test_main_preserves_path_valued_options_from_subdirectory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_run(_label: str, cmd: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["cmd"] = cmd
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    invocation = tmp_path / "nested"
+    invocation.mkdir()
+    (invocation / "fixtures").mkdir()
+    monkeypatch.chdir(invocation)
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", _fake_run)
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+
+    assert (
+        run_tests.main(
+            [
+                "-k",
+                "proof",
+                "--basetemp=diagnostic",
+                "--rootdir",
+                ".",
+                "--ignore",
+                "fixtures",
+                "--ignore-glob=fixtures/*.json",
+                "--junit-xml",
+                "reports/results.xml",
+            ]
+        )
+        == 0
+    )
+
+    command = cast(list[str], captured["cmd"])
+    assert f"--basetemp={invocation / 'diagnostic'}" in command
+    assert command[command.index("--rootdir") + 1] == str(invocation)
+    assert command[command.index("--ignore") + 1] == str(invocation / "fixtures")
+    assert f"--ignore-glob={invocation / 'fixtures' / '*.json'}" in command
+    assert command[command.index("--junit-xml") + 1] == str(invocation / "reports" / "results.xml")
+
+
+def test_main_keeps_interruption_diagnosis_when_checkout_verification_finds_a_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history: dict[str, Any] = {}
+    fingerprints = iter(("before", "after"))
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", interrupt)
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 130
+    assert history["diagnosis"] == "pytest_interrupted"
+    assert history["checkout_diagnosis"] == "checkout_changed_during_focused_test"
+
+
+def test_main_persists_interrupted_checkout_diagnosis_to_all_run_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+    fingerprints = iter(("before", "after"))
+    receipt = tmp_path / "receipt.json"
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        run_tests,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setenv(VERIFICATION_INVOCATION_ID_ENV, "focused-interrupt")
+    monkeypatch.setenv(VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", interrupt)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 130
+
+    run_payload = json.loads((tmp_path / history["artifact_dir"] / "run.json").read_text())
+    current_payload = json.loads((tmp_path / CURRENT_RUN_PATH).read_text())
+    receipt_payload = json.loads(receipt.read_text())
+    for payload in (history, run_payload, current_payload, receipt_payload):
+        assert payload["diagnosis"] == "pytest_interrupted"
+        assert payload["checkout_diagnosis"] == "checkout_changed_during_focused_test"
+
+
+def test_normalize_selection_paths_preserves_pytest_path_option_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    invocation = tmp_path / "invocation"
+    expanded_root = tmp_path / "expanded-root"
+    invocation.mkdir()
+    expanded_root.mkdir()
+    absolute_config = tmp_path / "absolute.ini"
+    monkeypatch.setenv("PYTEST_ROOT", str(expanded_root))
+
+    normalized = run_tests._normalize_selection_paths(
+        [
+            "-cconfig/pytest.ini",
+            "-c",
+            "separate/pytest.ini",
+            "--config-file=other/pytest.ini",
+            "--config-file",
+            "separate-config/pytest.ini",
+            "--log-file",
+            "logs/test.log",
+            "--log-file=logs/joined.log",
+            "--debug",
+            "logs/debug-separated.log",
+            "--debug=logs/debug.log",
+            "--rootdir",
+            "$PYTEST_ROOT/relative",
+            "--rootdir=$PYTEST_ROOT/joined",
+            "--junitxml=reports/junit.xml",
+            "--junit-xml",
+            "reports/junit-alias.xml",
+            "--ignore-glob=fixtures/*.json",
+            "--basetemp",
+            str(absolute_config),
+            "--config-file",
+            "$PYTEST_ROOT/literal.ini",
+        ],
+        invocation_directory=invocation,
+    )
+
+    assert f"-c{invocation / 'config' / 'pytest.ini'}" in normalized
+    assert normalized[normalized.index("-c") + 1] == str(invocation / "separate" / "pytest.ini")
+    assert f"--config-file={invocation / 'other' / 'pytest.ini'}" in normalized
+    assert normalized[normalized.index("--config-file") + 1] == str(invocation / "separate-config" / "pytest.ini")
+    assert normalized[normalized.index("--log-file") + 1] == str(invocation / "logs" / "test.log")
+    assert f"--log-file={invocation / 'logs' / 'joined.log'}" in normalized
+    assert normalized[normalized.index("--debug") + 1] == str(invocation / "logs" / "debug-separated.log")
+    assert f"--debug={invocation / 'logs' / 'debug.log'}" in normalized
+    assert normalized[normalized.index("--rootdir") + 1] == str(expanded_root / "relative")
+    assert f"--rootdir={expanded_root / 'joined'}" in normalized
+    assert f"--junitxml={invocation / 'reports' / 'junit.xml'}" in normalized
+    assert normalized[normalized.index("--junit-xml") + 1] == str(invocation / "reports" / "junit-alias.xml")
+    assert f"--ignore-glob={invocation / 'fixtures' / '*.json'}" in normalized
+    assert normalized[normalized.index("--basetemp") + 1] == str(absolute_config)
+    assert normalized[-1] == str(invocation / "$PYTEST_ROOT" / "literal.ini")
+
+
+def test_normalize_selection_paths_preserves_pytest_symlinks_and_optional_debug(
+    tmp_path: Path,
+) -> None:
+    invocation = tmp_path / "invocation"
+    invocation.mkdir()
+    target = invocation / "target.ini"
+    target.write_text("[pytest]\n", encoding="utf-8")
+    config_link = invocation / "config-link.ini"
+    config_link.symlink_to(target.name)
+
+    normalized = run_tests._normalize_selection_paths(
+        ["-c", "config-link.ini", "-c=config-link.ini", "--debug", "-k", "focused"],
+        invocation_directory=invocation,
+    )
+
+    lexical_link = str(invocation / "config-link.ini")
+    assert normalized[:2] == ["-c", lexical_link]
+    assert normalized[2] == f"-c{lexical_link}"
+    assert normalized[3:] == ["--debug", "-k", "focused"]
+    assert str(target) not in normalized
+
+
+def test_main_preserves_keyword_and_marker_values_from_tests_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+    monkeypatch.chdir(run_tests.ROOT / "tests")
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+
+    def capture(_label: str, command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured.extend(command)
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.setattr(
+        run_tests,
+        "_run",
+        capture,
+    )
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["-k", "unit", "-m", "unit"]) == 0
+
+    keyword_index = captured.index("-k")
+    marker_index = next(index for index in range(keyword_index + 1, len(captured)) if captured[index] == "-m")
+    assert captured[keyword_index + 1] == "unit"
+    assert captured[marker_index + 1] == "unit"
+
+
+def test_main_finalizes_runner_exception_after_open_step(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        run_tests,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+
+    def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        run = kwargs["run"]
+        run.start_step(label="pytest focused", cmd=command)
+        raise RuntimeError("focused runner exploded")
+
+    monkeypatch.setattr(run_tests, "_run", explode)
+
+    assert run_tests.main(["focused-selector", "--json"]) == 125
+    assert history["exit_code"] == 125
+    assert history["diagnosis"] == "focused_test_runner_exception"
+    assert history["steps"][0]["status"] == "failed"
+    assert history["steps"][0]["exit"] == 125
+
+
+def test_main_withholds_success_when_checkout_changes_during_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    fingerprints = iter(("initial", "changed"))
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 125
+    assert captured["status"] == "failed"
+    assert captured["diagnosis"] == "checkout_changed_during_focused_test"
+    assert captured["worktree_fingerprint"] == "initial"
+    assert captured["final_worktree_fingerprint"] == "changed"
+
+
+def test_main_starts_checkout_monitor_before_initial_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _OrderingMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    def fingerprint(_root: Path) -> str:
+        assert events[0] == "monitor-started"
+        events.append("fingerprinted")
+        return "stable"
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", fingerprint)
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _OrderingMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+
+    assert run_tests.main(["tests/unit/example.py"]) == 0
+    assert events == ["monitor-started", "fingerprinted", "fingerprinted", "monitor-finished"]
+
+
+def test_main_finalizes_checkout_monitor_when_initial_fingerprint_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _ExceptionalExitMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("monitor-started")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("monitor-finished")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _ExceptionalExitMonitor)
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_tests.main(["tests/unit/example.py"])
+
+    assert events == ["monitor-started", "monitor-finished"]
+
+
+@pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
+def test_main_withholds_success_when_checkout_fingerprint_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    fingerprints: tuple[str, str],
+) -> None:
+    captured: dict[str, Any] = {}
+    fingerprint_values = iter(fingerprints)
+
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprint_values))
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 125
+    assert captured["status"] == "failed"
+    assert captured["diagnosis"] == "checkout_fingerprint_unavailable"
+    assert captured["worktree_fingerprint"] == fingerprints[0]
+    assert captured["final_worktree_fingerprint"] == fingerprints[1]
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,6 +519,52 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
+
+
+@pytest.mark.parametrize("invocation_location", ["inside", "external"])
+def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, invocation_location: str
+) -> None:
+    root = tmp_path / "checkout"
+    subdirectory = root / "devtools"
+    external_directory = tmp_path / "unrelated"
+    subdirectory.mkdir(parents=True)
+    external_directory.mkdir()
+    stale_report = root / verify.PYTEST_REPORT_PATH
+    stale_statistics = root / CURRENT_STATISTICS_PATH
+    stale_report.parent.mkdir(parents=True)
+    stale_statistics.parent.mkdir(parents=True, exist_ok=True)
+    stale_report.write_text('{"stale": true}')
+    stale_statistics.write_text('{"stale": true}')
+    captured: dict[str, object] = {}
+
+    def fake_run(_label: str, _cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["cwd"] = kwargs["cwd"]
+        Path(verify.PYTEST_REPORT_PATH).write_text('{"fresh": true}')
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.setattr(run_tests, "ROOT", root)
+    monkeypatch.setattr(run_tests, "_LOCK_PATH", root / ".cache" / "test-run.lock")
+    monkeypatch.setattr(
+        run_tests,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=root / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
+    monkeypatch.setattr(run_tests, "_run", fake_run)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    invocation_directory = subdirectory if invocation_location == "inside" else external_directory
+    monkeypatch.chdir(invocation_directory)
+
+    assert run_tests.main(["tests/unit/example.py"]) == 0
+
+    assert captured["cwd"] == str(root)
+    assert stale_report.read_text() == '{"fresh": true}'
+    assert not stale_statistics.exists()
+    assert not (invocation_directory / ".cache").exists()
 
 
 def test_git_head_records_checkout_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

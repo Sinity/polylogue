@@ -122,6 +122,49 @@ def test_seed_shard_ledger_rejects_duplicate_nodes_across_shards() -> None:
     assert testmon_state.validate_seed_shard_ledger([shard, duplicate], expected_nodeids=[NODEIDS[0]]) is None
 
 
+def test_seed_shard_ledger_accepts_expected_and_unexpected_xfail_outcomes() -> None:
+    nodes = sorted(NODEIDS)
+    shard = {
+        "index": 1,
+        "nodeids": nodes,
+        "nodeid_count": len(nodes),
+        "nodeid_digest": hashlib.sha256("\n".join(nodes).encode()).hexdigest(),
+        "status": "complete",
+        "node_outcomes": [
+            {"nodeid": nodes[0], "outcome": "xfailed"},
+            {"nodeid": nodes[1], "outcome": "xpassed"},
+        ],
+    }
+
+    assert testmon_state.validate_seed_shard_ledger([shard], expected_nodeids=nodes) == [shard]
+
+
+def test_expected_failure_and_non_strict_xpass_preserve_green_baseline(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    _write_graph(data)
+    attempt = _attempt(data, outcomes=("xfailed", "xpassed"))
+    attempt.update(status="complete", exit_code=0, release_baseline_allowed=True, verification_scope="release-baseline")
+    identity = attempt["identity"]
+    assert isinstance(identity, dict)
+    identity.update(skip_slow=False, terminal_authorization=None)
+
+    green = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
+
+    assert green is not None
+    assert green.baseline_status is BaselineStatus.GREEN
+    serialized = green.as_dict()
+    assert _TestmonSeedStamp.from_mapping(serialized, protocol_version=PROTOCOL).baseline_status is BaselineStatus.GREEN
+
+    # pytest controls strict-xpass behavior through its process exit code.  A
+    # strict xpass therefore remains reusable graph evidence but is red.
+    attempt.update(status="reusable", exit_code=1, release_baseline_allowed=False)
+    strict = stamp_from_attempt(attempt, data, checkout_root=tmp_path, protocol_version=PROTOCOL)
+
+    assert strict is not None
+    assert strict.baseline_status is BaselineStatus.RED
+    assert strict.affected_selection_allowed
+
+
 def test_testmon_database_canonicalizes_xdist_group_names(tmp_path: Path) -> None:
     data = tmp_path / "testmondata"
     _write_graph(data)

@@ -31,10 +31,10 @@ import selectors
 import shlex
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +44,7 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
+from devtools.pytest_progress_plugin import merge_worker_collection_payloads
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
@@ -59,6 +60,8 @@ from devtools.pytest_supervisor import (
 )
 from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
 from devtools.testmon_state import (
+    SUCCESSFUL_NODE_OUTCOMES,
+    TERMINAL_NODE_OUTCOMES,
     BindingMode,
     GraphStatus,
     SeedAttemptOutcome,
@@ -81,23 +84,34 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
+    CURRENT_STATISTICS_PATH,
+    PYTEST_CANONICAL_REPORT_NAME,
+    PYTEST_EXPLICIT_BASETEMP_ENV,
+    VERIFY_HISTORY_PATH,
+    CheckoutMutationMonitor,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_worker_count,
+    append_verify_history,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
+    finalize_checkout_mutation_monitors,
+    finish_checkout_mutation_monitor,
     force_managed_pytest_scratch,
     latest_event_from_paths,
-    merge_worker_events,
     normalize_pytest_basetemp_env,
     pytest_basetemp_path,
+    pytest_command_worker_request,
+    pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
+    start_checkout_mutation_monitor,
     utc_now,
+    worktree_fingerprint,
     xdist_uninterruptible_stall_reason,
 )
 from polylogue.scenarios.workload import (
@@ -215,7 +229,7 @@ def _format_completion_notification(
 # ── history (JSONL) ────────────────────────────────────────────────
 
 
-HISTORY_PATH = Path(".cache/verify-history.jsonl")
+HISTORY_PATH = VERIFY_HISTORY_PATH
 TESTMON_DATA = Path(".cache/testmon/testmondata")
 TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
 TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
@@ -263,9 +277,7 @@ def _load_history() -> list[dict[str, Any]]:
 
 
 def _save_history(entry: dict[str, Any]) -> None:
-    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(HISTORY_PATH, "a") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_verify_history(entry, path=HISTORY_PATH)
 
 
 def _print_history(file: Path | None = None) -> None:
@@ -277,12 +289,35 @@ def _print_history(file: Path | None = None) -> None:
     print(f"{'time':<20} {'tier':<8} {'head':<10} {'dur':>7} {'exit':>4}  steps")
     print("-" * 75)
     for entry in entries[-10:]:
-        ts = entry["timestamp"][5:19]  # MM-DD HH:MM
-        tier = entry["tier"][:8]
-        head = entry["git_head"][:8]
-        dur = f"{entry['total_duration_s']:.0f}s"
-        ec = entry["exit_code"]
-        steps = ", ".join(f"{s['name']}({s['duration_s']:.0f}s{' FAIL' if s['exit'] else ''})" for s in entry["steps"])
+        timestamp = str(entry.get("timestamp") or entry.get("finished_at") or entry.get("started_at") or "unknown")
+        ts = timestamp[5:19] if timestamp != "unknown" else timestamp
+        tier = str(entry.get("tier") or "unknown")[:8]
+        head = str(entry.get("git_head") or "unknown")[:8]
+        duration = entry.get("total_duration_s", entry.get("duration_s", 0.0))
+        try:
+            dur = f"{float(duration or 0.0):.0f}s"
+        except (TypeError, ValueError):
+            dur = "0s"
+        raw_exit = entry.get("exit_code", 1)
+        try:
+            ec = int(raw_exit if raw_exit is not None else 1)
+        except (TypeError, ValueError):
+            ec = 1
+        rendered_steps: list[str] = []
+        for step in entry.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            try:
+                step_duration = float(step.get("duration_s") or 0.0)
+            except (TypeError, ValueError):
+                step_duration = 0.0
+            raw_step_exit = step.get("exit", 1)
+            try:
+                step_exit = int(raw_step_exit if raw_step_exit is not None else 1)
+            except (TypeError, ValueError):
+                step_exit = 1
+            rendered_steps.append(f"{step.get('name', 'unknown')}({step_duration:.0f}s{' FAIL' if step_exit else ''})")
+        steps = ", ".join(rendered_steps)
         print(f"{ts:<20} {tier:<8} {head:<10} {dur:>7} {ec:>4}  {steps}")
 
 
@@ -380,7 +415,7 @@ def _pytest_metadata_from_report(report: dict[str, Any], *, report_path: Path) -
 def _pytest_command_metadata(cmd: list[str]) -> dict[str, Any]:
     """Return verify metadata that explains the pytest worker policy."""
     metadata: dict[str, Any] = {}
-    metadata["pytest_workers"] = _pytest_command_worker_request(cmd) or "unset"
+    metadata["pytest_workers"] = pytest_command_worker_request(cmd) or "unset"
     if "--testmon" in cmd:
         metadata["pytest_selection"] = "testmon-noselect" if "--testmon-noselect" in cmd else "testmon"
     else:
@@ -456,7 +491,8 @@ def _pytest_workload_receipt(
     peak_swap_pss_kb = resource_summary.get("peak_tree_swap_pss_kb")
     read_bytes = resource_summary.get("tree_read_bytes_delta")
     write_bytes = resource_summary.get("tree_write_bytes_delta")
-    peak_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
+    peak_basetemp_kb = resource_summary.get("peak_basetemp_allocated_kb")
+    logical_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
     final_rss_kb = last_resource_sample.get("tree_rss_kb") if last_resource_sample is not None else None
     final_pss_kb = last_resource_sample.get("tree_pss_kb") if last_resource_sample is not None else None
     total_cpu_s = last_resource_sample.get("tree_cpu_s") if last_resource_sample is not None else None
@@ -554,7 +590,14 @@ def _pytest_workload_receipt(
         ),
         cancellation_requested=termination_reason is not None,
         cleanup_complete=True if basetemp_cleanup is not None else None,
-        notes=("Managed pytest process-tree sampler adapter.",),
+        notes=(
+            "Managed pytest process-tree sampler adapter.",
+            (
+                f"Logical basetemp peak retained as diagnostic evidence: {logical_basetemp_kb * 1024} bytes."
+                if isinstance(logical_basetemp_kb, int)
+                else "Logical basetemp peak unavailable."
+            ),
+        ),
     )
     return dict(receipt.to_payload())
 
@@ -591,6 +634,7 @@ def _clear_pytest_report(cmd: Sequence[str] = ()) -> None:
         CURRENT_RESOURCES_PATH,
         CURRENT_POSTMORTEM_PATH,
         CURRENT_CONTAINMENT_PATH,
+        CURRENT_STATISTICS_PATH,
     ):
         with contextlib.suppress(FileNotFoundError):
             if path.is_dir():
@@ -603,6 +647,20 @@ def _write_pytest_output(stdout: str, stderr: str) -> None:
     """Persist captured pytest output for killed runs and post-mortem review."""
     PYTEST_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     PYTEST_OUTPUT_PATH.write_text(stdout + ("\n" if stdout and stderr else "") + stderr, encoding="utf-8")
+
+
+def _persist_pytest_output(stdout: str, stderr: str, *, artifacts: PytestStepArtifacts | None) -> None:
+    """Persist drained pytest output on both ordinary and exceptional exits."""
+    with contextlib.suppress(OSError):
+        _write_pytest_output(stdout, stderr)
+    if artifacts is not None:
+        for path, content in (
+            (artifacts.stdout_path, stdout),
+            (artifacts.stderr_path, stderr),
+            (artifacts.output_path, stdout + stderr),
+        ):
+            with contextlib.suppress(OSError):
+                path.write_text(content, encoding="utf-8")
 
 
 def _write_pytest_progress(
@@ -666,10 +724,12 @@ def _write_pytest_progress(
         }
         if latest_event.get("event") == "test_started" and isinstance(latest_event.get("nodeid"), str):
             payload["current_test_nodeid"] = latest_event["nodeid"]
-    PYTEST_PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PYTEST_PROGRESS_PATH.with_name(f"{PYTEST_PROGRESS_PATH.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    tmp.replace(PYTEST_PROGRESS_PATH)
+    targets = [PYTEST_PROGRESS_PATH]
+    if artifact_dir is not None:
+        targets.insert(0, Path(artifact_dir) / "progress.json")
+    for target in dict.fromkeys(targets):
+        with contextlib.suppress(OSError):
+            _atomic_write_json(target, payload)
 
 
 def _process_cpu_seconds(pid: int) -> float | None:
@@ -772,6 +832,59 @@ def _request_supervisor_termination(
         signalled = signal_process_identity(supervisor_pid, supervisor_start, signal.SIGTERM)
     if not signalled and process.poll() is None:
         process.send_signal(signal.SIGTERM)
+
+
+class PytestContainmentError(RuntimeError):
+    """Raised when an interrupted pytest supervisor cannot be confirmed stopped."""
+
+
+def _await_interrupted_pytest_containment(
+    process: subprocess.Popen[bytes],
+    launch: SupervisorLaunch,
+    *,
+    term_grace_s: float,
+    preserved_runner_descendants: Sequence[tuple[int, int]],
+) -> None:
+    """Wait for an interrupted pytest supervisor before its caller cleans up."""
+    if process.poll() is None:
+        _request_supervisor_termination(process, launch, reason="pytest runner interrupted")
+    try:
+        process.wait(timeout=max(1.0, term_grace_s + 1.0))
+    except subprocess.TimeoutExpired:
+        _force_kill_owned_run(
+            process,
+            launch,
+            preserved_runner_descendants=preserved_runner_descendants,
+        )
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired as exc:
+            raise PytestContainmentError(
+                "pytest containment did not quiesce after forced termination; leaving its basetemp intact"
+            ) from exc
+    reap_exited_children()
+    receipt = read_receipt(launch.receipt_path)
+    remaining_descendants = tuple(
+        identity
+        for identity in descendant_process_identities(os.getpid())
+        if identity not in preserved_runner_descendants
+    )
+    if (
+        receipt is None
+        or receipt.get("status") not in {"finished", "terminated"}
+        or receipt.get("controller_group_alive") is not False
+        or remaining_descendants
+    ):
+        raise PytestContainmentError(
+            "pytest containment did not quiesce its owned process tree; leaving its basetemp intact"
+        )
+
+
+def _supervised_tmpfs_cleanup_path(*, root: Path, run_id: str, env: dict[str, str]) -> Path | None:
+    """Return only a supervisor-owned tmpfs path eligible for cleanup."""
+    if env.get(PYTEST_EXPLICIT_BASETEMP_ENV) or pytest_tmpfs_budget_kb(env) is None:
+        return None
+    return pytest_basetemp_path(root=root, run_id=run_id, env=env)
 
 
 def _force_kill_owned_run(
@@ -931,14 +1044,10 @@ def _run_pytest_with_heartbeat(
         else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
     pytest_run_id = run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(os.getpid()))
-    tmpfs_cleanup_path = (
-        pytest_basetemp_path(
-            root=Path(cwd) if cwd is not None else Path.cwd(),
-            run_id=pytest_run_id,
-            env=env,
-        )
-        if tmpfs_budget_kb is not None
-        else None
+    tmpfs_cleanup_path = _supervised_tmpfs_cleanup_path(
+        root=Path(cwd) if cwd is not None else Path.cwd(),
+        run_id=pytest_run_id,
+        env=env,
     )
     launch = build_supervisor_launch(
         cmd,
@@ -1388,15 +1497,14 @@ def _run_pytest_with_heartbeat(
                 and sample_now - last_resource_sample >= resource_interval_s
             ):
                 resource_sample = sampler.sample(event="sample")
-                basetemp_size_kb = resource_sample.get("basetemp_size_kb")
                 if (
                     termination_reason is None
                     and tmpfs_budget_kb is not None
-                    and isinstance(basetemp_size_kb, int)
-                    and basetemp_size_kb > tmpfs_budget_kb
+                    and pytest_tmpfs_budget_exceeded(resource_sample, budget_kb=tmpfs_budget_kb)
                 ):
+                    basetemp_allocated_kb = int(resource_sample["basetemp_allocated_kb"])
                     termination_reason = (
-                        f"pytest tmpfs budget exceeded: {basetemp_size_kb / 1024:.1f} MiB "
+                        f"pytest tmpfs budget exceeded: {basetemp_allocated_kb / 1024:.1f} MiB allocated "
                         f"> {tmpfs_budget_kb / 1024:.0f} MiB"
                     )
                 if resource_sample.get("all_xdist_workers_uninterruptible") is True:
@@ -1415,8 +1523,19 @@ def _run_pytest_with_heartbeat(
             if process.poll() is not None and not selector.get_map():
                 break
     except BaseException:
-        if process.poll() is None:
-            _request_supervisor_termination(process, launch, reason="pytest runner interrupted")
+        try:
+            _await_interrupted_pytest_containment(
+                process,
+                launch,
+                term_grace_s=term_grace_s,
+                preserved_runner_descendants=preserved_runner_descendants,
+            )
+        finally:
+            _persist_pytest_output(
+                b"".join(output["stdout"]).decode(errors="replace"),
+                b"".join(output["stderr"]).decode(errors="replace"),
+                artifacts=artifacts,
+            )
         raise
     finally:
         selector.close()
@@ -1485,11 +1604,7 @@ def _run_pytest_with_heartbeat(
             events_path=events_path,
             events_dir=events_dir,
         )
-    _write_pytest_output(stdout, stderr)
-    if artifacts is not None:
-        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
-        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
-        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    _persist_pytest_output(stdout, stderr, artifacts=artifacts)
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
@@ -1507,10 +1622,16 @@ def _run(
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
     has_managed_pytest_child = label == "bench slo"
+    if is_pytest and run is not None:
+        isolated_report = run.run_dir / f"pytest-report-{uuid.uuid4().hex}.json"
+        cmd = [f"--json-report-file={isolated_report}" if arg.startswith("--json-report-file=") else arg for arg in cmd]
     if is_pytest:
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
+    explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
+    if explicit_basetemp is not None:
+        env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
     pytest_tmpfs = False
     pytest_tmpfs_budget_mb: float | None = None
     runtime_policy = None
@@ -1543,10 +1664,14 @@ def _run(
                 "release_baseline_allowed": False,
             }
             if run is not None and artifacts is not None:
-                run.finish_step(
+                finalized_step = run.finish_step(
                     step_id=artifacts.step_id,
                     result={"duration_s": round(elapsed, 2), "exit": 125, **refusal_metadata},
                 )
+                if isinstance(finalized_step, dict):
+                    for key in ("statistics", "statistics_path"):
+                        if key in finalized_step:
+                            refusal_metadata[key] = finalized_step[key]
             return 125, elapsed, refusal_metadata
         pytest_tmpfs = env.get("POLYLOGUE_PYTEST_TMPFS") == "1"
         budget_kb = pytest_tmpfs_budget_kb(env)
@@ -1558,27 +1683,42 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    interrupted = False
+    pytest_containment_quiescent = True
+    containment_error: str | None = None
     if is_pytest:
         try:
-            result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+            try:
+                result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+            except PytestContainmentError as exc:
+                pytest_containment_quiescent = False
+                containment_error = str(exc)
+                result = subprocess.CompletedProcess(args=cmd, returncode=125, stdout="", stderr=str(exc))
+            except KeyboardInterrupt:
+                interrupted = True
+                result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
         finally:
-            basetemp_cleanup = cleanup_managed_pytest_basetemp(
-                root=ROOT,
-                run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
-                env=env,
-            )
-        if artifacts is not None:
-            merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
-            with contextlib.suppress(FileNotFoundError):
-                shutil.copyfile(PYTEST_PROGRESS_PATH, artifacts.progress_path)
+            if pytest_containment_quiescent:
+                basetemp_cleanup = cleanup_managed_pytest_basetemp(
+                    root=ROOT,
+                    run_id=env.get("POLYLOGUE_PYTEST_RUN_ID", ""),
+                    env=env,
+                )
     else:
-        result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+        try:
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+        except KeyboardInterrupt:
+            interrupted = True
+            result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
     elapsed = time.monotonic() - t0
     metadata: dict[str, Any] = {}
     if artifacts is not None:
         metadata["run_id"] = run.run_id if run is not None else None
         metadata["artifact_dir"] = str(artifacts.step_dir.relative_to(Path.cwd()))
     if is_pytest:
+        if containment_error is not None:
+            metadata["diagnosis"] = "pytest_containment_unproven"
+            metadata["termination_reason"] = f"pytest containment did not quiesce: {containment_error}"
         metadata.update(_pytest_command_metadata(cmd))
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s()
@@ -1608,6 +1748,19 @@ def _run(
         if report is not None:
             metadata.update(_pytest_metadata_from_report(report, report_path=report_path))
             metadata["report_status"] = "present"
+            if artifacts is not None:
+                durable_report_path = artifacts.step_dir / PYTEST_CANONICAL_REPORT_NAME
+                try:
+                    shutil.copyfile(report_path, durable_report_path)
+                except OSError:
+                    metadata["report_path"] = None
+                else:
+                    metadata["report_path"] = str(
+                        durable_report_path.relative_to(run.root if run is not None else ROOT)
+                    )
+                    if report_path != durable_report_path:
+                        with contextlib.suppress(OSError):
+                            report_path.unlink()
         else:
             # Fallback: terminal scraping when the structured report is
             # missing (pytest crashed before writing it, or the plugin is
@@ -1631,6 +1784,15 @@ def _run(
             if isinstance(termination_reason, str):
                 metadata["termination_reason"] = termination_reason
         selection_path = artifacts.selection_path if artifacts is not None else PYTEST_SELECTION_PATH
+        if interrupted or containment_error is not None:
+            _recover_worker_collection_facts(
+                events_dir=(
+                    artifacts.events_dir
+                    if artifacts is not None
+                    else Path(env.get("POLYLOGUE_PYTEST_EVENTS_DIR", str(PYTEST_EVENTS_DIR)))
+                ),
+                selection_path=selection_path,
+            )
         selection = _read_json_artifact(selection_path)
         if selection is not None:
             selected_count = selection.get("selected_count")
@@ -1674,6 +1836,7 @@ def _run(
             peak_swap_pss: int | None = None
             peak_process_count = 0
             peak_basetemp_size_kb: int | None = None
+            peak_basetemp_allocated_kb: int | None = None
             with artifacts.resources_path.open(encoding="utf-8") as resource_handle:
                 for line in resource_handle:
                     if not line.strip():
@@ -1702,6 +1865,11 @@ def _run(
                         peak_basetemp_size_kb = max(
                             peak_basetemp_size_kb or 0,
                             int(row["basetemp_size_kb"]),
+                        )
+                    if row.get("basetemp_allocated_kb") is not None:
+                        peak_basetemp_allocated_kb = max(
+                            peak_basetemp_allocated_kb or 0,
+                            int(row["basetemp_allocated_kb"]),
                         )
             if sample_count:
                 resource_summary = {
@@ -1741,6 +1909,10 @@ def _run(
                     "peak_basetemp_size_mb": (
                         round(peak_basetemp_size_kb / 1024, 1) if peak_basetemp_size_kb is not None else None
                     ),
+                    "peak_basetemp_allocated_kb": peak_basetemp_allocated_kb,
+                    "peak_basetemp_allocated_mb": (
+                        round(peak_basetemp_allocated_kb / 1024, 1) if peak_basetemp_allocated_kb is not None else None
+                    ),
                 }
                 metadata.update(resource_summary)
         diagnosis = classify_pytest_result(
@@ -1752,6 +1924,11 @@ def _run(
             summary=summary if isinstance(summary, dict) else None,
             progress_event=metadata.get("progress_event") if isinstance(metadata.get("progress_event"), str) else None,
         )
+        if containment_error is not None:
+            diagnosis = "pytest_containment_unproven"
+        if interrupted:
+            diagnosis = "pytest_interrupted"
+            metadata["termination_reason"] = "operator_interrupt"
         metadata["diagnosis"] = diagnosis
         termination_reason = (
             metadata.get("termination_reason") if isinstance(metadata.get("termination_reason"), str) else None
@@ -1788,17 +1965,8 @@ def _run(
                 **resource_summary,
             }
             artifacts.postmortem_path.write_text(json.dumps(postmortem, indent=2, ensure_ascii=False) + "\n")
-            copy_current_pytest_artifacts(
-                Path.cwd(),
-                artifacts,
-                legacy_paths={
-                    "progress_path": PYTEST_PROGRESS_PATH,
-                    "events_merged_path": PYTEST_EVENTS_PATH,
-                    "selection_path": PYTEST_SELECTION_PATH,
-                    "summary_path": PYTEST_SUMMARY_PATH,
-                    "output_path": PYTEST_OUTPUT_PATH,
-                },
-            )
+    elif interrupted:
+        metadata.update({"diagnosis": "verification_interrupted", "termination_reason": "operator_interrupt"})
     if result.returncode == 0:
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
@@ -1808,14 +1976,56 @@ def _run(
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
     if run is not None and artifacts is not None:
-        run.finish_step(
+        finalized_step = run.finish_step(
             step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": result.returncode, **metadata}
+        )
+        if isinstance(finalized_step, dict):
+            for key in ("statistics", "statistics_path"):
+                if key in finalized_step:
+                    metadata[key] = finalized_step[key]
+    if is_pytest and artifacts is not None:
+        copy_current_pytest_artifacts(
+            Path.cwd(),
+            artifacts,
+            legacy_paths={
+                "progress_path": PYTEST_PROGRESS_PATH,
+                "events_merged_path": PYTEST_EVENTS_PATH,
+                "selection_path": PYTEST_SELECTION_PATH,
+                "summary_path": PYTEST_SUMMARY_PATH,
+                "output_path": PYTEST_OUTPUT_PATH,
+            },
         )
     return result.returncode, elapsed, metadata
 
 
+def _pytest_command_basetemp(
+    cmd: Sequence[str], *, cwd: str | None, env: Mapping[str, str] | None = None
+) -> Path | None:
+    """Return the effective explicit pytest basetemp, if the command has one."""
+    raw_path: str | None = None
+    addopts: list[str] = []
+    if env is not None:
+        with contextlib.suppress(ValueError):
+            addopts = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    arguments = [*addopts, *cmd]
+    for index, argument in enumerate(arguments):
+        if argument.startswith("--basetemp="):
+            raw_path = argument.partition("=")[2]
+        elif argument == "--basetemp" and index + 1 < len(arguments):
+            raw_path = arguments[index + 1]
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (Path(cwd) if cwd is not None else Path.cwd()) / path
+
+
 def _subprocess_env() -> dict[str, str]:
     env = normalize_pytest_basetemp_env(os.environ)
+    # Tests and verification helpers may inspect Git, but observational reads
+    # must not refresh the index and invalidate the exact-head mutation watch.
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     inherited_pythonpath = env.get("PYTHONPATH", "")
@@ -2106,11 +2316,23 @@ def _compare_against_last(step_results: list[dict[str, Any]]) -> list[str]:
     entries = _load_history()
     if len(entries) < 1:
         return []
-    last = entries[-1]
-    last_steps = {s["name"]: s["duration_s"] for s in last.get("steps", [])}
     flags: list[str] = []
     for s in step_results:
-        prev = last_steps.get(s["name"])
+        name = s.get("name")
+        if not isinstance(name, str):
+            continue
+        prev = next(
+            (
+                prior.get("duration_s")
+                for entry in reversed(entries)
+                if entry.get("tier") != "focused-test"
+                for prior in entry.get("steps", [])
+                if isinstance(prior, dict)
+                and prior.get("name") == name
+                and isinstance(prior.get("duration_s"), (int, float))
+            ),
+            None,
+        )
         if prev is not None and prev > 0:
             delta = s["duration_s"] - prev
             pct = (delta / prev) * 100
@@ -2134,14 +2356,8 @@ def _print_json(result: dict[str, Any]) -> None:
 
 
 def _git_head() -> str | None:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        return result.stdout.strip()
-    return None
+    """Resolve HEAD through the bounded authority-sensitive Git probe."""
+    return _git_commit("HEAD")
 
 
 def _git_committed_tree() -> str | None:
@@ -2153,6 +2369,25 @@ def _git_committed_tree() -> str | None:
     if result.returncode == 0:
         return result.stdout.strip()
     return None
+
+
+def _git_commit(ref: str) -> str | None:
+    """Resolve a mutable Git ref once for an authority-sensitive run."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ROOT,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or result.stderr.strip():
+        return None
+    commit = result.stdout.strip()
+    return commit or None
 
 
 def _stamp_head() -> None:
@@ -2182,7 +2417,7 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     workers = adaptive_pytest_worker_count(os.environ)
     if maximum is not None:
         workers = min(workers, maximum)
-    return ["-n", str(workers)]
+    return ["--dist=loadgroup", "-n", str(workers)]
 
 
 BROAD_PYTEST_STEP_LABELS = {
@@ -2194,25 +2429,6 @@ BROAD_PYTEST_STEP_LABELS = {
 }
 
 
-def _pytest_command_worker_request(cmd: Sequence[str]) -> str | None:
-    """Return the last xdist worker request from a final pytest command.
-
-    ``devtools test`` forwards pytest arguments unchanged, so this accepts
-    both xdist spellings and their compact forms.  The final occurrence wins,
-    matching pytest's normal option precedence.
-    """
-    request: str | None = None
-    for index, arg in enumerate(cmd):
-        if arg in {"-n", "--numprocesses"}:
-            if index + 1 < len(cmd):
-                request = cmd[index + 1]
-        elif arg.startswith("--numprocesses="):
-            request = arg.removeprefix("--numprocesses=")
-        elif arg.startswith("-n") and len(arg) > 2:
-            request = arg[2:].removeprefix("=")
-    return request
-
-
 def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | None = None) -> int:
     """Return a fail-closed reservation for the final pytest command.
 
@@ -2220,7 +2436,7 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
     instead of guessing one worker; an unrecognised xdist value is treated the
     same way so malformed or future values cannot weaken admission.
     """
-    request = _pytest_command_worker_request(cmd)
+    request = pytest_command_worker_request(cmd)
     if request is None:
         return 0
     if request == "auto":
@@ -2249,38 +2465,49 @@ _BROAD_TESTMON_CHANGED_PATHS = {
 }
 
 
-def _changed_paths() -> set[str]:
+def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
+    """Return changes between immutable start-time Git authorities."""
     changed: set[str] = set()
     commands = (
-        ["git", "diff", "--name-only", "HEAD", "--"],
-        ["git", "diff", "--name-only", "origin/master...HEAD", "--"],
+        ["git", "diff", "--no-renames", "--name-only", "-z", head_commit, "--"],
+        ["git", "diff", "--no-renames", "--name-only", "-z", f"{base_commit}...{head_commit}", "--"],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z", "--"],
     )
     for command in commands:
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode == 0:
-            changed.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=5,
+                cwd=ROOT,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PytestResourceError("testmon changed-path authority is unavailable") from exc
+        if result.returncode != 0 or result.stderr.strip():
+            raise PytestResourceError("testmon changed-path authority is unavailable")
+        changed.update(os.fsdecode(raw_path) for raw_path in result.stdout.split(b"\0") if raw_path)
     return changed
 
 
-def _default_testmon_is_broad_change() -> bool:
+def _default_testmon_is_broad_change(base_commit: str, head_commit: str) -> bool:
     """Return true when affected-test selection should be treated as broad."""
-    return bool(_changed_paths() & _BROAD_TESTMON_CHANGED_PATHS)
+    return bool(_changed_paths(base_commit, head_commit) & _BROAD_TESTMON_CHANGED_PATHS)
 
 
-def _changed_executable_paths() -> tuple[str, ...]:
+def _changed_executable_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:
     """Return changed paths whose behavior should select at least one test."""
     roots = ("polylogue/", "devtools/", "tests/", "packaging/")
     exact = {"pyproject.toml", "uv.lock"}
-    return tuple(sorted(path for path in _changed_paths() if path in exact or path.startswith(roots)))
+    return tuple(
+        sorted(path for path in _changed_paths(base_commit, head_commit) if path in exact or path.startswith(roots))
+    )
 
 
 def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any]:
     """Identify the exact worktree contents covered by an affected/full run."""
     return {
-        "worktree_fingerprint": _worktree_fingerprint(),
+        "worktree_fingerprint": worktree_fingerprint(),
         "executable_paths": list(executable_paths),
     }
 
@@ -2372,54 +2599,6 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _worktree_fingerprint() -> str:
-    """Fingerprint tracked changes plus exact non-ignored untracked content."""
-    digest = hashlib.sha256()
-    for command in (
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        ["git", "diff", "--binary", "HEAD", "--"],
-    ):
-        try:
-            result = subprocess.run(command, capture_output=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            return "unavailable"
-        if result.returncode != 0:
-            return "unavailable"
-        digest.update(result.stdout)
-        digest.update(b"\0")
-    try:
-        untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return "unavailable"
-    if untracked.returncode != 0:
-        return "unavailable"
-    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
-        try:
-            path_text = os.fsdecode(raw_path)
-            path = Path(path_text)
-            mode = path.lstat().st_mode
-            digest.update(raw_path)
-            digest.update(b"\0")
-            if stat.S_ISLNK(mode):
-                digest.update(b"symlink\0")
-                digest.update(os.fsencode(os.readlink(path)))
-            elif stat.S_ISREG(mode):
-                digest.update(b"file\0")
-                with path.open("rb") as handle:
-                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                        digest.update(chunk)
-            else:
-                digest.update(f"mode:{stat.S_IFMT(mode):o}".encode())
-            digest.update(b"\0")
-        except OSError:
-            return "unavailable"
-    return digest.hexdigest()
-
-
 def _testmon_seed_identity(
     *,
     git_head: str | None,
@@ -2435,7 +2614,7 @@ def _testmon_seed_identity(
     return {
         "git_head": git_head,
         "git_tree": git_tree,
-        "worktree_fingerprint": _worktree_fingerprint(),
+        "worktree_fingerprint": worktree_fingerprint(),
         "python": sys.version,
         "skip_slow": skip_slow,
         "lab": lab,
@@ -2448,6 +2627,36 @@ def _testmon_seed_identity(
 def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     payload = _read_json_artifact(TESTMON_SEED_ATTEMPT)
     return payload if isinstance(payload, dict) else None
+
+
+def _recover_worker_collection_facts(*, events_dir: Path, selection_path: Path) -> bool:
+    """Publish xdist worker collection facts when its controller never finishes.
+
+    The progress plugin normally merges these facts during controller
+    ``pytest_sessionfinish``. Interrupted containment bypasses that hook, so
+    the runner recovers the same canonical worker fact before it terminalizes
+    the durable step record.
+    """
+    merged = merge_worker_collection_payloads(events_dir)
+    if merged is None:
+        return False
+    selection = dict(merged)
+    selection.update(
+        {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "worker_id": "runner",
+            "pid": os.getpid(),
+            "recovered_after_interruption": True,
+        }
+    )
+    try:
+        selection_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = selection_path.with_name(f"{selection_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(selection, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(selection_path)
+    except OSError:
+        return False
+    return True
 
 
 def _flatten_seed_outcomes(attempt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
@@ -2715,7 +2924,6 @@ def _seed_shard_command(
     else:
         command.extend(
             [
-                "--dist=loadgroup",
                 *_pytest_worker_args(maximum=10),
                 "--testmon",
                 "--testmon-noselect",
@@ -2779,7 +2987,7 @@ def _checkpoint_testmon_seed_shard(
         prior_node_outcomes=prior,
         use_database_fallback=False,
     )
-    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in outcomes)
+    terminal = all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in outcomes)
     selection_matches = selected == nodeids
     shard.update(
         {
@@ -2886,6 +3094,10 @@ def _seed_node_outcomes_from_events(
             outcome, reason = "timeout", "pytest-timeout report"
         elif any(report.get("when") in {"setup", "teardown"} for report in failed_reports):
             outcome, reason = "error", "fixture setup/teardown failed"
+        elif any(report.get("outcome") == "xfailed" for report in node_reports):
+            outcome, reason = "xfailed", "pytest expected failure"
+        elif any(report.get("outcome") == "xpassed" for report in node_reports):
+            outcome, reason = "xpassed", "pytest unexpected pass"
         elif any(report.get("outcome") == "failed" for report in call_reports):
             outcome, reason = "failed", "test call failed"
         elif any(report.get("outcome") == "passed" for report in call_reports):
@@ -2924,7 +3136,7 @@ def _seed_node_outcomes_from_events(
         elif prior_node_outcomes is not None and nodeid in prior_node_outcomes:
             prior = prior_node_outcomes[nodeid]
             prior_outcome = prior.get("outcome")
-            if prior_outcome in {"passed", "failed", "error", "skipped"}:
+            if prior_outcome in TERMINAL_NODE_OUTCOMES:
                 outcome, reason = str(prior_outcome), "terminal outcome carried from the prior seed attempt"
             else:
                 outcome, reason = "missing", "prior seed attempt has no terminal outcome"
@@ -3059,7 +3271,7 @@ def _finalize_testmon_seed_attempt(
             },
         )
     unsuccessful_nodeids = [
-        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES
     ]
     green_complete = (
         exit_code == 0
@@ -3084,7 +3296,7 @@ def _finalize_testmon_seed_attempt(
         and not database["missing_nodeids"]
         and database["orphan_execution_edges"] == 0
         and database["orphan_fingerprint_edges"] == 0
-        and all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+        and all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
     )
     outcome = _seed_attempt_outcome(
         release_eligible=release_eligible,
@@ -3100,7 +3312,7 @@ def _finalize_testmon_seed_attempt(
             {
                 "status": (
                     SeedShardStatus.COMPLETE.value
-                    if all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+                    if all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
                     else SeedShardStatus.INCOMPLETE.value
                 ),
                 "node_outcomes": node_outcomes,
@@ -3239,7 +3451,7 @@ def _refresh_testmon_selection_attempt(
         and database.get("orphan_execution_edges") == 0
         and database.get("orphan_fingerprint_edges") == 0
     )
-    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+    terminal = all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
     prior_selection = attempt.get("selection")
     payload = {
         **attempt,
@@ -3270,7 +3482,7 @@ def _refresh_testmon_selection_attempt(
             )
         ),
         "unsuccessful_nodeids": [
-            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES
         ],
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "run_id": run.run_id,
@@ -3285,10 +3497,43 @@ def _refresh_testmon_selection_attempt(
     _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
 
 
+def _discard_testmon_dependency_authority() -> None:
+    """Remove a dependency graph learned while checkout authority was unstable."""
+    for path in (
+        TESTMON_SEED_STAMP,
+        TESTMON_SEED_ATTEMPT,
+        TESTMON_DATA,
+        Path(f"{TESTMON_DATA}-wal"),
+        Path(f"{TESTMON_DATA}-shm"),
+        Path(f"{TESTMON_DATA}-journal"),
+    ):
+        path.unlink(missing_ok=True)
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 
-def main(argv: list[str] | None = None) -> int:
+_ACTIVE_VERIFY_RUN: tuple[VerifyRun, float, VerificationScope] | None = None
+
+
+def _planned_verification_scope(args: argparse.Namespace, *, full_pytest: bool) -> VerificationScope:
+    """Return the immutable scope requested before the runner starts."""
+    if args.quick or args.commit:
+        return VerificationScope.NON_TEST
+    if full_pytest or args.seed_testmon:
+        return VerificationScope.NARROW_TERMINAL if args.skip_slow else VerificationScope.RELEASE_BASELINE
+    return VerificationScope.AFFECTED
+
+
+def _changed_paths_from_testmon_authority(base_commit: str | None, head_commit: str | None) -> tuple[str, ...]:
+    """Require immutable refs before deriving affected executable paths."""
+    if base_commit is None or head_commit is None:
+        raise PytestResourceError("testmon changed-path authority is unavailable")
+    return _changed_executable_paths(base_commit, head_commit)
+
+
+def _main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_VERIFY_RUN
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument(
@@ -3360,7 +3605,15 @@ def main(argv: list[str] | None = None) -> int:
     else:
         tier = "testmon"
 
+    head = _git_head()
     full_pytest = bool(args.all or args.full)
+    affected_testmon = not (args.quick or args.commit or args.seed_testmon or full_pytest)
+    planned_verification_scope = _planned_verification_scope(args, full_pytest=full_pytest)
+    testmon_base_commit = _git_commit("origin/master") if affected_testmon else None
+    testmon_head_commit = head if affected_testmon else None
+    if affected_testmon and (testmon_base_commit is None or testmon_head_commit is None):
+        sys.stderr.write("verify: cannot resolve immutable Git refs for affected-test authority.\n")
+        return 125
     if args.terminal_authorization is not None and not ((full_pytest or args.seed_testmon) and args.skip_slow):
         parser.error("--terminal-authorization requires --all, --full, or --seed-testmon with --skip-slow")
     preflight_error = _testmon_preflight(
@@ -3373,15 +3626,19 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(preflight_error)
         return 2
 
-    head = _git_head()
     t0 = time.monotonic()
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    start_checkout_mutation_monitor(mutation_monitor)
+    checkout_fingerprint = worktree_fingerprint(ROOT)
     verify_run = VerifyRun(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
         polylogue_import_path=str(polylogue_import_path),
         environment_fingerprint=environment_fingerprint,
+        worktree_fingerprint=checkout_fingerprint,
     )
+    _ACTIVE_VERIFY_RUN = (verify_run, t0, planned_verification_scope)
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False
     prepared_seed_attempt: dict[str, Any] | None = None
@@ -3395,12 +3652,14 @@ def main(argv: list[str] | None = None) -> int:
                 terminal_authorization=args.terminal_authorization,
             )
         except RuntimeError as exc:
+            finish_checkout_mutation_monitor(mutation_monitor)
             sys.stderr.write(f"verify: {exc}\n")
-            verify_run.finish(
+            early_payload = verify_run.finish(
                 exit_code=125,
                 duration_s=time.monotonic() - t0,
                 diagnosis="testmon_environment_identity_unavailable",
             )
+            _save_history(early_payload)
             return 125
         resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
         prepared_seed_attempt = _prepare_testmon_seed_attempt(
@@ -3428,19 +3687,35 @@ def main(argv: list[str] | None = None) -> int:
             seed_testmon=bool(args.seed_testmon),
             resume_testmon_seed=resume_testmon_seed,
             full_pytest=full_pytest,
-            broad_testmon=_default_testmon_is_broad_change(),
+            broad_testmon=(
+                _default_testmon_is_broad_change(testmon_base_commit, testmon_head_commit)
+                if testmon_base_commit is not None and testmon_head_commit is not None
+                else False
+            ),
         )
     except PytestResourceError as exc:
+        finish_checkout_mutation_monitor(mutation_monitor)
         sys.stderr.write(f"verify: {exc}\n")
-        verify_run.finish(exit_code=125, duration_s=time.monotonic() - t0, diagnosis="pytest_resource_preflight_failed")
+        early_payload = verify_run.finish(
+            exit_code=125,
+            duration_s=time.monotonic() - t0,
+            diagnosis="pytest_resource_preflight_failed",
+        )
+        _save_history(early_payload)
         return 125
 
     step_results: list[dict[str, Any]] = []
-
+    pending_testmon_stamp: TestmonSeedStamp | None = None
+    pending_affected_coverage: tuple[tuple[str, ...], int] | None = None
+    pending_selection_refresh: tuple[dict[str, Any], int] | None = None
+    testmon_graph_touched = False
+    changed_path_authority_failed = False
     for label, cmd in steps:
         if label.startswith("pytest"):
             _warn_low_memory()  # check again right before the heavy step
         rc, elapsed, metadata = _run(label, cmd, run=verify_run)
+        if label in {"pytest testmon", "pytest testmon (broad)"} or label.startswith("pytest seed-testmon"):
+            testmon_graph_touched = True
         if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"}:
             raw_stamp = _read_json_artifact(TESTMON_SEED_STAMP)
             try:
@@ -3454,8 +3729,20 @@ def main(argv: list[str] | None = None) -> int:
             if current_stamp is not None:
                 refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
                 if refreshed_stamp is not None:
-                    _atomic_write_json(TESTMON_SEED_STAMP, refreshed_stamp.as_dict())
-            executable_paths = _changed_executable_paths()
+                    pending_testmon_stamp = refreshed_stamp
+            try:
+                executable_paths = _changed_paths_from_testmon_authority(testmon_base_commit, testmon_head_commit)
+            except PytestResourceError as exc:
+                changed_path_authority_failed = True
+                executable_paths = ()
+                rc = 125
+                metadata["diagnosis"] = "testmon_changed_path_authority_unavailable"
+                metadata["error"] = str(exc)
+                pending_testmon_stamp = None
+                sys.stderr.write(
+                    "verify: changed-path authority became unavailable after pytest; "
+                    "discarding the affected dependency graph.\n"
+                )
             selected_count = metadata.get("selected_count")
             if selected_count == 0 and executable_paths:
                 coverage = _matching_testmon_coverage(executable_paths)
@@ -3471,11 +3758,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     metadata["zero_selection_coverage"] = coverage
             elif isinstance(selected_count, int) and selected_count > 0:
-                _record_testmon_affected_coverage(
-                    executable_paths=executable_paths,
-                    selected_count=selected_count,
-                    run_id=verify_run.run_id,
-                )
+                pending_affected_coverage = (tuple(executable_paths), selected_count)
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         step_results.append(step_result)
@@ -3568,25 +3851,103 @@ def main(argv: list[str] | None = None) -> int:
                         break
             continue
         if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
-            _refresh_testmon_selection_attempt(step=step_result, run=verify_run, exit_code=rc)
+            pending_selection_refresh = (step_result, rc)
         if rc != 0:
             exit_code = rc
-            if _stop_after_failed_step(label):
+            if rc == 130 or _stop_after_failed_step(label):
                 break
 
-    seed_receipt: dict[str, Any] | None = None
-    if prepared_seed_attempt is not None:
-        seed_receipt = _finalize_testmon_seed_attempt(
-            prepared=prepared_seed_attempt,
-            step_results=step_results,
-            exit_code=exit_code,
+    final_head = _git_head()
+    final_checkout_fingerprint = worktree_fingerprint(ROOT)
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+    checkout_stable = True
+    if (
+        changed_path_authority_failed
+        or head is None
+        or final_head is None
+        or "unavailable" in {checkout_fingerprint, final_checkout_fingerprint}
+        or mutation_observation.unavailable
+    ):
+        checkout_stable = False
+        step_results.append(
+            {
+                "name": "checkout stability",
+                "duration_s": 0.0,
+                "exit": 125,
+                "diagnosis": (
+                    "testmon_changed_path_authority_unavailable"
+                    if changed_path_authority_failed
+                    else "checkout_fingerprint_unavailable"
+                ),
+                "initial_git_head": head,
+                "final_git_head": final_head,
+                "initial_worktree_fingerprint": checkout_fingerprint,
+                "final_worktree_fingerprint": final_checkout_fingerprint,
+            }
         )
-        if exit_code == 0 and seed_receipt["status"] != "complete":
-            exit_code = 5
-            sys.stderr.write(
-                "verify: pytest passed but the testmon dependency baseline is incomplete; "
-                f"inspect {TESTMON_SEED_ATTEMPT}.\n"
+        if exit_code == 0:
+            exit_code = 125
+        sys.stderr.write("verify: checkout fingerprint unavailable; evidence is not exact-head.\n")
+    elif final_head != head or mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
+        checkout_stable = False
+        step_results.append(
+            {
+                "name": "checkout stability",
+                "duration_s": 0.0,
+                "exit": 125,
+                "diagnosis": "checkout_changed_during_verification",
+                "initial_git_head": head,
+                "final_git_head": final_head,
+                "initial_worktree_fingerprint": checkout_fingerprint,
+                "final_worktree_fingerprint": final_checkout_fingerprint,
+                "transient_checkout_mutation": mutation_observation.changed,
+                "checkout_mutation_path": mutation_observation.observed_path,
+            }
+        )
+        if exit_code == 0:
+            exit_code = 125
+        sys.stderr.write("verify: checkout contents changed during verification; evidence is not exact-head.\n")
+
+    seed_receipt: dict[str, Any] | None = None
+    if checkout_stable:
+        if pending_testmon_stamp is not None:
+            _atomic_write_json(TESTMON_SEED_STAMP, pending_testmon_stamp.as_dict())
+        if pending_affected_coverage is not None:
+            executable_paths, selected_count = pending_affected_coverage
+            _record_testmon_affected_coverage(
+                executable_paths=executable_paths,
+                selected_count=selected_count,
+                run_id=verify_run.run_id,
             )
+        if pending_selection_refresh is not None:
+            step_result, selection_exit_code = pending_selection_refresh
+            _refresh_testmon_selection_attempt(
+                step=step_result,
+                run=verify_run,
+                exit_code=selection_exit_code,
+            )
+        if prepared_seed_attempt is not None:
+            seed_receipt = _finalize_testmon_seed_attempt(
+                prepared=prepared_seed_attempt,
+                step_results=step_results,
+                exit_code=exit_code,
+            )
+            if exit_code == 0 and seed_receipt["status"] != "complete":
+                exit_code = 5
+                sys.stderr.write(
+                    "verify: pytest passed but the testmon dependency baseline is incomplete; "
+                    f"inspect {TESTMON_SEED_ATTEMPT}.\n"
+                )
+    elif testmon_graph_touched:
+        _discard_testmon_dependency_authority()
+        if prepared_seed_attempt is not None:
+            seed_receipt = {
+                "status": "discarded",
+                "outcome": SeedAttemptOutcome.INCOMPLETE.value,
+                "resume": False,
+                "expected_count": len(_testmon_seed_expected_nodeids(prepared_seed_attempt)),
+                "release_baseline_allowed": False,
+            }
 
     total_duration = round(time.monotonic() - t0, 2)
 
@@ -3594,13 +3955,25 @@ def main(argv: list[str] | None = None) -> int:
     history_entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_head": head,
+        "final_git_head": final_head,
         "tier": tier,
         "run_id": verify_run.run_id,
+        "checkout_root": str(ROOT.resolve()),
+        "worktree_fingerprint": checkout_fingerprint,
+        "final_worktree_fingerprint": final_checkout_fingerprint,
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
         "exit_code": exit_code,
     }
+    checkout_stability_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in reversed(step_results)
+            if step.get("name") == "checkout stability" and "diagnosis" in step
+        ),
+        None,
+    )
     fallback_pytest_diagnosis = next(
         (
             str(step["diagnosis"])
@@ -3617,8 +3990,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         fallback_pytest_diagnosis,
     )
-    if pytest_diagnosis is not None:
-        history_entry["diagnosis"] = pytest_diagnosis
+    run_diagnosis = checkout_stability_diagnosis or pytest_diagnosis
+    if run_diagnosis is not None:
+        history_entry["diagnosis"] = run_diagnosis
     if seed_receipt is not None:
         history_entry["testmon_seed"] = {
             "status": seed_receipt["status"],
@@ -3630,8 +4004,8 @@ def main(argv: list[str] | None = None) -> int:
             "release_baseline_allowed": seed_receipt["release_baseline_allowed"],
         }
 
+    verification_scope = planned_verification_scope
     if args.quick or args.commit:
-        verification_scope = VerificationScope.NON_TEST
         # Non-test verification is intentionally not release authority, but it
         # is still a typed verification receipt.  ``None`` made merge-gate
         # treat an explicit quick receipt as malformed instead of as a valid
@@ -3640,9 +4014,6 @@ def main(argv: list[str] | None = None) -> int:
     elif full_pytest or args.seed_testmon:
         narrow_terminal = bool(args.skip_slow)
         authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
-        verification_scope = (
-            VerificationScope.NARROW_TERMINAL if narrow_terminal else VerificationScope.RELEASE_BASELINE
-        )
         if full_pytest:
             release_baseline_allowed = exit_code == 0 and (not narrow_terminal or authorized_narrow_terminal)
         else:
@@ -3650,7 +4021,6 @@ def main(argv: list[str] | None = None) -> int:
                 not narrow_terminal or authorized_narrow_terminal
             )
     else:
-        verification_scope = VerificationScope.AFFECTED
         release_baseline_allowed = _testmon_release_baseline_permission()
     history_entry["verification_scope"] = verification_scope.value
     history_entry["release_baseline_allowed"] = release_baseline_allowed
@@ -3680,7 +4050,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # Persist history and stamp.
     _save_history(history_entry)
-    verify_run.finish(exit_code=exit_code, duration_s=total_duration, diagnosis=pytest_diagnosis)
+    verify_run.finish(
+        exit_code=exit_code,
+        duration_s=total_duration,
+        diagnosis=run_diagnosis,
+        verification_scope=verification_scope.value,
+        release_baseline_allowed=release_baseline_allowed,
+        terminal_authorization=args.terminal_authorization,
+        final_worktree_fingerprint=final_checkout_fingerprint,
+        checkout_mutation_path=mutation_observation.observed_path,
+    )
     if exit_code == 0:
         _stamp_head()
 
@@ -3697,3 +4076,61 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     return exit_code
+
+
+def _finalize_verify_runner_exception(
+    run: VerifyRun,
+    exc: Exception,
+    *,
+    run_started: float,
+    verification_scope: VerificationScope,
+    use_json: bool,
+) -> int:
+    """Leave typed, durable failed evidence when verification orchestration raises."""
+    diagnosis = "verify_runner_exception"
+    run.finish_interrupted_steps(
+        exit_code=125,
+        diagnosis=diagnosis,
+        termination_reason="runner_exception",
+    )
+    try:
+        final_worktree_fingerprint = worktree_fingerprint(ROOT)
+    except Exception:
+        final_worktree_fingerprint = "unavailable"
+    payload = run.finish(
+        exit_code=125,
+        duration_s=time.monotonic() - run_started,
+        diagnosis=diagnosis,
+        verification_scope=verification_scope.value,
+        release_baseline_allowed=False,
+        final_worktree_fingerprint=final_worktree_fingerprint,
+    )
+    payload["exception_type"] = type(exc).__name__
+    payload["error"] = str(exc)
+    _save_history(payload)
+    if use_json:
+        _print_json(payload)
+    sys.stderr.write(f"verify: unexpected runner exception: {exc}\n")
+    return 125
+
+
+@finalize_checkout_mutation_monitors
+def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_VERIFY_RUN
+    _ACTIVE_VERIFY_RUN = None
+    try:
+        return _main(argv)
+    except Exception as exc:
+        if _ACTIVE_VERIFY_RUN is None:
+            raise
+        raw_argv = sys.argv[1:] if argv is None else argv
+        run, run_started, verification_scope = _ACTIVE_VERIFY_RUN
+        return _finalize_verify_runner_exception(
+            run,
+            exc,
+            run_started=run_started,
+            verification_scope=verification_scope,
+            use_json="--json" in raw_argv,
+        )
+    finally:
+        _ACTIVE_VERIFY_RUN = None

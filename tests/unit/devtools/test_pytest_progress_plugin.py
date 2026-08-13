@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -12,10 +11,11 @@ from pathlib import Path
 import pytest
 
 from devtools import pytest_progress_plugin
+from devtools.verify_runs import aggregate_pytest_statistics
 
 
 @pytest.fixture(autouse=True)
-def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # Unit tests own their event destinations; do not let a surrounding
     # managed verify invocation redirect them into its step artifacts.
     for name in (
@@ -23,6 +23,7 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
         "POLYLOGUE_PYTEST_EVENTS_PATH",
         "POLYLOGUE_PYTEST_SELECTION_PATH",
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
+        "PYTEST_XDIST_WORKER",
     ):
         monkeypatch.delenv(name, raising=False)
     selected_count = pytest_progress_plugin._SELECTED_COUNT
@@ -31,16 +32,22 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
     slowest_reports = list(pytest_progress_plugin._SLOWEST_REPORTS)
     collection_started_at = pytest_progress_plugin._COLLECTION_STARTED_AT
     collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
+    controller_collection_payload = pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD
+    recorded_report_keys = set(pytest_progress_plugin._RECORDED_REPORT_KEYS)
+    session_state_stack = list(pytest_progress_plugin._SESSION_STATE_STACK)
+    pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
+    pytest_progress_plugin._SESSION_STATE_STACK.clear()
     yield
-    checkout_cache = Path(__file__).resolve().parents[3] / ".cache" / "testmon"
-    if checkout_cache.exists():
-        shutil.move(str(checkout_cache), str(tmp_path / "checkout-testmon-generated"))
     pytest_progress_plugin._SELECTED_COUNT = selected_count
     pytest_progress_plugin._DESELECTED_COUNT = deselected_count
     pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE[:] = deselected_nodeids
     pytest_progress_plugin._SLOWEST_REPORTS[:] = slowest_reports
     pytest_progress_plugin._COLLECTION_STARTED_AT = collection_started_at
     pytest_progress_plugin._COLLECTION_DURATION_S = collection_duration_s
+    pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD = controller_collection_payload
+    pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
+    pytest_progress_plugin._RECORDED_REPORT_KEYS.update(recorded_report_keys)
+    pytest_progress_plugin._SESSION_STATE_STACK[:] = session_state_stack
 
 
 @dataclass(frozen=True)
@@ -50,6 +57,8 @@ class _Report:
     outcome: str
     duration: float = 0.0
     longrepr: str = ""
+    worker_id: str | None = None
+    wasxfail: str | None = None
 
 
 def test_progress_plugin_records_call_and_setup_failures(
@@ -75,23 +84,142 @@ def test_progress_plugin_records_call_and_setup_failures(
     assert events[2]["longrepr"] == "fixture exploded"
 
 
+def test_progress_plugin_preserves_xfail_and_xpass_in_durable_statistics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    step = tmp_path / "step"
+    step.mkdir()
+    events_path = step / "events.jsonl"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    pytest_progress_plugin.pytest_sessionstart(object())
+
+    pytest_progress_plugin.pytest_runtest_logstart("test_xfailed", ("tests/a.py", 1, "test_xfailed"))
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_xfailed", "call", "skipped", wasxfail="known failure")
+    )
+    pytest_progress_plugin.pytest_runtest_logstart("test_setup_xfailed", ("tests/a.py", 2, "test_setup_xfailed"))
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_setup_xfailed", "setup", "skipped", wasxfail="fixture calls pytest.xfail()")
+    )
+    pytest_progress_plugin.pytest_runtest_logstart("test_xpassed", ("tests/a.py", 3, "test_xpassed"))
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test_xpassed", "call", "passed", wasxfail="known failure"))
+
+    statistics = aggregate_pytest_statistics(step)
+
+    assert statistics["outcomes"] == {"xfailed": 2, "xpassed": 1}
+
+
+def test_progress_plugin_observes_real_pytest_xfail_outcome(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.jsonl"
+    test_path = tmp_path / "test_xfail.py"
+    test_path.write_text(
+        "import pytest\n\n@pytest.mark.xfail(reason='known failure')\ndef test_expected_failure():\n    assert False\n"
+    )
+    env = os.environ.copy()
+    env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(events_path)
+    checkout_root = Path(__file__).resolve().parents[3]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            "-p",
+            "no:testmon",
+            str(test_path),
+        ],
+        cwd=checkout_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    reports = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event") == "test_report"
+    ]
+    assert any(report["when"] == "call" and report["outcome"] == "xfailed" for report in reports)
+
+
+def test_progress_plugin_skips_xdist_controller_forwarding_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test_one", "call", "passed", worker_id="gw0"))
+
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test_one", "call", "passed", worker_id="gw0"))
+
+    events = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert [(event["nodeid"], event["when"], event["worker_id"]) for event in events] == [("test_one", "call", "gw0")]
+
+
+def test_progress_plugin_keeps_xdist_worker_timings_in_controller_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    summary_path = tmp_path / "summary.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(summary_path))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_slow", "call", "passed", duration=1.5, worker_id="gw0")
+    )
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_slow", "call", "passed", duration=1.5, worker_id="gw0")
+    )
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    events = [
+        json.loads(line)
+        for line in events_path.read_text().splitlines()
+        if json.loads(line).get("event") == "test_report"
+    ]
+    summary = json.loads(summary_path.read_text())
+    assert [(event["nodeid"], event["worker_id"]) for event in events] == [("test_slow", "gw0")]
+    assert [report["nodeid"] for report in summary["slowest_reports"]] == ["test_slow"]
+
+
 def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:
     events_dir = tmp_path / "events"
     checkout_root = Path(__file__).resolve().parents[3]
-    # The real testmon plugin receives no TESTMON_DATAFILE here by design:
-    # this regression test models a child process after the host scrub.  Give
-    # its default relative path a parent directory without permitting the
-    # resulting cache to leak into later tests.
-    (checkout_root / ".cache" / "testmon").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
+    for name in (
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT",
+        "POLYLOGUE_PYTEST_TMPFS",
+        "POLYLOGUE_PYTEST_RUN_ID",
+        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
+    ):
+        env.pop(name, None)
     env.update(
         {
+            # Keep the nested real pytest away from the host-only scratch
+            # fallback while preserving the scrubbed event/testmon scenario.
+            "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path / "pytest-basetemp"),
+            "POLYLOGUE_PYTEST_TMPFS": "0",
             "POLYLOGUE_PYTEST_EVENTS_DIR": str(events_dir),
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
             "POLYLOGUE_VERIFY_RUN_ID": "subprocess-regression",
+            "TESTMON_DATAFILE": str(tmp_path / "testmon" / "testmon.sqlite"),
         }
     )
+    Path(env["TESTMON_DATAFILE"]).parent.mkdir(parents=True)
     result = subprocess.run(
         [
             sys.executable,
@@ -274,3 +402,105 @@ def test_progress_plugin_records_collection_duration_and_summary(
         "collection_finished",
     ]
     assert events[2]["duration_s"] == 2.5
+
+
+def test_progress_plugin_retains_controller_selection_through_session_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selection_path = tmp_path / "selection.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(selection_path))
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_collection_modifyitems(
+        _Session(["tests/a.py::test_keep"]),
+        object(),
+        [_Item("tests/a.py::test_keep")],
+    )
+
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    selection = json.loads(selection_path.read_text())
+    assert selection["selected_nodeids"] == ["tests/a.py::test_keep"]
+    assert selection["selected_nodeids_omitted"] == 0
+
+
+def test_nested_pytest_session_keeps_outer_progress_and_artifacts_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outer_events = tmp_path / "outer-events.jsonl"
+    outer_selection = tmp_path / "outer-selection.json"
+    outer_summary = tmp_path / "outer-summary.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(outer_events))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(outer_selection))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(outer_summary))
+
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_collection_modifyitems(
+        _Session(["tests/outer.py::test_outer"]), object(), [_Item("tests/outer.py::test_outer")]
+    )
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("tests/outer.py::test_outer", "call", "passed"))
+
+    pytest_progress_plugin.pytest_sessionstart(object())
+    nested_selection = Path(os.environ["POLYLOGUE_PYTEST_SELECTION_PATH"])
+    nested_summary = Path(os.environ["POLYLOGUE_PYTEST_SUMMARY_PATH"])
+    nested_events = Path(os.environ["POLYLOGUE_PYTEST_EVENTS_PATH"])
+    assert nested_selection != outer_selection
+    assert nested_summary != outer_summary
+    assert nested_events != outer_events
+    pytest_progress_plugin.pytest_collection_modifyitems(
+        _Session(["tests/inner.py::test_inner"]), object(), [_Item("tests/inner.py::test_inner")]
+    )
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("tests/inner.py::test_inner", "call", "passed"))
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    assert os.environ["POLYLOGUE_PYTEST_SELECTION_PATH"] == str(outer_selection)
+    assert json.loads(outer_selection.read_text())["selected_nodeids"] == ["tests/outer.py::test_outer"]
+    assert json.loads(nested_selection.read_text())["selected_nodeids"] == ["tests/inner.py::test_inner"]
+    assert [json.loads(line)["nodeid"] for line in nested_events.read_text().splitlines() if "nodeid" in line] == [
+        "tests/inner.py::test_inner"
+    ]
+
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    outer_payload = json.loads(outer_summary.read_text())
+    nested_payload = json.loads(nested_summary.read_text())
+    assert [report["nodeid"] for report in outer_payload["slowest_reports"]] == ["tests/outer.py::test_outer"]
+    assert [report["nodeid"] for report in nested_payload["slowest_reports"]] == ["tests/inner.py::test_inner"]
+
+
+def test_progress_plugin_merges_xdist_collection_facts_without_double_counting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events_dir = tmp_path / "events"
+    selection_path = tmp_path / "selection.json"
+    summary_path = tmp_path / "summary.json"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_DIR", str(events_dir))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(selection_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(summary_path))
+
+    for worker_id, duration in (("gw1", 1.5), ("gw0", 2.5)):
+        ticks = iter([10.0, 10.0 + duration])
+        monkeypatch.setattr("devtools.pytest_progress_plugin.time.monotonic", lambda ticks=ticks: next(ticks))
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", worker_id)
+        pytest_progress_plugin.pytest_sessionstart(object())
+        pytest_progress_plugin.pytest_collection(object())
+        pytest_progress_plugin.pytest_deselected([_Item("tests/a.py::test_skip")])
+        pytest_progress_plugin.pytest_collection_modifyitems(
+            _Session(["tests/a.py::test_keep"]), object(), [_Item("tests/a.py::test_keep")]
+        )
+        pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    pytest_progress_plugin.pytest_sessionstart(object())
+    pytest_progress_plugin.pytest_sessionfinish(object(), 0)
+
+    selection = json.loads(selection_path.read_text())
+    summary = json.loads(summary_path.read_text())
+    assert selection["selected_count"] == 1
+    assert selection["deselected_count"] == 1
+    assert selection["selected_nodeids"] == ["tests/a.py::test_keep"]
+    assert summary["selected_count"] == 1
+    assert summary["deselected_count"] == 1
+    assert summary["collection_duration_s"] == 2.5

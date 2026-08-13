@@ -70,16 +70,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from devtools import pr_scope
 from devtools.testmon_state import TerminalAuthorization, VerificationScope
+from devtools.verify_runs import VERIFICATION_INVOCATION_ID_ENV as VERIFICATION_INVOCATION_ID_ENV
+from devtools.verify_runs import VERIFICATION_RECEIPT_PATH_ENV as VERIFICATION_RECEIPT_PATH_ENV
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
@@ -192,6 +198,18 @@ def _git_is_clean() -> bool:
     return result.returncode == 0 and not result.stdout.strip()
 
 
+def _repository_root() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip()).resolve(strict=False)
+    return Path.cwd().resolve(strict=False)
+
+
 @dataclass
 class GateVerdict:
     pr: int
@@ -205,11 +223,11 @@ class GateVerdict:
 
 
 def _receipt_path(pr: int) -> Path:
-    return _RECEIPT_DIR / f"pr-{pr}.json"
+    return _repository_root() / _RECEIPT_DIR / f"pr-{pr}.json"
 
 
 def _ack_path(pr: int) -> Path:
-    return _RECEIPT_DIR / f"pr-{pr}-acks.json"
+    return _repository_root() / _RECEIPT_DIR / f"pr-{pr}-acks.json"
 
 
 def _command_skips_tests(command: str) -> bool:
@@ -219,37 +237,62 @@ def _command_skips_tests(command: str) -> bool:
     return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
 
 
-def _release_baseline_permission(stdout: str) -> bool | None:
-    """Read the structured verify decision when the command emitted one."""
+def _invocation_receipt(
+    *,
+    path: Path,
+    invocation_id: str,
+    head_sha: str,
+    command_exit: int,
+    checkout_root: Path,
+) -> dict[str, Any] | None:
+    """Load the exact run artifact bound to the launched verifier process."""
+
     try:
-        payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict):
+        return None
+    if (
+        payload.get("invocation_id") != invocation_id
+        or payload.get("git_head") != head_sha
+        or payload.get("exit_code") != command_exit
+    ):
+        return None
+    recorded_root = payload.get("checkout_root")
+    if not isinstance(recorded_root, str) or Path(recorded_root).resolve(strict=False) != checkout_root.resolve(
+        strict=False
+    ):
+        return None
+    if _verification_scope(payload) is None or _release_baseline_permission(payload) is None:
+        return None
+    terminal_authorization = payload.get("terminal_authorization")
+    if terminal_authorization is not None and terminal_authorization not in {
+        authorization.value for authorization in TerminalAuthorization
+    }:
+        return None
+    return payload
+
+
+def _release_baseline_permission(payload: Mapping[str, Any] | None) -> bool | None:
+    """Read the typed release decision from an invocation-bound receipt."""
+    if payload is None:
         return None
     value = payload.get("release_baseline_allowed")
     return value if isinstance(value, bool) else None
 
 
-def _verification_scope(stdout: str) -> str | None:
-    """Read the typed verification scope from a structured verify receipt."""
-    try:
-        payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+def _verification_scope(payload: Mapping[str, Any] | None) -> str | None:
+    """Read the typed verification scope from an invocation-bound receipt."""
+    if payload is None:
         return None
     value = payload.get("verification_scope")
     return value if value in {scope.value for scope in VerificationScope} else None
 
 
-def _terminal_authorization(stdout: str) -> str | None:
-    """Read the typed terminal authorization from a structured receipt."""
-    try:
-        payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+def _terminal_authorization(payload: Mapping[str, Any] | None) -> str | None:
+    """Read terminal authorization from an invocation-bound receipt."""
+    if payload is None:
         return None
     value = payload.get("terminal_authorization")
     return value if value in {authorization.value for authorization in TerminalAuthorization} else None
@@ -261,7 +304,13 @@ def _base_sha(info: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.ScopeVerdict:
+def _scope_verdict(
+    pr: int,
+    info: dict[str, Any],
+    *,
+    head_sha: str,
+    checkout_root: Path,
+) -> pr_scope.ScopeVerdict:
     """Use the same carrier or typed bot exception for record and check."""
     author = info.get("author")
     files = info.get("files")
@@ -284,6 +333,7 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
         info.get("body") or "",
         head_sha=head_sha,
         is_draft=bool(info.get("isDraft")),
+        beads_path=checkout_root / ".beads" / "issues.jsonl",
         base_sha=_base_sha(info),
     )
 
@@ -291,6 +341,7 @@ def _scope_verdict(pr: int, info: dict[str, Any], *, head_sha: str) -> pr_scope.
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName,baseRefOid,body,isDraft,author,files"])
     head_sha = info["headRefOid"]
+    checkout_root = _repository_root()
 
     local_head = _git_head_sha()
     if local_head != head_sha:
@@ -310,7 +361,7 @@ def cmd_record(pr: int, command: str) -> int:
         )
         return 2
 
-    scope = _scope_verdict(pr, info, head_sha=head_sha)
+    scope = _scope_verdict(pr, info, head_sha=head_sha, checkout_root=checkout_root)
     if not scope.ok:
         print(f"REFUSING to record: PR #{pr} has an invalid structured pr-scope carrier:", file=sys.stderr)
         for reason in scope.reasons:
@@ -321,12 +372,25 @@ def cmd_record(pr: int, command: str) -> int:
     if not argv:
         print("REFUSING to record: --command is empty after shell splitting.", file=sys.stderr)
         return 2
+    invocation_id = uuid.uuid4().hex
     started = time.time()
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True)
-    except OSError as exc:
-        print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
-        return 2
+    with tempfile.TemporaryDirectory(prefix="polylogue-merge-gate-") as temp_dir:
+        receipt_path = Path(temp_dir) / "run.json"
+        env = dict(os.environ)
+        env[VERIFICATION_INVOCATION_ID_ENV] = invocation_id
+        env[VERIFICATION_RECEIPT_PATH_ENV] = str(receipt_path)
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, cwd=checkout_root, env=env)
+        except OSError as exc:
+            print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
+            return 2
+        verification_receipt = _invocation_receipt(
+            path=receipt_path,
+            invocation_id=invocation_id,
+            head_sha=head_sha,
+            command_exit=result.returncode,
+            checkout_root=checkout_root,
+        )
     duration_s = round(time.time() - started, 2)
 
     receipt = {
@@ -344,17 +408,18 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
-        "verification_scope": _verification_scope(result.stdout),
-        "release_baseline_allowed": _release_baseline_permission(result.stdout),
-        "terminal_authorization": _terminal_authorization(result.stdout),
+        "verification_scope": _verification_scope(verification_receipt),
+        "release_baseline_allowed": _release_baseline_permission(verification_receipt),
+        "terminal_authorization": _terminal_authorization(verification_receipt),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
     }
-    _RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
-    _receipt_path(pr).write_text(json.dumps(receipt, indent=2))
+    receipt_path = _receipt_path(pr)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(receipt, indent=2))
 
     print(f"recorded receipt for PR #{pr} @ {head_sha[:8]}: exit={result.returncode} ({duration_s}s)")
     if receipt["skips_tests"]:
@@ -385,7 +450,7 @@ def cmd_ack(pr: int, comment_id: int, *, reason: str) -> int:
     else:
         acks = {}
     acks[str(comment_id)] = {"head_sha": head_sha, "reason": reason, "acked_at": time.time()}
-    _RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    ack_path.parent.mkdir(parents=True, exist_ok=True)
     ack_path.write_text(json.dumps(acks, indent=2))
     print(f"acknowledged comment {comment_id} on PR #{pr} @ {head_sha[:8]}: {reason}")
     return 0
@@ -498,7 +563,7 @@ def cmd_check(
             "current checkout has uncommitted changes; merge-gate check requires committed PR content"
         )
 
-    scope = _scope_verdict(pr, info, head_sha=head_sha)
+    scope = _scope_verdict(pr, info, head_sha=head_sha, checkout_root=_repository_root())
     verdict.pr_scope = asdict(scope)
     if not scope.ok:
         verdict.ok = False

@@ -73,6 +73,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -608,7 +609,13 @@ def cmd_merge(
         return 1
 
     head_sha = info["headRefOid"]
-    scope = merge_gate._scope_verdict(pr, info, head_sha=head_sha)
+    checkout_root = merge_gate._repository_root()
+    scope = merge_gate._scope_verdict(
+        pr,
+        info,
+        head_sha=head_sha,
+        checkout_root=checkout_root,
+    )
 
     if not scope.ok:
         print(f"REFUSING to merge PR #{pr}: invalid structured pr-scope carrier:", file=sys.stderr)
@@ -666,7 +673,12 @@ def cmd_merge(
             file=sys.stderr,
         )
         return 1
-    final_scope = merge_gate._scope_verdict(pr, final_info, head_sha=head_sha)
+    final_scope = merge_gate._scope_verdict(
+        pr,
+        final_info,
+        head_sha=head_sha,
+        checkout_root=checkout_root,
+    )
     initial_attestation = pr_scope.attestation_payload(
         scope, head_sha=head_sha, base_sha=merge_gate._base_sha(info)
     ).get("attestation_digest")
@@ -798,20 +810,30 @@ def cmd_record_full_verify(
     if execution_root is not None:
         argv = ["direnv", "exec", str(execution_root), *argv]
     started = verification_started_at
-    try:
-        result = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
-    except OSError as exc:
-        print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
-        return 2
+    checkout_root = Path(cwd) if cwd is not None else Path.cwd()
+    invocation_id = uuid.uuid4().hex
+    with tempfile.TemporaryDirectory(prefix="polylogue-terminal-verify-") as temp_dir:
+        receipt_path = Path(temp_dir) / "run.json"
+        env = dict(os.environ)
+        env[merge_gate.VERIFICATION_INVOCATION_ID_ENV] = invocation_id
+        env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV] = str(receipt_path)
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, cwd=checkout_root, env=env)
+        except OSError as exc:
+            print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
+            return 2
+        receipt = merge_gate._invocation_receipt(
+            path=receipt_path,
+            invocation_id=invocation_id,
+            head_sha=target_sha,
+            command_exit=result.returncode,
+            checkout_root=checkout_root,
+        )
     duration_s = round(time.time() - started, 2)
-    release_allowed = merge_gate._release_baseline_permission(result.stdout)
-    verification_scope = merge_gate._verification_scope(result.stdout)
-    terminal_authorization = merge_gate._terminal_authorization(result.stdout)
-    try:
-        structured = json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError):
-        structured = None
-    verified_head = structured.get("git_head") if isinstance(structured, dict) else None
+    release_allowed = merge_gate._release_baseline_permission(receipt)
+    verification_scope = merge_gate._verification_scope(receipt)
+    terminal_authorization = merge_gate._terminal_authorization(receipt)
+    verified_head = receipt.get("git_head") if isinstance(receipt, dict) else None
     accepted = (
         result.returncode == 0
         and release_allowed is True

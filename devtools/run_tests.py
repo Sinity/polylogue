@@ -47,10 +47,150 @@ from devtools.verify import (
     _clear_pytest_report,
     _run,
 )
-from devtools.verify_runs import VerifyRun, git_head
+from devtools.verify_runs import (
+    CheckoutMutationMonitor,
+    CheckoutMutationObservation,
+    VerifyRun,
+    append_verify_history,
+    finalize_checkout_mutation_monitors,
+    finish_checkout_mutation_monitor,
+    git_head,
+    pytest_command_worker_request,
+    start_checkout_mutation_monitor,
+    worktree_fingerprint,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
+_PATH_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "--basetemp",
+        "--config-file",
+        "--confcutdir",
+        "--debug",
+        "--ignore",
+        "--ignore-glob",
+        "--junit-xml",
+        "--junitxml",
+        "--log-file",
+        "--rootdir",
+    }
+)
+_ENV_EXPANDING_PATH_OPTIONS = frozenset({"--rootdir"})
+_NON_PATH_VALUE_OPTIONS = frozenset(
+    {
+        "-k",
+        "--keyword",
+        "-m",
+        "--mark",
+        "--deselect",
+        "--maxfail",
+        "--tb",
+        "--capture",
+        "--durations",
+        "--durations-min",
+        "--override-ini",
+        "-o",
+    }
+)
+
+
+def _absolute_option_path(
+    value: str,
+    *,
+    invocation_directory: Path,
+    expand_environment_variables: bool = False,
+) -> str:
+    if expand_environment_variables:
+        value = os.path.expandvars(value)
+    path = Path(value)
+    # pytest deliberately uses ``os.path.abspath`` for command-line paths:
+    # resolving here would make ``-c config-link.ini`` select the linked
+    # target as its rootdir instead of preserving the caller's spelling.
+    return os.path.abspath(path if path.is_absolute() else invocation_directory / path)
+
+
+def _normalize_selection_paths(selection: list[str], *, invocation_directory: Path) -> list[str]:
+    """Preserve path selections relative to the directory that invoked devtools."""
+    normalized: list[str] = []
+    pending_option: str | None = None
+    for argument in selection:
+        if pending_option is not None:
+            # pytest's --debug accepts an optional file name.  A following
+            # option belongs to pytest, not to --debug's optional value.
+            if pending_option == "--debug" and argument.startswith("-"):
+                pending_option = None
+            elif pending_option in _PATH_VALUE_OPTIONS:
+                normalized.append(
+                    _absolute_option_path(
+                        argument,
+                        invocation_directory=invocation_directory,
+                        expand_environment_variables=pending_option in _ENV_EXPANDING_PATH_OPTIONS,
+                    )
+                )
+                pending_option = None
+                continue
+            else:
+                normalized.append(argument)
+                pending_option = None
+                continue
+        if argument.startswith("-c="):
+            normalized.append(
+                "-c"
+                + _absolute_option_path(
+                    argument[len("-c=") :],
+                    invocation_directory=invocation_directory,
+                )
+            )
+            continue
+        option_name, equals, option_value = argument.partition("=")
+        if option_name in _PATH_VALUE_OPTIONS:
+            if equals:
+                normalized_value = _absolute_option_path(
+                    option_value,
+                    invocation_directory=invocation_directory,
+                    expand_environment_variables=option_name in _ENV_EXPANDING_PATH_OPTIONS,
+                )
+                normalized.append(f"{option_name}={normalized_value}")
+            else:
+                normalized.append(argument)
+                pending_option = option_name
+            continue
+        if option_name in _NON_PATH_VALUE_OPTIONS:
+            normalized.append(argument)
+            if not equals:
+                pending_option = option_name
+            continue
+        if argument.startswith("-c") and len(argument) > len("-c"):
+            normalized.append(
+                "-c"
+                + _absolute_option_path(
+                    argument[len("-c") :],
+                    invocation_directory=invocation_directory,
+                )
+            )
+            continue
+        if argument.startswith("-"):
+            normalized.append(argument)
+            continue
+        path_text, separator, node_suffix = argument.partition("::")
+        candidate = Path(path_text)
+        if candidate.is_absolute() or not (invocation_directory / candidate).exists():
+            normalized.append(argument)
+            continue
+        resolved = (invocation_directory / candidate).resolve()
+        try:
+            anchored = resolved.relative_to(ROOT).as_posix()
+        except ValueError:
+            anchored = str(resolved)
+        normalized.append(f"{anchored}{separator}{node_suffix}")
+    return normalized
+
+
+def _anchor_test_paths() -> None:
+    """Anchor focused-test execution and artifacts to this checkout."""
+    os.chdir(ROOT)
 
 
 def _has_worker_flag(selection: list[str]) -> bool:
@@ -66,8 +206,20 @@ def _worker_args(selection: list[str]) -> list[str]:
     return ["-n", workers]
 
 
+def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> list[str]:
+    """Keep declared shared-state groups together whenever xdist is active."""
+    if any(arg == "--dist" or arg.startswith("--dist=") for arg in selection):
+        return []
+    command = [*selection, *worker_args]
+    request = pytest_command_worker_request(command)
+    if request in {None, "0"}:
+        return []
+    return ["--dist=loadgroup"]
+
+
 def build_pytest_cmd(selection: list[str]) -> list[str]:
     """Compose the pytest command for a focused selection."""
+    worker_args = _worker_args(selection)
     return [
         sys.executable,
         "-m",
@@ -78,7 +230,8 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={PYTEST_REPORT_PATH}",
         *selection,
-        *_worker_args(selection),
+        *worker_args,
+        *_xdist_distribution_args(selection, worker_args),
     ]
 
 
@@ -111,7 +264,12 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
             handle.truncate()
 
 
+@finalize_checkout_mutation_monitors
 def main(argv: list[str] | None = None) -> int:
+    invocation_directory = Path.cwd()
+    selection = list(sys.argv[1:] if argv is None else argv)
+    selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
+    _anchor_test_paths()
     try:
         fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
@@ -121,7 +279,6 @@ def main(argv: list[str] | None = None) -> int:
     environment_fingerprint = fingerprint.as_dict()
     sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
-    selection = list(sys.argv[1:] if argv is None else argv)
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
     # flag; it is meaningless for a streamed test run, so drop it before pytest.
@@ -140,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
+        mutation_monitor = CheckoutMutationMonitor(ROOT)
+        start_checkout_mutation_monitor(mutation_monitor)
+        initial_worktree_fingerprint = worktree_fingerprint(ROOT)
         run = VerifyRun(
             tier="focused-test",
             argv=selection,
@@ -147,16 +307,82 @@ def main(argv: list[str] | None = None) -> int:
             root=ROOT,
             polylogue_import_path=str(polylogue_import_path),
             environment_fingerprint=environment_fingerprint,
+            worktree_fingerprint=initial_worktree_fingerprint,
         )
         started = time.monotonic()
-        rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
+        final_worktree_fingerprint = "unavailable"
+        mutation_observation = CheckoutMutationObservation(changed=False, unavailable=True)
+        runner_exception = False
+        try:
+            rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
+        except KeyboardInterrupt:
+            rc = 130
+            metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
+            run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
+        except Exception as exc:
+            runner_exception = True
+            rc = 125
+            metadata = {
+                "diagnosis": "focused_test_runner_exception",
+                "exception_type": type(exc).__name__,
+                "error": str(exc),
+                "termination_reason": "runner_exception",
+            }
+            run.finish_interrupted_steps(
+                exit_code=rc,
+                diagnosis=str(metadata["diagnosis"]),
+                termination_reason="runner_exception",
+            )
+            try:
+                final_worktree_fingerprint = worktree_fingerprint(ROOT)
+            except Exception:
+                final_worktree_fingerprint = "unavailable"
+            try:
+                mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+            except Exception:
+                mutation_observation = CheckoutMutationObservation(changed=False, unavailable=True)
+            sys.stderr.write(f"devtools test: unexpected runner exception: {exc}\n")
+        if not runner_exception:
+            final_worktree_fingerprint = worktree_fingerprint(ROOT)
+            mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+            if (
+                "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
+                or mutation_observation.unavailable
+            ):
+                checkout_diagnosis = "checkout_fingerprint_unavailable"
+                if rc == 130:
+                    metadata["checkout_diagnosis"] = checkout_diagnosis
+                else:
+                    metadata["diagnosis"] = checkout_diagnosis
+                if rc == 0:
+                    rc = 125
+                sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
+            elif mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint:
+                checkout_diagnosis = "checkout_changed_during_focused_test"
+                if rc == 130:
+                    metadata["checkout_diagnosis"] = checkout_diagnosis
+                else:
+                    metadata["diagnosis"] = checkout_diagnosis
+                metadata["transient_checkout_mutation"] = mutation_observation.changed
+                metadata["checkout_mutation_path"] = mutation_observation.observed_path
+                if rc == 0:
+                    rc = 125
+                sys.stderr.write(
+                    "devtools test: checkout contents changed during pytest; evidence is not exact-head.\n"
+                )
         payload = run.finish(
             exit_code=rc,
             duration_s=time.monotonic() - started,
             diagnosis=metadata.get("diagnosis"),
             verification_scope="affected",
             release_baseline_allowed=False,
+            final_worktree_fingerprint=final_worktree_fingerprint,
+            checkout_mutation_path=mutation_observation.observed_path,
+            checkout_diagnosis=(
+                metadata["checkout_diagnosis"] if isinstance(metadata.get("checkout_diagnosis"), str) else None
+            ),
         )
+        append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     sys.stderr.write(
