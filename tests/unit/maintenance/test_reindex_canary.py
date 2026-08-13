@@ -1735,34 +1735,8 @@ def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_pat
         load_canary_review_manifest(manifest)
 
 
-def test_review_manifest_rejects_unregistered_expected_bead_authority(tmp_path: Path) -> None:
-    manifest = tmp_path / "reviews.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "reviews": [
-                    {
-                        "table": "blocks",
-                        "operation": "changed",
-                        "identity": {"block_id": "block"},
-                        "changed_columns": ["text"],
-                        "classification": "expected",
-                        "reference": "bead:not-a-real-issue",
-                        "authority": {"kind": "bead", "id": "not-a-real-issue"},
-                        "rationale": "this must resolve through the committed tracker registry",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(UnclassifiedCanaryDiffError, match="not declared in packaged evidence"):
-        load_canary_review_manifest(manifest)
-
-
-def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_path: Path) -> None:
-    """Authority resolution uses the packaged full catalog, while successors stay actionable."""
+def test_review_manifest_accepts_structured_bead_and_successor_references(tmp_path: Path) -> None:
+    """Tracker references stay typed without copying tracker state into the package."""
 
     manifest = tmp_path / "reviews.json"
     manifest.write_text(
@@ -1775,8 +1749,8 @@ def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_pat
                         "identity": {"block_id": "closed"},
                         "changed_columns": ["text"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-010x",
-                        "authority": {"kind": "bead", "id": "polylogue-010x"},
+                        "reference": "bead:completed-repair",
+                        "authority": {"kind": "bead", "id": "completed-repair"},
                         "rationale": "completed repair declared this difference",
                     },
                     {
@@ -1785,8 +1759,8 @@ def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_pat
                         "identity": {"block_id": "successor"},
                         "changed_columns": ["text"],
                         "classification": "unexpected",
-                        "reference": "successor:polylogue-ox2iz",
-                        "authority": {"kind": "successor", "id": "polylogue-ox2iz"},
+                        "reference": "successor:unresolved-difference",
+                        "authority": {"kind": "successor", "id": "unresolved-difference"},
                         "rationale": "open successor owns the unresolved difference",
                     },
                 ]
@@ -1796,32 +1770,6 @@ def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_pat
     )
 
     assert len(load_canary_review_manifest(manifest)) == 2
-
-
-def test_review_manifest_rejects_unresolved_successor_authority(tmp_path: Path) -> None:
-    manifest = tmp_path / "reviews.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "reviews": [
-                    {
-                        "table": "blocks",
-                        "operation": "changed",
-                        "identity": {"block_id": "successor"},
-                        "changed_columns": ["text"],
-                        "classification": "unexpected",
-                        "reference": "successor:not-a-real-issue",
-                        "authority": {"kind": "successor", "id": "not-a-real-issue"},
-                        "rationale": "this must resolve through packaged actionable evidence",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(UnclassifiedCanaryDiffError, match="not declared in packaged evidence"):
-        load_canary_review_manifest(manifest)
 
 
 def test_partial_canary_scopes_thread_membership_by_session_not_thread_aggregate(tmp_path: Path) -> None:

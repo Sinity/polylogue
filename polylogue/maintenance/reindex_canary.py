@@ -1774,17 +1774,17 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
 
 
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
-    """Resolve expected-difference authorities from packaged and typed catalogs."""
-    from polylogue.maintenance.canary_authorities import BEAD_AUTHORITY_IDS, OPEN_BEAD_AUTHORITY_IDS
+    """Resolve machine-owned expected-difference authorities.
+
+    Bead and successor identifiers remain structured review references, but
+    their existence is tracker state rather than product semantics.  A frozen
+    package-local copy of every tracker id could detect a typo while being
+    unable to prove that the cited issue authorized the difference.  Index
+    deltas, by contrast, are an executable product vocabulary and are checked
+    against their canonical declarations here.
+    """
     from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
 
-    expected_beads: set[str] = {
-        review.authority_id
-        for review in reviews
-        if review.classification is DifferenceClassification.EXPECTED
-        and review.authority_kind is CanaryAuthorityKind.BEAD
-        and review.authority_id is not None
-    }
     expected_deltas = {
         review.authority_id
         for review in reviews
@@ -1792,23 +1792,10 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
         and review.authority_kind is CanaryAuthorityKind.DELTA
         and review.authority_id is not None
     }
-    unknown_beads = sorted(bead for bead in expected_beads if bead not in BEAD_AUTHORITY_IDS)
-    successor_beads = {
-        review.authority_id
-        for review in reviews
-        if review.authority_kind is CanaryAuthorityKind.SUCCESSOR and review.authority_id is not None
-    }
-    unknown_successors = sorted(bead for bead in successor_beads if bead not in OPEN_BEAD_AUTHORITY_IDS)
     declared_deltas = {str(declaration.version) for declaration in INDEX_DELTA_DECLARATIONS}
     unknown_deltas = sorted(delta for delta in expected_deltas if delta not in declared_deltas)
-    if unknown_beads or unknown_successors or unknown_deltas:
-        detail = ", ".join(
-            [
-                *(f"unknown Bead {bead}" for bead in unknown_beads),
-                *(f"unknown successor Bead {bead}" for bead in unknown_successors),
-                *(f"unknown index delta {delta}" for delta in unknown_deltas),
-            ]
-        )
+    if unknown_deltas:
+        detail = ", ".join(f"unknown index delta {delta}" for delta in unknown_deltas)
         raise UnclassifiedCanaryDiffError(f"expected canary authority is not declared in packaged evidence: {detail}")
 
 
