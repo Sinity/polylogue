@@ -1149,6 +1149,7 @@ def apply_managed_pytest_runtime_policy(
         shm_free_kb=None if manages_tmpfs else 0,
         full_suite=full_suite,
     )
+    rejected_candidates: tuple[str, ...] = ()
     if full_suite and policy.tmpfs_predicted_mb is not None:
         normalized.setdefault(PYTEST_BASETEMP_REQUIRED_MB_ENV, str(policy.tmpfs_predicted_mb))
     if manages_tmpfs:
@@ -1174,12 +1175,23 @@ def apply_managed_pytest_runtime_policy(
                     safe_budget_kb=effective_tmpfs_budget_kb,
                     headroom_kb=pytest_basetemp_min_free_kb(normalized),
                 )
-            normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
             if configured_tmpfs:
                 # The configured tmpfs root has become unsafe for this run.
                 # Leaving it in place would make the resolver select it even
                 # though tmpfs has just been disabled, without its cap.
+                rejected_candidates = (
+                    str(
+                        _tmpfs_admission_refusal(
+                            kind="configured",
+                            path=Path(configured_root or PYTEST_TMPFS_ROOT),
+                            declared_demand_kb=required_basetemp_kb,
+                            safe_budget_kb=effective_tmpfs_budget_kb,
+                            headroom_kb=pytest_basetemp_min_free_kb(normalized),
+                        )
+                    ),
+                )
                 normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
+            normalized["POLYLOGUE_PYTEST_TMPFS"] = "0"
     if default_full_suite_scratch:
         # Broad-suite demand grows with the fixture universe and has exceeded
         # the supervised 2 GiB ceiling while tests were still progressing.
@@ -1206,7 +1218,9 @@ def apply_managed_pytest_runtime_policy(
                 else f"explicit pytest basetemp is unreachable: {selected_root}"
             )
     else:
-        selected_root, selected_label = resolve_pytest_basetemp_root(normalized)
+        selected_root, selected_label = resolve_pytest_basetemp_root(
+            normalized, rejected_candidates=rejected_candidates
+        )
         free_kb = _headroom_kb(selected_root)
     if (
         explicit_basetemp is None
@@ -1316,7 +1330,9 @@ def _basetemp_refusal(checked: list[str], min_free_kb: int) -> PytestResourceErr
     )
 
 
-def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
+def resolve_pytest_basetemp_root(
+    env: Mapping[str, str], *, rejected_candidates: tuple[str, ...] = ()
+) -> tuple[Path, str]:
     """Pick the ONE basetemp root pytest will use this run.
 
     Single resolution order, shared by ``tests/conftest.py`` (direct pytest
@@ -1344,7 +1360,7 @@ def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
     required_kb = pytest_basetemp_required_kb(env)
     min_free_kb = max(pytest_basetemp_min_free_kb(env), required_kb or 0)
     normalized = normalize_pytest_basetemp_env(env)
-    checked: list[str] = []
+    checked = list(rejected_candidates)
 
     configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     if configured:

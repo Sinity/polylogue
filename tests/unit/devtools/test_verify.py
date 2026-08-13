@@ -2917,6 +2917,36 @@ def test_configured_tmpfs_root_reroutes_to_scratch_when_its_cap_is_too_small(
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
 
 
+def test_configured_tmpfs_reroute_keeps_admission_evidence_when_scratch_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    _patch_resource_capacity(monkeypatch, shm=shm, scratch=scratch, available_mb=15_190)
+    configured = shm / "configured"
+    configured.mkdir()
+
+    def constrained_headroom(path: Path) -> int | None:
+        if path == scratch:
+            return 1 * 1024
+        return 8 * 1024 * 1024
+
+    monkeypatch.setattr(verify_runs, "_headroom_kb", constrained_headroom)
+
+    with pytest.raises(PytestResourceError) as excinfo:
+        apply_managed_pytest_runtime_policy(
+            {
+                "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(configured),
+                "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+            },
+            worker_count=4,
+        )
+
+    message = str(excinfo.value)
+    assert f"configured pytest basetemp declared demand exceeds its safe adaptive tmpfs budget ({configured}" in message
+    assert "safe tmpfs budget=512 MiB" in message
+    assert f"{scratch} (scratch): 1 MiB free" in message
+
+
 def test_focused_policy_keeps_full_suite_basetemp_demand_out_of_scratch_preflight(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

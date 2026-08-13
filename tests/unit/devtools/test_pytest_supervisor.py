@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import tomllib
@@ -439,6 +440,45 @@ def test_surviving_owned_process_forces_nonzero_containment_result(
     assert receipt["controller_returncode"] == 0
     assert receipt["controller_group_alive"] is True
     assert receipt["termination_reason"] == "owned pytest processes survived cleanup"
+
+
+def test_supervisor_main_retains_tmpfs_tree_when_receipt_is_not_quiescent(
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "containment.json"
+    cleanup_path = Path("/dev/shm") / "pytest-polylogue-retained"
+
+    def fake_supervise(*_args: object, **_kwargs: object) -> int:
+        receipt_path.write_text(json.dumps({"controller_group_alive": True}), encoding="utf-8")
+        return 125
+
+    with (
+        patch("devtools.pytest_supervisor.supervise", side_effect=fake_supervise),
+        patch("devtools.pytest_supervisor.cleanup_managed_tmpfs_path") as cleanup,
+    ):
+        rc = pytest_supervisor.main(
+            [
+                "--receipt",
+                str(receipt_path),
+                "--owner-pid",
+                str(os.getpid()),
+                "--timeout-s",
+                "1",
+                "--term-grace-s",
+                "1",
+                "--mode",
+                "process-group",
+                "--cleanup-path",
+                str(cleanup_path),
+                "--",
+                "pytest",
+            ]
+        )
+
+    assert rc == 125
+    cleanup.assert_not_called()
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["tmpfs_cleanup_complete"] is False
 
 
 def test_managed_runner_retains_responsible_node_for_per_test_timeout(
