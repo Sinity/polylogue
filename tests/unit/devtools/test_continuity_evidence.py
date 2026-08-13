@@ -1,21 +1,13 @@
-"""Unit tests for the combined continuity-evidence artifact.
+"""Unit tests for the executable continuity-evidence artifact.
 
 Anti-vacuity: the discovery-coverage lane runs against the real shipped
 ``QUERY_DISCOVERY_EXAMPLES`` catalog and t8t's real ``CONTINUITY_SCENARIOS``
-declarations (not stand-ins); the work-evidence lane runs the real
-``polylogue.insights.work_effects`` adapters against genuine ``git`` and Beads
-ledger fixtures via subprocess/file I/O, exactly as
-``tests/unit/insights/test_work_effects.py`` does. Mutation cases remove a
-piece of real evidence (a discovery example, a corroborating commit) and
-assert the artifact's own status flips to the failing/unevaluated state,
-rather than asserting a fixed shape that a broken implementation could still
-satisfy.
+declarations (not stand-ins). The mutation case removes a real discovery
+example and requires the executable report to fail rather than asserting a
+fixed catalog shape.
 """
 
 from __future__ import annotations
-
-import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -23,23 +15,6 @@ from devtools import continuity_evidence as mcr
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.core.json import JSONDocument
 from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS
-
-_BEADS_FIXTURE = Path(__file__).parents[2] / "fixtures" / "beads" / "issue-interactions.jsonl"
-
-
-def _init_git_repo(path: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(path)], check=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.email", "agent@example.test"], check=True)
-    subprocess.run(["git", "-C", str(path), "config", "user.name", "Agent"], check=True)
-
-
-def _commit(path: Path, *, filename: str, message: str) -> str:
-    (path / filename).write_text("content\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(path), "add", filename], check=True)
-    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", message], check=True)
-    result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
-    return result.stdout.strip()
-
 
 # ── Discovery-coverage lane ────────────────────────────────────────────
 
@@ -70,96 +45,6 @@ def test_discovery_coverage_flags_a_regressed_catalog(monkeypatch: pytest.Monkey
     assert report.status == "fail"
     assert any(gap.plan_atom == "query:runs" for gap in report.gaps)
     assert report.covered_steps == report.checked_steps - len(report.gaps)
-
-
-# ── Work-evidence effect-reconciliation lane ──────────────────────────
-
-
-def test_build_repository_claim_graph_builds_one_claim_per_closed_issue() -> None:
-    graph = mcr.build_repository_claim_graph(_BEADS_FIXTURE)
-
-    claim_ids = {node.ref.object_id for node in graph.nodes if node.kind == "claim"}
-    assert claim_ids == {"claimed-closed:polylogue-7fj"}
-    [node] = [n for n in graph.nodes if n.kind == "claim"]
-    assert node.claim_text is not None
-    assert "polylogue-7fj" in node.claim_text
-
-
-def test_build_repository_claim_graph_raises_explicitly_for_missing_ledger(tmp_path: Path) -> None:
-    missing = tmp_path / "interactions.jsonl"
-    with pytest.raises(FileNotFoundError):
-        mcr.build_repository_claim_graph(missing)
-
-
-def test_work_evidence_effect_proof_evaluates_claims_with_a_corroborating_commit(tmp_path: Path) -> None:
-    from polylogue.insights.work_effects import (
-        BeadsIssueEffectAdapter,
-        GitCommitEffectAdapter,
-        GitHubPullRequestEffectAdapter,
-    )
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    _commit(repo, filename="a.txt", message="fix: land the work (Ref polylogue-7fj)")
-
-    proof = mcr.run_work_evidence_effect_proof(
-        repo_path=repo,
-        beads_ledger_path=_BEADS_FIXTURE,
-        adapters=(
-            GitCommitEffectAdapter(repo_path=repo),
-            BeadsIssueEffectAdapter(jsonl_path=_BEADS_FIXTURE),
-            # A deterministically-missing `gh_path`, not the real "gh" binary:
-            # the real one succeeds on any machine authenticated against
-            # Sinity/polylogue (this devbox included), which would make the
-            # "GitHub fails" assertion below environment-dependent rather
-            # than a property of the code.
-            GitHubPullRequestEffectAdapter(repo="Sinity/polylogue", gh_path="polylogue-test-missing-gh-binary"),
-        ),
-    )
-
-    assert proof.claims_total == 1
-    assert proof.claims_evaluated == 1
-    assert proof.claims_unevaluated == 0
-    assert proof.status == "pass"
-    assert proof.effect_count_by_authority["git"] >= 1
-    assert proof.effect_count_by_authority["beads"] >= 1
-    assert proof.judgment_count_by_evaluation.get("supported", 0) >= 1
-    # GitHub is included and is expected to fail explicitly -- an honest
-    # "not wired yet" citation, not a silent omission.
-    assert any(failure["authority"] == "github" for failure in proof.adapter_failures)
-
-
-def test_work_evidence_effect_proof_evaluates_via_beads_effect_when_git_has_no_reference(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    _commit(repo, filename="a.txt", message="unrelated commit, no bead reference")
-
-    proof = mcr.run_work_evidence_effect_proof(repo_path=repo, beads_ledger_path=_BEADS_FIXTURE)
-
-    # The Beads ledger's own field-change row is still a real, independently
-    # collected effect record (the same mechanism BeadsIssueEffectAdapter
-    # exercises against production ledgers), so the claim is still evaluated
-    # -- but only through the beads authority; git contributes no matching
-    # effect here because the commit never mentions the issue id.
-    assert proof.claims_total == 1
-    assert proof.judgment_count_by_evaluation.get("supported", 0) >= 1
-    assert proof.effect_count_by_authority.get("git", 0) == 1  # the unrelated commit is still observed
-
-
-def test_work_evidence_effect_proof_status_fails_on_an_empty_ledger(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    _commit(repo, filename="a.txt", message="unrelated")
-    empty_ledger = tmp_path / "interactions.jsonl"
-    empty_ledger.write_text("", encoding="utf-8")
-
-    proof = mcr.run_work_evidence_effect_proof(repo_path=repo, beads_ledger_path=empty_ledger)
-
-    assert proof.claims_total == 0
-    assert proof.status == "fail"
 
 
 # ── Redaction ──────────────────────────────────────────────────────────

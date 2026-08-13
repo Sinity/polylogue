@@ -1563,12 +1563,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace continuity-evidence",
         "workspace",
-        "Replay continuity scenarios and repository effects through production routes.",
+        "Replay continuity scenarios and verify their query routes are discoverable.",
         "devtools.continuity_evidence",
         use_when=(
-            "Replay the continuity scenario catalog "
-            "over MCP stdio JSON-RPC, reconcile repository effects through the work-evidence adapters, "
-            "and cross-check query routes against discovery. The default is a synthetic archive; pass "
+            "Replay the continuity scenario catalog over MCP stdio JSON-RPC and cross-check "
+            "its query routes against discovery. The default is a synthetic archive; pass "
             "--archive-root only for an authorized live read-only replay."
         ),
         examples=(
