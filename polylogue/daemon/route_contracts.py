@@ -287,6 +287,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/cli/delete/cancel",
+        "maintenance",
+        "private",
+        "bearer_if_configured_and_same_origin",
+        "delete cancellation envelope",
+        "Local CLI transport; cancels an unconfirmed daemon-held preview under the writer gate.",
+    ),
+    RouteContract(
+        "POST",
         "/api/cli/delete",
         "maintenance",
         "private",

@@ -2244,6 +2244,24 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
         if len(prepared_session_ids) > 5:
             click.echo(f"  ... and {len(prepared_session_ids) - 5} more", err=True)
         if not env.ui.confirm("Proceed?", default=False):
+            preview_ref = daemon_preview.get("preview_ref")
+            if not isinstance(preview_ref, str) or not preview_ref:
+                raise click.ClickException("daemon returned an invalid delete preview")
+            try:
+                cancellation = _submit_daemon_mutation(
+                    config,
+                    "/api/cli/delete/cancel",
+                    body={"preview_ref": preview_ref},
+                )
+            except DaemonMutationIndeterminateError as exc:
+                raise click.ClickException(
+                    "delete cancellation outcome is indeterminate after the daemon accepted the request; "
+                    "inspect daemon audit state before retrying"
+                ) from exc
+            except DaemonResponseError as exc:
+                raise click.ClickException(f"daemon refused delete cancellation ({exc.status}): {exc.detail}") from exc
+            if cancellation is None:
+                raise click.ClickException("daemon became unavailable before it cancelled the delete preview")
             click.echo(
                 MutationResultPayload(
                     status="aborted", operation="delete", session_count=count, affected_count=0

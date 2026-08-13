@@ -93,10 +93,9 @@ def _canonical_session_ids(archive: ArchiveStore, requested: tuple[str, ...]) ->
     canonical: list[str] = []
     canonical_set: set[str] = set()
     for session_id in requested:
-        try:
-            resolved = exact_matches.get(session_id) or archive.resolve_session_id(session_id)
-        except KeyError as exc:
-            raise DeleteAuthorizationError("selection_is_stale") from exc
+        resolved = exact_matches.get(session_id)
+        if resolved is None:
+            raise DeleteAuthorizationError("selection_is_stale")
         if resolved in canonical_set:
             raise DeleteAuthorizationError("selection_is_not_canonical")
         canonical_set.add(resolved)
@@ -108,6 +107,15 @@ def _audit_path(archive_root: Path) -> Path:
     return archive_root / "audit.db"
 
 
+def _audit_repository(archive_root: Path) -> AuditRepository:
+    """Create audit authority with the local actuator identity for recovery."""
+
+    return AuditRepository(
+        _audit_path(archive_root),
+        attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+    )
+
+
 def prepare_cli_delete(
     archive_root: Path,
     requested_session_ids: tuple[str, ...],
@@ -117,7 +125,7 @@ def prepare_cli_delete(
 
     if not requested_session_ids:
         raise DeleteAuthorizationError("selection_is_empty")
-    audit = AuditRepository(_audit_path(archive_root))
+    audit = _audit_repository(archive_root)
     executor = OperationExecutor(audit=audit)
     binding = _binding()
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -145,7 +153,7 @@ def authorize_cli_delete(
 ) -> str:
     """Issue a daemon-held, single-use authorization for one prepared preview."""
 
-    audit = AuditRepository(_audit_path(archive_root))
+    audit = _audit_repository(archive_root)
     preview = _load_preview(audit, preview_ref, principal, require_prepared=True)
     authorization = OperationExecutor(audit=audit).authorize_bound(
         _binding(),
@@ -165,7 +173,7 @@ def consume_cli_delete(
 ) -> MutationReceipt:
     """Atomically consume a daemon-issued delete authorization before mutation."""
 
-    audit = AuditRepository(_audit_path(archive_root))
+    audit = _audit_repository(archive_root)
     preview, authorization = _load_active_authorization(audit, token, principal)
     if audit.ensure_archive_authority(now_ms=_now_ms()) != preview.plan.archive_instance_id:
         raise DeleteAuthorizationError("archive_instance_changed")
@@ -184,6 +192,18 @@ def consume_cli_delete(
         raise DeleteAuthorizationError("selection_changed_after_authorization") from exc
     except (AuthorizationMismatchError, TokenConsumedError, TokenExpiredError) as exc:
         raise DeleteAuthorizationError("authorization_not_active") from exc
+
+
+def cancel_cli_delete(
+    archive_root: Path,
+    preview_ref: str,
+    principal: MutationPrincipal,
+) -> None:
+    """Cancel an authenticated caller's unconfirmed durable delete preview."""
+
+    audit = _audit_repository(archive_root)
+    preview = _load_preview(audit, preview_ref, principal, require_prepared=True)
+    audit.cancel_preview(preview)
 
 
 def _load_preview(

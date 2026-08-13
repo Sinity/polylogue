@@ -242,6 +242,40 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     assert confirmation == ("bound_token",)
 
 
+def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A declined CLI confirmation has the daemon retire its durable preview."""
+
+    from polylogue.daemon_client import DaemonResponseError
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = client.request_mutation_json(  # type: ignore[attr-defined]
+            "POST", "/api/cli/delete/prepare", {"session_ids": [session_id]}
+        )
+        assert preview is not None
+        preview_ref = str(preview["preview_ref"])
+        cancelled = client.request_mutation_json(  # type: ignore[attr-defined]
+            "POST", "/api/cli/delete/cancel", {"preview_ref": preview_ref}
+        )
+        assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
+        with pytest.raises(DaemonResponseError) as authorization_error:
+            client.request_mutation_json(  # type: ignore[attr-defined]
+                "POST", "/api/cli/delete/authorize", {"preview_ref": preview_ref}
+            )
+
+    assert authorization_error.value.status == HTTPStatus.CONFLICT
+    _assert_session_exists(archive_root, session_id, expected=True)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute("SELECT state FROM operation_previews WHERE preview_id = ?", (preview_ref,)).fetchone() == (
+            "cancelled",
+        )
+
+
 def test_cli_delete_bounds_body_bytes_accepts_large_selection_and_reads_before_writer_gate() -> None:
     class _ExplodingBody:
         def read(self, _size: int) -> bytes:
@@ -351,6 +385,24 @@ def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path
 
     session_selects = [statement for statement in statements if "FROM sessions" in statement]
     assert len(session_selects) <= 3
+
+
+def test_cli_delete_preparation_refuses_a_missing_exact_id_that_is_a_live_prefix(tmp_path: Path) -> None:
+    """Delete previews are bound to exact canonical IDs, never prefix resolution."""
+
+    from polylogue.operations.delete_authorization import DeleteAuthorizationError, _canonical_session_ids
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
+    missing_exact_id = session_id.removesuffix("0")
+
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        with pytest.raises(DeleteAuthorizationError, match="selection_is_stale"):
+            _canonical_session_ids(archive, (missing_exact_id,))
+
+    _assert_session_exists(archive_root, session_id, expected=True)
 
 
 def test_cli_delete_preparation_rejects_a_late_duplicate_before_archive_resolution(tmp_path: Path) -> None:

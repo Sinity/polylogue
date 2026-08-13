@@ -4506,6 +4506,13 @@ x-polylogue-route-contracts:
   response_contract: delete authorization envelope
   notes: Local CLI transport; issues one daemon-held authorization for an authenticated preview owner.
 - method: POST
+  pattern: /api/cli/delete/cancel
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: delete cancellation envelope
+  notes: Local CLI transport; cancels an unconfirmed daemon-held preview under the writer gate.
+- method: POST
   pattern: /api/cli/delete
   kind: maintenance
   stability: private

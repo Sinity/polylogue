@@ -502,6 +502,8 @@ class AuditRepository:
             }
         if kind == "mark_preview_stale":
             return {"preview": _preview_payload(cast(MutationPreview, args[0]))}
+        if kind == "cancel_preview":
+            return {"preview": _preview_payload(cast(MutationPreview, args[0]))}
         if kind == "finalize_attempt":
             operation_id = cast(str, args[0])
             return {
@@ -560,6 +562,11 @@ class AuditRepository:
                 )
             if mutation.kind == "mark_preview_stale":
                 return cast(Any, self.mark_preview_stale).__wrapped__(
+                    self,
+                    _preview_from_payload(payload["preview"]),
+                )
+            if mutation.kind == "cancel_preview":
+                return cast(Any, self.cancel_preview).__wrapped__(
                     self,
                     _preview_from_payload(payload["preview"]),
                 )
@@ -873,6 +880,31 @@ class AuditRepository:
             )
             conn.execute(
                 "UPDATE operation_previews SET state = 'stale' WHERE preview_id = ? AND state = 'prepared'",
+                (preview.preview_ref,),
+            )
+
+    @_continuity_mutation("cancel_preview")
+    def cancel_preview(self, preview: MutationPreview) -> None:
+        """Cancel an unconfirmed preview and revoke any live authorization."""
+
+        with self._connection() as conn:
+            self._begin(conn)
+            row = conn.execute(
+                "SELECT plan_hash FROM operation_previews WHERE preview_id = ?",
+                (preview.preview_ref,),
+            ).fetchone()
+            if row is None or str(row[0]) != preview.plan.plan_hash:
+                raise ValueError("cancelled preview does not match its durable authority")
+            conn.execute(
+                """
+                UPDATE operation_authorizations
+                SET state = 'revoked'
+                WHERE preview_id = ? AND state = 'active'
+                """,
+                (preview.preview_ref,),
+            )
+            conn.execute(
+                "UPDATE operation_previews SET state = 'cancelled' WHERE preview_id = ? AND state = 'prepared'",
                 (preview.preview_ref,),
             )
 

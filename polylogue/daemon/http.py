@@ -459,6 +459,11 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             ("api", "cli", "delete", "authorize"),
             "_handle_cli_delete_authorize",
         ),
+        _StaticPostRoute(
+            "/api/cli/delete/cancel",
+            ("api", "cli", "delete", "cancel"),
+            "_handle_cli_delete_cancel",
+        ),
         _StaticPostRoute("/api/cli/delete", ("api", "cli", "delete"), "_handle_cli_delete"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
@@ -5094,6 +5099,28 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return
         self._send_json(HTTPStatus.OK, {"status": "authorized", "authorization_token": token})
+
+    @daemon_safe_handler
+    def _handle_cli_delete_cancel(self) -> None:
+        """Cancel an authenticated caller's unconfirmed delete preview."""
+
+        preview_ref = self._read_cli_delete_token_field("preview_ref")
+        if preview_ref is None:
+            return
+        principal = self._cli_delete_principal()
+
+        async def _cancel(poly: Polylogue) -> None:
+            from polylogue.operations.delete_authorization import cancel_cli_delete
+
+            cancel_cli_delete(poly.config.archive_root, preview_ref, principal)
+
+        try:
+            with self._write_gate("http.cli.delete.cancel"):
+                self._sync_run(_cancel)
+        except ValueError as exc:
+            self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
+            return
+        self._send_json(HTTPStatus.OK, {"status": "cancelled", "preview_ref": preview_ref})
 
     @daemon_safe_handler
     def _handle_cli_delete(self) -> None:

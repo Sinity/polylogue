@@ -1088,12 +1088,20 @@ class TestEmitDeleteMachineModeNoPrompt:
 
         with patch(
             "polylogue.cli.archive_query._submit_daemon_mutation",
-            return_value={"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
-        ):
+            side_effect=[
+                {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+                {"status": "cancelled", "preview_ref": "preview:delete"},
+            ],
+        ) as daemon_delete:
             _emit_delete(env, ("s1", "s2"), params={"force": False, "dry_run": False})
 
         env.ui.confirm.assert_called_once()
         archive.delete_sessions.assert_not_called()
+        assert [call.args[1] for call in daemon_delete.call_args_list] == [
+            "/api/cli/delete/prepare",
+            "/api/cli/delete/cancel",
+        ]
+        assert daemon_delete.call_args_list[-1].kwargs["body"] == {"preview_ref": "preview:delete"}
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "aborted"
 
