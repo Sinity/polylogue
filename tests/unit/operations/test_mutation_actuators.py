@@ -26,6 +26,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import Context
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,7 +34,6 @@ import pytest
 
 from polylogue.core.enums import AssertionKind, Provider
 from polylogue.insights.feedback import LearningCorrection
-from polylogue.operations.audit import AuditRepository
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,
@@ -337,38 +337,10 @@ class TestTagAddActuator:
             previews.append(preview)
             authorizations.append(executor.authorize_bound(binding, preview, principal))
 
-        audit_lock = threading.Lock()
         execute_barrier = threading.Barrier(2)
         first_scope_installed = threading.Event()
         first_execute_done = threading.Event()
-        original_consume = AuditRepository.consume_authorization_and_start
-        original_finalize = AuditRepository.finalize_attempt
         original_execute = OperationExecutor.execute
-
-        def locked_consume(
-            self: AuditRepository, preview: MutationPreview, authorization: MutationAuthorization
-        ) -> str:
-            with audit_lock:
-                return original_consume(self, preview, authorization)
-
-        def locked_finalize(
-            self: AuditRepository,
-            operation_id: str,
-            *,
-            status: str,
-            receipt: MutationReceipt | None = None,
-            error_summary: str | None = None,
-            unknown_reason: str | None = None,
-        ) -> None:
-            with audit_lock:
-                original_finalize(
-                    self,
-                    operation_id,
-                    status=status,
-                    receipt=receipt,
-                    error_summary=error_summary,
-                    unknown_reason=unknown_reason,
-                )
 
         def synchronized_execute(
             self: OperationExecutor,
@@ -389,8 +361,6 @@ class TestTagAddActuator:
                 raise TimeoutError("first executor route did not complete")
             return original_execute(self, actuator, plan, authorization, args)
 
-        monkeypatch.setattr(AuditRepository, "consume_authorization_and_start", locked_consume)
-        monkeypatch.setattr(AuditRepository, "finalize_attempt", locked_finalize)
         monkeypatch.setattr(OperationExecutor, "execute", synchronized_execute)
 
         def execute_tag(index: int) -> MutationReceipt:
@@ -419,6 +389,35 @@ class TestTagAddActuator:
                 "SELECT status, unknown_count FROM operation_runs ORDER BY operation_id"
             ).fetchall()
         assert audit_rows == [("completed", 0), ("completed", 0)]
+
+    def test_bound_prevalidation_does_not_escape_into_deferred_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="deferred-context")
+        actuator = TagAddActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal("test", frozenset({"archive.add_tag"}), "api", "write")
+        executor = OperationExecutor.for_archive_root(archive_root)
+        deferred: list[tuple[Context, MutationPlan, TagAddArgs]] = []
+        original_apply = TagAddActuator.apply
+
+        def capture_context(self: TagAddActuator, plan: MutationPlan, args: TagAddArgs) -> MutationReceipt:
+            from contextvars import copy_context
+
+            deferred.append((copy_context(), plan, args))
+            return original_apply(self, plan, args)
+
+        monkeypatch.setattr(TagAddActuator, "apply", capture_context)
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            args = TagAddArgs(archive=archive, session_id=session_id, tag="once")
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+            authorization = executor.authorize_bound(binding, preview, principal)
+            assert executor.execute_bound(binding, preview, authorization, args).status == "applied"
+            inherited, applied_plan, applied_args = deferred.pop()
+            with pytest.raises(PlanStaleError):
+                inherited.run(executor.execute, actuator, applied_plan, authorization, applied_args)
 
 
 class TestTagRemoveActuator:

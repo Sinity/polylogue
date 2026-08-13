@@ -955,7 +955,14 @@ class OperationExecutor:
             expected_actuator, expected_plan = active_executions[-1]
             if actuator is not expected_actuator or plan is not expected_plan:
                 raise MutationTransactionError("prevalidated execution does not match the active bound mutation")
-            return actuator.apply(plan, args)
+            # Context variables are copied into callbacks/tasks at creation.
+            # Remove this one-shot authority before entering actuator-owned
+            # code so work it schedules cannot inherit and replay it later.
+            cleared = self._prevalidated_executions.set(())
+            try:
+                return actuator.apply(plan, args)
+            finally:
+                self._prevalidated_executions.reset(cleared)
         fresh_plan = actuator.prepare(args)
         if fresh_plan.plan_hash != plan.plan_hash:
             raise PlanStaleError(

@@ -14,6 +14,7 @@ import hashlib
 import json
 import sqlite3
 import stat
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,6 +35,21 @@ AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 = "3230fdd585a4fd2d71b7d720bcfe5d697ff120fd
 _SOURCE_CONTINUITY_SCHEMA_VERSION = 32
 _AUDIT_CONTINUITY_SCHEMA_VERSION = 2
 _T = TypeVar("_T")
+
+_COORDINATOR_LOCK_GUARD = threading.Lock()
+_COORDINATOR_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _coordinator_lock(archive_root: Path) -> threading.RLock:
+    """Serialize one archive's cross-tier continuity state machine in-process."""
+
+    key = str(archive_root.resolve())
+    with _COORDINATOR_LOCK_GUARD:
+        lock = _COORDINATOR_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _COORDINATOR_LOCKS[key] = lock
+        return lock
 
 
 class AuditContinuityError(RuntimeError):
@@ -162,9 +178,18 @@ class AuditContinuityCoordinator:
         self.source_path = self.archive_root / "source.db"
         self.audit_path = self.archive_root / "audit.db"
         self._phase_hook = phase_hook
+        self._execution_lock = _coordinator_lock(self.archive_root)
 
     def execute(self, mutation: AuditMutation, apply: Callable[[sqlite3.Connection, AuditMutation], _T]) -> _T:
         """Prepare one command, commit audit bytes, then promote source control."""
+
+        with self._execution_lock:
+            return self._execute_serialized(mutation, apply)
+
+    def _execute_serialized(
+        self, mutation: AuditMutation, apply: Callable[[sqlite3.Connection, AuditMutation], _T]
+    ) -> _T:
+        """Run the complete source-to-audit transition under one archive lock."""
 
         self._phase("before_source_prepare", mutation)
         prepared = self._prepare(mutation)
