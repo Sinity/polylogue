@@ -184,6 +184,39 @@ def test_unknown_retained_stream_replay_scans_past_oversized_first_record_withou
     assert [session.provider_session_id for session in sessions] == ["unknown-stream"]
 
 
+def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The only provider-defining record may itself exceed the scan bound."""
+    initialize_active_archive_root(tmp_path)
+    payload = (
+        json.dumps(
+            {
+                "sessionId": "oversized-only-provider-record",
+                "uuid": "message-1",
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": "x" * 9_000}]},
+            }
+        ).encode()
+        + b"\n"
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="oversized-only.jsonl",
+            acquired_at_ms=1,
+        )
+
+        def reject_eager_material(_raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+            raise AssertionError("eager payload read")
+
+        monkeypatch.setattr(archive, "raw_revision_material", reject_eager_material)
+        sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+
+    assert [session.provider_session_id for session in sessions] == ["oversized-only-provider-record"]
+
+
 def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -230,9 +263,11 @@ def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record
 
 
 def test_unknown_retained_nonstream_jsonl_keeps_complete_payload_fallback(tmp_path: Path) -> None:
-    """A bounded scan must not remove eager replay for a non-stream provider."""
+    """Positive bounded document evidence may select eager non-stream replay."""
     initialize_active_archive_root(tmp_path)
-    payload = json.dumps(_chatgpt_session("large-jsonl-document", "x" * 9_000), sort_keys=True).encode() + b"\n"
+    document = _chatgpt_session("large-jsonl-document", "bounded evidence")
+    document["padding"] = "x" * 9_000
+    payload = json.dumps(document, sort_keys=True).encode() + b"\n"
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
@@ -254,7 +289,9 @@ def test_unknown_retained_document_replays_after_complete_payload_detection(tmp_
     archive, rather than testing the detector in isolation.
     """
     initialize_active_archive_root(tmp_path)
-    payload = _bundle(_chatgpt_session("large-document", "x" * 9_000))
+    document = _chatgpt_session("large-document", "bounded evidence")
+    document["padding"] = "x" * 9_000
+    payload = _bundle(document)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.UNKNOWN,

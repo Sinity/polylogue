@@ -18,6 +18,9 @@ from pathlib import Path
 from types import TracebackType
 from typing import BinaryIO, Final, Literal, cast
 
+import ijson
+from ijson.common import ObjectBuilder
+
 from polylogue import logging as _polylogue_logging
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.ingest_flags import (
@@ -46,6 +49,7 @@ from polylogue.pipeline.services.process_pool import (
 from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
+    detect_provider_evidence,
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
     is_stream_record_provider,
@@ -82,6 +86,47 @@ _LOGGER = _polylogue_logging.get_logger(__name__)
 _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
 
 
+def _detect_provider_from_bounded_prefix(
+    prefix: bytes,
+    stream_name: str,
+    *,
+    record_stream: bool,
+) -> tuple[Provider, str]:
+    """Classify completed structure exposed by a bounded JSON prefix.
+
+    The ordinary raw-byte detector remains the first authority.  When the
+    prefix ends inside one oversized JSON value, ijson still emits every
+    completed key/value event before that truncated value.  Reconstructing
+    only those completed events preserves structural provider evidence (for
+    example a Codex ``session_meta`` envelope or a Claude ``sessionId``)
+    without retaining or completing the oversized record.
+    """
+    provider, evidence = detect_provider_from_raw_bytes_evidence(
+        prefix,
+        stream_name,
+        Provider.UNKNOWN,
+        truncated_tail_ok=True,
+    )
+    if provider is not Provider.UNKNOWN:
+        return provider, evidence
+
+    builder = ObjectBuilder()
+    try:
+        for event, value in ijson.basic_parse(BytesIO(prefix), use_float=True):
+            builder.event(event, value)
+    except ijson.JSONError:
+        # Premature EOF is expected for an oversized-record prefix.  The
+        # builder retains only values whose lexical token completed inside
+        # the bound; an unfinished string/object contributes no guessed data.
+        pass
+    partial = builder.value
+    candidate: object = [partial] if record_stream and isinstance(partial, dict) else partial
+    detected, partial_evidence = detect_provider_evidence(candidate)
+    if detected is None:
+        return Provider.UNKNOWN, evidence
+    return detected, f"bounded partial JSON structure: {partial_evidence}"
+
+
 def _detect_unknown_retained_provider(
     payload: BinaryIO,
     source_path: str,
@@ -101,34 +146,41 @@ def _detect_unknown_retained_provider(
     """
     stream_name = Path(source_path).name
     if not is_jsonl_source_path(source_path):
-        return detect_provider_from_raw_bytes_evidence(
+        return _detect_provider_from_bounded_prefix(
             payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
             stream_name,
-            Provider.UNKNOWN,
-            truncated_tail_ok=True,
+            record_stream=False,
         )
-
-    # Local import avoids a source-dispatch import cycle during module load;
-    # this is the same bounded physical-record iterator used by raw-payload
-    # artifact inspection.
-    from polylogue.archive.raw_payload.decode import _bounded_raw_lines
 
     last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
-    for raw_line, oversized in _bounded_raw_lines(
-        payload,
-        max_record_bytes=_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES,
-    ):
-        if oversized or raw_line is None:
-            continue
-        record_bytes = raw_line.encode("utf-8", errors="surrogatepass") if isinstance(raw_line, str) else raw_line
-        provider, last_evidence = detect_provider_from_raw_bytes_evidence(
-            record_bytes,
-            stream_name,
-            Provider.UNKNOWN,
-        )
+    read_size = _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 1
+    while raw_line := payload.readline(read_size):
+        has_newline = raw_line.endswith(b"\n")
+        oversized = not has_newline and len(raw_line) > _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
+        bounded_record = raw_line[:_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
+        if oversized:
+            provider, last_evidence = _detect_provider_from_bounded_prefix(
+                bounded_record,
+                stream_name,
+                record_stream=True,
+            )
+            while raw_line and not raw_line.endswith(b"\n"):
+                raw_line = payload.readline(read_size)
+        else:
+            provider, last_evidence = detect_provider_from_raw_bytes_evidence(
+                bounded_record,
+                stream_name,
+                Provider.UNKNOWN,
+            )
         if provider is not Provider.UNKNOWN:
             return provider, last_evidence
     return Provider.UNKNOWN, last_evidence
+
+
+def _require_bounded_provider(provider: Provider, source_path: str) -> None:
+    """Refuse eager UNKNOWN replay after bounded structural detection."""
+    if provider is Provider.UNKNOWN:
+        raise ValueError(f"retained UNKNOWN provider remained unresolved after bounded scan: {source_path}")
 
 
 def _canonical_authority_logical_key(logical_key: str) -> str:
@@ -2076,13 +2128,8 @@ def census_parse_worker(
                         provider, stream_payload, source_path, fallback_id_override=fallback_id_override
                     )
                 return raw_id, sessions, None
+            _require_bounded_provider(provider, source_path)
             payload = publisher.read_all(blob_hash)
-            if provider is Provider.UNKNOWN:
-                provider, _evidence = detect_provider_from_raw_bytes_evidence(
-                    payload,
-                    Path(source_path).name,
-                    provider,
-                )
             payload_path = None
             if provider is Provider.HERMES:
                 candidate_path = publisher.blob_path(blob_hash)
@@ -2514,13 +2561,8 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
                 return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+        _require_bounded_provider(provider, source_path)
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
-        if provider is Provider.UNKNOWN:
-            provider, _evidence = detect_provider_from_raw_bytes_evidence(
-                eager_payload,
-                Path(source_path).name,
-                provider,
-            )
         payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
         return _parse_one(
             provider,
@@ -3335,12 +3377,6 @@ def _detected_provider_for_empty_replay(
         provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
     if provider is not Provider.UNKNOWN:
         return provider
-    _provider, full_payload, _path, _kind = archive.raw_revision_material(raw_id)
-    provider, _evidence = detect_provider_from_raw_bytes_evidence(
-        full_payload,
-        Path(source_path).name,
-        stored_provider,
-    )
     return provider
 
 
