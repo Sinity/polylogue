@@ -38,6 +38,17 @@ def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
     return store.write_from_bytes(payload)
 
 
+def test_unavailable_frontier_preserves_empty_healthy_source_reason() -> None:
+    """A healthy source check must not inherit an unrelated pointer failure."""
+    projection = raw_retention_mod.unknown_raw_frontier_integrity_projection(
+        "active index pointer unavailable",
+        missing_source_raw_status="healthy",
+        missing_source_raw_reason="",
+    )
+
+    assert projection.missing_source_raw_reason == ""
+
+
 def _ensure_archive_source_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE raw_sessions (
@@ -2474,6 +2485,44 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
     assert projection.cursor_ahead_status == "healthy"
     assert projection.overall_status == "healthy"
     assert projection.available is True
+
+
+def test_raw_frontier_integrity_projection_reports_malformed_active_pointer(tmp_path: Path) -> None:
+    """Status reads degrade to an unavailable projection when a pointer is invalid."""
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0},
+    )
+
+    assert projection.available is False
+    assert projection.overall_status == "unknown"
+    assert "active index pointer" in projection.broken_head_reason
+
+
+def test_raw_frontier_projection_retains_known_missing_source_violation_when_pointer_is_invalid(tmp_path: Path) -> None:
+    """An unavailable active pointer cannot erase known source-tier loss."""
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {
+            "available": True,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [{"session_id": "missing-session"}],
+        },
+    )
+
+    assert projection.available is False
+    assert projection.overall_status == "violated"
+    assert projection.missing_source_raw_status == "violated"
+    assert projection.missing_source_raw_count == 1
+    assert projection.missing_source_raw_samples == ({"session_id": "missing-session"},)
 
 
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])

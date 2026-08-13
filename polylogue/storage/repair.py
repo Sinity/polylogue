@@ -61,6 +61,7 @@ from polylogue.storage.message_type_backfill import (
     count_unclassified_message_type_sync,
 )
 from polylogue.storage.raw_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RAW_REPLAY_NO_PROGRESS_REASON,
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     RawAuthorityCensusReceipt,
@@ -3933,6 +3934,15 @@ def _raw_materialization_candidate_ids(
                    , EXISTS (
                        SELECT 1
                        FROM raw_membership_census AS c
+                       WHERE c.raw_id = r.raw_id
+                         AND c.parser_fingerprint = ?
+                         AND c.status = 'non_session'
+                         AND r.parsed_at_ms IS NOT NULL
+                         AND r.parse_error IS NULL
+                   ) AS membership_non_session_terminal
+                   , EXISTS (
+                       SELECT 1
+                       FROM raw_membership_census AS c
                        JOIN raw_session_memberships AS m ON m.raw_id = c.raw_id
                        WHERE c.raw_id = r.raw_id
                          AND c.status = 'complete'
@@ -4023,6 +4033,7 @@ def _raw_materialization_candidate_ids(
             [
                 *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
                 RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+                RAW_AUTHORITY_PARSER_FINGERPRINT,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
@@ -4071,6 +4082,8 @@ def _raw_materialization_candidate_ids(
             ):
                 continue
             if _raw_materialized_by_source_path_native(materialized_aliases, row):
+                continue
+            if bool(row["membership_non_session_terminal"]):
                 continue
             if _raw_materialization_parsed_non_session_artifact(archive_root, row):
                 continue

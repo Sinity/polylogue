@@ -1273,9 +1273,9 @@ def upsert_raw_artifact(
     """
     failure_kind = _is_raw_failure_artifact_kind(artifact.artifact_kind)
     coordinate_predicate = (
-        "raw_id = ? AND origin = ? AND source_path = ? AND source_index = ?"
+        "a.raw_id = ? AND a.origin = ? AND a.source_path = ? AND a.source_index = ?"
         if failure_kind
-        else "origin = ? AND source_path = ? AND source_index = ? AND artifact_kind NOT IN ("
+        else "a.origin = ? AND a.source_path = ? AND a.source_index = ? AND a.artifact_kind NOT IN ("
         + ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
         + ")"
     )
@@ -1292,13 +1292,50 @@ def upsert_raw_artifact(
     with conn if manage_transaction else nullcontext():
         existing = conn.execute(
             f"""
-            SELECT artifact_id
-            FROM raw_artifacts
+            SELECT a.artifact_id, a.raw_id, a.first_observed_at_ms, a.last_observed_at_ms, r.rowid
+            FROM raw_artifacts AS a
+            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
             WHERE {coordinate_predicate}
             """,
             coordinate_params,
         ).fetchone()
         if existing is not None:
+            # One coordinate has one authority carrier. A delayed census of
+            # stale retained bytes must not replace a carrier observed later.
+            if str(existing[1]) != raw_id:
+                incoming_row = conn.execute(
+                    """
+                    SELECT acquired_at_ms, rowid FROM blob_refs
+                    WHERE ref_id = ? AND ref_type = 'raw_payload'
+                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    """,
+                    (raw_id,),
+                ).fetchone()
+                if incoming_row is None:
+                    incoming_row = conn.execute(
+                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+                    ).fetchone()
+                if incoming_row is None:
+                    raise KeyError(raw_id)
+                existing_observation = conn.execute(
+                    """
+                    SELECT acquired_at_ms, rowid FROM blob_refs
+                    WHERE ref_id = ? AND ref_type = 'raw_payload'
+                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    """,
+                    (str(existing[1]),),
+                ).fetchone()
+                existing_order = (
+                    (int(existing_observation[0]), int(existing_observation[1]))
+                    if existing_observation is not None
+                    else (int(existing[3]), int(existing[4]))
+                )
+                if existing_order >= (int(incoming_row[0]), int(incoming_row[1])):
+                    conn.execute(
+                        "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
+                        (artifact.first_observed_at_ms, str(existing[0])),
+                    )
+                    return
             artifact = replace(artifact, artifact_id=str(existing[0]))
         _insert_artifact(conn, raw_id, artifact)
 

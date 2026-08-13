@@ -1709,25 +1709,38 @@ def raw_revision_rebuild_selection(
 
 def raw_membership_census_rows(
     store: RawRevisionGovernanceHost, raw_ids: Sequence[str] | None = None
-) -> tuple[tuple[str, int, bool], ...]:
+) -> tuple[tuple[str, int, bool, int], ...]:
     """Return retained raws and whether durable evidence says they are non-sessions."""
     conn = store._ensure_source_conn()
     columns = """
         r.raw_id,
         r.source_index,
-        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+        (
+            EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+            OR EXISTS(
+                SELECT 1 FROM raw_membership_census AS c
+                WHERE c.raw_id = r.raw_id
+                  AND c.parser_fingerprint = ?
+                  AND c.status = 'non_session'
+                  AND r.parsed_at_ms IS NOT NULL
+                  AND r.parse_error IS NULL
+            )
+        ),
+        r.rowid
     """
     if raw_ids is None:
-        rows = conn.execute(f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id").fetchall()
+        rows = conn.execute(
+            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (RAW_AUTHORITY_PARSER_FINGERPRINT,)
+        ).fetchall()
     elif raw_ids:
         placeholders = ",".join("?" for _ in raw_ids)
         rows = conn.execute(
             f"SELECT {columns} FROM raw_sessions AS r WHERE r.raw_id IN ({placeholders}) ORDER BY r.raw_id",
-            tuple(raw_ids),
+            (RAW_AUTHORITY_PARSER_FINGERPRINT, *raw_ids),
         ).fetchall()
     else:
         rows = []
-    return tuple((str(row[0]), int(row[1]), bool(row[2])) for row in rows)
+    return tuple((str(row[0]), int(row[1]), bool(row[2]), int(row[3])) for row in rows)
 
 
 def raw_payload_sizes(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> dict[str, int]:
@@ -1767,8 +1780,6 @@ def replace_raw_membership_census(
             ).fetchone()
             if revision is None:
                 raise RuntimeError(f"membership census raw is missing: {raw_id}")
-            if revision[0] is not None and str(revision[1]) != RawRevisionKind.FULL.value:
-                raise RuntimeError("only self-contained full raws can move to membership governance")
             dependent = conn.execute(
                 """
                 SELECT 1 FROM raw_sessions
@@ -2190,6 +2201,38 @@ def raw_revision_acquired_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -
     if row is None:
         raise KeyError(f"unknown raw revision {raw_id}")
     return int(row[0])
+
+
+def raw_revision_observed_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -> int:
+    """Return the latest durable observation receipt for a retained raw.
+
+    ``raw_sessions.acquired_at_ms`` is deliberately immutable because the raw
+    id is content-derived.  Re-observing identical bytes refreshes the
+    ``blob_refs`` raw-payload receipt instead, which is the ordering authority
+    for replaying mutable state snapshots.
+    """
+    return raw_revision_observation_order(store, raw_id)[0]
+
+
+def raw_revision_observation_order(store: RawRevisionGovernanceHost, raw_id: str) -> tuple[int, int]:
+    """Return the latest observation timestamp and its durable receipt order."""
+    conn = store._ensure_source_conn()
+    row = conn.execute(
+        """
+        SELECT acquired_at_ms, rowid
+        FROM blob_refs
+        WHERE ref_id = ? AND ref_type = 'raw_payload'
+        ORDER BY acquired_at_ms DESC, rowid DESC
+        LIMIT 1
+        """,
+        (raw_id,),
+    ).fetchone()
+    if row is not None:
+        return int(row[0]), int(row[1])
+    row = conn.execute("SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"unknown raw revision {raw_id}")
+    return int(row[0]), int(row[1])
 
 
 def raw_membership_rebuild_raw_ids(store: RawRevisionGovernanceHost, logical_source_key: str) -> tuple[str, ...]:

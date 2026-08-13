@@ -216,6 +216,8 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_descriptor,
     raw_revision_head_raw_id,
     raw_revision_material,
+    raw_revision_observation_order,
+    raw_revision_observed_at_ms,
     raw_revision_rebuild_selection,
     raw_revision_replay_adoptable,
     raw_revision_replay_plan,
@@ -2699,7 +2701,9 @@ class ArchiveStore:
     ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
         return raw_revision_rebuild_selection(self, raw_ids)
 
-    def raw_membership_census_rows(self, raw_ids: Sequence[str] | None = None) -> tuple[tuple[str, int, bool], ...]:
+    def raw_membership_census_rows(
+        self, raw_ids: Sequence[str] | None = None
+    ) -> tuple[tuple[str, int, bool, int], ...]:
         return raw_membership_census_rows(self, raw_ids)
 
     def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
@@ -2761,6 +2765,12 @@ class ArchiveStore:
 
     def raw_revision_acquired_at_ms(self, raw_id: str) -> int:
         return raw_revision_acquired_at_ms(self, raw_id)
+
+    def raw_revision_observed_at_ms(self, raw_id: str) -> int:
+        return raw_revision_observed_at_ms(self, raw_id)
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]:
+        return raw_revision_observation_order(self, raw_id)
 
     def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
         return raw_membership_rebuild_raw_ids(self, logical_source_key)
