@@ -22,6 +22,8 @@ from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
     _assert_complete_source_semantic_delta,
     _assert_exact_liveness_delta,
+    _table_content_digest,
+    _write_refresh_receipt,
     apply_historical_source_continuity_recovery,
     load_historical_source_continuity_recovery_plan,
 )
@@ -272,6 +274,30 @@ def test_historical_liveness_delta_requires_exact_deletion_and_no_other_source_m
         _assert_exact_liveness_delta(pre, wrong_blob_set, (candidate,))
 
 
+def test_historical_source_delta_tags_sqlite_storage_classes_and_rejects_refresh_symlinks(tmp_path: Path) -> None:
+    """A non-STRICT BLOB/TEXT swap and a symlinked receipt directory are both unsafe."""
+    typed = tmp_path / "typed.db"
+    with sqlite3.connect(typed) as connection:
+        connection.execute("CREATE TABLE values_table (value)")
+        connection.execute("INSERT INTO values_table VALUES (?)", ("01",))
+        text_digest = _table_content_digest(connection, "values_table")
+        connection.execute("UPDATE values_table SET value = X'01'")
+        blob_digest = _table_content_digest(connection, "values_table")
+    assert text_digest != blob_digest
+
+    root = tmp_path / "archive"
+    state = root / ".maintenance-state"
+    state.mkdir(parents=True)
+    target = tmp_path / "outside"
+    target.mkdir()
+    (state / "source-continuity-refreshes").symlink_to(target, target_is_directory=True)
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="not a real directory"):
+        _write_refresh_receipt(
+            state / "source-continuity-refreshes" / ("a" * 64 + ".json"),
+            {"refresh_sha256": "a" * 64},
+        )
+
+
 def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -328,6 +354,20 @@ def test_historical_continuity_recovery_is_a_real_cli_route_and_resumes(
     )
     assert plan_result.exit_code == 0, plan_result.output
     plan = load_historical_source_continuity_recovery_plan(plan_path)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            "polylogue.operations.historical_source_continuity_recovery.running_daemon_pid",
+            lambda _config: 4242,
+        )
+        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="daemon to be stopped"):
+            apply_historical_source_continuity_recovery(
+                root=new_root,
+                plan=plan,
+                authorization=plan.plan_sha256,
+                stopped_daemon_evidence_ref="proof:daemon-stopped",
+                single_writer_evidence_ref="proof:archive-ownership-lock",
+            )
+    assert not (new_root / ".maintenance-state" / "historical-source-continuity-recoveries").exists()
     assert database_before == {
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }

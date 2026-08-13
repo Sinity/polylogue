@@ -20,7 +20,12 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.config import Config
+from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.maintenance.blob_ref_liveness_reconciliation import census_blob_ref_liveness
+from polylogue.maintenance.offline_guard import running_daemon_pid
+from polylogue.paths import render_root
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.backup_attestation import BackupAttestationError, verify_verification_receipt
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
@@ -391,12 +396,31 @@ def _table_content_digest(connection: sqlite3.Connection, table: str) -> tuple[i
         for row in connection.execute(
             f"SELECT {', '.join(quoted_columns)} FROM {quoted} ORDER BY {', '.join(quoted_columns)}"
         ):
-            encoded = [value.hex() if isinstance(value, bytes) else value for value in row]
+            encoded = [_typed_sqlite_value(value) for value in row]
             digest.update(json.dumps(encoded, separators=(",", ":"), ensure_ascii=True).encode() + b"\n")
             count += 1
     except (sqlite3.Error, TypeError) as exc:
         raise HistoricalSourceContinuityRecoveryError(f"cannot deterministically read source table: {table}") from exc
     return count, digest.hexdigest()
+
+
+def _typed_sqlite_value(value: object) -> list[str]:
+    """Encode SQLite's storage class as well as its visible value."""
+    if value is None:
+        return ["null", ""]
+    if isinstance(value, bool):
+        return ["integer", "1" if value else "0"]
+    if isinstance(value, int):
+        return ["integer", str(value)]
+    if isinstance(value, float):
+        return ["real", value.hex()]
+    if isinstance(value, str):
+        return ["text", value]
+    if isinstance(value, bytes):
+        return ["blob", value.hex()]
+    raise HistoricalSourceContinuityRecoveryError(
+        f"source table returned unsupported SQLite value type: {type(value)!r}"
+    )
 
 
 def _assert_complete_source_semantic_delta(pre_source: Path, post_source: Path) -> None:
@@ -520,6 +544,64 @@ def _receipt_path(root: Path, plan: HistoricalSourceContinuityRecoveryPlan) -> P
 
 def _refresh_path(root: Path, digest: str) -> Path:
     return root / ".maintenance-state" / "source-continuity-refreshes" / f"{digest}.json"
+
+
+def _require_offline_ownership_boundary(root: Path) -> None:
+    """Make offline authority real for callers that bypass the Click adapter."""
+    if daemon_write_lease_active():
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery is offline-only and cannot run under a daemon writer lease"
+        )
+    if (pid := running_daemon_pid(Config(archive_root=root, render_root=render_root(), sources=[]))) is not None:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"historical continuity recovery requires the daemon to be stopped; live pidfile PID: {pid}"
+        )
+
+
+def _write_refresh_receipt(path: Path, payload: dict[str, object]) -> None:
+    """Publish a retained receipt beneath a pinned, non-symlink directory."""
+    state_root = _real_directory(path.parent.parent, label="maintenance state")
+    refresh_root = state_root / path.parent.name
+    if refresh_root.exists() or refresh_root.is_symlink():
+        _real_directory(refresh_root, label="source continuity refresh receipt directory")
+    else:
+        refresh_root.mkdir(mode=0o700)
+        descriptor = os.open(state_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _real_directory(refresh_root, label="source continuity refresh receipt directory")
+    receipt_path = refresh_root / path.name
+    if receipt_path.exists() or receipt_path.is_symlink():
+        _real_file(receipt_path, label="source continuity refresh receipt")
+        try:
+            if json.loads(receipt_path.read_text(encoding="utf-8")) != payload:
+                raise HistoricalSourceContinuityRecoveryError(
+                    "historical continuity recovery refresh receipt collision"
+                )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HistoricalSourceContinuityRecoveryError(
+                "historical continuity recovery refresh receipt is unreadable"
+            ) from exc
+        return
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=refresh_root, prefix=f".{receipt_path.name}.", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, receipt_path)
+        temporary = None
+        descriptor = os.open(refresh_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def prepare_historical_source_continuity_recovery(
@@ -751,6 +833,31 @@ def apply_historical_source_continuity_recovery(
     stopped_daemon_evidence_ref: str,
     single_writer_evidence_ref: str,
 ) -> HistoricalSourceContinuityRecoveryResult:
+    """Acquire archive ownership before the API can publish receipts or a CAS revision."""
+    resolved = _real_directory(root, label="configured archive root")
+    _require_offline_ownership_boundary(resolved)
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(resolved),
+        owner_id=f"historical-source-continuity-recovery:{os.getpid()}",
+        allow_reentrant=True,
+    ):
+        return _apply_historical_source_continuity_recovery_locked(
+            root=resolved,
+            plan=plan,
+            authorization=authorization,
+            stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+            single_writer_evidence_ref=single_writer_evidence_ref,
+        )
+
+
+def _apply_historical_source_continuity_recovery_locked(
+    *,
+    root: Path,
+    plan: HistoricalSourceContinuityRecoveryPlan,
+    authorization: str,
+    stopped_daemon_evidence_ref: str,
+    single_writer_evidence_ref: str,
+) -> HistoricalSourceContinuityRecoveryResult:
     _verify_plan(plan)
     if authorization != plan.plan_sha256 or plan.bound_confirmation != "historical-source-continuity-recovery":
         raise HistoricalSourceContinuityRecoveryError(
@@ -811,26 +918,8 @@ def apply_historical_source_continuity_recovery(
     else:
         _write_receipt(receipt_path, prepared, expected=None)
         receipt = prepared
-    refresh_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     encoded = {**refresh_payload, "refresh_sha256": refresh_digest}
-    if refresh_path.exists():
-        if json.loads(refresh_path.read_text(encoding="utf-8")) != encoded:
-            raise HistoricalSourceContinuityRecoveryError("historical continuity recovery refresh receipt collision")
-    else:
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=refresh_path.parent, prefix=f".{refresh_path.name}.", delete=False
-            ) as stream:
-                temporary = Path(stream.name)
-                stream.write((json.dumps(encoded, indent=2, sort_keys=True) + "\n").encode())
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, refresh_path)
-            temporary = None
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+    _write_refresh_receipt(refresh_path, encoded)
     path = Path(plan.source_train_path)
     train = load_durable_change_train_manifest(path)
     if _sha256(path) == plan.source_train_sha256:
