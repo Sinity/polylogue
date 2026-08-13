@@ -1667,7 +1667,8 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
         rows = conn.execute(
             f"""
             WITH newest_per_coordinate AS (
-                SELECT raw_id, source_path, origin, source_index, parse_error, validation_status, parsed_at_ms
+                SELECT raw_id, source_path, origin, source_index, parse_error,
+                       validation_status, validated_at_ms, parsed_at_ms
                 FROM (
                     SELECT
                         raw_id,
@@ -1676,6 +1677,7 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                         source_index,
                         parse_error,
                         validation_status,
+                        validated_at_ms,
                         parsed_at_ms,
                         ROW_NUMBER() OVER (
                             PARTITION BY source_path, origin, source_index
@@ -1692,14 +1694,24 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                 JOIN newest_per_coordinate AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
                 WHERE artifact.parse_as_session = 0
                   AND (
-                      artifact.artifact_kind NOT IN ({raw_failure_placeholders})
+                      (
+                          artifact.artifact_kind NOT IN ({raw_failure_placeholders})
+                          AND (
+                              evidence_raw.parsed_at_ms IS NULL
+                              OR artifact.last_observed_at_ms >= evidence_raw.parsed_at_ms
+                          )
+                      )
                       OR (
                           artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
                           AND (
                               evidence_raw.parse_error IS NOT NULL
                               OR (
                                   evidence_raw.validation_status = 'failed'
-                                  AND evidence_raw.parsed_at_ms IS NULL
+                                  AND (
+                                      evidence_raw.parsed_at_ms IS NULL
+                                      OR evidence_raw.validated_at_ms IS NULL
+                                      OR evidence_raw.validated_at_ms >= evidence_raw.parsed_at_ms
+                                  )
                               )
                           )
                       )

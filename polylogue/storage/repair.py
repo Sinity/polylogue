@@ -3868,7 +3868,7 @@ def _raw_materialization_candidate_ids(
         rows = conn.execute(
             f"""
             SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size,
-                   r.acquired_at_ms, r.parsed_at_ms,
+                   r.acquired_at_ms, r.parsed_at_ms, r.validated_at_ms,
                    r.parse_error,
                    (
                        SELECT a.artifact_kind
@@ -3956,7 +3956,11 @@ def _raw_materialization_candidate_ids(
               -- index reset from replaying successfully parsed raw bytes.
               AND NOT (
                 COALESCE(r.validation_status, '') = 'failed'
-                AND r.parsed_at_ms IS NULL
+                AND (
+                  r.parsed_at_ms IS NULL
+                  OR r.validated_at_ms IS NULL
+                  OR r.validated_at_ms >= r.parsed_at_ms
+                )
               )
               AND (
                 r.parse_error IS NULL
@@ -3990,7 +3994,11 @@ def _raw_materialization_candidate_ids(
                     r.parse_error IS NOT NULL
                     OR (
                       r.validation_status = 'failed'
-                      AND r.parsed_at_ms IS NULL
+                      AND (
+                        r.parsed_at_ms IS NULL
+                        OR r.validated_at_ms IS NULL
+                        OR r.validated_at_ms >= r.parsed_at_ms
+                      )
                     )
                   )
               )
