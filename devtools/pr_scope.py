@@ -834,6 +834,12 @@ def check_authority_metadata(
         )
         _ensure_local_commit(metadata.base_sha)
         _ensure_local_commit(metadata.head_sha)
+        if _automated_dependency_scope_allowed(metadata):
+            print(
+                "pr-scope authority OK: typed automated-dependency disposition "
+                f"(files={','.join(metadata.changed_files)})"
+            )
+            return 0
         verdict = validate_pr_body(
             metadata.body,
             head_sha=metadata.head_sha,

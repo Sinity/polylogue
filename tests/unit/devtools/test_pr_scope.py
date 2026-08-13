@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib import request
@@ -292,6 +293,50 @@ def test_authority_event_rejects_missing_or_mismatched_api_fields(
         pr_scope._pr_metadata_from_payload(
             {"body": "", "draft": False, "head": {"sha": head_sha}, "base": {"sha": base_sha}}
         )
+
+
+def test_authority_accepts_only_the_typed_dependency_bot_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _candidate, base_sha, head_sha = _authority_repositories(tmp_path)
+    monkeypatch.chdir(base)
+    metadata = pr_scope.PullRequestMetadata(
+        body="",
+        head_sha=head_sha,
+        base_sha=base_sha,
+        is_draft=False,
+        base_ref="master",
+        number=7,
+        state="open",
+        author_login="dependabot[bot]",
+        author_type="Bot",
+        changed_files=("pyproject.toml", "uv.lock"),
+    )
+
+    assert (
+        pr_scope.check_authority_metadata(
+            metadata,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=base_sha,
+        )
+        == 0
+    )
+    assert "typed automated-dependency disposition" in capsys.readouterr().out
+
+    widened = pr_scope.PullRequestMetadata(
+        **{**asdict(metadata), "changed_files": (*metadata.changed_files, "polylogue/config.py")}
+    )
+    assert (
+        pr_scope.check_authority_metadata(
+            widened,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=base_sha,
+        )
+        == 1
+    )
+    assert "missing the structured pr-scope carrier" in capsys.readouterr().out
 
 
 def test_authority_carrier_ignores_arbitrary_surrounding_prose(beads_path: Path) -> None:
