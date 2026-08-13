@@ -2013,6 +2013,41 @@ class LiveBatchProcessor:
                 # the bytes as a generic session artifact.
                 self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
                 continue
+            elif source_only:
+                # A derived-only outage must not turn durable acquisition into
+                # an ad hoc parse pass. Provider detection and session/artifact
+                # classification decode payload bytes, while this route has no
+                # derived tier to consume their result. Preserve the original
+                # bytes under the configured source identity and let the
+                # normal raw replay classify them once the index is available.
+                provider = fallback_provider
+                source_name = provider.value
+                try:
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
+                    raw_id, blob_size = blob_store.write_from_path(
+                        path,
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
+                    )
+                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
             elif (
                 origin_artifact_rule is None
                 and not is_jsonl_source_path(str(path))

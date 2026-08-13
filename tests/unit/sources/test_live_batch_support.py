@@ -400,6 +400,8 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
         b'"content":[{"type":"input_text","text":"zero"}]}}\n'
     )
+    json_path = root / "degraded-full.json"
+    json_path.write_bytes(b'{"mapping":{"root":{"message":{"author":{"role":"user"}}}}}')
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -418,16 +420,28 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         "polylogue.sources.live.batch._parse_payload_as_session_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not decode source-only evidence")),
     )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.has_decoded_session_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect source-only JSON evidence")),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._detect_provider_from_raw_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
+    )
     try:
-        result = processor._ingest_full_paths_sync([path], source_name="codex")
+        result = processor._ingest_full_paths_sync([path, json_path], source_name="codex")
     finally:
         clear_degraded()
 
-    assert result.succeeded == [path]
+    assert result.succeeded == [path, json_path]
     assert result.failed == []
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is None
-    assert parse_error is None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_states = conn.execute("SELECT parsed_at_ms, parse_error FROM raw_sessions ORDER BY source_path").fetchall()
+    assert raw_states == [(None, None), (None, None)]
 
 
 def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
