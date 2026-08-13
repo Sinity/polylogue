@@ -1284,10 +1284,19 @@ def validate_raw_replay_plan(archive_root: Path, plan: RawReplayPlan) -> tuple[b
     return observed == plan, observed.to_dict()
 
 
-def raw_replay_application_receipt(archive_root: Path, plan: RawReplayPlan) -> JSONDocument:
+def raw_replay_application_receipt(
+    archive_root: Path,
+    plan: RawReplayPlan,
+    *,
+    index_db_path: Path | None = None,
+) -> JSONDocument:
+    if index_db_path is None:
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        index_db_path = resolve_active_index_path(archive_root)
     marks = ",".join("?" for _ in plan.input_raw_ids)
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
         source = _rows(
             conn,
             f"""
@@ -1349,6 +1358,7 @@ def raw_replay_application_receipt(archive_root: Path, plan: RawReplayPlan) -> J
     return json_document(
         {
             "schema": "polylogue.raw-replay-application-receipt.v2",
+            "index_db_path": str(index_db_path),
             "source_rows": source,
             "membership_rows": memberships,
             "application_rows": applications,

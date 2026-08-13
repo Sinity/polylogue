@@ -105,16 +105,10 @@ def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
     assert not (root / ".maintenance-state").exists()
 
 
-def test_source_tier_acquisition_does_not_resolve_active_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_source_tier_acquisition_does_not_resolve_active_index(tmp_path: Path) -> None:
     """Acquire-only writes remain available while the derived pointer is unreadable."""
-    from polylogue.storage import archive_identity
-
     initialize_active_archive_root(tmp_path)
-    monkeypatch.setattr(
-        archive_identity,
-        "resolve_active_index_path",
-        lambda _root: (_ for _ in ()).throw(AssertionError("source acquisition must not resolve index")),
-    )
+    (tmp_path / ".index-active-pointer").write_bytes(b"\xff")
 
     with ArchiveStore.open_source_tier_acquisition(tmp_path) as archive:
         assert archive.source_db_path == tmp_path / "source.db"

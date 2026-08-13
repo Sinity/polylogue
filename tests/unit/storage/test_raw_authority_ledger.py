@@ -20,6 +20,7 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage import raw_reconciler as raw_reconciler_mod
 from polylogue.storage import repair as repair_mod
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
@@ -42,7 +43,8 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.raw_reconciler import RawAuthorityFrontierState, inspect_raw_authority_frontier
 from polylogue.storage.repair import RepairResult, repair_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _config(root: Path) -> Config:
@@ -905,8 +907,13 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
     _write_codex_raw(tmp_path, native_id="receipt", source_path="receipt.jsonl", acquired_at_ms=1)
     real_receipt = raw_authority_mod.raw_replay_application_receipt
 
-    def incomplete_receipt(root: Path, plan: RawReplayPlan) -> JSONDocument:
-        payload = dict(real_receipt(root, plan))
+    def incomplete_receipt(
+        root: Path,
+        plan: RawReplayPlan,
+        *,
+        index_db_path: Path | None = None,
+    ) -> JSONDocument:
+        payload = dict(real_receipt(root, plan, index_db_path=index_db_path))
         payload["head_rows"] = []
         return json_document(payload)
 
@@ -918,6 +925,21 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
         assert (
             conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 1
         )
+
+
+def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="active-receipt", source_path="active.jsonl", acquired_at_ms=1)
+    assert repair_raw_materialization(_config(tmp_path)).success is True
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+    receipt = raw_authority_mod.raw_replay_application_receipt(tmp_path, plan)
+
+    assert receipt["index_db_path"] == str(active_index)
+    assert receipt["application_rows"] == []
 
 
 @pytest.mark.parametrize("field", ["session_id", "accepted_raw_id", "accepted_content_hash"])
@@ -1305,7 +1327,12 @@ def _seed_ambiguous_membership_component(
         conn.commit()
     (plan,) = build_raw_replay_plans(tmp_path, [(raw_id,)])
     empty_remaining = repair_mod.RawMaterializationCandidates([], 0, 0)
-    (outcome,) = repair_mod._raw_replay_plan_outcomes(tmp_path, [plan], remaining=empty_remaining)
+    (outcome,) = repair_mod._raw_replay_plan_outcomes(
+        tmp_path,
+        resolve_active_index_path(tmp_path),
+        [plan],
+        remaining=empty_remaining,
+    )
     return raw_id, outcome
 
 

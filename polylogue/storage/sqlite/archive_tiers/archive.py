@@ -1779,15 +1779,16 @@ class ArchiveStore:
 
                 self._active_writer_lease = ActiveWriterLease(archive_root)
                 self._active_writer_lease.acquire()
-                try:
-                    assert_writable_archive_identity(
-                        configured_root=configured_archive_root(),
-                        active_root=archive_root,
-                    )
-                except Exception:
-                    self._active_writer_lease.close()
-                    self._active_writer_lease = None
-                    raise
+                if not source_tier_acquisition:
+                    try:
+                        assert_writable_archive_identity(
+                            configured_root=configured_archive_root(),
+                            active_root=archive_root,
+                        )
+                    except Exception:
+                        self._active_writer_lease.close()
+                        self._active_writer_lease = None
+                        raise
             else:
                 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 
