@@ -4765,7 +4765,7 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
 
 
 async def test_archive_tiers_api_bulk_delete_commits_one_resolved_set(tmp_path: Path) -> None:
-    """The bulk facade reaches the one-transaction archive delete primitive."""
+    """The bulk facade durably authorizes one archive-bound delete transaction."""
     import sqlite3
 
     from polylogue.archive.message.roles import Role
@@ -4799,6 +4799,16 @@ async def test_archive_tiers_api_bulk_delete_commits_one_resolved_set(tmp_path: 
         assert result.affected_count == 2
         with sqlite3.connect(tmp_path / "index.db") as index_conn:
             assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        with sqlite3.connect(tmp_path / "audit.db") as audit_conn:
+            preview = audit_conn.execute(
+                """
+                SELECT operation_name, state, principal_actor_ref, principal_surface, target_count
+                FROM operation_previews
+                """
+            ).fetchone()
+            run = audit_conn.execute("SELECT operation_name, status, affected_count FROM operation_runs").fetchone()
+        assert preview == ("mutate-delete-session", "consumed", "user:api", "api", 2)
+        assert run == ("mutate-delete-session", "completed", 2)
     finally:
         await archive.close()
 

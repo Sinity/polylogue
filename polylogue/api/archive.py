@@ -6616,26 +6616,28 @@ class PolylogueArchiveMixin:
         subset and ``ArchiveStore.delete_sessions`` commits that subset once;
         a failed apply therefore cannot expose a partially committed prefix.
         """
+        from polylogue.operations.bindings import runtime_operation_binding
         from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-        from polylogue.operations.mutation_transaction import OperationExecutor
+        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import BulkDeleteSessionResult
 
         requested = tuple(dict.fromkeys(session_ids))
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+        root = _active_archive_root(self.config)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
             actuator = SessionDeleteActuator()
-            executor = OperationExecutor()
+            executor = OperationExecutor.for_archive_root(root)
             args = SessionDeleteArgs(archive=archive, session_ids=requested)
-            plan = executor.prepare(actuator, args)
-            authorization = executor.authorize(
-                actuator,
-                plan,
-                actor=actor,
-                role="write",
-                capability="archive.delete_session",
+            binding = runtime_operation_binding(actuator)
+            principal = MutationPrincipal(actor, frozenset({"archive.delete_session"}), "api", "write")
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+            authorization = executor.authorize_bound(
+                binding,
+                preview,
+                principal,
                 confirmation_strength="confirm_flag",
             )
-            receipt = executor.execute(actuator, plan, authorization, args)
+            receipt = executor.execute_bound(binding, preview, authorization, args)
         return BulkDeleteSessionResult(
             outcome="deleted" if receipt.affected_count else "not_found",
             session_count=len(requested),
