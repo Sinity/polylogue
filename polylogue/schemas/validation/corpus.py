@@ -325,10 +325,6 @@ def verify_raw_corpus(
             if tracked_row is None:
                 continue
             total_records, provider_stats = tracked_row
-            if not envelope.artifact.schema_eligible:
-                provider_stats.skipped_no_schema += 1
-                _report_progress(request.progress_callback)
-                continue
             if malformed_lines:
                 if request.quarantine_malformed:
                     _record_decode_error(
@@ -345,6 +341,10 @@ def verify_raw_corpus(
                     )
                 else:
                     provider_stats.decode_errors += 1
+                _report_progress(request.progress_callback)
+                continue
+            if not envelope.artifact.schema_eligible:
+                provider_stats.skipped_no_schema += 1
                 _report_progress(request.progress_callback)
                 continue
 
