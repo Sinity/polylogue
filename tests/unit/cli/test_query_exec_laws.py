@@ -15,7 +15,6 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -4058,11 +4057,10 @@ async def test_semantic_path_stats_match_substrate_and_across_actions(monkeypatc
     assert matches_referenced_path(SessionQueryPlan(referenced_path=terms), session) is True
     assert query_semantic.session_matches_referenced_path((foo, bar), terms) is True
 
-    env = SimpleNamespace(
-        polylogue=SimpleNamespace(
-            get_actions_batch=AsyncMock(return_value={"only-foo": (only_foo,), "both-paths": (foo, bar)})
-        )
-    )
+    env = _make_env()
+    polylogue = MagicMock()
+    polylogue.get_actions_batch = AsyncMock(return_value={"only-foo": (only_foo,), "both-paths": (foo, bar)})
+    monkeypatch.setattr(AppEnv, "polylogue", property(lambda _env: polylogue))
     with patch("click.echo") as echo:
         await query_semantic.output_stats_by_semantic_ids(
             env,

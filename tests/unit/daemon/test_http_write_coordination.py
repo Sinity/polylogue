@@ -346,7 +346,7 @@ def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path
 
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
         statements: list[str] = []
-        archive._conn.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+        archive._conn.set_trace_callback(statements.append)
         assert _canonical_session_ids(archive, session_ids) == session_ids
 
     session_selects = [statement for statement in statements if "FROM sessions" in statement]
@@ -370,7 +370,7 @@ def test_cli_delete_preparation_rejects_a_late_duplicate_before_archive_resoluti
 
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
         statements: list[str] = []
-        archive._conn.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+        archive._conn.set_trace_callback(statements.append)
         with pytest.raises(DeleteAuthorizationError, match="selection_is_not_canonical"):
             _canonical_session_ids(archive, session_ids + (session_ids[0],))
 
