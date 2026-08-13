@@ -1720,7 +1720,7 @@ def _run(
             if artifacts is not None:
                 durable_report_path = artifacts.step_dir / PYTEST_CANONICAL_REPORT_NAME
                 shutil.copyfile(report_path, durable_report_path)
-                metadata["report_path"] = str(durable_report_path.relative_to(ROOT))
+                metadata["report_path"] = str(durable_report_path.relative_to(run.root))
         else:
             # Fallback: terminal scraping when the structured report is
             # missing (pytest crashed before writing it, or the plugin is

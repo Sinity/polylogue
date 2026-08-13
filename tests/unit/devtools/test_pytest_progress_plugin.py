@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -14,11 +13,9 @@ import pytest
 from devtools import pytest_progress_plugin
 from devtools.verify_runs import aggregate_pytest_statistics
 
-pytestmark = pytest.mark.xdist_group("checkout-testmon")
-
 
 @pytest.fixture(autouse=True)
-def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # Unit tests own their event destinations; do not let a surrounding
     # managed verify invocation redirect them into its step artifacts.
     for name in (
@@ -36,9 +33,6 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> It
     collection_started_at = pytest_progress_plugin._COLLECTION_STARTED_AT
     collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
     yield
-    checkout_cache = Path(__file__).resolve().parents[3] / ".cache" / "testmon"
-    if checkout_cache.exists():
-        shutil.move(str(checkout_cache), str(tmp_path / "checkout-testmon-generated"))
     pytest_progress_plugin._SELECTED_COUNT = selected_count
     pytest_progress_plugin._DESELECTED_COUNT = deselected_count
     pytest_progress_plugin._DESELECTED_NODEIDS_SAMPLE[:] = deselected_nodeids
@@ -157,11 +151,6 @@ def test_progress_plugin_keeps_xdist_worker_timings_in_controller_summary(
 def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:
     events_dir = tmp_path / "events"
     checkout_root = Path(__file__).resolve().parents[3]
-    # The real testmon plugin receives no TESTMON_DATAFILE here by design:
-    # this regression test models a child process after the host scrub.  Give
-    # its default relative path a parent directory without permitting the
-    # resulting cache to leak into later tests.
-    (checkout_root / ".cache" / "testmon").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     for name in (
         "POLYLOGUE_PYTEST_BASETEMP_ROOT",
@@ -180,8 +169,10 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
             "POLYLOGUE_VERIFY_RUN_ID": "subprocess-regression",
+            "TESTMON_DATAFILE": str(tmp_path / "testmon" / "testmon.sqlite"),
         }
     )
+    Path(env["TESTMON_DATAFILE"]).parent.mkdir(parents=True)
     result = subprocess.run(
         [
             sys.executable,
