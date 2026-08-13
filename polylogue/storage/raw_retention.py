@@ -1646,8 +1646,11 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
     retain the source coordinate's latest receipt while ``raw_sessions``
     retains its historical acquisition evidence, so authority attaches to each
     coordinate's newest raw observation rather than requiring a duplicate
-    receipt on every historical raw. Every ``(origin, source_index)`` member
-    of a physical path must be terminal before the cursor path is exempt.
+    receipt on every historical raw. A failure-kind carrier remains authority
+    only while that raw's current parse or validation state is failed; a later
+    successful reparse makes the retained carrier historical evidence. Every
+    ``(origin, source_index)`` member of a physical path must be terminal before
+    the cursor path is exempt.
     """
 
     result: set[str] = set()
@@ -1664,12 +1667,19 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
         rows = conn.execute(
             f"""
             WITH terminal_artifacts AS (
-                SELECT raw_id
-                FROM raw_artifacts
-                WHERE parse_as_session = 0
+                SELECT artifact.raw_id
+                FROM raw_artifacts AS artifact
+                JOIN raw_sessions AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
+                WHERE artifact.parse_as_session = 0
                   AND (
-                      artifact_kind NOT IN ({raw_failure_placeholders})
-                      OR artifact_kind IN ({terminal_raw_failure_placeholders})
+                      artifact.artifact_kind NOT IN ({raw_failure_placeholders})
+                      OR (
+                          artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
+                          AND (
+                              evidence_raw.parse_error IS NOT NULL
+                              OR evidence_raw.validation_status = 'failed'
+                          )
+                      )
                   )
             )
             SELECT DISTINCT terminal_raw.source_path
