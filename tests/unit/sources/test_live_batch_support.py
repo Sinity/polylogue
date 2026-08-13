@@ -29,6 +29,7 @@ from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
+from polylogue.sources.live import batch as live_batch
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
@@ -680,6 +681,70 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     assert rows == [
         (f"{bundle}:{member_names[0]}", 0, None, None),
         (f"{bundle}:{member_names[1]}", 1, None, None),
+    ]
+
+
+def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real source-only route must not exclude a transiently unreadable ZIP."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    bundle = root / "retry.zip"
+    member_names = ("sessions/one.jsonl", "sessions/two.jsonl")
+    with zipfile.ZipFile(bundle, "w") as zf:
+        zf.writestr(member_names[0], b'{"opaque":"first"}\n')
+        zf.writestr(member_names[1], b'{"opaque":"second"}\n')
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    original_stream = live_batch.stream_preserved_zip_entry_raw_data
+    calls = 0
+
+    def fail_after_first_copy(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("transient ZIP read failure")
+        return original_stream(*args, **kwargs)
+
+    monkeypatch.setattr(live_batch, "stream_preserved_zip_entry_raw_data", fail_after_first_copy)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        failed = asyncio.run(processor.ingest_files([bundle], emit_event=False))
+
+        assert failed.succeeded_file_count == 0
+        assert failed.failed_file_count == 1
+        failed_cursor = cursor.get_record(bundle)
+        assert failed_cursor is not None
+        assert failed_cursor.failure_count == 1
+        assert failed_cursor.excluded is False
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+        retried = asyncio.run(processor.ingest_files([bundle], emit_event=False))
+    finally:
+        clear_degraded()
+
+    assert retried.succeeded_file_count == 1
+    assert retried.failed_file_count == 0
+    recovered_cursor = cursor.get_record(bundle)
+    assert recovered_cursor is not None
+    assert recovered_cursor.failure_count == 0
+    assert recovered_cursor.excluded is False
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        retained = conn.execute("SELECT source_path, source_index FROM raw_sessions ORDER BY source_index").fetchall()
+    assert retained == [
+        (f"{bundle}:{member_names[0]}", 0),
+        (f"{bundle}:{member_names[1]}", 1),
     ]
 
 

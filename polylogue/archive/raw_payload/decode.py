@@ -191,6 +191,9 @@ def _sample_jsonl_payload_with_detail(
     This is intended for provider/artifact/schema resolution where full-record
     materialization is unnecessary. Set ``scan_full`` when malformed-line
     accounting must reflect the entire source, such as strict validation.
+    Records skipped because they exceed ``max_record_bytes`` are uninspected,
+    not malformed: the bound must not manufacture decode-loss evidence for a
+    syntactically valid stream.
     """
     samples: list[JSONValue] = []
     malformed_lines = 0
@@ -203,9 +206,6 @@ def _sample_jsonl_payload_with_detail(
         for raw_line, oversized in _bounded_raw_lines(stream, max_record_bytes=max_record_bytes):
             line_number += 1
             if oversized:
-                malformed_lines += 1
-                if malformed_detail is None:
-                    malformed_detail = f"line {line_number}: record exceeds inspection byte bound"
                 first_line = False
                 continue
             assert raw_line is not None

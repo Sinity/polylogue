@@ -162,6 +162,10 @@ def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_
     assert observation.artifact_kind == "session_record_stream"
     assert observation.wire_format == "jsonl"
     assert observation.decode_error is None
+    assert observation.malformed_jsonl_lines == 0
+    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
+    assert observation.resolved_package_version == "v1"
+    assert observation.resolved_element_kind == "session_record_stream"
     expected_message: JSONValue = {
         "type": "response_item",
         "payload": {

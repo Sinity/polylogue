@@ -1832,12 +1832,16 @@ class LiveBatchProcessor:
             if path.suffix.lower() == ".zip":
                 file_mtime = datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat()
                 if source_only:
-                    zip_records, zip_bytes = self._extract_source_only_zip_member_records(
+                    source_only_zip = self._extract_source_only_zip_member_records(
                         path,
                         blob_store=blob_store,
                         fallback_provider=fallback_provider,
                         file_mtime=file_mtime,
                     )
+                    if source_only_zip is None:
+                        failed.append(path)
+                        continue
+                    zip_records, zip_bytes = source_only_zip
                 else:
                     zip_records, zip_bytes = self._extract_zip_member_records(
                         path,
@@ -3304,7 +3308,7 @@ class LiveBatchProcessor:
         blob_store: BlobStore,
         fallback_provider: Provider,
         file_mtime: str,
-    ) -> tuple[list[tuple[str, RawSessionRecord]], int]:
+    ) -> tuple[list[tuple[str, RawSessionRecord]], int] | None:
         """Acquire admitted ZIP members without interpreting their bytes.
 
         A derived-tier outage does not authorize the source tier to infer a
@@ -3367,7 +3371,11 @@ class LiveBatchProcessor:
                     )
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
-            return [], 0
+            # A transport/read failure is not evidence that the archive has no
+            # admissible members. Keep it distinct from a successful empty
+            # extraction so the caller records retryable failure state instead
+            # of permanently acknowledging this source coordinate as excluded.
+            return None
         return records, total_bytes
 
     @staticmethod

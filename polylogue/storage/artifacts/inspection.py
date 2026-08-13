@@ -281,7 +281,9 @@ def _full_scan_malformed_jsonl(record: RawSessionRecord, *, blob_store: BlobStor
     The prefix-based classification only inspects the first 64 KB, so malformed
     content past the prefix never marks the artifact failed (#1745). This scan
     streams the whole blob line-by-line (never materializing it) so the
-    malformed-line count and decode status reflect the full artifact.
+    malformed-line count and decode status reflect the full artifact. Records
+    larger than the inspection bound are discarded in chunks but are not
+    counted as malformed: bounded inspection is not evidence of decode loss.
 
     Returns ``(malformed_lines, had_valid_records)``. ``had_valid_records`` is
     ``True`` when at least one line decoded successfully; the sampling helper
@@ -375,12 +377,8 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
                 provider=stream_provider,
                 wire_format="jsonl",
                 artifact=recovered_scan.artifact,
-                malformed_jsonl_lines=recovered_scan.oversized_records,
-                malformed_jsonl_detail=(
-                    "one or more records exceeded the inspection byte bound"
-                    if recovered_scan.oversized_records
-                    else None
-                ),
+                malformed_jsonl_lines=0,
+                malformed_jsonl_detail=None,
             )
         payload_provider = envelope.provider
         artifact = envelope.artifact
