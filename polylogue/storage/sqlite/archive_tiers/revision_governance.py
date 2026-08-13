@@ -1722,6 +1722,8 @@ def raw_membership_census_rows(
                 WHERE c.raw_id = r.raw_id
                   AND c.parser_fingerprint = ?
                   AND c.status = 'non_session'
+                  AND r.parsed_at_ms IS NOT NULL
+                  AND r.parse_error IS NULL
             )
         ),
         r.rowid
@@ -1778,8 +1780,6 @@ def replace_raw_membership_census(
             ).fetchone()
             if revision is None:
                 raise RuntimeError(f"membership census raw is missing: {raw_id}")
-            if revision[0] is not None and str(revision[1]) != RawRevisionKind.FULL.value:
-                raise RuntimeError("only self-contained full raws can move to membership governance")
             dependent = conn.execute(
                 """
                 SELECT 1 FROM raw_sessions
@@ -2211,18 +2211,28 @@ def raw_revision_observed_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -
     ``blob_refs`` raw-payload receipt instead, which is the ordering authority
     for replaying mutable state snapshots.
     """
+    return raw_revision_observation_order(store, raw_id)[0]
+
+
+def raw_revision_observation_order(store: RawRevisionGovernanceHost, raw_id: str) -> tuple[int, int]:
+    """Return the latest observation timestamp and its durable receipt order."""
     conn = store._ensure_source_conn()
     row = conn.execute(
         """
-        SELECT MAX(acquired_at_ms)
+        SELECT acquired_at_ms, rowid
         FROM blob_refs
         WHERE ref_id = ? AND ref_type = 'raw_payload'
+        ORDER BY acquired_at_ms DESC, rowid DESC
+        LIMIT 1
         """,
         (raw_id,),
     ).fetchone()
-    if row is not None and row[0] is not None:
-        return int(row[0])
-    return raw_revision_acquired_at_ms(store, raw_id)
+    if row is not None:
+        return int(row[0]), int(row[1])
+    row = conn.execute("SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"unknown raw revision {raw_id}")
+    return int(row[0]), int(row[1])
 
 
 def raw_membership_rebuild_raw_ids(store: RawRevisionGovernanceHost, logical_source_key: str) -> tuple[str, ...]:

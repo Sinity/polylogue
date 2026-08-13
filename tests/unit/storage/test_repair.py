@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.config import Config
-from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.json import json_document
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
@@ -1637,6 +1637,24 @@ def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_bl
     assert result.success is True
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_candidate_count"] == 0.0
+
+
+def test_raw_materialization_skips_current_non_session_census(tmp_path: Path) -> None:
+    """A successful zero-session census settles an otherwise unknown sidecar shape."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"type":"queue-operation","operation":"compact"}\n',
+            source_path=str(tmp_path / "ordinary.jsonl"),
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path)
+
+    assert raw_id not in repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids
 
 
 def test_superseded_raw_cleanup_protects_split_index_referenced_raw_ids(tmp_path: Path) -> None:

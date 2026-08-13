@@ -528,10 +528,10 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
             provider=Provider.CODEX, payload=snapshot_a, source_path=source_path, acquired_at_ms=1
         )
         archive.write_raw_payload(
-            provider=Provider.CODEX, payload=snapshot_b, source_path=source_path, acquired_at_ms=2
+            provider=Provider.CODEX, payload=snapshot_b, source_path=source_path, acquired_at_ms=1
         )
         archive.write_raw_payload(
-            provider=Provider.CODEX, payload=snapshot_a, source_path=source_path, acquired_at_ms=3
+            provider=Provider.CODEX, payload=snapshot_a, source_path=source_path, acquired_at_ms=1
         )
 
     census_historical_revision_evidence(tmp_path)
@@ -664,6 +664,56 @@ def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
             "non_session",
         )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        assert archive.raw_membership_census_rows([raw_id])[0][2]
+
+
+def test_backfill_leaves_undetected_empty_raw_replayable(tmp_path: Path) -> None:
+    """An unknown shape is not terminal merely because it produced no sessions."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=b'{"future_provider_shape":true}\n',
+            source_path=str(tmp_path / "future.jsonl"),
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        assert not archive.raw_membership_census_rows([raw_id])[0][2]
+
+
+def test_backfill_retires_stale_revision_governance_for_empty_replay(tmp_path: Path) -> None:
+    """A current zero-session parse cannot remain in a stale full-revision plan."""
+    initialize_active_archive_root(tmp_path)
+    source_path = str(tmp_path / ".claude" / "projects" / "proj" / "history-only-session.jsonl")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"type":"file-history-snapshot","sessionId":"history-only","snapshot":{}}\n',
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key="claude-code-session:stale-session",
+                kind=RawRevisionKind.FULL,
+                source_revision=raw_id,
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+    census_historical_revision_evidence(tmp_path)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT logical_source_key, revision_kind, revision_authority FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (None, "unknown", "quarantined")
 
 
 def test_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

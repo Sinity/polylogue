@@ -1303,10 +1303,34 @@ def upsert_raw_artifact(
             # One coordinate has one authority carrier. A delayed census of
             # stale retained bytes must not replace a carrier observed later.
             if str(existing[1]) != raw_id:
-                incoming_row = conn.execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+                incoming_row = conn.execute(
+                    """
+                    SELECT acquired_at_ms, rowid FROM blob_refs
+                    WHERE ref_id = ? AND ref_type = 'raw_payload'
+                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    """,
+                    (raw_id,),
+                ).fetchone()
+                if incoming_row is None:
+                    incoming_row = conn.execute(
+                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+                    ).fetchone()
                 if incoming_row is None:
                     raise KeyError(raw_id)
-                if (int(existing[3]), int(existing[4])) >= (artifact.last_observed_at_ms, int(incoming_row[0])):
+                existing_observation = conn.execute(
+                    """
+                    SELECT acquired_at_ms, rowid FROM blob_refs
+                    WHERE ref_id = ? AND ref_type = 'raw_payload'
+                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    """,
+                    (str(existing[1]),),
+                ).fetchone()
+                existing_order = (
+                    (int(existing_observation[0]), int(existing_observation[1]))
+                    if existing_observation is not None
+                    else (int(existing[3]), int(existing[4]))
+                )
+                if existing_order >= (int(incoming_row[0]), int(incoming_row[1])):
                     conn.execute(
                         "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
                         (artifact.first_observed_at_ms, str(existing[0])),

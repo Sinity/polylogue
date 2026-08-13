@@ -1271,7 +1271,7 @@ def unknown_raw_frontier_integrity_projection(
         missing_source_raw_status=missing_source_raw_status,
         missing_source_raw_count=missing_source_raw_count,
         missing_source_raw_samples=missing_source_raw_samples,
-        missing_source_raw_reason=missing_source_raw_reason or reason,
+        missing_source_raw_reason=reason if missing_source_raw_reason is None else missing_source_raw_reason,
         cursor_ahead_status=snapshot.cursor_ahead_status,
         cursor_ahead_count=snapshot.cursor_ahead_count,
         cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,

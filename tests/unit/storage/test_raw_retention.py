@@ -38,6 +38,17 @@ def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
     return store.write_from_bytes(payload)
 
 
+def test_unavailable_frontier_preserves_empty_healthy_source_reason() -> None:
+    """A healthy source check must not inherit an unrelated pointer failure."""
+    projection = raw_retention_mod.unknown_raw_frontier_integrity_projection(
+        "active index pointer unavailable",
+        missing_source_raw_status="healthy",
+        missing_source_raw_reason="",
+    )
+
+    assert projection.missing_source_raw_reason == ""
+
+
 def _ensure_archive_source_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE raw_sessions (

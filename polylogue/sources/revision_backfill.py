@@ -714,6 +714,7 @@ def _census_historical_revision_evidence(
                         [],
                         parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                         censused_at_ms=0,
+                        retire_full_revision_governance=revision_kind is not RawRevisionKind.UNKNOWN,
                         manage_transaction=False,
                     )
                     if not terminalized:
@@ -802,7 +803,7 @@ def _census_historical_revision_evidence(
                 rows = archive.raw_membership_census_rows(census_selection)
                 for raw_id, _source_index, _terminal_non_session, _raw_rowid in sorted(
                     rows,
-                    key=lambda row: (archive.raw_revision_observed_at_ms(row[0]), row[3]),
+                    key=lambda row: archive.raw_revision_observation_order(row[0]),
                 ):
                     if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
                         continue
