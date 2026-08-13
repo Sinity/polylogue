@@ -58,6 +58,7 @@ from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -73,6 +74,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import apply_source_raw
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
+_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
 
 
 def _canonical_authority_logical_key(logical_key: str) -> str:
@@ -746,7 +748,10 @@ def _census_historical_revision_evidence(
             census_selection = initial_selection
             while True:
                 rows = archive.raw_membership_census_rows(census_selection)
-                for raw_id, _source_index, _terminal_non_session in rows:
+                for raw_id, _source_index, _terminal_non_session in sorted(
+                    rows,
+                    key=lambda row: (archive.raw_revision_acquired_at_ms(row[0]), row[1], row[0]),
+                ):
                     if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
                         continue
                     state.scanned += 1
@@ -1176,7 +1181,11 @@ def validate_frozen_source_authority(
             archive_root,
             active_index_path=active_index_path,
         ) as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+        _ParsedSessionSpill(
+            archive_root,
+            index_path=active_index_path,
+            max_cached_payload_bytes=max_payload_bytes,
+        ) as spill,
     ):
         census = _load_frozen_revision_evidence(
             archive,
@@ -1233,6 +1242,7 @@ def validate_frozen_source_authority(
 def census_historical_revision_evidence(
     archive_root: Path,
     *,
+    active_index_path: Path | None = None,
     selected_raw_ids: list[str] | None = None,
     max_payload_bytes: int | None = None,
     ingest_workers: int = 1,
@@ -1248,7 +1258,11 @@ def census_historical_revision_evidence(
     """
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+        _ParsedSessionSpill(
+            archive_root,
+            index_path=active_index_path,
+            max_cached_payload_bytes=max_payload_bytes,
+        ) as spill,
     ):
         state = _census_historical_revision_evidence(
             archive,
@@ -1370,6 +1384,7 @@ def _lineage_aware_replay_order(
 def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
+    active_index_path: Path | None = None,
     selected_raw_ids: list[str] | None = None,
     owned_inactive_generation: tuple[str, str] | None = None,
     retention_observer: Callable[[int, int], None] | None = None,
@@ -1508,7 +1523,11 @@ def backfill_historical_revision_evidence(
     prepare_pool = ThreadPoolExecutor(max_workers=1) if parallel_threads_effective() else None
     with (
         archive_context as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=spill_cache_bytes) as spill,
+        _ParsedSessionSpill(
+            archive_root,
+            index_path=active_index_path,
+            max_cached_payload_bytes=spill_cache_bytes,
+        ) as spill,
         prepare_pool if prepare_pool is not None else nullcontext(),
     ):
         census_started = time.perf_counter()
@@ -1945,8 +1964,19 @@ def census_parse_worker(
     publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
     try:
         if provider is Provider.UNKNOWN:
+            provider, _evidence = detect_provider_from_raw_bytes_evidence(
+                publisher.read_prefix(blob_hash, _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
+                Path(source_path).name,
+                provider,
+                truncated_tail_ok=True,
+            )
+            if is_stream_record_provider(source_path, str(provider)):
+                with publisher.open(blob_hash) as stream_payload:
+                    sessions = _parse_stream(
+                        provider, stream_payload, source_path, fallback_id_override=fallback_id_override
+                    )
+                return raw_id, sessions, None
             payload = publisher.read_all(blob_hash)
-            provider, _evidence = detect_provider_from_raw_bytes_evidence(payload, Path(source_path).name, provider)
             payload_path = None
             if provider is Provider.HERMES:
                 candidate_path = publisher.blob_path(blob_hash)
@@ -2373,12 +2403,15 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         # without decoding them.  Recovery is the first lawful point to
         # inspect the durable bytes and resolve their parser, before deciding
         # whether their filename is a stream route.
-        _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+        with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, _stream_path, _stream_kind):
+            detection_prefix = payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES)
         provider, _evidence = detect_provider_from_raw_bytes_evidence(
-            eager_payload,
-            Path(source_path).name,
-            provider,
+            detection_prefix, Path(source_path).name, provider, truncated_tail_ok=True
         )
+        if is_stream_record_provider(source_path, str(provider)):
+            with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
+                return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+        _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
         payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
         return _parse_one(
             provider,
@@ -2885,14 +2918,20 @@ class _ParsedSessionSpill:
     #: existing crash-recovery contract for the sqlite-backed spill.
     _WHALE_CACHE_MAX_TREE_BYTES: Final[int] = 8 * 1024 * 1024 * 1024
 
-    def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        index_path: Path | None = None,
+        max_cached_payload_bytes: int | None,
+    ) -> None:
         # Place the spill beside the RESOLVED index tier, not the archive
         # root: on deployments where the .db files are symlinks (e.g. root
         # SSD config dir -> NVMe data disk), a spill in archive_root would
         # put census churn on the wear-limited disk the symlinks exist to
         # protect.
-        index_path = archive_root / "index.db"
-        spill_dir = index_path.resolve().parent if index_path.exists() else archive_root
+        resolved_index_path = index_path or ArchiveLocation.resolve(archive_root).active_index_path
+        spill_dir = resolved_index_path.resolve().parent if resolved_index_path.exists() else archive_root
         fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=spill_dir)
         os.close(fd)
         self.path = Path(name)

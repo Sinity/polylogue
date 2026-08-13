@@ -156,6 +156,52 @@ def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path
     assert sessions[0].messages[0].text == "hi"
 
 
+def test_unknown_retained_stream_replay_detects_from_prefix_without_eager_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """UNKNOWN source-only JSONL reopens the blob as a stream after prefix detection."""
+    initialize_active_archive_root(tmp_path)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"unknown-stream","timestamp":"2026-06-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+        b'"content":[{"type":"input_text","text":"prefix detected replay"}]}}\n'
+    )
+
+    def detect_from_prefix(raw_bytes: bytes, *_args: object, **_kwargs: object) -> tuple[Provider, str]:
+        assert raw_bytes == payload
+        return Provider.CODEX, "test prefix"
+
+    monkeypatch.setattr(revision_backfill, "detect_provider_from_raw_bytes_evidence", detect_from_prefix)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="unknown-member.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.raw_revision_material = lambda _raw_id: (_ for _ in ()).throw(AssertionError("eager payload read"))  # type: ignore[method-assign]
+        sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+
+    assert [session.provider_session_id for session in sessions] == ["unknown-stream"]
+
+
+def test_parsed_session_spill_uses_the_pinned_active_index_directory(tmp_path: Path) -> None:
+    """Repair spill churn follows the generation being repaired, not a shadow index."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    active_index = tmp_path / "external-generation" / "index.db"
+    active_index.parent.mkdir()
+    active_index.touch()
+    (archive_root / "index.db").touch()
+
+    with revision_backfill._ParsedSessionSpill(
+        archive_root,
+        index_path=active_index,
+        max_cached_payload_bytes=None,
+    ) as spill:
+        assert spill.path.parent == active_index.parent
+
+
 @pytest.mark.parametrize(
     "source_path_suffix",
     [
