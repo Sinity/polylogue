@@ -593,6 +593,7 @@ class OperationExecutor:
         self._now_ms = now_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
         self._archive_root = archive_root
+        self._prevalidated_execution: tuple[object, MutationPlan] | None = None
 
     @classmethod
     def for_archive_root(
@@ -762,8 +763,9 @@ class OperationExecutor:
         operation_id: str | None = None
         if self._audit is not None:
             operation_id = self._audit.consume_authorization_and_start(preview, authorization)
+        self._prevalidated_execution = (binding.actuator, fresh_plan)
         try:
-            result = binding.actuator.apply(fresh_plan, args)
+            result = self.execute(binding.actuator, fresh_plan, authorization, args)
         except Exception as exc:
             if self._audit is not None and operation_id is not None:
                 self._audit.finalize_attempt(
@@ -773,6 +775,8 @@ class OperationExecutor:
                     unknown_reason="actuator exception after durable intent",
                 )
             raise
+        finally:
+            self._prevalidated_execution = None
         receipt = result
         if self._audit is not None and operation_id is not None:
             try:
@@ -942,6 +946,11 @@ class OperationExecutor:
             raise AuthorizationMismatchError(
                 f"authorization bound to plan {authorization.plan_hash!r} does not match plan {plan.plan_hash!r}"
             )
+        if self._prevalidated_execution is not None:
+            expected_actuator, expected_plan = self._prevalidated_execution
+            if actuator is not expected_actuator or plan is not expected_plan:
+                raise MutationTransactionError("prevalidated execution does not match the active bound mutation")
+            return actuator.apply(plan, args)
         fresh_plan = actuator.prepare(args)
         if fresh_plan.plan_hash != plan.plan_hash:
             raise PlanStaleError(

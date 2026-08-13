@@ -186,6 +186,40 @@ def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: P
     assert actuator.calls == 1
 
 
+def test_execute_bound_routes_the_effect_through_execute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bound execution reaches the executor's sole actuator.apply gate."""
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "bound-route-token")
+    binding = _binding(actuator)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    calls: list[object] = []
+    original_execute = OperationExecutor.execute
+
+    def record_execute(
+        self: OperationExecutor, invoked_actuator: object, plan: object, auth: object, args: object
+    ) -> object:
+        calls.append(invoked_actuator)
+        return original_execute(self, invoked_actuator, plan, auth, args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(OperationExecutor, "execute", record_execute)
+
+    receipt = executor.execute_bound(binding, preview, authorization, object())
+
+    assert receipt.status == "applied"
+    assert calls == [actuator]
+    assert actuator.calls == 1
+
+
 def test_prepare_bound_uses_the_declared_durable_target_for_legacy_actuators() -> None:
     """Fallback target construction cannot downgrade a durable policy to derived."""
 
