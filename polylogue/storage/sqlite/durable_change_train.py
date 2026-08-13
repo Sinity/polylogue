@@ -564,15 +564,19 @@ def rebind_released_source_train_archive_identity(
     """Return the one permitted root-relocation revision of a source train."""
     if train.tier is not ArchiveTier.SOURCE or train.state is not DurableChangeTrainState.RELEASED:
         raise DurableChangeTrainError("archive-root relocation requires a released source train")
-    if train.apply_evidence is None or train.source_continuity_evidence is not None:
-        raise DurableChangeTrainError("archive-root relocation does not support source continuity train shapes")
+    if train.apply_evidence is None:
+        raise DurableChangeTrainError("archive-root relocation requires source train apply evidence")
     _migration_runner._validate_sha256(archive_identity_digest, label="relocated archive identity")
     post = replace(train.apply_evidence.post, archive_identity_digest=archive_identity_digest)
     evidence = replace(train.apply_evidence, post=post)
+    continuity = train.source_continuity_evidence
+    if continuity is not None:
+        continuity = replace(continuity, archive_identity_digest=archive_identity_digest)
     updated = replace(
         train,
         revision=train.revision + 1,
         apply_evidence=evidence,
+        source_continuity_evidence=continuity,
         proof_refs=_migration_runner._append_proof_refs(train.proof_refs, proof_ref),
     )
     validate_durable_change_train_manifest(updated)

@@ -8,7 +8,6 @@ import os
 import sqlite3
 import stat
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +16,12 @@ from pydantic import BaseModel, ConfigDict
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
+    DURABLE_MIGRATION_ADOPTION_FLOORS,
+    DurableChangeTrainError,
     DurableChangeTrainState,
+    _released_train_manifests_by_target,
+    _require_released_train_chain,
+    _validate_source_continuity_refresh_receipt,
     load_durable_change_train_manifest,
     rebind_released_source_train_archive_identity,
     write_durable_change_train_manifest,
@@ -65,6 +69,7 @@ class RelocationSourceTrain(BaseModel):
     before_manifest_sha256: str
     before_archive_identity_digest: str
     after_archive_identity_digest: str
+    source_continuity_receipt_digests: tuple[str, ...]
 
 
 class ArchiveRootRelocationPlan(BaseModel):
@@ -122,17 +127,15 @@ def _canonical_sha256(payload: object) -> str:
 
 
 def _sealed_plan(**values: object) -> ArchiveRootRelocationPlan:
-    payload = {"format": PLAN_FORMAT, **values, "plan_sha256": ""}
-    payload["plan_sha256"] = _canonical_sha256({key: value for key, value in payload.items() if key != "plan_sha256"})
-    return ArchiveRootRelocationPlan.model_validate(payload)
+    plan = ArchiveRootRelocationPlan.model_validate({"format": PLAN_FORMAT, **values, "plan_sha256": ""})
+    payload = plan.model_dump(mode="json", exclude={"plan_sha256"})
+    return plan.model_copy(update={"plan_sha256": _canonical_sha256(payload)})
 
 
 def _sealed_receipt(**values: object) -> ArchiveRootRelocationReceipt:
-    payload = {"format": RECEIPT_FORMAT, **values, "receipt_sha256": ""}
-    payload["receipt_sha256"] = _canonical_sha256(
-        {key: value for key, value in payload.items() if key != "receipt_sha256"}
-    )
-    return ArchiveRootRelocationReceipt.model_validate(payload)
+    receipt = ArchiveRootRelocationReceipt.model_validate({"format": RECEIPT_FORMAT, **values, "receipt_sha256": ""})
+    payload = receipt.model_dump(mode="json", exclude={"receipt_sha256"})
+    return receipt.model_copy(update={"receipt_sha256": _canonical_sha256(payload)})
 
 
 def _verify_plan(plan: ArchiveRootRelocationPlan) -> None:
@@ -234,7 +237,8 @@ def _tier_snapshot(root: Path, tier: ArchiveTier) -> RelocationTierEvidence:
 def _source_trains(
     root: Path,
     *,
-    accepted_before_digests: frozenset[str],
+    source_version: int,
+    source_content_sha256: str,
     after_identity_digest: str,
 ) -> tuple[RelocationSourceTrain, ...]:
     manifest_root = root / ".maintenance-state" / "durable-change-trains"
@@ -242,19 +246,47 @@ def _source_trains(
     _real_directory(manifest_root, label="durable change-train state")
     if (manifest_root / ".bootstrap").exists() or (manifest_root / ".bootstrap.pending").exists():
         raise ArchiveRootRelocationError("archive-root relocation does not support fresh-bootstrap train authority")
-    paths = tuple(sorted(manifest_root.glob("source-*.json")))
-    if not paths:
+    manifests = _released_train_manifests_by_target(manifest_root, ArchiveTier.SOURCE)
+    if not manifests:
         raise ArchiveRootRelocationError("archive-root relocation requires released source train evidence")
+    try:
+        _require_released_train_chain(
+            ArchiveTier.SOURCE,
+            manifests,
+            current_version=source_version,
+        )
+    except DurableChangeTrainError as exc:
+        raise ArchiveRootRelocationError("archive-root relocation source train chain is not released") from exc
+    expected_targets = set(range(DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE] + 1, source_version + 1))
+    if set(manifests) != expected_targets:
+        raise ArchiveRootRelocationError("archive-root relocation found an unexpected source train target")
     trains: list[RelocationSourceTrain] = []
-    for path in paths:
+    for _target, train in sorted(manifests.items()):
+        path = manifest_root / f"source-{train.slot:03d}.json"
         _real_file(path, label="source train manifest")
-        train = load_durable_change_train_manifest(path)
         if train.state is not DurableChangeTrainState.RELEASED or train.apply_evidence is None:
             raise ArchiveRootRelocationError(f"source train is not released: {path}")
-        if train.source_continuity_evidence is not None:
+        continuity_refs = tuple(
+            ref.removeprefix("proof:source-continuity-refresh:")
+            for ref in train.proof_refs
+            if ref.startswith("proof:source-continuity-refresh:")
+        )
+        if (
+            train.target_version == source_version
+            and train.source_continuity_evidence is None
+            and train.apply_evidence.post.content_sha256 != source_content_sha256
+        ):
             raise ArchiveRootRelocationError(
-                "archive-root relocation does not support source-continuity train authority"
+                "archive-root relocation requires a typed source-continuity refresh for the live source train; "
+                "the released source train still carries stale source content authority"
             )
+        if train.source_continuity_evidence is not None:
+            try:
+                _validate_source_continuity_refresh_receipt(root, train)
+            except DurableChangeTrainError as exc:
+                raise ArchiveRootRelocationError(
+                    "archive-root relocation source continuity authority is invalid"
+                ) from exc
         trains.append(
             RelocationSourceTrain(
                 path=str(path),
@@ -262,11 +294,12 @@ def _source_trains(
                 before_manifest_sha256=_sha256_file(path),
                 before_archive_identity_digest=train.apply_evidence.post.archive_identity_digest,
                 after_archive_identity_digest=after_identity_digest,
+                source_continuity_receipt_digests=continuity_refs,
             )
         )
-        if trains[-1].before_archive_identity_digest not in accepted_before_digests:
+        if trains[-1].before_archive_identity_digest == after_identity_digest:
             raise ArchiveRootRelocationError(
-                f"released source train does not independently prove the relocated source inode: {path}"
+                f"released source train already carries the current archive identity: {path}"
             )
     return tuple(trains)
 
@@ -326,10 +359,12 @@ def prepare_archive_root_relocation(
     _check_backup_against_live(new_resolved, manifest=manifest, receipt=receipt, snapshots=snapshots)
     location_identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(new_resolved))
     source_identity_digest = hashlib.sha256(location_identity.tier("source").stable_id.encode()).hexdigest()
-    old_location_identity = replace(location_identity, configured_root=old_resolved)
+    source_version = next(item.user_version for item in snapshots if item.tier == "source")
+    source_content_sha256 = next(item.content_sha256 for item in snapshots if item.tier == "source")
     trains = _source_trains(
         new_resolved,
-        accepted_before_digests=frozenset({source_identity_digest, old_location_identity.authority_identity_digest}),
+        source_version=source_version,
+        source_content_sha256=source_content_sha256,
         after_identity_digest=source_identity_digest,
     )
     root_metadata = new_resolved.stat()
@@ -468,11 +503,29 @@ def _revalidate_plan_live_state(
     for item in plan.source_trains:
         path = Path(item.path)
         train = load_durable_change_train_manifest(path)
+        continuity_refs = tuple(
+            ref.removeprefix("proof:source-continuity-refresh:")
+            for ref in train.proof_refs
+            if ref.startswith("proof:source-continuity-refresh:")
+        )
+        if continuity_refs != item.source_continuity_receipt_digests:
+            raise ArchiveRootRelocationError(f"archive-root relocation continuity receipts changed: {path}")
+        if train.source_continuity_evidence is not None:
+            try:
+                _validate_source_continuity_refresh_receipt(root, train)
+            except DurableChangeTrainError as exc:
+                raise ArchiveRootRelocationError(
+                    f"archive-root relocation continuity receipt is invalid: {path}"
+                ) from exc
         before = _sha256_file(path) == item.before_manifest_sha256
         after = (
             train.revision == item.before_revision + 1
             and train.apply_evidence is not None
             and train.apply_evidence.post.archive_identity_digest == item.after_archive_identity_digest
+            and (
+                train.source_continuity_evidence is None
+                or train.source_continuity_evidence.archive_identity_digest == item.after_archive_identity_digest
+            )
         )
         if not before and not after:
             raise ArchiveRootRelocationError(f"archive-root relocation manifest changed: {path}")
@@ -519,6 +572,8 @@ def apply_archive_root_relocation(
         if receipt.plan_sha256 != plan.plan_sha256 or receipt.authorization != authorization:
             raise ArchiveRootRelocationError("archive-root relocation receipt belongs to another plan")
         if receipt.state == "committed":
+            if tuple(_sha256_file(Path(item.path)) for item in plan.source_trains) != receipt.manifest_after_sha256:
+                raise ArchiveRootRelocationError("archive-root relocation committed receipt does not match manifests")
             return ArchiveRootRelocationResult(
                 state="committed",
                 plan_sha256=plan.plan_sha256,

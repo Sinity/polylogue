@@ -41,7 +41,7 @@ command's migration result alone.
 
 ## Relocating an archive root
 
-Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. It requires the daemon to be stopped, archive ownership, and a successful verified `full_evidence` backup whose receipt is authenticated against the old root path. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
+Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. It requires the daemon to be stopped, archive ownership, and a successful verified `full_evidence` backup whose receipt is authenticated against the old root path. A current source train with post-release source content must first have its existing receipt-backed source-continuity refresh; this operation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation plan --old-root /old/archive/root --backup-manifest /path/to/manifest.json --output /safe/relocation-plan.json --output-format json
