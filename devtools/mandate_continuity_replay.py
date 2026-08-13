@@ -1,5 +1,4 @@
-"""z9gh.7-owned mandate replay: wire t8t scenarios + the work-evidence effect
-graph + query discovery into one privacy-safe artifact.
+"""Replay continuity, work-effect, and query-discovery behavior together.
 
 ``polylogue-t8t`` declares and proves the seven continuity scenarios (plus the
 parallel-Claude incident variant) against a deterministic synthetic archive.
@@ -33,24 +32,15 @@ This module is that wiring, not a fourth reimplementation:
   :func:`devtools.continuity_replay.replay_archive` unmodified against either
   a supplied archive root (an authorized live-scale replay) or a freshly
   seeded synthetic corpus (the default, privacy-safe CI lane), then combines
-  all three lanes plus a mandate acceptance-criteria matrix into one JSON
-  artifact. :func:`redact_report` strips raw evidence prose from that
+  all three executable lanes into one JSON artifact. :func:`redact_report`
+  strips raw evidence prose from that
   artifact (keeping refs/hashes/counts) for the live-archive lane; the
   synthetic lane never touches private content so redaction there is a no-op
   proof of the same mechanism, not a load-bearing privacy boundary.
 
-Two acceptance-criteria items this module explicitly does NOT claim to
-close, stated up front rather than discovered by a reviewer:
-
-- AC2's specific 2026-07-15 incident replay (finding the real coordinator
-  ``cf0c6474-...`` and run ``wf_54d4fb2e-841`` in a live private archive)
-  requires an authorized live archive this sandbox does not have. The
-  synthetic lane proves the identical mechanism against t8t's corrected
-  91/38/129/4 census; a live run is `--archive-root` away once one is
-  authorized, deferred honestly in the AC matrix rather than faked.
-- AC6 (mutation checks) is already t8t's own proven scope
-  (``tests/infra/continuity_mutations.py``); this module cites that
-  suite rather than duplicating it.
+The report states whether it used a supplied live archive. It does not copy a
+tracker item's acceptance prose into product output or infer tracker closure
+from the three lane statuses.
 """
 
 from __future__ import annotations
@@ -95,31 +85,6 @@ from tests.infra.continuity import load_continuity_catalog, seed_continuity_arch
 DEFAULT_REPO_PATH = Path(__file__).resolve().parents[1]
 DEFAULT_BEADS_LEDGER_RELATIVE = Path(".beads") / "interactions.jsonl"
 _GITHUB_REPO_SLUG = "Sinity/polylogue"
-
-MandateLaneStatus = Literal["pass", "fail", "deferred"]
-
-#: z9gh.7's own acceptance criteria, verbatim (see ``bd show polylogue-z9gh.7``).
-#: Numbering matches the bead's numbering so the artifact's ac_matrix can be
-#: diffed against the bead text directly.
-_MANDATE_AC_TEXT: tuple[str, ...] = (
-    "The seven polylogue-t8t flows pass as real MCP walks.",
-    "The 2026-07-15 incident replay starts from repo, approximate time, and "
-    "parallel-agent wording; it finds coordinator "
-    "cf0c6474-da22-44be-af3e-666037aa5ea4 and run wf_54d4fb2e-841, distinguishes "
-    "four Workflow invocations from one resumed run, reconstructs 50 call keys, "
-    "91 attempt transcripts, 65 result records over 49 completed keys, one "
-    "unresolved key, and the final structured result, and excludes the "
-    "coordinator's other 38 child sessions from Workflow membership.",
-    "The replay distinguishes model, material, call, attempt, and effect scopes "
-    "and cites git, PR, and Beads effects with uncertainty.",
-    "Payload paging is lossless, cancellation stops work, and measured latency/memory stay within declared SLOs.",
-    "A cold model succeeds using MCP schemas/errors/catalog evidence alone.",
-    "Mutation checks prove the replay fails if continuation state, selective "
-    "SQL, orchestration links, source coverage, or provenance classification "
-    "is removed.",
-    "The artifact records each mandate bead as satisfied, deferred to a named successor, or still blocking.",
-)
-
 
 # ── Discovery-coverage lane ───────────────────────────────────────────
 
@@ -364,98 +329,6 @@ def redact_report(document: JSONValue) -> JSONValue:
     return document
 
 
-# ── Mandate acceptance-criteria matrix ────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class MandateAcceptanceCriterion:
-    index: int
-    text: str
-    status: Literal["satisfied", "deferred", "blocking"]
-    note: str
-
-    def to_dict(self) -> dict[str, object]:
-        return {"index": self.index, "text": self.text, "status": self.status, "note": self.note}
-
-
-def build_ac_matrix(
-    *,
-    continuity_report: JSONDocument,
-    discovery_report: DiscoveryCoverageReport,
-    effect_proof: WorkEvidenceEffectProof,
-    live_archive: bool,
-) -> tuple[MandateAcceptanceCriterion, ...]:
-    """Map this artifact's lane results onto z9gh.7's own seven AC items."""
-
-    continuity_status = str(continuity_report.get("status"))
-    ac1 = MandateAcceptanceCriterion(
-        index=1,
-        text=_MANDATE_AC_TEXT[0],
-        status="satisfied" if continuity_status == "pass" else "blocking",
-        note=(
-            f"devtools.continuity_replay.replay_archive ran {continuity_report.get('scenario_count')} t8t "
-            f"scenarios over real MCP stdio JSON-RPC: {continuity_report.get('passed')} passed, "
-            f"{continuity_report.get('failed')} failed."
-        ),
-    )
-    ac2 = MandateAcceptanceCriterion(
-        index=2,
-        text=_MANDATE_AC_TEXT[1],
-        status="satisfied" if live_archive and continuity_status == "pass" else "deferred",
-        note=(
-            "Ran against an authorized live archive root."
-            if live_archive
-            else "No authorized live archive was supplied to this run; proved the identical mechanism "
-            "against t8t's corrected synthetic 91/38/129/4 parallel-incident census instead. Re-run this "
-            "same artifact with --archive-root pointed at the promoted live archive to satisfy this item "
-            "for real; deferred, not fabricated."
-        ),
-    )
-    effect_status = effect_proof.status
-    ac3 = MandateAcceptanceCriterion(
-        index=3,
-        text=_MANDATE_AC_TEXT[2],
-        status="satisfied" if effect_status == "pass" else "blocking",
-        note=(
-            f"reconcile_repository_effects over this repo's real git+Beads history: "
-            f"{effect_proof.claims_evaluated}/{effect_proof.claims_total} claims evaluated "
-            f"({effect_proof.judgment_count_by_evaluation}); GitHub PR effects explicitly unavailable "
-            f"({[failure['authority'] for failure in effect_proof.adapter_failures]}), cited as uncertainty "
-            "rather than silently omitted."
-        ),
-    )
-    ac4 = MandateAcceptanceCriterion(
-        index=4,
-        text=_MANDATE_AC_TEXT[3],
-        status="satisfied" if continuity_status == "pass" else "blocking",
-        note="Paging/cancellation/SLO budgets are t8t's own proven scope (PR #3185); this artifact cites "
-        "its pass/fail rather than re-deriving it.",
-    )
-    ac5 = MandateAcceptanceCriterion(
-        index=5,
-        text=_MANDATE_AC_TEXT[4],
-        status="satisfied" if discovery_report.status == "pass" else "blocking",
-        note=(
-            f"{discovery_report.covered_steps}/{discovery_report.checked_steps} query-tool route steps have "
-            f"a declared query-discovery example of the same unit-source/route shape."
-        ),
-    )
-    ac6 = MandateAcceptanceCriterion(
-        index=6,
-        text=_MANDATE_AC_TEXT[5],
-        status="deferred",
-        note="t8t's own mutation curriculum (tests/infra/continuity_mutations.py, six named families) "
-        "already proves this; this artifact cites that suite rather than duplicating it.",
-    )
-    ac7 = MandateAcceptanceCriterion(
-        index=7,
-        text=_MANDATE_AC_TEXT[6],
-        status="satisfied",
-        note="This ac_matrix is that record: 7 items, each explicitly satisfied/deferred/blocking with a cited reason.",
-    )
-    return (ac1, ac2, ac3, ac4, ac5, ac6, ac7)
-
-
 # ── Orchestration ──────────────────────────────────────────────────────
 
 
@@ -510,16 +383,15 @@ async def run_mandate_continuity_replay(
         since_ms=since_ms,
         until_ms=until_ms,
     )
-    ac_matrix = build_ac_matrix(
-        continuity_report=continuity_report,
-        discovery_report=discovery_report,
-        effect_proof=effect_proof,
-        live_archive=live_archive,
+    overall_status: Literal["pass", "fail"] = (
+        "pass"
+        if continuity_report.get("status") == "pass"
+        and discovery_report.status == "pass"
+        and effect_proof.status == "pass"
+        else "fail"
     )
-    overall_status: Literal["pass", "fail"] = "pass" if all(item.status != "blocking" for item in ac_matrix) else "fail"
     report: dict[str, object] = {
-        "schema_version": 1,
-        "mandate_bead": "polylogue-z9gh.7",
+        "schema_version": 2,
         "live_archive": live_archive,
         "archive_root": str(resolved_root.resolve()) if keep_archive or live_archive else None,
         "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
@@ -527,7 +399,6 @@ async def run_mandate_continuity_replay(
         "continuity": continuity_report,
         "discovery_coverage": discovery_report.to_dict(),
         "work_evidence_effect_proof": effect_proof.to_dict(),
-        "ac_matrix": [item.to_dict() for item in ac_matrix],
     }
     document = require_json_document(report, context="mandate continuity replay report")
     return cast(JSONDocument, redact_report(document)) if redact else document
@@ -587,9 +458,7 @@ __all__ = [
     "DEFAULT_REPO_PATH",
     "DiscoveryCoverageGap",
     "DiscoveryCoverageReport",
-    "MandateAcceptanceCriterion",
     "WorkEvidenceEffectProof",
-    "build_ac_matrix",
     "build_repository_claim_graph",
     "check_discovery_coverage",
     "main",
