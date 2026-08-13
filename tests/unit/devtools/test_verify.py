@@ -1368,6 +1368,7 @@ def test_verify_main_records_containment_failure_as_terminal_history(
     monkeypatch.setattr(verify, "HISTORY_PATH", history_path)
 
     with (
+        patch("devtools.verify._anchor_verification_paths"),
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._testmon_preflight", return_value=None),
         patch("devtools.verify.build_verify_steps", return_value=[("pytest containment", ["pytest", "-n", "0"])]),
