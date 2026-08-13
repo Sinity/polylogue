@@ -9,7 +9,7 @@ import pytest
 
 from devtools import verify, verify_schema_upgrade_lane
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import durable_migration_claim_for_sql
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, durable_migration_claim_for_sql
 
 
 def _healthy_delta_report() -> dict[str, object]:
@@ -27,7 +27,7 @@ def test_checked_in_durable_migrations_have_unique_contention_keys() -> None:
     report = verify_schema_upgrade_lane.durable_migration_collision_report(claims)
     assert report["ok"] is True
     assert report["collisions"] == []
-    assert {claim.tier for claim in claims} == {ArchiveTier.SOURCE, ArchiveTier.USER}
+    assert {claim.tier for claim in claims} == DURABLE_MIGRATION_TIERS
 
 
 def test_schema_policy_accepts_only_canonical_train_sidecar_names(

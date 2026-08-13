@@ -42,16 +42,12 @@ Wired into ``devtools verify --lab`` rather than the fast default path
 because the policy boundary is a lab/architectural concern, not a
 per-edit gate.
 
-**Out of scope (polylogue-gucv):** this lint is keyed entirely to
-``INDEX_SCHEMA_VERSION``. It has no visibility into whether a parser or
-classifier under ``polylogue/sources/`` or
-``polylogue/archive/artifact_taxonomy/`` changed what it accepts for
-identical input bytes -- that reparse-requiring drift can land with no
-version bump at all, so this lint runs green while already-indexed rows go
-silently stale (PR #3428 is the confirmed case). See
-``devtools/verify_classifier_fingerprints.py`` (``devtools lab policy
-classifier-fingerprints``), which fingerprints those functions directly. A
-green run of *this* lint is not evidence that no reparse is needed.
+**Out of scope:** this lint is keyed entirely to ``INDEX_SCHEMA_VERSION``.
+Parser and lowering drift use the production fingerprints declared by
+``polylogue.sources.origin_specs`` instead: archive rows, candidate metadata,
+and live-proof receipts carry those fingerprints, and archive verification
+rejects stale or mixed values. A green run of *this* lint alone is therefore
+not evidence that no reparse is needed.
 """
 
 from __future__ import annotations

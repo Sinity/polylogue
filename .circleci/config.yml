@@ -8,7 +8,7 @@ version: 2.1
 #     polylogue-ze5i: this job used to reimplement ruff/mypy/render-all as
 #     separate `run` steps and silently diverged from what
 #     devtools/verify.py's `if not commit:` block actually gates, so
-#     schema-versioning/classifier-fingerprints and
+#     schema-versioning and
 #     every other check added to that block over time never ran in real CI
 #     even though `.github/workflows/ci.yml` referenced them -- that GHA
 #     workflow does not execute, only CircleCI does). No pytest; the test

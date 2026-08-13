@@ -193,28 +193,16 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   batched before a live rebuild so the active archive is not reset repeatedly.
 - `devtools lab policy schema-versioning` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
-  derived-tier upgrade helpers remain forbidden. **This check is keyed to
-  `INDEX_SCHEMA_VERSION` and cannot see parser/classifier drift** -- a
-  `looks_like*`/`classify_artifact*` function under `polylogue/sources/` or
-  `polylogue/archive/artifact_taxonomy/` can change what it accepts for
-  identical input bytes with no version bump at all, running this lint green
-  while already-indexed rows silently go stale (polylogue-gucv; PR #3428 is
-  the confirmed case). The same blindness applies to a purely declarative
-  admission table: `origin_specs.py`'s `OriginSpec.artifact_rules` sets a
-  `parse_policy` (`session`/`fact`/`raw-only`) per native path family with no
-  function body at all, and PR #3088 changed `parse_as_session` for four
-  Claude Workflow artifact kinds by editing that table with no version bump
-  (retroactively declared as the missing v48 delta by polylogue-lzh8;
-  polylogue-qs4b). `devtools lab policy classifier-fingerprints`
-  (`devtools/verify_classifier_fingerprints.py`) closes both gaps: it
-  fingerprints every in-scope `looks_like*`/`classify_artifact*` function
-  (AST hash, docstring excluded) **and** every `OriginArtifactRule` in
-  `ORIGIN_SPECS` (hash of `path_pattern`/`parse_policy`/`parser_path`/
-  `coverage_role`/`path_suffixes`, `fidelity_note` excluded) against a
-  committed manifest (`docs/plans/classifier-fingerprints.json`) and fails on
-  undeclared drift, requiring either a `SEMANTIC_REPARSE`-declared version
-  bump or an explicit `acknowledged_safe` justification recorded in the
-  manifest.
+  derived-tier upgrade helpers remain forbidden. Parser/classifier meaning is
+  governed separately by production fingerprints from
+  `polylogue.sources.origin_specs`: declared parser and assembly sources feed an
+  origin-scoped parser fingerprint, while shared lowering, replay routing, and
+  materialization have their own fingerprints. Archive rows and candidate/live
+  proof metadata carry these values; archive verification rejects stale or mixed
+  fingerprints. Behavioral tests prove that changing a declared parser,
+  assembly helper, or lowering source changes the corresponding fingerprint.
+  This makes semantic drift part of runtime archive authority instead of a
+  source-AST manifest that also fired on behavior-preserving refactors.
 
 - User schema version 7 adds durable content-addressed `queries`, mutable
   `query_names`, promoted `result_sets`/`result_set_members`, and planner

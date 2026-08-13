@@ -212,7 +212,6 @@ def test_quick_verify_omits_pytest() -> None:
         "verify layering",
         "lab schema roundtrip",
         "lab policy schema-versioning",
-        "lab policy classifier-fingerprints",
         "schema promotion audit",
     ]
 
