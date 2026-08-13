@@ -680,14 +680,35 @@ def _census_historical_revision_evidence(
                 manage_transaction=not batched,
             )
         if not sessions:
-            _persist_terminal_non_session_artifact(
+            provider = _detected_provider_for_empty_replay(
                 archive,
                 raw_id,
-                provider=stored_provider,
+                stored_provider=stored_provider,
                 source_path=_source_path,
-                source_index=source_index,
-                manage_transaction=not batched,
             )
+            # A terminal artifact makes this raw ineligible for future census
+            # work. Its artifact carrier, parse state, and both census receipts
+            # must therefore become durable as one source-tier transaction.
+            with archive._ensure_source_conn():
+                terminalized = _persist_terminal_non_session_artifact(
+                    archive,
+                    raw_id,
+                    provider=provider,
+                    source_path=_source_path,
+                    source_index=source_index,
+                    manage_transaction=False,
+                )
+                if terminalized:
+                    archive.replace_raw_membership_census(
+                        raw_id,
+                        [],
+                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        censused_at_ms=0,
+                        manage_transaction=False,
+                    )
+            if terminalized:
+                commit_unit()
+                return
         state.classified += int(len(sessions) == 1)
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
         if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
@@ -3238,6 +3259,34 @@ def _declared_non_session_artifact_classification(
     return classification if not classification.parse_as_session else None
 
 
+def _detected_provider_for_empty_replay(
+    archive: ArchiveStore,
+    raw_id: str,
+    *,
+    stored_provider: Provider,
+    source_path: str,
+) -> Provider:
+    """Resolve a provider before terminalizing an empty retained replay."""
+    if stored_provider is not Provider.UNKNOWN:
+        return stored_provider
+    with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
+        provider, _evidence = detect_provider_from_raw_bytes_evidence(
+            payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
+            Path(source_path).name,
+            stored_provider,
+            truncated_tail_ok=True,
+        )
+    if provider is not Provider.UNKNOWN:
+        return provider
+    _provider, full_payload, _path, _kind = archive.raw_revision_material(raw_id)
+    provider, _evidence = detect_provider_from_raw_bytes_evidence(
+        full_payload,
+        Path(source_path).name,
+        stored_provider,
+    )
+    return provider
+
+
 def _persist_terminal_non_session_artifact(
     archive: ArchiveStore,
     raw_id: str,
@@ -3246,25 +3295,19 @@ def _persist_terminal_non_session_artifact(
     source_path: str,
     source_index: int,
     manage_transaction: bool,
-) -> None:
+) -> bool:
     """Record replay-confirmed source-only artifact authority once.
 
-    A declared JSONL fact path can contain a real session, so it receives a
-    full rolling eligibility scan before replay may terminalize it.  A
-    non-session result then follows the same typed artifact row and parse
-    lifecycle used by live acquisition instead of remaining pending forever.
+    Replay reaches this function only after the real parser has consumed the
+    complete stream and produced no conversational session. The terminal
+    receipt therefore follows that one authoritative parse result instead of
+    reclassifying the raw through a second, weaker JSONL shape scan.
     """
     if provider is Provider.UNKNOWN:
-        return
+        return False
     classification = _declared_non_session_artifact_classification(provider, source_path)
     if classification is None:
-        return
-    if is_jsonl_source_path(source_path):
-        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
-
-        with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
-            if jsonl_session_artifact(payload, provider=provider) is not None:
-                return
+        return False
     origin = origin_from_provider(provider)
     observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
     upsert_raw_artifact(
@@ -3294,6 +3337,7 @@ def _persist_terminal_non_session_artifact(
         state=_raw_parse_success_state(provider),
         manage_transaction=manage_transaction,
     )
+    return True
 
 
 def _is_declared_non_session_artifact(

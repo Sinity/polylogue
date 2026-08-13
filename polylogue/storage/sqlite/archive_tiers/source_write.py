@@ -1292,13 +1292,21 @@ def upsert_raw_artifact(
     with conn if manage_transaction else nullcontext():
         existing = conn.execute(
             f"""
-            SELECT artifact_id
+            SELECT artifact_id, first_observed_at_ms, last_observed_at_ms
             FROM raw_artifacts
             WHERE {coordinate_predicate}
             """,
             coordinate_params,
         ).fetchone()
         if existing is not None:
+            # One coordinate has one authority carrier. A delayed census of
+            # stale retained bytes must not replace a carrier observed later.
+            if int(existing[2]) >= artifact.last_observed_at_ms:
+                conn.execute(
+                    "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
+                    (artifact.first_observed_at_ms, str(existing[0])),
+                )
+                return
             artifact = replace(artifact, artifact_id=str(existing[0]))
         _insert_artifact(conn, raw_id, artifact)
 

@@ -2492,6 +2492,28 @@ def test_raw_frontier_integrity_projection_reports_malformed_active_pointer(tmp_
     assert "active index pointer" in projection.broken_head_reason
 
 
+def test_raw_frontier_projection_retains_known_missing_source_violation_when_pointer_is_invalid(tmp_path: Path) -> None:
+    """An unavailable active pointer cannot erase known source-tier loss."""
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {
+            "available": True,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [{"session_id": "missing-session"}],
+        },
+    )
+
+    assert projection.available is False
+    assert projection.overall_status == "violated"
+    assert projection.missing_source_raw_status == "violated"
+    assert projection.missing_source_raw_count == 1
+    assert projection.missing_source_raw_samples == ({"session_id": "missing-session"},)
+
+
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])
 def test_raw_frontier_integrity_snapshot_unavailable_index_tier_is_unknown_never_healthy(
     tmp_path: Path,

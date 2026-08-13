@@ -1187,7 +1187,13 @@ def raw_frontier_integrity_projection(
     try:
         index_db_path = resolve_active_index_path(archive_root)
     except ArchiveLocationError as exc:
-        return unknown_raw_frontier_integrity_projection(f"active index pointer unavailable: {exc}")
+        return unknown_raw_frontier_integrity_projection(
+            f"active index pointer unavailable: {exc}",
+            missing_source_raw_status=missing_status,
+            missing_source_raw_count=missing_count,
+            missing_source_raw_samples=missing_samples,
+            missing_source_raw_reason=missing_reason,
+        )
     source_db_path = archive_root / "source.db"
     ops_db_path = archive_root / "ops.db"
     snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unavailable: {source_db_path}")
@@ -1237,7 +1243,14 @@ def raw_frontier_integrity_projection(
     )
 
 
-def unknown_raw_frontier_integrity_projection(reason: str) -> RawFrontierIntegrityProjection:
+def unknown_raw_frontier_integrity_projection(
+    reason: str,
+    *,
+    missing_source_raw_status: RawFrontierIntegrityStatus = "unknown",
+    missing_source_raw_count: int = 0,
+    missing_source_raw_samples: tuple[Mapping[str, object], ...] = (),
+    missing_source_raw_reason: str | None = None,
+) -> RawFrontierIntegrityProjection:
     """Return the canonical explicit-unknown projection for an unavailable read.
 
     Cache and presentation adapters use this instead of inventing partial
@@ -1246,18 +1259,19 @@ def unknown_raw_frontier_integrity_projection(reason: str) -> RawFrontierIntegri
     """
 
     snapshot = _unavailable_frontier_integrity_snapshot(reason)
+    statuses = (snapshot.broken_head_status, missing_source_raw_status, snapshot.cursor_ahead_status)
     return RawFrontierIntegrityProjection(
         available=False,
-        overall_status="unknown",
+        overall_status=combine_raw_frontier_integrity_statuses(*statuses),
         broken_head_status=snapshot.broken_head_status,
         broken_head_count=snapshot.broken_head_count,
         broken_head_checked_count=snapshot.broken_head_checked_count,
         broken_head_samples=snapshot.broken_head_samples,
         broken_head_reason=snapshot.broken_head_reason,
-        missing_source_raw_status="unknown",
-        missing_source_raw_count=0,
-        missing_source_raw_samples=(),
-        missing_source_raw_reason=reason,
+        missing_source_raw_status=missing_source_raw_status,
+        missing_source_raw_count=missing_source_raw_count,
+        missing_source_raw_samples=missing_source_raw_samples,
+        missing_source_raw_reason=missing_source_raw_reason or reason,
         cursor_ahead_status=snapshot.cursor_ahead_status,
         cursor_ahead_count=snapshot.cursor_ahead_count,
         cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,
