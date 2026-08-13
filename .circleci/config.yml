@@ -71,19 +71,13 @@ jobs:
           name: Structured PR scope carrier
           command: |
             set -o pipefail
-            if [ "${CIRCLE_BRANCH:-}" = "master" ]; then
+            if [ -z "${CIRCLE_PULL_REQUEST:-}" ]; then
               exit 0
             fi
-            if [ -n "${CIRCLE_PULL_REQUEST:-}" ]; then
-              ~/.local/bin/uv run devtools workspace pr-scope check-ci \
-                --pr "${CIRCLE_PULL_REQUEST##*/}" \
-                --repo "Sinity/polylogue" \
-                --expected-head-sha "${CIRCLE_SHA1}" 2>&1 | tee /tmp/polylogue-pr-scope.log
-            else
-              ~/.local/bin/uv run devtools workspace pr-scope check-ci \
-                --repo "Sinity/polylogue" \
-                --expected-head-sha "${CIRCLE_SHA1}" 2>&1 | tee /tmp/polylogue-pr-scope.log
-            fi
+            ~/.local/bin/uv run devtools workspace pr-scope check-ci \
+              --pr "${CIRCLE_PULL_REQUEST##*/}" \
+              --repo "Sinity/polylogue" \
+              --expected-head-sha "${CIRCLE_SHA1}" 2>&1 | tee /tmp/polylogue-pr-scope.log
       - run:
           name: devtools verify --quick
           command: ~/.local/bin/uv run devtools verify --quick

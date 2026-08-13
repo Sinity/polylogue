@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -35,6 +36,71 @@ def beads_path(tmp_path: Path) -> Path:
     records = [_record(ASSIGNED), _record(OTHER_ASSIGNED), _record(OPEN_SUCCESSOR), _record(CLOSED_SUCCESSOR, "closed")]
     path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
     return path
+
+
+def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "-C", str(repository), *args], capture_output=True, text=True, check=True)
+
+
+def _commit(repository: Path, message: str) -> str:
+    _git(repository, "add", ".")
+    _git(
+        repository,
+        "-c",
+        "user.name=Polylogue test",
+        "-c",
+        "user.email=polylogue-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=",
+        "commit",
+        "-qm",
+        message,
+    )
+    return _git(repository, "rev-parse", "HEAD").stdout.strip()
+
+
+def _self_contained_body() -> str:
+    carrier: dict[str, object] = {
+        "version": 2,
+        "scope_kind": "self_contained",
+        "assigned_beads": [],
+        "mutated_beads": [],
+        "dispositions": [],
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    return pr_scope.render_carrier(carrier)
+
+
+def _authority_repositories(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    """Create a base checkout and a candidate ref named master, like a fork can use."""
+    origin = tmp_path / "origin.git"
+    base = tmp_path / "base"
+    candidate = tmp_path / "candidate"
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(base)], check=True)
+    (base / ".beads").mkdir()
+    (base / ".beads" / "issues.jsonl").write_text("", encoding="utf-8")
+    (base / "devtools").mkdir()
+    shutil.copy2(Path(pr_scope.__file__), base / "devtools" / "pr_scope.py")
+    (base / ".github" / "workflows").mkdir(parents=True)
+    shutil.copy2(
+        Path(__file__).parents[3] / ".github" / "workflows" / "pr-scope-authority.yml",
+        base / ".github" / "workflows" / "pr-scope-authority.yml",
+    )
+    base_sha = _commit(base, "base authority")
+    _git(base, "push", "origin", "HEAD:master")
+    subprocess.run(["git", "clone", "-q", str(origin), str(candidate)], check=True)
+    _git(candidate, "switch", "master")
+    (candidate / "devtools" / "pr_scope.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (candidate / ".github" / "workflows" / "pr-scope-authority.yml").write_text(
+        "name: candidate success\non: push\njobs: {success: {runs-on: ubuntu-latest}}\n", encoding="utf-8"
+    )
+    head_sha = _commit(candidate, "candidate replaces validator")
+    _git(candidate, "push", "origin", "HEAD:refs/pull/7/head")
+    _git(base, "fetch", "--no-tags", "origin", "+refs/pull/7/head:refs/polylogue/test/7")
+    return base, candidate, base_sha, head_sha
 
 
 def _input(disposition: str = "satisfied", successors: list[str] | None = None) -> dict[str, object]:
@@ -158,6 +224,100 @@ def test_v2_self_contained_scope_needs_no_invented_bead(
     rendered = capsys.readouterr().out
 
     assert _validate_rendered_without_mutation_scope(rendered, beads_path, head_sha="b" * 40).ok
+
+
+def test_authority_uses_real_base_and_candidate_git_objects_not_candidate_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _candidate, base_sha, head_sha = _authority_repositories(tmp_path)
+    metadata = pr_scope.PullRequestMetadata(
+        body=_self_contained_body(), head_sha=head_sha, base_sha=base_sha, is_draft=False, number=7, state="open"
+    )
+    monkeypatch.chdir(base)
+
+    assert (
+        pr_scope.check_authority_metadata(
+            metadata,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=base_sha,
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.startswith("pr-scope OK")
+
+    # The candidate changed its validator to unconditional success. A body edit
+    # with the same head is independently revalidated and must still fail.
+    edited_metadata = pr_scope.PullRequestMetadata(
+        body="ordinary prose cannot replace the structured carrier",
+        head_sha=head_sha,
+        base_sha=base_sha,
+        is_draft=False,
+        number=7,
+        state="open",
+    )
+    assert (
+        pr_scope.check_authority_metadata(
+            edited_metadata,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=base_sha,
+        )
+        == 1
+    )
+    assert "missing the structured pr-scope carrier" in capsys.readouterr().out
+
+
+def test_authority_event_rejects_missing_or_mismatched_api_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _candidate, base_sha, head_sha = _authority_repositories(tmp_path)
+    monkeypatch.chdir(base)
+    metadata = pr_scope.PullRequestMetadata(
+        body=_self_contained_body(), head_sha=head_sha, base_sha=base_sha, is_draft=False, number=8, state="open"
+    )
+
+    assert (
+        pr_scope.check_authority_metadata(
+            metadata,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=base_sha,
+        )
+        == 2
+    )
+    assert "number does not match the workflow event PR number" in capsys.readouterr().err
+
+    with pytest.raises(ValueError, match="base.sha or base.ref"):
+        pr_scope._pr_metadata_from_payload(
+            {"body": "", "draft": False, "head": {"sha": head_sha}, "base": {"sha": base_sha}}
+        )
+
+
+def test_authority_carrier_ignores_arbitrary_surrounding_prose(beads_path: Path) -> None:
+    body = f"operator prose that resembles a decision\n\n{_self_contained_body()}\n\nmore arbitrary prose"
+
+    assert pr_scope.validate_pr_body(body, head_sha=HEAD_SHA, is_draft=False, beads_path=beads_path).ok
+
+
+def test_authority_workflow_is_event_bound_and_publishes_pending_before_validation() -> None:
+    workflow = (Path(__file__).parents[3] / ".github" / "workflows" / "pr-scope-authority.yml").read_text()
+    circle = (Path(__file__).parents[3] / ".circleci" / "config.yml").read_text()
+    source = Path(pr_scope.__file__).read_text()
+
+    assert "pull_request_target:" in workflow
+    assert "push:" not in workflow
+    assert "edited" in workflow
+    assert "converted_to_draft" in workflow
+    assert "refs/pull/${EVENT_PR}/head" in workflow
+    assert "check-authority" in workflow
+    assert workflow.index("state=pending") < workflow.index("check-authority")
+    assert workflow.count("context=polylogue/pr-scope-authority") == 3
+    assert "uv sync" not in workflow
+    assert "refs/heads/${" not in workflow
+    assert "/commits/${EVENT_HEAD_SHA}/pulls" not in workflow
+    assert "CIRCLE_BRANCH" not in circle
+    assert "fetch_pr_for_head" not in source
 
 
 def test_v2_body_file_check_requires_base_revision(
@@ -291,12 +451,35 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     ).stdout.strip()
     changed = _record(ASSIGNED, title="changed tracker record")
     beads_path.write_text(json.dumps(changed) + "\n")
+    subprocess.run(["git", "-C", str(repository), "add", ".beads/issues.jsonl"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Polylogue test",
+            "-c",
+            "user.email=polylogue-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=",
+            "commit",
+            "-qm",
+            "candidate Bead change",
+        ],
+        check=True,
+    )
+    head_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
     scope_input = repository / "scope.json"
     scope_input.write_text(json.dumps(_v2_input()))
     monkeypatch.chdir(repository)
 
     assert (
-        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", head_sha, "--beads-path", str(beads_path)])
         == 0
     )
     rendered = capsys.readouterr().out
@@ -310,7 +493,7 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
                 "--body-file",
                 str(body_path),
                 "--head-sha",
-                HEAD_SHA,
+                head_sha,
                 "--base-sha",
                 base_sha,
                 "--beads-path",
@@ -322,7 +505,7 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     assert "mutated_beads does not match the complete Bead mutation set" in capsys.readouterr().out
 
     legacy_body_path = repository / "legacy-body.md"
-    legacy_body_path.write_text(_body(_input(), beads_path))
+    legacy_body_path.write_text(_body(_input(), beads_path, head_sha=head_sha))
     assert (
         pr_scope.main(
             [
@@ -330,7 +513,7 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
                 "--body-file",
                 str(legacy_body_path),
                 "--head-sha",
-                HEAD_SHA,
+                head_sha,
                 "--base-sha",
                 base_sha,
                 "--beads-path",
@@ -408,6 +591,29 @@ def test_v2_deleted_mutated_bead_stays_in_bead_scope(
         ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
     beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
+    subprocess.run(["git", "-C", str(repository), "add", ".beads/issues.jsonl"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Polylogue test",
+            "-c",
+            "user.email=polylogue-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=",
+            "commit",
+            "-qm",
+            "candidate Bead deletion",
+        ],
+        check=True,
+    )
+    head_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
     scope_input = repository / "scope.json"
     payload = _v2_input()
     payload["mutated_beads"] = [OTHER_ASSIGNED]
@@ -415,7 +621,7 @@ def test_v2_deleted_mutated_bead_stays_in_bead_scope(
     monkeypatch.chdir(repository)
 
     assert (
-        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", head_sha, "--beads-path", str(beads_path)])
         == 0
     )
     body_path = repository / "body.md"
@@ -428,7 +634,7 @@ def test_v2_deleted_mutated_bead_stays_in_bead_scope(
                 "--body-file",
                 str(body_path),
                 "--head-sha",
-                HEAD_SHA,
+                head_sha,
                 "--base-sha",
                 base_sha,
                 "--beads-path",
@@ -487,12 +693,17 @@ def test_v2_mutation_scope_uses_the_pr_merge_base_not_the_moved_target_tip(
         "\n".join(json.dumps(record) for record in [_record(ASSIGNED, title="feature change"), _record(OTHER_ASSIGNED)])
         + "\n"
     )
+    subprocess.run(["git", "-C", str(repository), "add", ".beads/issues.jsonl"], check=True)
+    subprocess.run([*commit, "feature Bead change"], check=True)
+    head_sha = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
     scope_input = repository / "scope.json"
     scope_input.write_text(json.dumps(_v2_input() | {"mutated_beads": [ASSIGNED]}))
     monkeypatch.chdir(repository)
 
     assert (
-        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", HEAD_SHA, "--beads-path", str(beads_path)])
+        pr_scope.main(["render", "--input", str(scope_input), "--head-sha", head_sha, "--beads-path", str(beads_path)])
         == 0
     )
     body_path = repository / "body.md"
@@ -505,7 +716,7 @@ def test_v2_mutation_scope_uses_the_pr_merge_base_not_the_moved_target_tip(
                 "--body-file",
                 str(body_path),
                 "--head-sha",
-                HEAD_SHA,
+                head_sha,
                 "--base-sha",
                 moved_target,
                 "--beads-path",
@@ -578,10 +789,12 @@ def test_pr_check_uses_public_github_rest_without_cli_auth(
         assert timeout == 30
         requests.append(api_request)
         payload = {
+            "number": 42,
+            "state": "open",
             "body": body,
             "draft": False,
             "head": {"sha": HEAD_SHA},
-            "base": {"sha": "b" * 40},
+            "base": {"sha": "b" * 40, "ref": "master"},
         }
         return _FakeHttpResponse(json.dumps(payload).encode())
 
@@ -630,43 +843,6 @@ def test_pr_check_refuses_uncommitted_bead_contents(
     assert "Beads snapshot does not match the committed PR head" in capsys.readouterr().err
 
 
-def test_ci_resolves_pr_from_exact_head_when_circle_pr_url_is_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[request.Request] = []
-
-    def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
-        assert timeout == 30
-        requests.append(api_request)
-        payload = [
-            {
-                "number": 3845,
-                "state": "open",
-                "body": "carrier",
-                "draft": False,
-                "head": {"sha": HEAD_SHA},
-                "base": {"sha": "b" * 40},
-            },
-            {
-                "number": 3800,
-                "state": "closed",
-                "body": "old carrier",
-                "draft": False,
-                "head": {"sha": HEAD_SHA},
-                "base": {"sha": "c" * 40},
-            },
-        ]
-        return _FakeHttpResponse(json.dumps(payload).encode())
-
-    monkeypatch.setattr(request, "urlopen", _urlopen)
-
-    pr_number, metadata = pr_scope.fetch_pr_for_head(repository="Sinity/polylogue", head_sha=HEAD_SHA)
-
-    assert pr_number == 3845
-    assert metadata.head_sha == HEAD_SHA
-    assert requests[0].full_url == f"https://api.github.com/repos/Sinity/polylogue/commits/{HEAD_SHA}/pulls"
-
-
 def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -678,10 +854,12 @@ def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
         payload: object
         if api_request.full_url.endswith("/pulls/42"):
             payload = {
+                "number": 42,
+                "state": "open",
                 "body": "",
                 "draft": False,
                 "head": {"sha": HEAD_SHA},
-                "base": {"sha": "b" * 40},
+                "base": {"sha": "b" * 40, "ref": "master"},
                 "user": {"login": "dependabot[bot]", "type": "Bot"},
             }
         else:
@@ -713,31 +891,6 @@ def test_fetch_pr_files_rejects_truncated_automated_scope(
 
     with pytest.raises(ValueError, match="100 or more changed files"):
         pr_scope.fetch_pr_files(42, repository="Sinity/polylogue")
-
-
-def test_fetch_pr_for_head_reports_when_no_open_pr_matches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(request, "urlopen", lambda *_args, **_kwargs: _FakeHttpResponse(b"[]"))
-
-    with pytest.raises(pr_scope.NoOpenPullRequestError, match="no open PR"):
-        pr_scope.fetch_pr_for_head(repository="Sinity/polylogue", head_sha=HEAD_SHA)
-
-
-def test_ci_skips_when_commit_has_no_open_pr(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(pr_scope, "resolve_repository", lambda _repo: "Sinity/polylogue")
-    monkeypatch.setattr(pr_scope, "_git_head_sha", lambda: HEAD_SHA)
-
-    def _no_pr(**_kwargs: object) -> tuple[int, pr_scope.PullRequestMetadata]:
-        raise pr_scope.NoOpenPullRequestError("no open PR found for head aaaaaaaa")
-
-    monkeypatch.setattr(pr_scope, "fetch_pr_for_head", _no_pr)
-
-    assert pr_scope.main(["check-ci", "--repo", "Sinity/polylogue", "--expected-head-sha", HEAD_SHA]) == 0
-    assert "pr-scope CI skip" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -996,7 +1149,7 @@ def test_changed_bead_ids_fetches_missing_target_commit_before_merge_base(
         calls.append(argv)
         if argv[:3] == ["git", "cat-file", "-e"]:
             cat_file_attempts += 1
-            return subprocess.CompletedProcess(argv, 0 if cat_file_attempts == 2 else 1, "", "")
+            return subprocess.CompletedProcess(argv, 0 if cat_file_attempts in {2, 4} else 1, "", "")
         if argv[:2] == ["git", "fetch"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:2] == ["git", "merge-base"]:
@@ -1005,12 +1158,10 @@ def test_changed_bead_ids_fetches_missing_target_commit_before_merge_base(
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _sha: {})
-    monkeypatch.setattr(pr_scope, "load_bead_records", lambda _path: {})
-
-    assert pr_scope.changed_bead_ids(base_sha=base_sha) == []
+    assert pr_scope.changed_bead_ids(base_sha=base_sha, head_sha=HEAD_SHA) == []
     assert ["git", "fetch", "--no-tags", "--quiet", "origin", base_sha] in calls
     assert calls.index(["git", "fetch", "--no-tags", "--quiet", "origin", base_sha]) < calls.index(
-        ["git", "merge-base", base_sha, "HEAD"]
+        ["git", "merge-base", base_sha, HEAD_SHA]
     )
 
 
@@ -1038,9 +1189,7 @@ def test_changed_bead_ids_unshallows_before_retrying_the_merge_base(
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(pr_scope, "_bead_records_at", lambda _sha: {})
-    monkeypatch.setattr(pr_scope, "load_bead_records", lambda _path: {})
-
-    assert pr_scope.changed_bead_ids(base_sha=base_sha) == []
+    assert pr_scope.changed_bead_ids(base_sha=base_sha, head_sha=HEAD_SHA) == []
     unshallow = next(item for item in calls if "--unshallow" in item[0])
     assert unshallow[1]["timeout"] == 120
     assert merge_base_attempts == 2

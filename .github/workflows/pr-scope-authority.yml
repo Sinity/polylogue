@@ -1,0 +1,73 @@
+name: PR scope authority
+
+on:
+  pull_request_target:
+    branches: [master]
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  validate:
+    name: pr-scope-authority
+    runs-on: ubuntu-latest
+    env:
+      EVENT_PR: ${{ github.event.pull_request.number }}
+      EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish pending authority status
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${EVENT_PR}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${EVENT_HEAD_SHA}" \
+            -f state=pending \
+            -f context=polylogue/pr-scope-authority \
+            -f description='Validating trusted PR scope authority'
+      - name: Check out the event base revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - name: Fetch candidate commit as Git data
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${EVENT_BASE_SHA}" ]]
+          candidate_ref="refs/polylogue/pr-scope-authority/${EVENT_PR}"
+          git fetch --no-tags origin "+refs/pull/${EVENT_PR}/head:${candidate_ref}"
+          [[ "$(git rev-parse "${candidate_ref}^{commit}")" == "${EVENT_HEAD_SHA}" ]]
+      - name: Validate with base-authoritative code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python devtools/pr_scope.py check-authority \
+            --pr "${EVENT_PR}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --event-head-sha "${EVENT_HEAD_SHA}" \
+            --event-base-sha "${EVENT_BASE_SHA}"
+      - name: Publish success authority status
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${EVENT_HEAD_SHA}" \
+            -f state=success \
+            -f context=polylogue/pr-scope-authority \
+            -f description='Trusted PR scope authority accepted'
+      - name: Publish failure authority status
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${EVENT_HEAD_SHA}" \
+            -f state=failure \
+            -f context=polylogue/pr-scope-authority \
+            -f description='Trusted PR scope authority rejected'
