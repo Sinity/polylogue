@@ -791,7 +791,10 @@ def test_lineage_validation_writes_demo_artifacts(tmp_path: Path) -> None:
     assert written["receipt_sha256"] == report["receipt_sha256"]
     assert lineage_validation._receipt_sha256(written) == written["receipt_sha256"]
     assert summary["artifact"] == "lineage-validation"
-    assert summary["proof_report"]["external_counts_citable"] is True
+    assert summary["external_counts_citable"] is True
+    assert summary["physical_sessions"] == report["counts"]["physical_sessions"]
+    assert summary["logical_sessions"] == report["counts"]["logical_sessions"]
+    assert summary["integrity"] == report["lineage"]["integrity"]
     assert "external counts citable: `true`" in readme
 
 
