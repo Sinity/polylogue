@@ -24,13 +24,16 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from polylogue.core.enums import AssertionKind, Provider
 from polylogue.insights.feedback import LearningCorrection
+from polylogue.operations.audit import AuditRepository
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,
@@ -85,7 +88,11 @@ from polylogue.operations.mutation_actuators import (
 )
 from polylogue.operations.mutation_transaction import (
     ConfirmationRequiredError,
+    MutationAuthorization,
+    MutationPlan,
+    MutationPreview,
     MutationPrincipal,
+    MutationReceipt,
     OperationExecutor,
     PlanStaleError,
 )
@@ -307,6 +314,106 @@ class TestTagAddActuator:
             args = TagAddArgs(archive=archive, session_id="codex-session:typo", tag="x")
             with pytest.raises(KeyError):
                 actuator.prepare(args)
+
+    def test_shared_executor_keeps_concurrent_bound_execution_scopes_isolated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_ids = (
+            _seed_archive_session(archive_root, native_id="concurrent-first"),
+            _seed_archive_session(archive_root, native_id="concurrent-second"),
+        )
+        actuators = (TagAddActuator(), TagAddActuator())
+        bindings = tuple(runtime_operation_binding(actuator) for actuator in actuators)
+        principal = MutationPrincipal("test", frozenset({"archive.add_tag"}), "api", "write")
+        executor = OperationExecutor.for_archive_root(archive_root)
+        previews: list[MutationPreview] = []
+        authorizations: list[MutationAuthorization] = []
+        for index, (session_id, binding) in enumerate(zip(session_ids, bindings, strict=True)):
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                args = TagAddArgs(archive=archive, session_id=session_id, tag=f"concurrent-{index}")
+                preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+            previews.append(preview)
+            authorizations.append(executor.authorize_bound(binding, preview, principal))
+
+        audit_lock = threading.Lock()
+        execute_barrier = threading.Barrier(2)
+        first_execute_done = threading.Event()
+        original_consume = AuditRepository.consume_authorization_and_start
+        original_finalize = AuditRepository.finalize_attempt
+        original_execute = OperationExecutor.execute
+
+        def locked_consume(
+            self: AuditRepository, preview: MutationPreview, authorization: MutationAuthorization
+        ) -> str:
+            with audit_lock:
+                return original_consume(self, preview, authorization)
+
+        def locked_finalize(
+            self: AuditRepository,
+            operation_id: str,
+            *,
+            status: str,
+            receipt: MutationReceipt | None = None,
+            error_summary: str | None = None,
+            unknown_reason: str | None = None,
+        ) -> None:
+            with audit_lock:
+                original_finalize(
+                    self,
+                    operation_id,
+                    status=status,
+                    receipt=receipt,
+                    error_summary=error_summary,
+                    unknown_reason=unknown_reason,
+                )
+
+        def synchronized_execute(
+            self: OperationExecutor,
+            actuator: Any,
+            plan: MutationPlan,
+            authorization: MutationAuthorization,
+            args: Any,
+        ) -> MutationReceipt:
+            execute_barrier.wait(timeout=10)
+            if actuator is actuators[0]:
+                try:
+                    return original_execute(self, actuator, plan, authorization, args)
+                finally:
+                    first_execute_done.set()
+            if not first_execute_done.wait(timeout=10):
+                raise TimeoutError("first executor route did not complete")
+            return original_execute(self, actuator, plan, authorization, args)
+
+        monkeypatch.setattr(AuditRepository, "consume_authorization_and_start", locked_consume)
+        monkeypatch.setattr(AuditRepository, "finalize_attempt", locked_finalize)
+        monkeypatch.setattr(OperationExecutor, "execute", synchronized_execute)
+
+        def execute_tag(index: int) -> MutationReceipt:
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                args = TagAddArgs(
+                    archive=archive,
+                    session_id=session_ids[index],
+                    tag=f"concurrent-{index}",
+                )
+                return executor.execute_bound(bindings[index], previews[index], authorizations[index], args)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            receipts = tuple(pool.map(execute_tag, range(2)))
+
+        assert [receipt.status for receipt in receipts] == ["applied", "applied"]
+        assert all(receipt.operation_id is not None for receipt in receipts)
+        with sqlite3.connect(archive_root / "user.db") as connection:
+            tags = connection.execute(
+                "SELECT key FROM assertions WHERE kind = 'tag' AND status != 'deleted' ORDER BY key"
+            ).fetchall()
+        assert tags == [("concurrent-0",), ("concurrent-1",)]
+        with sqlite3.connect(archive_root / "audit.db") as connection:
+            audit_rows = connection.execute(
+                "SELECT status, unknown_count FROM operation_runs ORDER BY operation_id"
+            ).fetchall()
+        assert audit_rows == [("completed", 0), ("completed", 0)]
 
 
 class TestTagRemoveActuator:
