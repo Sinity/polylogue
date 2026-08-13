@@ -608,7 +608,13 @@ def cmd_merge(
         return 1
 
     head_sha = info["headRefOid"]
-    scope = merge_gate._scope_verdict(pr, info, head_sha=head_sha)
+    checkout_root = merge_gate._repository_root()
+    scope = merge_gate._scope_verdict(
+        pr,
+        info,
+        head_sha=head_sha,
+        checkout_root=checkout_root,
+    )
 
     if not scope.ok:
         print(f"REFUSING to merge PR #{pr}: invalid structured pr-scope carrier:", file=sys.stderr)
@@ -666,7 +672,12 @@ def cmd_merge(
             file=sys.stderr,
         )
         return 1
-    final_scope = merge_gate._scope_verdict(pr, final_info, head_sha=head_sha)
+    final_scope = merge_gate._scope_verdict(
+        pr,
+        final_info,
+        head_sha=head_sha,
+        checkout_root=checkout_root,
+    )
     initial_attestation = pr_scope.attestation_payload(
         scope, head_sha=head_sha, base_sha=merge_gate._base_sha(info)
     ).get("attestation_digest")

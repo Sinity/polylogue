@@ -88,6 +88,8 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
         if "/pulls/" in joined and "/comments" in joined:
             return MagicMock(returncode=0, stdout=json.dumps([comments]), stderr="")
+        if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
+            return MagicMock(returncode=0, stdout=str(Path.cwd()) + "\n", stderr="")
         if cmd[:2] == ["git", "rev-parse"]:
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
