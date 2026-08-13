@@ -179,7 +179,11 @@ def test_unknown_retained_stream_replay_detects_from_prefix_without_eager_payloa
             source_path="unknown-member.jsonl",
             acquired_at_ms=1,
         )
-        archive.raw_revision_material = lambda _raw_id: (_ for _ in ()).throw(AssertionError("eager payload read"))  # type: ignore[method-assign]
+
+        def reject_eager_material(_raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
+            raise AssertionError("eager payload read")
+
+        monkeypatch.setattr(archive, "raw_revision_material", reject_eager_material)
         sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
 
     assert [session.provider_session_id for session in sessions] == ["unknown-stream"]
