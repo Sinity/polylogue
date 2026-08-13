@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import platform
 import shutil
 import sqlite3
 import subprocess
@@ -1892,8 +1893,85 @@ def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux
         "rust_timeout": monitor._WATCH_RUST_TIMEOUT_MS,
         "yield_on_timeout": True,
         "raise_interrupt": False,
+        "force_polling": False,
+        "recursive": False,
     }
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="tracked.py")
+
+
+def test_checkout_mutation_monitor_rejects_forced_polling_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WATCHFILES_FORCE_POLLING", "1")
+
+    def unexpected_watch(*_paths: Path, **_kwargs: object) -> object:
+        raise AssertionError("polling mode must fail before watchfiles starts")
+        yield set()
+
+    monkeypatch.setattr(watchfiles, "watch", unexpected_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_rejects_wsl_auto_polling_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("WATCHFILES_FORCE_POLLING", raising=False)
+    monkeypatch.setattr(
+        platform,
+        "uname",
+        lambda: SimpleNamespace(system="Linux", release="6.6.0-microsoft-standard-WSL2"),
+    )
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=True)
+
+
+def test_checkout_mutation_monitor_prunes_disposable_trees_and_observes_new_source_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], check=True)
+    source = tmp_path / "src" / "package"
+    source.mkdir(parents=True)
+    for disposable in (".venv", ".git", ".cache"):
+        (tmp_path / disposable / "nested").mkdir(parents=True, exist_ok=True)
+    calls: dict[str, object] = {}
+    allow_event = threading.Event()
+    new_source = tmp_path / "new_source"
+
+    def portable_watch(*paths: Path, **kwargs: object) -> object:
+        calls["paths"] = paths
+        calls["kwargs"] = kwargs
+        yield set()
+        assert allow_event.wait(timeout=1)
+        yield {(watchfiles.Change.added, str(new_source))}
+
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    new_source.mkdir()
+    allow_event.set()
+    observation = monitor.finish()
+
+    raw_paths = calls["paths"]
+    raw_kwargs = calls["kwargs"]
+    assert isinstance(raw_paths, tuple)
+    assert isinstance(raw_kwargs, dict)
+    watched = {Path(path) for path in raw_paths}
+    assert tmp_path.resolve() in watched
+    assert source in watched
+    assert all(not any(part in {".venv", ".git", ".cache"} for part in path.parts) for path in watched)
+    assert raw_kwargs["recursive"] is False
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="new_source")
 
 
 def test_checkout_mutation_monitor_fails_closed_when_portable_watcher_fails(

@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import stat
@@ -234,6 +235,7 @@ class CheckoutMutationMonitor:
     _WATCH_START_TIMEOUT_S = 1.0
     _WATCH_SETTLE_S = 0.2
     _WATCH_RUST_TIMEOUT_MS = 25
+    _POLLING_DISABLED_VALUES = frozenset({"false", "disable", "disabled"})
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -247,6 +249,11 @@ class CheckoutMutationMonitor:
 
     def start(self) -> None:
         """Start and prove the portable interval watcher before verification."""
+        if self._polling_backend_requested():
+            with self._state_lock:
+                self._unavailable = True
+            self._ready.set()
+            return
         self._thread = threading.Thread(target=self._watch, name="checkout-mutation-monitor", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=self._WATCH_START_TIMEOUT_S):
@@ -277,7 +284,7 @@ class CheckoutMutationMonitor:
     def _watch(self) -> None:
         try:
             for changes in watchfiles.watch(
-                self.root,
+                *self._watched_directories(),
                 watch_filter=None,
                 debounce=0,
                 step=1,
@@ -285,6 +292,8 @@ class CheckoutMutationMonitor:
                 rust_timeout=self._WATCH_RUST_TIMEOUT_MS,
                 yield_on_timeout=True,
                 raise_interrupt=False,
+                force_polling=False,
+                recursive=False,
             ):
                 # An empty timeout batch proves the backend initialized before
                 # a verification command starts, closing the startup race.
@@ -301,6 +310,24 @@ class CheckoutMutationMonitor:
                 self._unavailable = True
         finally:
             self._ready.set()
+
+    @classmethod
+    def _polling_backend_requested(cls) -> bool:
+        """Reject watchfiles modes that cannot witness every interval mutation."""
+        forced = os.getenv("WATCHFILES_FORCE_POLLING")
+        if forced:
+            return forced.lower() not in cls._POLLING_DISABLED_VALUES
+        uname = platform.uname()
+        return uname.system.lower() == "linux" and "microsoft-standard" in uname.release.lower()
+
+    def _watched_directories(self) -> list[Path]:
+        """Watch existing source directories shallowly and omit disposable trees."""
+        directories: list[Path] = []
+        for current, child_directories, _files in os.walk(self.root):
+            current_path = Path(current)
+            child_directories[:] = [child for child in child_directories if child not in self._IGNORED_TOP_LEVEL]
+            directories.append(current_path)
+        return directories
 
     def _record_change(self, candidate: Path) -> None:
         if not candidate.is_absolute():
