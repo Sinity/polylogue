@@ -1309,17 +1309,18 @@ def _drain_raw_materialization_once(
             "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
             auto_resolved,
         )
-    try:
-        result = raw_authority.repair_materialization(
-            config,
-            dry_run=False,
-            raw_artifact_limit=limit,
-            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-            prefetch_cache=prefetch_cache,
-            max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
-        )
-    finally:
-        _close_raw_materialization_fts(config.current_db_path())
+    with raw_authority.materialization_generation_lease(config) as index_db:
+        try:
+            result = raw_authority.repair_materialization(
+                config,
+                dry_run=False,
+                raw_artifact_limit=limit,
+                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+                prefetch_cache=prefetch_cache,
+                max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
+            )
+        finally:
+            _close_raw_materialization_fts(index_db)
     _emit_raw_materialization_pass(result)
     frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
@@ -1378,16 +1379,17 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
 
     archive = archive_root()
     config = Config(archive_root=archive, render_root=render_root(), sources=[])
-    try:
-        result = raw_authority.repair_materialization(
-            config,
-            dry_run=False,
-            raw_artifact_limit=1,
-            max_payload_bytes=max_payload_bytes,
-            raw_artifact_id=raw_artifact_id,
-        )
-    finally:
-        _close_raw_materialization_fts(config.current_db_path())
+    with raw_authority.materialization_generation_lease(config) as index_db:
+        try:
+            result = raw_authority.repair_materialization(
+                config,
+                dry_run=False,
+                raw_artifact_limit=1,
+                max_payload_bytes=max_payload_bytes,
+                raw_artifact_id=raw_artifact_id,
+            )
+        finally:
+            _close_raw_materialization_fts(index_db)
     _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)
