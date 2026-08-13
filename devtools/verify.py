@@ -2020,6 +2020,9 @@ def _pytest_command_basetemp(
 
 def _subprocess_env() -> dict[str, str]:
     env = normalize_pytest_basetemp_env(os.environ)
+    # Tests and verification helpers may inspect Git, but observational reads
+    # must not refresh the index and invalidate the exact-head mutation watch.
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
     inherited_pythonpath = env.get("PYTHONPATH", "")
