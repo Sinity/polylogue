@@ -538,7 +538,7 @@ def _validated_receipt_artifacts(
     manifest: dict[str, object],
     receipt: dict[str, object],
     *,
-    target_tier: str,
+    target_tier: str | None,
     live_tier_path: Path | None,
     file_evidence: dict[str, dict[str, object]],
 ) -> dict[str, dict[str, object]]:
@@ -564,7 +564,7 @@ def _validated_receipt_artifacts(
             backup_root,
             artifact,
             file_evidence=file_evidence,
-            live_tier_path=live_tier_path if tier == target_tier else None,
+            live_tier_path=live_tier_path if target_tier is not None and tier == target_tier else None,
         )
         by_tier[tier] = artifact
     if set(by_tier) != {name.removesuffix(".db") for name in included}:
@@ -701,6 +701,61 @@ def _validate_blob_inventory(
             raise MigrationError(f"migration backup blob hash mismatch: {blob['path']}")
 
 
+def _load_verified_backup_package(
+    path: Path,
+) -> tuple[Path, Path, Path, dict[str, object], dict[str, object]]:
+    """Load the regular manifest/receipt pair shared by every strict validator."""
+    manifest_path = _backup_manifest_path(path)
+    if not manifest_path.exists() and not manifest_path.is_symlink():
+        raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
+    backup_root = manifest_path.parent
+    _require_real_backup_directory(backup_root, label="backup root")
+    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
+    manifest = _load_json(manifest_path, label="manifest")
+    if manifest.get("format") != "polylogue-backup-v1":
+        raise MigrationError(f"migration backup manifest has unsupported format: {manifest_path}")
+    receipt_path = _receipt_path(manifest_path)
+    if not receipt_path.exists() and not receipt_path.is_symlink():
+        raise MigrationError(f"migration requires a successful backup verification receipt; missing {receipt_path}")
+    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
+    receipt = _load_json(receipt_path, label="verification receipt")
+    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
+        raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
+    if receipt.get("verdict") != "success":
+        raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
+    return manifest_path, receipt_path, backup_root, manifest, receipt
+
+
+def _validate_closed_backup_package(
+    backup_root: Path,
+    manifest: dict[str, object],
+    receipt: dict[str, object],
+    *,
+    target_tier: str | None,
+    live_tier_path: Path | None,
+) -> dict[str, dict[str, object]]:
+    """Re-hash the complete closed package bound by a successful receipt."""
+    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
+    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
+    manifest_evidence = file_evidence.get("manifest.json", {})
+    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
+        raise MigrationError("migration backup receipt does not match manifest size")
+    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
+        raise MigrationError("migration backup receipt does not match manifest bytes")
+    artifacts = _validated_receipt_artifacts(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier=target_tier,
+        live_tier_path=live_tier_path,
+        file_evidence=file_evidence,
+    )
+    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    if receipt.get("artifact_inventory") != artifact_inventory:
+        raise MigrationError("migration backup receipt does not match the closed artifact inventory")
+    return artifacts
+
+
 def _validate_backup_manifest_covers_tier(
     path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection, require_attestation: bool
 ) -> Path:
@@ -718,54 +773,26 @@ def _validate_backup_manifest_covers_tier(
     recomputed from the current on-disk file -- just not the attestation,
     which durable-tier migrations (``migrate_archive_tier``) still require.
     """
-    manifest_path = _backup_manifest_path(path)
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
-    backup_root = manifest_path.parent
-    _require_real_backup_directory(backup_root, label="backup root")
-    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
-    payload = _load_json(manifest_path, label="manifest")
-    if payload.get("format") != "polylogue-backup-v1":
-        raise MigrationError(f"migration backup manifest has unsupported format: {manifest_path}")
+    manifest_path, receipt_path, backup_root, payload, receipt = _load_verified_backup_package(path)
     included = set(_json_str_list(payload.get("included_tiers")))
     if f"{tier.value}.db" not in included:
         raise MigrationError(f"migration backup manifest does not include {tier.value}.db: {manifest_path}")
-    receipt_path = _receipt_path(manifest_path)
-    if not receipt_path.exists() and not receipt_path.is_symlink():
-        raise MigrationError(f"migration requires a successful backup verification receipt; missing {receipt_path}")
-    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
-    receipt = _load_json(receipt_path, label="verification receipt")
-    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
-        raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
     live_tier_path = _connection_main_path(connection).resolve(strict=False)
     if require_attestation:
         try:
             verify_verification_receipt(receipt, tier=tier.value, live_tier_path=live_tier_path)
         except BackupAttestationError as exc:
             raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
-    if receipt.get("verdict") != "success":
-        raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
-    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
-    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
-    manifest_evidence = file_evidence.get("manifest.json", {})
-    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
-        raise MigrationError("migration backup receipt does not match manifest size")
-    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
-        raise MigrationError("migration backup receipt does not match manifest bytes")
-    artifacts = _validated_receipt_artifacts(
+    artifacts = _validate_closed_backup_package(
         backup_root,
         payload,
         receipt,
         target_tier=tier.value,
         live_tier_path=live_tier_path,
-        file_evidence=file_evidence,
     )
     artifact = artifacts.get(tier.value)
     if artifact is None:
         raise MigrationError(f"migration backup receipt does not include {tier.value}.db: {receipt_path}")
-    _validate_blob_inventory(backup_root, payload, receipt, file_evidence=file_evidence)
-    if receipt.get("artifact_inventory") != artifact_inventory:
-        raise MigrationError("migration backup receipt does not match the closed artifact inventory")
     _validate_live_source_fingerprint(connection, artifact)
     return receipt_path
 
@@ -794,52 +821,24 @@ def validate_migration_backup_live_fingerprint(
 
     if tier not in DURABLE_MIGRATION_TIERS:
         raise MigrationError(f"{tier.value} tier is not a durable migration tier")
-    manifest_path = _backup_manifest_path(path)
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
-    backup_root = manifest_path.parent
-    _require_real_backup_directory(backup_root, label="backup root")
-    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
-    manifest = _load_json(manifest_path, label="manifest")
-    if manifest.get("format") != "polylogue-backup-v1":
-        raise MigrationError(f"migration backup manifest has unsupported format: {manifest_path}")
+    manifest_path, receipt_path, backup_root, manifest, receipt = _load_verified_backup_package(path)
     if f"{tier.value}.db" not in _json_str_list(manifest.get("included_tiers")):
         raise MigrationError(f"migration backup manifest does not include {tier.value}.db: {manifest_path}")
-    receipt_path = _receipt_path(manifest_path)
-    if not receipt_path.exists() and not receipt_path.is_symlink():
-        raise MigrationError(f"migration requires a successful backup verification receipt; missing {receipt_path}")
-    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
-    receipt = _load_json(receipt_path, label="verification receipt")
-    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
-        raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
     live_tier_path = _connection_main_path(connection).resolve(strict=False)
     try:
         verify_verification_receipt(receipt, tier=tier.value, live_tier_path=live_tier_path)
     except BackupAttestationError as exc:
         raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
-    if receipt.get("verdict") != "success":
-        raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
-    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
-    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
-    manifest_evidence = file_evidence.get("manifest.json", {})
-    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
-        raise MigrationError("migration backup receipt does not match manifest size")
-    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
-        raise MigrationError("migration backup receipt does not match manifest bytes")
-    artifacts = _validated_receipt_artifacts(
+    artifacts = _validate_closed_backup_package(
         backup_root,
         manifest,
         receipt,
         target_tier=tier.value,
         live_tier_path=live_tier_path,
-        file_evidence=file_evidence,
     )
     artifact = artifacts.get(tier.value)
     if artifact is None:
         raise MigrationError(f"migration backup receipt does not include {tier.value}.db: {receipt_path}")
-    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
-    if receipt.get("artifact_inventory") != artifact_inventory:
-        raise MigrationError("migration backup receipt does not match the closed artifact inventory")
     _validate_live_source_fingerprint(connection, artifact)
     return receipt_path
 
@@ -847,40 +846,67 @@ def validate_migration_backup_live_fingerprint(
 def validate_full_evidence_backup_for_archive_root_relocation(
     path: Path,
     *,
+    old_configured_root: Path,
     old_archive_root: Path,
 ) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
     """Authenticate complete old-root backup evidence for a root relocation."""
-    manifest_path = _backup_manifest_path(path)
-    backup_root = manifest_path.parent
-    _require_real_backup_directory(backup_root, label="backup root")
-    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
-    manifest = _load_json(manifest_path, label="manifest")
-    if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
+    manifest_path, receipt_path, backup_root, manifest, receipt = _load_verified_backup_package(path)
+    if manifest.get("profile") != "full_evidence":
         raise MigrationError("archive-root relocation requires a verified full_evidence backup")
     expected_tiers = {f"{tier.value}.db" for tier in ArchiveTier}
     if set(_json_str_list(manifest.get("included_tiers"))) != expected_tiers or _json_str_list(
         manifest.get("omitted_tiers")
     ):
         raise MigrationError("archive-root relocation backup must contain the exact complete tier set")
-    receipt_path = _receipt_path(manifest_path)
-    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
-    receipt = _load_json(receipt_path, label="verification receipt")
-    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
-        raise MigrationError("archive-root relocation requires a successful verification receipt")
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
         try:
             verify_verification_receipt(receipt, tier=tier.value, live_tier_path=old_archive_root / f"{tier.value}.db")
         except BackupAttestationError as exc:
             raise MigrationError(f"archive-root relocation old-root authority failed for {tier.value}: {exc}") from exc
+    validated_artifacts = _validate_closed_backup_package(
+        backup_root,
+        manifest,
+        receipt,
+        target_tier=None,
+        live_tier_path=None,
+    )
     fingerprints = manifest.get("tier_source_fingerprints")
-    artifacts = receipt.get("tier_artifacts")
-    if not isinstance(fingerprints, dict) or not isinstance(artifacts, list):
+    if not isinstance(fingerprints, dict):
         raise MigrationError("archive-root relocation backup lacks complete tier evidence")
-    artifact_by_tier = {
-        item.get("tier"): item for item in artifacts if isinstance(item, dict) and isinstance(item.get("tier"), str)
-    }
-    if set(fingerprints) != expected_tiers or set(artifact_by_tier) != {tier.value for tier in ArchiveTier}:
+    if set(fingerprints) != expected_tiers or set(validated_artifacts) != {tier.value for tier in ArchiveTier}:
         raise MigrationError("archive-root relocation backup tier evidence is incomplete")
+    for filename, fingerprint in fingerprints.items():
+        tier = filename.removesuffix(".db")
+        artifact = validated_artifacts[tier]
+        if not isinstance(fingerprint, dict) or artifact.get("source_fingerprint") != fingerprint:
+            raise MigrationError(f"archive-root relocation backup source authority differs for {filename}")
+        if not all(isinstance(fingerprint.get(field), int) for field in ("device", "inode")):
+            raise MigrationError(f"archive-root relocation backup lacks authenticated inode authority for {filename}")
+        recorded_path = fingerprint.get("path")
+        if not isinstance(recorded_path, str):
+            raise MigrationError(f"archive-root relocation backup lacks old path authority for {filename}")
+        recorded = Path(recorded_path).resolve(strict=False)
+        if tier == ArchiveTier.INDEX.value:
+            if not recorded.is_relative_to(old_archive_root.resolve(strict=False)):
+                raise MigrationError("archive-root relocation backup active index is outside the old archive root")
+        elif recorded != (old_archive_root / filename).resolve(strict=False):
+            raise MigrationError(f"archive-root relocation backup belongs to a different old tier path: {filename}")
+    root_identity = manifest.get("archive_root_source_identity")
+    if not isinstance(root_identity, dict) or not all(
+        isinstance(root_identity.get(field), int) for field in ("device", "inode")
+    ):
+        raise MigrationError("archive-root relocation backup lacks authenticated root inode authority")
+    recorded_root = root_identity.get("resolved_path")
+    if not isinstance(recorded_root, str) or Path(recorded_root).resolve(strict=False) != old_archive_root.resolve(
+        strict=False
+    ):
+        raise MigrationError("archive-root relocation backup belongs to a different old archive root")
+    recorded_configured_root = root_identity.get("configured_path")
+    if (
+        not isinstance(recorded_configured_root, str)
+        or Path(recorded_configured_root).absolute() != old_configured_root.absolute()
+    ):
+        raise MigrationError("archive-root relocation backup belongs to a different configured old archive root")
     return manifest_path, receipt_path, manifest, receipt
 
 

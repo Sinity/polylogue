@@ -26,6 +26,18 @@ def running_daemon_pid(config: Config) -> int | None:
     return pid if b"polylogued" in cmdline else None
 
 
+def offline_writer_block_reason(config: Config) -> str | None:
+    """Return the concrete writer that makes a strictly offline operation unsafe."""
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if daemon_write_lease_active():
+        return "a daemon writer lease is active"
+    daemon_pid = running_daemon_pid(config)
+    if daemon_pid is not None:
+        return f"live pidfile PID {daemon_pid} is running"
+    return None
+
+
 def offline_maintenance_block_reason(
     config: Config,
     *,
@@ -51,4 +63,4 @@ def offline_maintenance_block_reason(
     )
 
 
-__all__ = ["offline_maintenance_block_reason", "running_daemon_pid"]
+__all__ = ["offline_maintenance_block_reason", "offline_writer_block_reason", "running_daemon_pid"]

@@ -185,11 +185,27 @@ def _sqlite_user_version(path: Path) -> int:
 
 
 def _sqlite_source_fingerprint(path: Path) -> dict[str, object]:
+    metadata = path.stat()
     return {
         "path": str(path),
-        "size_bytes": path.stat().st_size,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "size_bytes": metadata.st_size,
         "sha256": _sha256_file(path),
         "user_version": _sqlite_user_version(path),
+    }
+
+
+def _archive_root_source_identity(root: Path) -> dict[str, object]:
+    """Capture the pre-move directory identity later authenticated by the receipt."""
+    configured = root.absolute()
+    resolved = root.resolve(strict=True)
+    metadata = resolved.stat()
+    return {
+        "configured_path": str(configured),
+        "resolved_path": str(resolved),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
     }
 
 
@@ -471,6 +487,7 @@ def _write_manifest(
     blob_count: int,
     blob_size: int,
     warnings: list[str],
+    archive_root_source_identity: dict[str, object],
     tier_source_fingerprints: dict[str, dict[str, object]],
     blob_reference_debt: BlobReferenceDebtReport | None = None,
 ) -> None:
@@ -485,6 +502,7 @@ def _write_manifest(
         "blob_count": blob_count,
         "blob_size_bytes": blob_size,
         "blob_inventory_file": "blob-inventory.json",
+        "archive_root_source_identity": archive_root_source_identity,
         "tier_source_fingerprints": tier_source_fingerprints,
         "warnings": warnings,
     }
@@ -604,6 +622,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         blob_count=blob_count,
         blob_size=blob_size,
         warnings=warnings,
+        archive_root_source_identity=_archive_root_source_identity(root),
         tier_source_fingerprints=tier_source_fingerprints,
         blob_reference_debt=blob_reference_debt,
     )

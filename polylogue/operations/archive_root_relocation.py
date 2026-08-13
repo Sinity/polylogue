@@ -13,7 +13,21 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.config import Config
+from polylogue.maintenance.offline_guard import offline_writer_block_reason
+from polylogue.operations._maintenance_receipt_fs import (
+    MaintenanceReceiptPathError,
+    atomic_replace_receipt,
+    maintenance_receipt_directory,
+    read_optional_receipt,
+)
+from polylogue.paths import render_root
+from polylogue.storage.archive_identity import (
+    ArchiveIdentity,
+    ArchiveLocation,
+    ArchiveOwnershipError,
+    OwnedArchiveLocation,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
@@ -51,6 +65,8 @@ class RelocationTierEvidence(BaseModel):
     tier: str
     configured_path: str
     resolved_path: str
+    old_device: int
+    old_inode: int
     device: int
     inode: int
     size_bytes: int
@@ -79,6 +95,8 @@ class ArchiveRootRelocationPlan(BaseModel):
     format: Literal["polylogue.archive-root-relocation-plan.v1"] = PLAN_FORMAT
     old_configured_root: str
     old_resolved_root: str
+    old_root_device: int
+    old_root_inode: int
     new_configured_root: str
     new_resolved_root: str
     new_root_device: int
@@ -191,7 +209,13 @@ def _reject_sidecars(root: Path) -> None:
                 raise ArchiveRootRelocationError(f"archive-root relocation refuses SQLite sidecar: {path}")
 
 
-def _tier_snapshot(root: Path, tier: ArchiveTier) -> RelocationTierEvidence:
+def _tier_snapshot(
+    root: Path,
+    tier: ArchiveTier,
+    *,
+    old_device: int,
+    old_inode: int,
+) -> RelocationTierEvidence:
     location = ArchiveLocation.resolve(root)
     identity = location.active_tier(tier.value)
     path = identity.configured_path
@@ -224,6 +248,8 @@ def _tier_snapshot(root: Path, tier: ArchiveTier) -> RelocationTierEvidence:
         tier=tier.value,
         configured_path=str(path.absolute()),
         resolved_path=str(resolved_path),
+        old_device=old_device,
+        old_inode=old_inode,
         device=metadata.st_dev,
         inode=metadata.st_ino,
         size_bytes=metadata.st_size,
@@ -308,6 +334,26 @@ def _source_trains(
     return tuple(trains)
 
 
+def _authenticated_identity(payload: object, *, label: str) -> tuple[int, int]:
+    if not isinstance(payload, dict):
+        raise ArchiveRootRelocationError(f"backup lacks authenticated {label} identity")
+    device = payload.get("device")
+    inode = payload.get("inode")
+    if type(device) is not int or type(inode) is not int:
+        raise ArchiveRootRelocationError(f"backup lacks authenticated {label} device/inode")
+    return device, inode
+
+
+def _authenticated_old_tier_identities(manifest: dict[str, object]) -> dict[str, tuple[int, int]]:
+    fingerprints = manifest.get("tier_source_fingerprints")
+    if not isinstance(fingerprints, dict):
+        raise ArchiveRootRelocationError("backup lacks authenticated tier identity inventory")
+    return {
+        tier.value: _authenticated_identity(fingerprints.get(f"{tier.value}.db"), label=f"{tier.value} tier")
+        for tier in ArchiveTier
+    }
+
+
 def _check_backup_against_live(
     root: Path,
     *,
@@ -326,7 +372,13 @@ def _check_backup_against_live(
         artifact = by_tier.get(snapshot.tier)
         if not isinstance(fingerprint, dict) or not isinstance(artifact, dict):
             raise ArchiveRootRelocationError(f"backup lacks {filename} evidence")
-        fields = {"size_bytes": snapshot.size_bytes, "sha256": snapshot.sha256, "user_version": snapshot.user_version}
+        fields = {
+            "device": snapshot.old_device,
+            "inode": snapshot.old_inode,
+            "size_bytes": snapshot.size_bytes,
+            "sha256": snapshot.sha256,
+            "user_version": snapshot.user_version,
+        }
         if any(fingerprint.get(key) != value for key, value in fields.items()):
             raise ArchiveRootRelocationError(f"backup bytes/version differ from relocated {filename}")
         artifact_fingerprint = artifact.get("source_fingerprint")
@@ -334,6 +386,10 @@ def _check_backup_against_live(
             artifact_fingerprint.get(key) != value for key, value in fields.items()
         ):
             raise ArchiveRootRelocationError(f"backup receipt differs from relocated {filename}")
+        if snapshot.old_inode != snapshot.inode:
+            raise ArchiveRootRelocationError(
+                f"archive-root relocation requires inode continuity for {filename}; a copied tier is not accepted"
+            )
     _reject_sidecars(root)
 
 
@@ -355,11 +411,25 @@ def prepare_archive_root_relocation(
     _reject_sidecars(new_resolved)
     try:
         manifest_path, receipt_path, manifest, receipt = validate_full_evidence_backup_for_archive_root_relocation(
-            backup_manifest, old_archive_root=old_resolved
+            backup_manifest,
+            old_configured_root=old_configured,
+            old_archive_root=old_resolved,
         )
     except MigrationError as exc:
         raise ArchiveRootRelocationError(str(exc)) from exc
-    snapshots = tuple(_tier_snapshot(new_resolved, tier) for tier in ArchiveTier)
+    old_root_device, old_root_inode = _authenticated_identity(
+        manifest.get("archive_root_source_identity"), label="archive root"
+    )
+    old_tier_identities = _authenticated_old_tier_identities(manifest)
+    snapshots = tuple(
+        _tier_snapshot(
+            new_resolved,
+            tier,
+            old_device=old_tier_identities[tier.value][0],
+            old_inode=old_tier_identities[tier.value][1],
+        )
+        for tier in ArchiveTier
+    )
     _check_backup_against_live(new_resolved, manifest=manifest, receipt=receipt, snapshots=snapshots)
     location_identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(new_resolved))
     source_identity_digest = hashlib.sha256(location_identity.tier("source").stable_id.encode()).hexdigest()
@@ -372,9 +442,15 @@ def prepare_archive_root_relocation(
         after_identity_digest=source_identity_digest,
     )
     root_metadata = new_resolved.stat()
+    if old_root_inode != root_metadata.st_ino:
+        raise ArchiveRootRelocationError(
+            "archive-root relocation requires root inode continuity; a copied archive root is not accepted"
+        )
     return _sealed_plan(
         old_configured_root=str(old_configured),
         old_resolved_root=str(old_resolved),
+        old_root_device=old_root_device,
+        old_root_inode=old_root_inode,
         new_configured_root=str(new_configured),
         new_resolved_root=str(new_resolved),
         new_root_device=root_metadata.st_dev,
@@ -421,41 +497,57 @@ def _receipt_path(root: Path, plan: ArchiveRootRelocationPlan) -> Path:
     return root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json"
 
 
+def _receipt_directory_binding(path: Path) -> tuple[Path, str]:
+    state_root = path.parent.parent
+    if state_root.name != ".maintenance-state" or path.suffix != ".json":
+        raise ArchiveRootRelocationError(f"invalid archive-root relocation receipt path: {path}")
+    return state_root.parent, path.parent.name
+
+
+def _decode_receipt(encoded: bytes, *, path: Path) -> ArchiveRootRelocationReceipt:
+    try:
+        receipt = ArchiveRootRelocationReceipt.model_validate_json(encoded)
+    except ValueError as exc:
+        raise ArchiveRootRelocationError(f"invalid archive-root relocation receipt: {path}") from exc
+    _verify_receipt(receipt)
+    return receipt
+
+
+def _load_receipt_for_update(path: Path) -> ArchiveRootRelocationReceipt | None:
+    root, directory_name = _receipt_directory_binding(path)
+    try:
+        with maintenance_receipt_directory(root, directory_name) as directory_fd:
+            encoded = read_optional_receipt(directory_fd, path.name)
+    except MaintenanceReceiptPathError as exc:
+        raise ArchiveRootRelocationError(f"unsafe archive-root relocation receipt path: {path}") from exc
+    return None if encoded is None else _decode_receipt(encoded, path=path)
+
+
 def _write_receipt(path: Path, receipt: ArchiveRootRelocationReceipt, *, expected: str | None) -> None:
     _verify_receipt(receipt)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _real_directory(path.parent, label="archive-root relocation receipt directory")
-    if path.exists():
-        current = load_archive_root_relocation_receipt(path)
-        if current.receipt_sha256 != expected:
-            raise ArchiveRootRelocationError("archive-root relocation receipt CAS state changed")
-    elif expected is not None:
-        raise ArchiveRootRelocationError("archive-root relocation receipt disappeared")
-    encoded = (json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
-        temporary = Path(stream.name)
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
+    root, directory_name = _receipt_directory_binding(path)
     try:
-        os.replace(temporary, path)
-        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    finally:
-        temporary.unlink(missing_ok=True)
+        with maintenance_receipt_directory(root, directory_name) as directory_fd:
+            current_bytes = read_optional_receipt(directory_fd, path.name)
+            if current_bytes is not None:
+                current = _decode_receipt(current_bytes, path=path)
+                if current.receipt_sha256 != expected:
+                    raise ArchiveRootRelocationError("archive-root relocation receipt CAS state changed")
+            elif expected is not None:
+                raise ArchiveRootRelocationError("archive-root relocation receipt disappeared")
+            encoded = (json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
+            atomic_replace_receipt(directory_fd, path.name, encoded)
+    except MaintenanceReceiptPathError as exc:
+        raise ArchiveRootRelocationError(f"unsafe archive-root relocation receipt path: {path}") from exc
 
 
 def load_archive_root_relocation_receipt(path: Path) -> ArchiveRootRelocationReceipt:
     _real_file(path, label="archive-root relocation receipt")
     try:
-        receipt = ArchiveRootRelocationReceipt.model_validate_json(path.read_text(encoding="utf-8"))
+        encoded = path.read_bytes()
     except (OSError, ValueError) as exc:
         raise ArchiveRootRelocationError(f"invalid archive-root relocation receipt: {path}") from exc
-    _verify_receipt(receipt)
-    return receipt
+    return _decode_receipt(encoded, path=path)
 
 
 def assert_no_prepared_archive_root_relocation(root: Path) -> None:
@@ -474,22 +566,17 @@ def assert_no_prepared_archive_root_relocation(root: Path) -> None:
 def _revalidate_plan_live_state(
     root: Path,
     plan: ArchiveRootRelocationPlan,
-    *,
-    stopped_daemon_evidence_ref: str,
-    single_writer_evidence_ref: str,
 ) -> None:
     """Recheck every immutable plan binding while allowing CAS resume states."""
-    if stopped_daemon_evidence_ref != plan.stopped_daemon_evidence_ref:
-        raise ArchiveRootRelocationError("archive-root relocation stopped-daemon evidence changed")
-    if single_writer_evidence_ref != plan.single_writer_evidence_ref:
-        raise ArchiveRootRelocationError("archive-root relocation single-writer evidence changed")
     root_metadata = root.stat()
     if (root_metadata.st_dev, root_metadata.st_ino) != (plan.new_root_device, plan.new_root_inode):
         raise ArchiveRootRelocationError("archive-root relocation configured root identity changed")
     _reject_sidecars(root)
     try:
         manifest_path, receipt_path, manifest, receipt = validate_full_evidence_backup_for_archive_root_relocation(
-            Path(plan.backup_manifest_path), old_archive_root=Path(plan.old_resolved_root)
+            Path(plan.backup_manifest_path),
+            old_configured_root=Path(plan.old_configured_root),
+            old_archive_root=Path(plan.old_resolved_root),
         )
     except MigrationError as exc:
         raise ArchiveRootRelocationError(str(exc)) from exc
@@ -500,7 +587,26 @@ def _revalidate_plan_live_state(
         or _sha256_file(receipt_path) != plan.backup_receipt_sha256
     ):
         raise ArchiveRootRelocationError("archive-root relocation backup authority changed")
-    snapshots = tuple(_tier_snapshot(root, tier) for tier in ArchiveTier)
+    expected_inventory = tuple(sorted(f"{tier}.db" for tier in _TIER_NAMES))
+    if plan.backup_tier_inventory != expected_inventory:
+        raise ArchiveRootRelocationError("archive-root relocation plan tier inventory changed")
+    if _authenticated_identity(manifest.get("archive_root_source_identity"), label="archive root") != (
+        plan.old_root_device,
+        plan.old_root_inode,
+    ):
+        raise ArchiveRootRelocationError("archive-root relocation old root identity authority changed")
+    old_tiers = {item.tier: (item.old_device, item.old_inode) for item in plan.tiers}
+    if len(plan.tiers) != len(ArchiveTier) or set(old_tiers) != {tier.value for tier in ArchiveTier}:
+        raise ArchiveRootRelocationError("archive-root relocation plan tier evidence is incomplete")
+    snapshots = tuple(
+        _tier_snapshot(
+            root,
+            tier,
+            old_device=old_tiers[tier.value][0],
+            old_inode=old_tiers[tier.value][1],
+        )
+        for tier in ArchiveTier
+    )
     if snapshots != plan.tiers:
         raise ArchiveRootRelocationError("archive-root relocation tier evidence changed")
     _check_backup_against_live(root, manifest=manifest, receipt=receipt, snapshots=snapshots)
@@ -535,28 +641,51 @@ def _revalidate_plan_live_state(
             raise ArchiveRootRelocationError(f"archive-root relocation manifest changed: {path}")
 
 
+def _require_offline_apply_boundary(root: Path) -> None:
+    reason = offline_writer_block_reason(Config(archive_root=root, render_root=render_root(), sources=[]))
+    if reason is not None:
+        raise ArchiveRootRelocationError(f"archive-root relocation requires the daemon to be stopped; {reason}")
+
+
 def apply_archive_root_relocation(
     *,
     root: Path,
     plan: ArchiveRootRelocationPlan,
     authorization: str,
-    stopped_daemon_evidence_ref: str,
-    single_writer_evidence_ref: str,
 ) -> ArchiveRootRelocationResult:
-    """CAS-rewrite only released source manifests, never SQLite/archive bytes."""
+    """Acquire real offline ownership before any receipt or manifest publication."""
+    resolved = _real_directory(root, label="configured archive root")
+    try:
+        with OwnedArchiveLocation.acquire(
+            ArchiveLocation.resolve(resolved),
+            owner_id=f"archive-root-relocation:{os.getpid()}",
+        ):
+            _require_offline_apply_boundary(resolved)
+            return _apply_archive_root_relocation_locked(
+                root=resolved,
+                plan=plan,
+                authorization=authorization,
+            )
+    except ArchiveOwnershipError as exc:
+        raise ArchiveRootRelocationError(
+            "archive-root relocation could not acquire exclusive archive ownership"
+        ) from exc
+
+
+def _apply_archive_root_relocation_locked(
+    *,
+    root: Path,
+    plan: ArchiveRootRelocationPlan,
+    authorization: str,
+) -> ArchiveRootRelocationResult:
+    """CAS-rewrite only released source manifests under the owned offline boundary."""
     _verify_plan(plan)
     if authorization != plan.plan_sha256 or plan.bound_confirmation != "archive-root-relocation":
         raise ArchiveRootRelocationError("archive-root relocation authorization does not bind this plan")
-    resolved = _real_directory(root, label="configured archive root")
-    if str(root.absolute()) != plan.new_configured_root or str(resolved) != plan.new_resolved_root:
+    if str(root.absolute()) != plan.new_configured_root or str(root) != plan.new_resolved_root:
         raise ArchiveRootRelocationError("archive-root relocation plan is bound to a different configured root")
-    _revalidate_plan_live_state(
-        resolved,
-        plan,
-        stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
-        single_writer_evidence_ref=single_writer_evidence_ref,
-    )
-    receipt_path = _receipt_path(resolved, plan)
+    _revalidate_plan_live_state(root, plan)
+    receipt_path = _receipt_path(root, plan)
     command = (
         f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance archive-root-relocation "
         f"apply --plan <plan.json> --authorize {plan.plan_sha256} --output-format json"
@@ -571,8 +700,9 @@ def apply_archive_root_relocation(
         manifest_after_sha256=(),
         resume_command=command,
     )
-    if receipt_path.exists():
-        receipt = load_archive_root_relocation_receipt(receipt_path)
+    existing_receipt = _load_receipt_for_update(receipt_path)
+    if existing_receipt is not None:
+        receipt = existing_receipt
         if receipt.plan_sha256 != plan.plan_sha256 or receipt.authorization != authorization:
             raise ArchiveRootRelocationError("archive-root relocation receipt belongs to another plan")
         if receipt.state == "committed":

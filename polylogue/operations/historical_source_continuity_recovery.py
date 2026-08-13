@@ -21,9 +21,14 @@ from typing import Literal, cast
 from pydantic import BaseModel, ConfigDict
 
 from polylogue.config import Config
-from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.maintenance.blob_ref_liveness_reconciliation import census_blob_ref_liveness
-from polylogue.maintenance.offline_guard import running_daemon_pid
+from polylogue.maintenance.offline_guard import offline_writer_block_reason
+from polylogue.operations._maintenance_receipt_fs import (
+    MaintenanceReceiptPathError,
+    atomic_replace_receipt,
+    maintenance_receipt_directory,
+    read_optional_receipt,
+)
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.backup_attestation import BackupAttestationError, verify_verification_receipt
@@ -548,60 +553,39 @@ def _refresh_path(root: Path, digest: str) -> Path:
 
 def _require_offline_ownership_boundary(root: Path) -> None:
     """Make offline authority real for callers that bypass the Click adapter."""
-    if daemon_write_lease_active():
+    reason = offline_writer_block_reason(Config(archive_root=root, render_root=render_root(), sources=[]))
+    if reason is not None:
         raise HistoricalSourceContinuityRecoveryError(
-            "historical continuity recovery is offline-only and cannot run under a daemon writer lease"
-        )
-    if (pid := running_daemon_pid(Config(archive_root=root, render_root=render_root(), sources=[]))) is not None:
-        raise HistoricalSourceContinuityRecoveryError(
-            f"historical continuity recovery requires the daemon to be stopped; live pidfile PID: {pid}"
+            f"historical continuity recovery requires the daemon to be stopped; {reason}"
         )
 
 
 def _write_refresh_receipt(path: Path, payload: dict[str, object]) -> None:
     """Publish a retained receipt beneath a pinned, non-symlink directory."""
-    state_root = _real_directory(path.parent.parent, label="maintenance state")
-    refresh_root = state_root / path.parent.name
-    if refresh_root.exists() or refresh_root.is_symlink():
-        _real_directory(refresh_root, label="source continuity refresh receipt directory")
-    else:
-        refresh_root.mkdir(mode=0o700)
-        descriptor = os.open(state_root, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        _real_directory(refresh_root, label="source continuity refresh receipt directory")
-    receipt_path = refresh_root / path.name
-    if receipt_path.exists() or receipt_path.is_symlink():
-        _real_file(receipt_path, label="source continuity refresh receipt")
-        try:
-            if json.loads(receipt_path.read_text(encoding="utf-8")) != payload:
-                raise HistoricalSourceContinuityRecoveryError(
-                    "historical continuity recovery refresh receipt collision"
-                )
-        except (OSError, json.JSONDecodeError) as exc:
-            raise HistoricalSourceContinuityRecoveryError(
-                "historical continuity recovery refresh receipt is unreadable"
-            ) from exc
-        return
-    temporary: Path | None = None
+    state_root = path.parent.parent
+    if state_root.name != ".maintenance-state" or path.suffix != ".json":
+        raise HistoricalSourceContinuityRecoveryError("invalid source continuity refresh receipt path")
     try:
-        with tempfile.NamedTemporaryFile(dir=refresh_root, prefix=f".{receipt_path.name}.", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode())
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, receipt_path)
-        temporary = None
-        descriptor = os.open(refresh_root, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        with maintenance_receipt_directory(state_root.parent, path.parent.name) as directory_fd:
+            current = read_optional_receipt(directory_fd, path.name)
+            if current is not None:
+                try:
+                    current_payload = json.loads(current)
+                except json.JSONDecodeError as exc:
+                    raise HistoricalSourceContinuityRecoveryError(
+                        "historical continuity recovery refresh receipt is unreadable"
+                    ) from exc
+                if current_payload != payload:
+                    raise HistoricalSourceContinuityRecoveryError(
+                        "historical continuity recovery refresh receipt collision"
+                    )
+                return
+            encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+            atomic_replace_receipt(directory_fd, path.name, encoded)
+    except MaintenanceReceiptPathError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"unsafe historical continuity refresh receipt path: {path}"
+        ) from exc
 
 
 def prepare_historical_source_continuity_recovery(
@@ -737,42 +721,62 @@ def load_historical_source_continuity_recovery_plan(path: Path) -> HistoricalSou
     return plan
 
 
+def _recovery_receipt_directory_binding(path: Path) -> tuple[Path, str]:
+    state_root = path.parent.parent
+    if state_root.name != ".maintenance-state" or path.suffix != ".json":
+        raise HistoricalSourceContinuityRecoveryError("invalid historical continuity recovery receipt path")
+    return state_root.parent, path.parent.name
+
+
+def _decode_recovery_receipt(encoded: bytes) -> HistoricalSourceContinuityRecoveryReceipt:
+    try:
+        receipt = HistoricalSourceContinuityRecoveryReceipt.model_validate_json(encoded)
+    except ValueError as exc:
+        raise HistoricalSourceContinuityRecoveryError("invalid historical continuity recovery receipt") from exc
+    _verify_receipt(receipt)
+    return receipt
+
+
+def _load_recovery_receipt_for_update(path: Path) -> HistoricalSourceContinuityRecoveryReceipt | None:
+    root, directory_name = _recovery_receipt_directory_binding(path)
+    try:
+        with maintenance_receipt_directory(root, directory_name) as directory_fd:
+            encoded = read_optional_receipt(directory_fd, path.name)
+    except MaintenanceReceiptPathError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"unsafe historical continuity recovery receipt path: {path}"
+        ) from exc
+    return None if encoded is None else _decode_recovery_receipt(encoded)
+
+
 def _write_receipt(path: Path, receipt: HistoricalSourceContinuityRecoveryReceipt, *, expected: str | None) -> None:
     _verify_receipt(receipt)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _real_directory(path.parent, label="historical continuity recovery receipt directory")
-    if path.exists():
-        if load_historical_source_continuity_recovery_receipt(path).receipt_sha256 != expected:
-            raise HistoricalSourceContinuityRecoveryError("historical continuity recovery receipt CAS state changed")
-    elif expected is not None:
-        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery receipt disappeared")
-    temporary: Path | None = None
+    root, directory_name = _recovery_receipt_directory_binding(path)
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write((json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode())
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        temporary = None
-        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        with maintenance_receipt_directory(root, directory_name) as directory_fd:
+            current_bytes = read_optional_receipt(directory_fd, path.name)
+            if current_bytes is not None:
+                if _decode_recovery_receipt(current_bytes).receipt_sha256 != expected:
+                    raise HistoricalSourceContinuityRecoveryError(
+                        "historical continuity recovery receipt CAS state changed"
+                    )
+            elif expected is not None:
+                raise HistoricalSourceContinuityRecoveryError("historical continuity recovery receipt disappeared")
+            encoded = (json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
+            atomic_replace_receipt(directory_fd, path.name, encoded)
+    except MaintenanceReceiptPathError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"unsafe historical continuity recovery receipt path: {path}"
+        ) from exc
 
 
 def load_historical_source_continuity_recovery_receipt(path: Path) -> HistoricalSourceContinuityRecoveryReceipt:
     _real_file(path, label="historical continuity recovery receipt")
     try:
-        receipt = HistoricalSourceContinuityRecoveryReceipt.model_validate_json(path.read_text(encoding="utf-8"))
+        encoded = path.read_bytes()
     except (OSError, ValueError) as exc:
         raise HistoricalSourceContinuityRecoveryError("invalid historical continuity recovery receipt") from exc
-    _verify_receipt(receipt)
-    return receipt
+    return _decode_recovery_receipt(encoded)
 
 
 def assert_no_prepared_historical_source_continuity_recovery(root: Path) -> None:
@@ -900,8 +904,9 @@ def _apply_historical_source_continuity_recovery_locked(
         refresh_receipt_sha256=refresh_digest,
         resume_command=command,
     )
-    if receipt_path.exists():
-        receipt = load_historical_source_continuity_recovery_receipt(receipt_path)
+    existing_receipt = _load_recovery_receipt_for_update(receipt_path)
+    if existing_receipt is not None:
+        receipt = existing_receipt
         if receipt.plan_sha256 != plan.plan_sha256 or receipt.authorization != authorization:
             raise HistoricalSourceContinuityRecoveryError(
                 "historical continuity recovery receipt belongs to another plan"

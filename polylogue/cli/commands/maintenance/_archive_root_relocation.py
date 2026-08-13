@@ -68,20 +68,14 @@ def archive_root_relocation_plan_command(
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def archive_root_relocation_apply_command(plan_path: Path, authorize: str, output_format: str) -> None:
     """Apply the plan by CAS-revising released source manifests only."""
-    from polylogue.cli.commands.maintenance._migrate_tier import _require_stopped_daemon
-
     root = archive_root()
     try:
         plan = load_archive_root_relocation_plan(plan_path)
-        with acquire_durable_archive_ownership(root, owner_id=f"archive-root-relocation-apply:{os.getpid()}"):
-            stopped = _require_stopped_daemon(root)
-            result = apply_archive_root_relocation(
-                root=root,
-                plan=plan,
-                authorization=authorize,
-                stopped_daemon_evidence_ref=stopped,
-                single_writer_evidence_ref="proof:archive-ownership-lock",
-            )
+        result = apply_archive_root_relocation(
+            root=root,
+            plan=plan,
+            authorization=authorize,
+        )
     except (ArchiveRootRelocationError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":
