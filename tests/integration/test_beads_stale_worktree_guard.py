@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE_COMMIT = "a516b3caa791ef84a1a4133d217e39c20123651a"
+BASE_COMMIT = "de9ca432fb6ef1a025dbe9dccd82a804522ed299"
 
 
 def _installed_bd() -> str | None:
@@ -240,7 +240,7 @@ def _setup_stale_worktree(
     assert isinstance(issue_rows, list) and len(issue_rows) == 1
     issue_id = issue_rows[0]["id"]
 
-    _run(["git", "add", ".beads", ".beads-hooks", ".envrc"], repo, env)
+    _run(["git", "add", ".beads", ".beads-hooks", ".envrc", "scripts/bd"], repo, env)
     _run(["git", "commit", "-m", "historical Beads snapshot"], repo, env)
     _run(["git", "branch", "stale-lane"], repo, env)
     _run(["git", "worktree", "add", str(lane), "stale-lane"], repo, env)
@@ -266,11 +266,14 @@ def _setup_stale_worktree(
     _run([str(repo / "scripts" / "configure-git-hooks")], repo, env)
     env = _execute_historical_envrc(lane, env, tmp_path, bd)
     lane_wrapper = lane / "scripts" / "bd"
-    assert lane_wrapper.is_symlink()
-    assert lane_wrapper.resolve() == (repo / "scripts" / "bd").resolve()
+    assert lane_wrapper.is_file()
+    assert not lane_wrapper.is_symlink()
+    assert lane_wrapper.read_text() == _historical_file("scripts/bd", commit=BASE_COMMIT)
+    assert _run(["git", "status", "--porcelain", "--", "scripts/bd"], lane, env).stdout == ""
+    assert _run(["bash", "-c", "command -v bd"], lane, env).stdout.strip() == str((repo / "scripts" / "bd").resolve())
 
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
-    assert (lane / "scripts" / "bd").is_symlink()
+    assert not (lane / "scripts" / "bd").is_symlink()
     assert (lane / ".envrc").read_text() == _historical_file(".envrc", commit=BASE_COMMIT)
     assert (lane / ".beads-hooks" / "post-checkout").read_text() == _historical_file(
         ".beads-hooks/post-checkout", commit=BASE_COMMIT
