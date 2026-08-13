@@ -29,7 +29,7 @@ _DEFINITELY_DEAD_PID = 2**31 - 1
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.archive_templates import clone_archive_template, freeze_archive_template
+from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 
 _ARCHIVE_TEMPLATE: Path | None = None
 
@@ -41,7 +41,7 @@ def _archive_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[Non
     template = tmp_path_factory.mktemp("index-generation-template") / "archive"
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS, ArchiveTier.INDEX):
         initialize_archive_database(template / f"{tier.value}.db", tier)
-    freeze_archive_template(template)
+    finalize_archive_template(template)
     _ARCHIVE_TEMPLATE = template
     try:
         yield

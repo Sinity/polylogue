@@ -42,7 +42,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.archive_templates import clone_archive_template, freeze_archive_template
+from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _DEFAULT_CANARY_TEMPLATE: Path | None = None
@@ -93,7 +93,7 @@ def _default_canary_template(tmp_path_factory: pytest.TempPathFactory) -> Genera
     global _DEFAULT_CANARY_TEMPLATE
     template = tmp_path_factory.mktemp("reindex-canary-template") / "archive"
     _seed_isolated_canary(template)
-    freeze_archive_template(template)
+    finalize_archive_template(template)
     _DEFAULT_CANARY_TEMPLATE = template
     try:
         yield

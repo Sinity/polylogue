@@ -35,7 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
-from tests.infra.archive_templates import clone_archive_template, freeze_archive_template
+from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _EMPTY_SOURCE_TEMPLATE: Path | None = None
@@ -52,8 +52,8 @@ def _archive_templates(tmp_path_factory: pytest.TempPathFactory) -> Generator[No
         initialize_archive_database(empty_source / f"{tier.value}.db", tier)
     active_archive = templates / "active-archive"
     initialize_active_archive_root(active_archive)
-    freeze_archive_template(empty_source)
-    freeze_archive_template(active_archive)
+    finalize_archive_template(empty_source)
+    finalize_archive_template(active_archive)
     _EMPTY_SOURCE_TEMPLATE = empty_source
     _ACTIVE_ARCHIVE_TEMPLATE = active_archive
     try:
