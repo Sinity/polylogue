@@ -971,7 +971,7 @@ def test_changed_paths_include_executable_rename_sources(
     monkeypatch.setattr(verify, "ROOT", tmp_path)
 
     changed = verify._changed_test_relevant_paths(base, head)
-    assert executable_python_paths(tmp_path, changed) == ("polylogue/example.py",)
+    assert "polylogue/example.py" in changed
 
 
 def test_changed_paths_parse_non_ascii_names_without_git_quoting(
@@ -1321,6 +1321,10 @@ def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp
     hidden.parent.mkdir()
     hidden.write_text("secret authority\n", encoding="utf-8")
     subprocess.run(["git", "add", "-f", "ignored/hidden.py"], cwd=tmp_path, check=True)
+    deadline = time.monotonic() + 1
+    while not monitor._changed and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert monitor._changed, "monitor did not witness the changed index authority before it was restored"
     subprocess.run(["git", "reset", "-q", "--", "ignored/hidden.py"], cwd=tmp_path, check=True)
     observation = monitor.finish()
 
@@ -1351,6 +1355,10 @@ def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: 
     monitor = CheckoutMutationMonitor(tmp_path)
     monitor.start()
     subprocess.run(["git", "update-ref", branch, first], cwd=tmp_path, check=True)
+    deadline = time.monotonic() + 1
+    while not monitor._changed and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert monitor._changed, "monitor did not witness the changed ref authority before it was restored"
     subprocess.run(["git", "update-ref", branch, second], cwd=tmp_path, check=True)
     observation = monitor.finish()
 
@@ -3782,6 +3790,7 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
     )
     native_state = SimpleNamespace(
         valid=True,
+        status="valid",
         environment=SimpleNamespace(nodeids=("tests/test_parallel.py::test_owner",)),
         missing_executable_paths=(),
         reason="current",

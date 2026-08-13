@@ -62,6 +62,7 @@ def _init_repo(root: Path, *, conftest: str = "") -> None:
         """
 [tool.pytest.ini_options]
 addopts = "-p no:randomly"
+cache_dir = ".cache/pytest"
 markers = [
   "load_sensitive: serial native-testmon lane",
   "tui: serial native-testmon lane",
@@ -345,7 +346,10 @@ def test_serial_owner():
     lane_steps = [step for step in bootstrap["steps"] if step.get("semantic_lane")]
     assert [step["semantic_lane"] for step in lane_steps] == ["parallel", "serial"]
     environments = {
-        arg for step in lane_steps for arg in step["cmd"] if isinstance(arg, str) and arg.startswith("--testmon-env=")
+        arg
+        for step in lane_steps
+        for arg in step["statistics"]["command"]
+        if isinstance(arg, str) and arg.startswith("--testmon-env=")
     }
     assert environments == {f"--testmon-env={bootstrap['testmon_environment']['name']}"}
     lane_timeouts = [step["timeout_s"] for step in lane_steps]
