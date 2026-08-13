@@ -8,7 +8,12 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
+    ArtifactKind,
+    classify_artifact_path,
+    strong_path_classification,
+)
 from polylogue.archive.raw_payload import (
     JSONValue,
     RawPayloadEnvelope,
@@ -184,6 +189,9 @@ def _complete_stream_session_artifact(
     """Recover positive stream evidence hidden by bounded inspection."""
     if not _prefers_json_stream(record.source_path) or provider not in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return None
+    path_artifact = strong_path_classification(record.source_path, provider=provider)
+    if path_artifact is not None and not path_artifact.parse_as_session:
+        return None
     return jsonl_session_artifact(
         blob_store.blob_path(_record_blob_ref(record)),
         provider=provider,
@@ -349,7 +357,23 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
     registry = _SCHEMA_REGISTRY
 
     try:
-        envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
+        try:
+            envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
+        except Exception:
+            stream_provider = Provider.from_string(provider_token)
+            recovered_artifact = _complete_stream_session_artifact(
+                record,
+                provider=stream_provider,
+                blob_store=resolved_blob_store,
+            )
+            if recovered_artifact is None:
+                raise
+            envelope = RawPayloadEnvelope(
+                payload=[],
+                provider=stream_provider,
+                wire_format="jsonl",
+                artifact=recovered_artifact,
+            )
         payload_provider = envelope.provider
         artifact = envelope.artifact
         if not artifact.parse_as_session:

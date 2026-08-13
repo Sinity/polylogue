@@ -1,9 +1,8 @@
-"""Regression tests: artifact DECODE_FAILED/PARTIAL_DECODE covers the whole file (#1745).
+"""Regression tests: artifact inspection covers the whole retained stream.
 
-The artifact support status is derived from raw inspection. Inspection reads
-only a 64 KB prefix to bound memory, so malformed JSONL content *past* the
-prefix used to be invisible and the artifact was never flagged. These tests
-assert that loss past the prefix is surfaced via a full-scan fallback.
+Inspection starts from a 64 KB prefix to bound memory, then uses rolling stream
+passes for whole-file loss accounting and positive session evidence. These
+tests preserve both duties without weakening definitive sidecar exclusions.
 """
 
 from __future__ import annotations
@@ -132,3 +131,52 @@ def test_large_codex_stream_is_not_terminalized_from_session_meta_prefix(blob_st
     assert observation.parse_as_session is True
     assert observation.artifact_kind == "session_record_stream"
     assert observation.classification_reason == "parser-supported Codex session record stream"
+
+
+def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_store: BlobStore) -> None:
+    session_meta = (
+        b'{"type":"session_meta","payload":{"id":"large-first-record","base_instructions":{"text":"'
+        + (b"x" * (_INSPECTION_PREFIX_BYTES * 2))
+        + b'"}}}\n'
+    )
+    message = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
+        b'"role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+    assert session_meta.find(b"\n") > _INSPECTION_PREFIX_BYTES
+
+    record = _write_record(
+        blob_store,
+        content=session_meta + message,
+        source_path="codex/large-first-record.jsonl",
+        source_name="codex",
+        provider=Provider.CODEX,
+    )
+    observation = inspect_raw_artifact(record)
+
+    assert observation.parse_as_session is True
+    assert observation.artifact_kind == "session_record_stream"
+    assert observation.wire_format == "jsonl"
+    assert observation.decode_error is None
+
+
+def test_rolling_scan_preserves_tool_result_sidecar_exclusion(blob_store: BlobStore) -> None:
+    content = (
+        b'{"parentUuid":null,"type":"user","sessionId":"embedded",'
+        b'"message":{"role":"user","content":"copied transcript"},'
+        b'"uuid":"user-1","timestamp":"2026-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"user-1","type":"assistant","sessionId":"embedded",'
+        b'"message":{"role":"assistant","content":[{"type":"text","text":"copied reply"}]},'
+        b'"uuid":"assistant-1","timestamp":"2026-01-01T00:00:01Z"}\n'
+    )
+    record = _write_record(
+        blob_store,
+        content=content,
+        source_path="projects/project/session/tool-results/copied-transcript.jsonl",
+    )
+
+    observation = inspect_raw_artifact(record)
+
+    assert observation.parse_as_session is False
+    assert observation.schema_eligible is False
+    assert observation.artifact_kind == "tool_result_sidecar"
