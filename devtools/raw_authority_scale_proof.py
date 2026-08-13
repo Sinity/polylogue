@@ -37,7 +37,7 @@ from polylogue.scenarios.workload import (
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier
 from polylogue.storage import repair
-from polylogue.storage.raw_authority import RawReplayPlanStatus
+from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
@@ -58,6 +58,7 @@ class RawAuthorityScalePass:
     executable_component_count: int
     fixed_point: bool
     plan_status_counts: dict[str, int]
+    production_success: bool
     wall_ms: int
     peak_rss_bytes: int
     peak_pss_bytes: int | None
@@ -241,6 +242,13 @@ class RawAuthorityScaleScenario:
             component_byte_cohorts=byte_cohorts,
             terminal_sibling_outcome=str(profile.get("terminal_sibling_outcome", "terminal")),
         )
+
+
+def _outcome_has_application_decision(outcome: RawReplayPlanOutcome, expected: str) -> bool:
+    if outcome.application_receipt is None:
+        return False
+    rows = outcome.application_receipt.get("application_rows")
+    return isinstance(rows, list) and any(isinstance(row, dict) and row.get("decision") == expected for row in rows)
 
 
 def _payload_header(native_id: str, revision: int, *, first: bool) -> bytes:
@@ -651,6 +659,7 @@ def _record_repair_pass(
     pass_limit: int,
     max_payload_bytes: int,
     check_admission: Callable[[], None],
+    expected_application_decision: str | None = None,
 ) -> tuple[RawAuthorityScalePass, str]:
     """Run one real repair/census pass and reject incomplete evidence."""
     check_admission()
@@ -666,7 +675,7 @@ def _record_repair_pass(
     before, after = sampler.samples[0], sampler.samples[-1]
     check_admission()
     metrics = result.metrics
-    if not result.success:
+    if not result.success and not metrics:
         raise RuntimeError(f"raw-authority scale proof repair pass failed: {result.detail}")
     candidate_value = metrics.get("raw_materialization_candidate_count")
     executable_candidate_value = metrics.get("raw_materialization_executable_candidate_count", candidate_value)
@@ -693,6 +702,48 @@ def _record_repair_pass(
     expected_modes = {"apply", "census"} if mode == "apply" else {"dry_run"}
     if receipt.mode not in expected_modes:
         raise RuntimeError(f"raw-authority scale proof expected {mode} census evidence, received {receipt.mode}")
+    plan_status_counts = {
+        status.value: sum(outcome.status is status for outcome in result.plan_outcomes)
+        for status in RawReplayPlanStatus
+    }
+    if not result.success:
+        # RepairResult.success is archive health. This fault/scale proof may
+        # deliberately create typed terminal debt, but it must never mistake
+        # an unrelated failed pass for successful proof execution.
+        expected_status = (
+            {
+                "ambiguous": RawReplayPlanStatus.TERMINAL,
+                "deferred": RawReplayPlanStatus.DEFERRED,
+            }.get(expected_application_decision)
+            if expected_application_decision is not None
+            else None
+        )
+        exceptional_outcomes = tuple(
+            outcome
+            for outcome in result.plan_outcomes
+            if outcome.status not in {RawReplayPlanStatus.EXECUTED, RawReplayPlanStatus.CARRIED_FORWARD}
+        )
+        expected_outcomes = bool(exceptional_outcomes) and expected_status is not None
+        for outcome in exceptional_outcomes:
+            expected_outcomes = (
+                expected_outcomes
+                and outcome.status is expected_status
+                and expected_application_decision is not None
+                and _outcome_has_application_decision(outcome, expected_application_decision)
+            )
+        blockers = (
+            metrics.get("raw_materialization_plan_conservation_error_count", 0),
+            metrics.get("raw_materialization_unresolved_blocker_count", 0),
+            metrics.get("raw_materialization_missing_blob_count", 0),
+            metrics.get("raw_materialization_resource_blocked_count", 0),
+            metrics.get("raw_materialization_no_progress_count", 0),
+            metrics.get("raw_materialization_remaining_byte_authority_pending_count", 0),
+        )
+        remaining = metrics.get("raw_materialization_remaining_candidate_count", 0)
+        bounded_progress = mode == "apply" and result.repaired_count > 0 and remaining > 0 and not exceptional_outcomes
+        expected_terminal_classification = mode == "apply" and result.repaired_count > 0 and expected_outcomes
+        if any(blockers) or not (bounded_progress or expected_terminal_classification):
+            raise RuntimeError(f"raw-authority scale proof repair pass failed: {result.detail}")
     return (
         RawAuthorityScalePass(
             number=number,
@@ -702,10 +753,8 @@ def _record_repair_pass(
             repaired_count=result.repaired_count,
             executable_component_count=int(metrics.get("raw_materialization_selected_executable_component_count", 0)),
             fixed_point=receipt.fixed_point,
-            plan_status_counts={
-                status.value: sum(outcome.status is status for outcome in result.plan_outcomes)
-                for status in RawReplayPlanStatus
-            },
+            plan_status_counts=plan_status_counts,
+            production_success=result.success,
             wall_ms=wall_ms,
             peak_rss_bytes=int(sampler.peak("rss_bytes") or 0),
             peak_pss_bytes=sampler.peak("pss_bytes"),
@@ -790,6 +839,11 @@ def run_raw_authority_scale_proof(
         shutil.rmtree(root)
     initialize_active_archive_root(root)
     component_shape = _component_authority_shape(scenario)
+    expected_application_decision = (
+        ("ambiguous" if scenario.terminal_sibling_outcome == "terminal" else "deferred")
+        if scenario.expanded_candidates != scenario.direct_candidates
+        else None
+    )
     component_sizes = _row_sizes(
         scenario,
         [direct_count + sibling_count for direct_count, sibling_count in component_shape],
@@ -984,6 +1038,7 @@ def run_raw_authority_scale_proof(
             pass_limit=pass_limit,
             max_payload_bytes=max_payload_bytes,
             check_admission=check_replay_pressure,
+            expected_application_decision=expected_application_decision,
         )
         pass_receipts.append(pass_receipt)
         if pass_receipt.candidate_count == 0:
@@ -1001,6 +1056,7 @@ def run_raw_authority_scale_proof(
             pass_limit=pass_limit,
             max_payload_bytes=max_payload_bytes,
             check_admission=check_replay_pressure,
+            expected_application_decision=expected_application_decision,
         )
         if pass_receipt.candidate_count != 0:
             raise RuntimeError("raw-authority scale proof lost quiescence during fixed-point confirmation")
@@ -1008,6 +1064,27 @@ def run_raw_authority_scale_proof(
         fixed_point_digests.append(digest)
     if fixed_point_digests[0] != fixed_point_digests[1] or not pass_receipts[-1].fixed_point:
         raise RuntimeError("raw-authority scale proof did not reach two matching quiescent fixed-point censuses")
+    expected_exception_status = (
+        RawReplayPlanStatus.TERMINAL
+        if scenario.terminal_sibling_outcome == "terminal"
+        else RawReplayPlanStatus.DEFERRED
+    )
+    expected_exception_count = sum(sibling_count > 0 for _direct_count, sibling_count in component_shape)
+    observed_exception_count = sum(item.plan_status_counts[expected_exception_status.value] for item in pass_receipts)
+    other_exception_status = (
+        RawReplayPlanStatus.DEFERRED
+        if expected_exception_status is RawReplayPlanStatus.TERMINAL
+        else RawReplayPlanStatus.TERMINAL
+    )
+    unexpected_exception_count = sum(
+        item.plan_status_counts[other_exception_status.value]
+        + item.plan_status_counts[RawReplayPlanStatus.REJECTED_STALE.value]
+        for item in pass_receipts
+    )
+    if observed_exception_count != expected_exception_count or unexpected_exception_count:
+        raise RuntimeError(
+            "raw-authority scale proof terminal classification disagrees with the requested synthetic topology"
+        )
     profile_id = (
         f"workload-profile:synthetic-raw-authority:{scenario.components}:"
         f"{scenario.direct_candidates}:{scenario.expanded_candidates}"

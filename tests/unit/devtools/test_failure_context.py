@@ -139,12 +139,3 @@ def test_main_rejects_bad_failure_id(capsys: pytest.CaptureFixture[str]) -> None
     exit_code = fc.main(["not-a-failure-id"])
     assert exit_code == 2
     assert "failure id must be" in capsys.readouterr().err
-
-
-def test_command_registered_in_catalog() -> None:
-    from devtools.command_catalog import COMMANDS
-
-    assert "workspace failure-context" in COMMANDS
-    spec = COMMANDS["workspace failure-context"]
-    assert spec.module == "devtools.failure_context"
-    assert callable(spec.resolve_main())

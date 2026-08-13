@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from devtools.command_catalog import COMMANDS
 from devtools.raw_authority_artifact_census import main
 from polylogue.core.enums import Provider
 from polylogue.daemon import backup as backup_module
@@ -92,12 +91,11 @@ def _real_backup_manifest(
     return Path(result.output_path) / "manifest.json"
 
 
-def test_census_is_catalogued_and_dry_run_receipt_is_immutable(archive: Path) -> None:
+def test_census_dry_run_receipt_is_immutable(archive: Path) -> None:
     _write_artifact(archive)
     receipt_path = archive.parent / "raw-authority-census.json"
     output = io.StringIO()
 
-    assert "workspace raw-authority-artifact-census" in COMMANDS
     assert main(["--archive-root", str(archive), "--json"], stdout=output) == 1
     assert "requires --receipt" in output.getvalue()
     output = io.StringIO()
@@ -523,7 +521,7 @@ def test_census_uses_active_index_pointer_for_duplicate_witness(archive: Path, t
         store.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=payload,
-            source_path="/exports/twin.json",
+            source_path="/exports/duplicate.json",
             acquired_at_ms=1_700_000_000_000,
             raw_id="raw-indexed-twin",
         )

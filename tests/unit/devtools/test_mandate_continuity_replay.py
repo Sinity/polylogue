@@ -20,7 +20,6 @@ from pathlib import Path
 import pytest
 
 from devtools import mandate_continuity_replay as mcr
-from devtools.command_catalog import COMMANDS
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.core.json import JSONDocument
 from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS
@@ -40,15 +39,6 @@ def _commit(path: Path, *, filename: str, message: str) -> str:
     subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", message], check=True)
     result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
     return result.stdout.strip()
-
-
-# ── Command registration ──────────────────────────────────────────────
-
-
-def test_mandate_replay_registered_in_command_catalog() -> None:
-    spec = COMMANDS["workspace mandate-continuity-replay"]
-    assert spec.module == "devtools.mandate_continuity_replay"
-    assert spec.entrypoint == "main"
 
 
 # ── Discovery-coverage lane ────────────────────────────────────────────

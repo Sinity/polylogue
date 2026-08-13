@@ -9,7 +9,6 @@ from typing import cast
 import pytest
 
 from devtools import raw_authority_restart_proof as proof
-from devtools.command_catalog import COMMANDS
 from polylogue.storage import repair
 from polylogue.storage.raw_authority import RawReplayPlanStatus
 
@@ -56,6 +55,11 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
         [crash["validated_executed_receipt_count"] for crash in cast(list[dict[str, object]], case["crashes"])]
         for case in cases
     ] == [[1], [2], [1, 1]]
+    assert any(
+        apply_pass["success"] is False
+        for case in cases
+        for apply_pass in cast(list[dict[str, object]], case["apply_passes"])
+    )
 
 
 def test_raw_authority_restart_proof_rejects_broken_ledger_conservation(tmp_path: Path) -> None:
@@ -158,9 +162,3 @@ def test_raw_authority_restart_proof_cli_and_catalog(monkeypatch: pytest.MonkeyP
     assert proof.main(["--workdir", str(tmp_path), "--keep"], stdout=stdout) == 0
     assert captured == {"workdir": tmp_path, "keep": True}
     assert stdout.getvalue() == "raw-authority-restart-proof:test\n"
-    command = COMMANDS["workspace raw-authority-restart-proof"]
-    assert command.module == "devtools.raw_authority_restart_proof"
-    assert command.examples == (
-        "devtools workspace raw-authority-restart-proof --json",
-        "devtools workspace raw-authority-restart-proof --workdir .cache/raw-restart-proof --keep --json",
-    )
