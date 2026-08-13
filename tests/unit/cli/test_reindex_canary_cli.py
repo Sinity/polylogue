@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -42,7 +42,10 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import clone_archive_template, freeze_archive_template
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+
+_DEFAULT_CANARY_TEMPLATE: Path | None = None
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +85,54 @@ def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.Monke
 
 def _schema_receipt_path(root: Path) -> Path:
     return root.parent / f"{root.name}-schema-inference-gate-receipt.json"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _default_canary_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[None]:
+    """Build the default real archive once, then clone it for each canary test."""
+    global _DEFAULT_CANARY_TEMPLATE
+    template = tmp_path_factory.mktemp("reindex-canary-template") / "archive"
+    _seed_isolated_canary(template)
+    freeze_archive_template(template)
+    _DEFAULT_CANARY_TEMPLATE = template
+    try:
+        yield
+    finally:
+        _DEFAULT_CANARY_TEMPLATE = None
+
+
+def _rebase_canary_template(template: Path, root: Path) -> None:
+    """Point copied generation metadata and links at this test's private clone."""
+    for path in root.rglob("*"):
+        if not path.is_symlink():
+            continue
+        target = path.readlink()
+        if target.is_absolute() and target.is_relative_to(template):
+            target_is_directory = target.is_dir()
+            path.unlink()
+            path.symlink_to(root / target.relative_to(template), target_is_directory=target_is_directory)
+    pointer = root / ".index-active-pointer"
+    if pointer.is_file():
+        target = Path(pointer.read_text(encoding="utf-8").strip())
+        if target.is_absolute() and target.is_relative_to(template):
+            pointer.write_text(str(root / target.relative_to(template)), encoding="utf-8")
+    for metadata_path in root.glob(".index-generations/gen-*/generation.json"):
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload["archive_root"] = str(root.resolve())
+        index_path = Path(str(payload["index_path"]))
+        if index_path.is_relative_to(template):
+            payload["index_path"] = str(root / index_path.relative_to(template))
+        metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _clone_default_canary_template(root: Path) -> bool:
+    template = _DEFAULT_CANARY_TEMPLATE
+    if template is None:
+        return False
+    clone_archive_template(template, root)
+    _rebase_canary_template(template, root)
+    write_valid_rebuild_receipt(root, _schema_receipt_path(root))
+    return True
 
 
 class _CanaryCliRunner(_ClickCliRunner):
@@ -191,6 +242,8 @@ def _seed_isolated_canary(
     session_names: tuple[str, ...] = ("isolated-canary",),
     membership_names: tuple[str, ...] = (),
 ) -> None:
+    if session_names == ("isolated-canary",) and not membership_names and _clone_default_canary_template(root):
+        return
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for acquired_at_ms, name in enumerate(session_names, start=1):

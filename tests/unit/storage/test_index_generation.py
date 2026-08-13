@@ -6,6 +6,7 @@ import logging
 import multiprocessing
 import os
 import sqlite3
+from collections.abc import Generator
 from dataclasses import replace
 from pathlib import Path
 
@@ -28,6 +29,24 @@ _DEFINITELY_DEAD_PID = 2**31 - 1
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import clone_archive_template, freeze_archive_template
+
+_ARCHIVE_TEMPLATE: Path | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _archive_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[None]:
+    """Build the deterministic five-tier fixture once, then clone per test."""
+    global _ARCHIVE_TEMPLATE
+    template = tmp_path_factory.mktemp("index-generation-template") / "archive"
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS, ArchiveTier.INDEX):
+        initialize_archive_database(template / f"{tier.value}.db", tier)
+    freeze_archive_template(template)
+    _ARCHIVE_TEMPLATE = template
+    try:
+        yield
+    finally:
+        _ARCHIVE_TEMPLATE = None
 
 
 def _hold_lease(
@@ -39,8 +58,8 @@ def _hold_lease(
 
 
 def _archive(root: Path) -> None:
-    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS, ArchiveTier.INDEX):
-        initialize_archive_database(root / f"{tier.value}.db", tier)
+    assert _ARCHIVE_TEMPLATE is not None
+    clone_archive_template(_ARCHIVE_TEMPLATE, root)
 
 
 def test_rebuild_lease_excludes_competing_process(tmp_path: Path) -> None:
