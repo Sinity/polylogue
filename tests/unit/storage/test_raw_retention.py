@@ -789,8 +789,10 @@ def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index,
-                blob_hash, blob_size, acquired_at_ms, parse_error
-            ) VALUES (?, ?, ?, ?, 0, ?, 1, 1, ?)
+                blob_hash, blob_size, acquired_at_ms, parse_error,
+                validated_at_ms, validation_status, validation_error,
+                validation_drift_count, validation_mode
+            ) VALUES (?, ?, ?, ?, 0, ?, 1, 1, ?, 1, 'failed', ?, 3, 'strict')
             """,
             (
                 "raw-terminal-reparsed",
@@ -799,6 +801,7 @@ def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_
                 str(source_path),
                 bytes(32),
                 "ValueError: unsupported export shape",
+                "schema validation failed",
             ),
         )
         conn.execute(
@@ -836,7 +839,12 @@ def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         state = conn.execute(
-            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?",
+            """
+            SELECT parsed_at_ms, parse_error, validated_at_ms, validation_status,
+                   validation_error, validation_drift_count, validation_mode
+            FROM raw_sessions
+            WHERE raw_id = ?
+            """,
             ("raw-terminal-reparsed",),
         ).fetchone()
         stale_artifact = conn.execute(
@@ -849,7 +857,17 @@ def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_
             ops_db_path=tmp_path / "ops.db",
         )
 
-    assert state is not None and state[0] is not None and state[1] is None
+    assert state is not None
+    parsed_at_ms, parse_error, validated_at_ms, validation_status, validation_error, drift_count, mode = state
+    assert parsed_at_ms is not None
+    assert (parse_error, validated_at_ms, validation_status, validation_error, drift_count, mode) == (
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+    )
     assert stale_artifact == ("terminal_unsupported_shape",)
     assert after.cursor_ahead_status == "unknown"
     assert after.cursor_authority_gap_count == 1

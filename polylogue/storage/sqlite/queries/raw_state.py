@@ -95,6 +95,10 @@ async def mark_raw_parsed(
             parsed_at=datetime.now(timezone.utc).isoformat(),
             parse_error=None,
             payload_provider=provider_token,
+            validation_status=None,
+            validation_error=None,
+            validation_drift_count=0,
+            validation_mode=None,
         )
     else:
         state = RawSessionStateUpdate(

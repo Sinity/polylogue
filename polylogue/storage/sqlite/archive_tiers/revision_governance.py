@@ -3490,6 +3490,13 @@ def _raw_parse_success_state(provider: Provider) -> RawSessionStateUpdate:
         parsed_at=datetime.now(UTC).isoformat(),
         parse_error=None,
         payload_provider=provider,
+        # Validation describes the previous parse result.  Once a later parse
+        # succeeds, retaining either verdict would make stale validation
+        # evidence authoritative for different material.
+        validation_status=None,
+        validation_error=None,
+        validation_drift_count=0,
+        validation_mode=None,
     )
 
 
