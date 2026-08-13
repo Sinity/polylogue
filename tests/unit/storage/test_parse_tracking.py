@@ -194,6 +194,48 @@ class TestUpdateRawState:
         assert rec.validation_error is not None
         assert len(rec.validation_error) == 2000
 
+    async def test_failed_validation_after_parse_advances_past_identical_or_backward_clock(
+        self, backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed revalidation cannot tie or precede the parse it supersedes."""
+        from polylogue.storage.sqlite.queries import raw_state as raw_state_queries
+
+        await self._save_raw(backend, raw_id="parse-then-failed-validation")
+        await backend.update_raw_state(
+            "parse-then-failed-validation",
+            state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:01Z"),
+        )
+        monkeypatch.setattr(raw_state_queries, "_now_ms", lambda: 999)
+        await backend.mark_raw_validated("parse-then-failed-validation", status="failed", error="rejected")
+
+        with sqlite3.connect(backend._source_db_path) as conn:
+            row = conn.execute(
+                "SELECT parsed_at_ms, validated_at_ms, validation_status FROM raw_sessions WHERE raw_id = ?",
+                ("parse-then-failed-validation",),
+            ).fetchone()
+        assert row == (1000, 1001, "failed")
+
+    async def test_successful_parse_after_validation_advances_past_identical_or_backward_clock(
+        self, backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A later parse wins even if its injected wall clock is older."""
+        from polylogue.storage.sqlite.queries import raw_state as raw_state_queries
+
+        await self._save_raw(backend, raw_id="validation-then-parse")
+        monkeypatch.setattr(raw_state_queries, "_now_ms", lambda: 1000)
+        await backend.mark_raw_validated("validation-then-parse", status="failed", error="rejected")
+        await backend.update_raw_state(
+            "validation-then-parse",
+            state=RawSessionStateUpdate(parsed_at="1970-01-01T00:00:00.999Z", parse_error=None),
+        )
+
+        with sqlite3.connect(backend._source_db_path) as conn:
+            row = conn.execute(
+                "SELECT parsed_at_ms, validated_at_ms, validation_status FROM raw_sessions WHERE raw_id = ?",
+                ("validation-then-parse",),
+            ).fetchone()
+        assert row == (1001, 1000, "failed")
+
 
 class TestMarkRawValidated:
     """Tests for mark_raw_validated backend method."""

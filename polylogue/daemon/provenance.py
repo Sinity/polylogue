@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from polylogue.core.raw_state import raw_state_authority
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -62,8 +63,10 @@ class ProvenanceRow:
     acquired_at: str | None
     file_mtime: str | None
     parsed_at: str | None
+    parsed_at_ms: int | None
     parse_error: str | None
     validated_at: str | None
+    validated_at_ms: int | None
     validation_status: str | None
     validation_error: str | None
 
@@ -185,8 +188,10 @@ def _fetch_archive_provenance_row(
         acquired_at=_iso_from_epoch_ms(row["acquired_at_ms"]),
         file_mtime=_iso_from_epoch_ms(row["file_mtime_ms"]),
         parsed_at=_iso_from_epoch_ms(row["parsed_at_ms"]),
+        parsed_at_ms=(int(row["parsed_at_ms"]) if row["parsed_at_ms"] is not None else None),
         parse_error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
         validated_at=_iso_from_epoch_ms(row["validated_at_ms"]),
+        validated_at_ms=(int(row["validated_at_ms"]) if row["validated_at_ms"] is not None else None),
         validation_status=(str(row["validation_status"]) if row["validation_status"] is not None else None),
         validation_error=(str(row["validation_error"]) if row["validation_error"] is not None else None),
     )
@@ -253,8 +258,10 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
         acquired_at=(str(row["acquired_at"]) if row["acquired_at"] is not None else None),
         file_mtime=(str(row["file_mtime"]) if row["file_mtime"] is not None else None),
         parsed_at=(str(row["parsed_at"]) if row["parsed_at"] is not None else None),
+        parsed_at_ms=None,
         parse_error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
         validated_at=(str(row["validated_at"]) if row["validated_at"] is not None else None),
+        validated_at_ms=None,
         validation_status=(str(row["validation_status"]) if row["validation_status"] is not None else None),
         validation_error=(str(row["validation_error"]) if row["validation_error"] is not None else None),
     )
@@ -272,10 +279,12 @@ def _quarantine_state(row: ProvenanceRow) -> tuple[bool, str | None]:
         return True, "no_raw_artifact"
     if row.parse_error:
         return True, "parse_error"
-    if row.validation_status == "failed" and (
-        row.parsed_at is None or row.validated_at is None or row.validated_at > row.parsed_at
-    ):
-        return True, "validation_failed"
+    if row.validation_status == "failed":
+        validation_authority = raw_state_authority(row.parsed_at_ms, row.validated_at_ms)
+        if validation_authority == "validation":
+            return True, "validation_failed"
+        if validation_authority == "ambiguous":
+            return True, "validation_parse_order_ambiguous"
     return False, None
 
 

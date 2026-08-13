@@ -146,6 +146,7 @@ from polylogue.sources.source_acquisition_components import (
     _DETECTION_PREFIX_SIZE,
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
+    stream_preserved_zip_entry_raw_data,
 )
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (
@@ -1904,12 +1905,20 @@ class LiveBatchProcessor:
                 )
             if path.suffix.lower() == ".zip":
                 file_mtime = datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat()
-                zip_records, zip_bytes = self._extract_zip_member_records(
-                    path,
-                    blob_store=blob_store,
-                    fallback_provider=fallback_provider,
-                    file_mtime=file_mtime,
-                )
+                if source_only:
+                    zip_records, zip_bytes = self._extract_source_only_zip_member_records(
+                        path,
+                        blob_store=blob_store,
+                        fallback_provider=fallback_provider,
+                        file_mtime=file_mtime,
+                    )
+                else:
+                    zip_records, zip_bytes = self._extract_zip_member_records(
+                        path,
+                        blob_store=blob_store,
+                        fallback_provider=fallback_provider,
+                        file_mtime=file_mtime,
+                    )
                 if not zip_records:
                     self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
                     continue
@@ -1962,7 +1971,9 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif path.name in _CODEX_STATE_DB_NAMES and codex_state.is_in_scope_codex_sqlite_path(path):
+            elif path.name in _CODEX_STATE_DB_NAMES and (
+                source_only or codex_state.is_in_scope_codex_sqlite_path(path)
+            ):
                 # polylogue-0jf4: acquire live Codex SQLite state the same
                 # way Hermes acquires its state.db -- a consistent
                 # backup/snapshot (never a raw read of a possibly-live-locked
@@ -1970,6 +1981,9 @@ class LiveBatchProcessor:
                 # gate keeps this cheap for the vast majority of ~/.codex
                 # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
                 # then re-confirms the table shape before trusting the name.
+                # Source-only acquisition intentionally skips that structural
+                # decode: a mid-write or future-schema state snapshot is still
+                # durable authority to replay once the derived tier returns.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -3338,6 +3352,73 @@ class LiveBatchProcessor:
                             )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+        except (zipfile.BadZipFile, OSError) as exc:
+            logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
+            return [], 0
+        return records, total_bytes
+
+    def _extract_source_only_zip_member_records(
+        self,
+        path: Path,
+        *,
+        blob_store: BlobStore,
+        fallback_provider: Provider,
+        file_mtime: str,
+    ) -> tuple[list[tuple[str, RawSessionRecord]], int]:
+        """Acquire admitted ZIP members without interpreting their bytes.
+
+        A derived-tier outage does not authorize the source tier to infer a
+        provider, parse JSON, or classify a member.  It does still enforce the
+        ordinary ZIP admission policy before streaming every retained member
+        under its exact ``<zip>:<member>`` coordinate.
+        """
+        source = Source(name=fallback_provider.value, path=path.parent)
+        acquired_at = datetime.now(UTC).isoformat()
+        records: list[tuple[str, RawSessionRecord]] = []
+        total_bytes = 0
+        validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                for source_index, info in enumerate(validator.filter_entries(zf.infolist())):
+                    if info.file_size == 0:
+                        continue
+                    try:
+                        raw_data = stream_preserved_zip_entry_raw_data(
+                            zf,
+                            ZipEntryReadContext(
+                                source=source,
+                                zip_path=path,
+                                entry=info,
+                                file_mtime=file_mtime,
+                                provider_hint=fallback_provider,
+                                blob_store=blob_store,
+                            ),
+                            provider_hint=fallback_provider,
+                            source_index=source_index,
+                        )
+                    except ZipBombError as exc:
+                        logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        continue
+                    if raw_data.blob_hash is None:
+                        continue
+                    total_bytes += raw_data.blob_size or 0
+                    records.append(
+                        (
+                            raw_data.blob_hash,
+                            RawSessionRecord(
+                                raw_id=raw_data.blob_hash,
+                                payload_provider=fallback_provider,
+                                capture_mode=fallback_provider,
+                                source_name=fallback_provider.value,
+                                source_path=raw_data.source_path,
+                                source_index=source_index,
+                                blob_size=raw_data.blob_size or 0,
+                                blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+                                acquired_at=acquired_at,
+                                file_mtime=raw_data.file_mtime,
+                            ),
+                        )
+                    )
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0

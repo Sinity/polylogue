@@ -1320,7 +1320,7 @@ def _drain_raw_materialization_once(
                 max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
             )
         finally:
-            _close_raw_materialization_fts(index_db)
+            _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
     _emit_raw_materialization_pass(result)
     frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
@@ -1389,7 +1389,7 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
                 raw_artifact_id=raw_artifact_id,
             )
         finally:
-            _close_raw_materialization_fts(index_db)
+            _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
     _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)
@@ -1608,7 +1608,7 @@ def _emit_raw_materialization_pass(result: Any) -> None:
     )
 
 
-def _close_raw_materialization_fts(index_db: Path) -> None:
+def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None:
     """Return message search to ready or leave explicit retryable debt.
 
     Large raw replay batches deliberately suspend FTS triggers and may skip
@@ -1622,7 +1622,9 @@ def _close_raw_materialization_fts(index_db: Path) -> None:
     try:
         needs_repair = _raw_materialization_fts_needs_repair(index_db)
     except Exception as exc:
-        _record_raw_materialization_fts_debt(index_db, f"FTS readiness probe failed after raw materialization: {exc}")
+        _record_raw_materialization_fts_debt(
+            index_db, ops_db_path=ops_db_path, error=f"FTS readiness probe failed after raw materialization: {exc}"
+        )
         return
     if not needs_repair:
         return
@@ -1634,14 +1636,15 @@ def _close_raw_materialization_fts(index_db: Path) -> None:
         # this closure retryable instead of masking the initiating failure.
         _record_raw_materialization_fts_debt(
             index_db,
-            f"FTS repair failed after raw materialization: {type(exc).__name__}: {exc}",
+            ops_db_path=ops_db_path,
+            error=f"FTS repair failed after raw materialization: {type(exc).__name__}: {exc}",
         )
         return
     if repaired:
         try:
             from polylogue.sources.live.cursor import CursorStore
 
-            CursorStore(index_db).clear_convergence_debt(
+            CursorStore(index_db, ops_db_path=ops_db_path).clear_convergence_debt(
                 subject_type="fts_surface",
                 subject_id="messages_fts",
                 stage="fts",
@@ -1651,15 +1654,16 @@ def _close_raw_materialization_fts(index_db: Path) -> None:
         return
     _record_raw_materialization_fts_debt(
         index_db,
-        "raw materialization exited without restoring message FTS readiness",
+        ops_db_path=ops_db_path,
+        error="raw materialization exited without restoring message FTS readiness",
     )
 
 
-def _record_raw_materialization_fts_debt(index_db: Path, error: str) -> None:
+def _record_raw_materialization_fts_debt(index_db: Path, *, ops_db_path: Path, error: str) -> None:
     from polylogue.sources.live.cursor import CursorStore
 
     try:
-        CursorStore(index_db).record_convergence_debt(
+        CursorStore(index_db, ops_db_path=ops_db_path).record_convergence_debt(
             stage="fts",
             subject_type="fts_surface",
             subject_id="messages_fts",

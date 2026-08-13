@@ -328,6 +328,35 @@ class TestLoadSamplesFromDb:
             }
         ]
 
+    def test_sampling_records_equal_raw_transition_timestamps_as_indeterminate(self, tmp_path: Path) -> None:
+        db = _archive_index_db(tmp_path)
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="claude-ai-export",
+            source_path="/tmp/equal-time.json",
+            raw_content=b'{"uuid":"equal-time","chat_messages":[]}',
+        )
+        with sqlite3.connect(db.with_name("source.db")) as conn:
+            cursor = conn.execute(
+                "UPDATE raw_sessions SET parsed_at_ms = 1, validated_at_ms = 1, validation_status = 'failed' WHERE raw_id = ?",
+                (raw_id,),
+            )
+            assert cursor.rowcount == 1
+            conn.commit()
+        outcomes: list[dict[str, object]] = []
+
+        result = list(
+            iter_schema_units(
+                "claude-ai",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert result == []
+        assert outcomes[0]["reason"] == "source_validation_parse_order_ambiguous"
+
     def test_record_provider_sampling_streams_without_full_envelope(
         self,
         tmp_path: Path,

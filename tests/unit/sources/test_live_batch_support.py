@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import sqlite3
+import zipfile
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -449,6 +450,88 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         ).fetchone()
     assert raw_states == [(None, None), (None, None), (None, None)]
     assert artifact_rows == (0,)
+
+
+def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production full-ingest ZIP route must retain bytes before decode."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    bundle = root / "degraded.zip"
+    member_names = ("sessions/one.jsonl", "sessions/two.json")
+    with zipfile.ZipFile(bundle, "w") as zf:
+        zf.writestr(member_names[0], b'{"opaque":"first"}\n')
+        zf.writestr(member_names[1], b'{"opaque":"second"}')
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    for target in (
+        "polylogue.sources.live.batch.iter_zip_entry_raw_data",
+        "polylogue.sources.live.batch.LiveBatchProcessor._sniff_zip_provider",
+        "polylogue.sources.live.batch._detect_provider_from_raw_bytes",
+        "polylogue.sources.source_acquisition_components.iter_entry_payloads",
+        "polylogue.sources.source_acquisition_components.classify_artifact",
+    ):
+        monkeypatch.setattr(
+            target, lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not decode ZIP"))
+        )
+    try:
+        result = processor._ingest_full_paths_sync([bundle], source_name="claude-code")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [bundle]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT source_path, source_index, parsed_at_ms, parse_error FROM raw_sessions ORDER BY source_index"
+        ).fetchall()
+    assert rows == [
+        (f"{bundle}:{member_names[0]}", 0, None, None),
+        (f"{bundle}:{member_names[1]}", 1, None, None),
+    ]
+
+
+def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shape_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A degraded source tier retains a valid but future-shaped Codex state DB."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "codex"
+    root.mkdir()
+    state_db = root / "state_5.sqlite"
+    _write_plain_sqlite_db(state_db)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    monkeypatch.setattr(
+        "polylogue.sources.parsers.codex_state.is_in_scope_codex_sqlite_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect source-only state schema")),
+    )
+    try:
+        result = processor._ingest_full_paths_sync([state_db], source_name="codex")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [state_db]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT source_path, parsed_at_ms FROM raw_sessions").fetchall() == [(str(state_db), None)]
 
 
 def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(

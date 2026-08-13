@@ -3966,7 +3966,10 @@ def _raw_materialization_candidate_ids(
                 AND (
                   r.parsed_at_ms IS NULL
                   OR r.validated_at_ms IS NULL
-                  OR r.validated_at_ms > r.parsed_at_ms
+                  -- Equal legacy timestamps are indeterminate.  Do not
+                  -- replay and overwrite either authority until a new,
+                  -- monotonic transition resolves the ambiguity.
+                  OR r.validated_at_ms >= r.parsed_at_ms
                 )
               )
               AND (
@@ -4004,7 +4007,7 @@ def _raw_materialization_candidate_ids(
                       AND (
                         r.parsed_at_ms IS NULL
                         OR r.validated_at_ms IS NULL
-                        OR r.validated_at_ms > r.parsed_at_ms
+                        OR r.validated_at_ms >= r.parsed_at_ms
                       )
                     )
                   )

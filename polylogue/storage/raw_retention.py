@@ -1710,7 +1710,10 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                                   AND (
                                       evidence_raw.parsed_at_ms IS NULL
                                       OR evidence_raw.validated_at_ms IS NULL
-                                      OR evidence_raw.validated_at_ms > evidence_raw.parsed_at_ms
+                                      -- A legacy tie has no proven winner;
+                                      -- retain it rather than deleting raw
+                                      -- authority based on an arbitrary side.
+                                      OR evidence_raw.validated_at_ms >= evidence_raw.parsed_at_ms
                                   )
                               )
                           )

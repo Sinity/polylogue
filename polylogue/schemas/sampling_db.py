@@ -22,6 +22,7 @@ from polylogue.core.provider_identity import (
     canonical_runtime_provider,
     canonical_schema_provider,
 )
+from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.paths import db_path as index_db_path
@@ -372,14 +373,17 @@ def _iter_schema_units_from_db(
                     )
                     continue
 
-                if row.validation_status == "failed" and (
-                    row.parsed_at_ms is None or row.validated_at_ms is None or row.validated_at_ms > row.parsed_at_ms
-                ):
+                validation_authority = raw_state_authority(row.parsed_at_ms, row.validated_at_ms)
+                if row.validation_status == "failed" and validation_authority != "parse":
                     _record_terminal(
                         terminal_recorder,
                         row,
                         status="quarantined",
-                        reason="source_validation_failed",
+                        reason=(
+                            "source_validation_failed"
+                            if validation_authority == "validation"
+                            else "source_validation_parse_order_ambiguous"
+                        ),
                     )
                     continue
 

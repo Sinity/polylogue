@@ -958,8 +958,11 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
 
 
-def test_raw_materialization_refuses_validation_failure_newer_than_parse(tmp_path: Path) -> None:
-    """A later validation failure remains current authority after an earlier parse."""
+@pytest.mark.parametrize("validation_offset", [0, 1])
+def test_raw_materialization_refuses_non_parse_authoritative_validation_failure(
+    tmp_path: Path, validation_offset: int
+) -> None:
+    """A newer failure or legacy tie must not replay and overwrite raw authority."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -989,7 +992,7 @@ def test_raw_materialization_refuses_validation_failure_newer_than_parse(tmp_pat
             SET validation_status = 'failed', validation_error = ?, validated_at_ms = ?
             WHERE raw_id = ?
             """,
-            ("strict validation rejected the later observation", parsed_at_ms + 1, raw_id),
+            ("strict validation rejected the later observation", parsed_at_ms + validation_offset, raw_id),
         )
         conn.commit()
 
