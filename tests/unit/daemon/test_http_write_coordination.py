@@ -301,7 +301,7 @@ def test_cli_delete_interruption_consumes_authorization_without_deleting(tmp_pat
     token = authorize_cli_delete(archive_root, preview.preview_ref, principal)
 
     with patch.object(SessionDeleteActuator, "apply", side_effect=RuntimeError("interrupted before apply")):
-        with pytest.raises(DeleteAuthorizationError, match="authorization_not_active"):
+        with pytest.raises(RuntimeError, match="interrupted before apply"):
             consume_cli_delete(archive_root, token, principal)
     _assert_session_exists(archive_root, session_id, expected=True)
 
@@ -312,6 +312,40 @@ def test_cli_delete_interruption_consumes_authorization_without_deleting(tmp_pat
             "SELECT state, unknown_reason FROM operation_attempts ORDER BY started_at_ms DESC LIMIT 1"
         ).fetchone()
     assert state == ("unknown", "actuator exception after durable intent")
+
+
+def test_cli_delete_preserves_audit_finalization_failure_after_effect(tmp_path: Path) -> None:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.delete_authorization import authorize_cli_delete, consume_cli_delete, prepare_cli_delete
+    from polylogue.operations.mutation_transaction import AuditFinalizationError, MutationPrincipal
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
+    principal = MutationPrincipal(
+        "daemon:bearer:audit-failure",
+        frozenset({"archive.delete_session"}),
+        "cli",
+        "daemon-authenticated",
+    )
+    preview = prepare_cli_delete(archive_root, (session_id,), principal)
+    token = authorize_cli_delete(archive_root, preview.preview_ref, principal)
+
+    with patch.object(AuditRepository, "finalize_attempt", side_effect=RuntimeError("audit unavailable")):
+        with pytest.raises(AuditFinalizationError):
+            consume_cli_delete(archive_root, token, principal)
+
+    _assert_session_exists(archive_root, session_id, expected=False)
+
+
+def test_no_auth_cli_principal_ignores_attacker_selected_bearer_text() -> None:
+    handler = _handler(["api", "cli", "delete", "prepare"], [])
+    handler.headers = {"Authorization": "Bearer attacker-selected"}  # type: ignore[assignment]
+
+    principal = handler._cli_delete_principal()
+
+    assert principal.actor_ref == "daemon:unauthenticated-loopback"
+    assert principal.role_label == "daemon-loopback-no-auth"
 
 
 def test_user_post_and_delete_hold_named_gates_around_dispatch() -> None:

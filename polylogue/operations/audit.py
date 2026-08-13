@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 from polylogue.operations.mutation_transaction import (
+    AuthorizationMismatchError,
     MutationAuthorization,
     MutationPlan,
     MutationPreview,
     MutationPrincipal,
     MutationReceipt,
     MutationTarget,
+    TokenConsumedError,
     TokenExpiredError,
     validate_mutation_plan_integrity,
 )
@@ -808,6 +810,14 @@ class AuditRepository:
                 return None
             conn.execute(
                 """
+                UPDATE operation_authorizations
+                SET state = 'revoked'
+                WHERE preview_id = ? AND state = 'active'
+                """,
+                (preview.preview_ref,),
+            )
+            conn.execute(
+                """
                 INSERT INTO operation_authorizations(
                     authorization_id, preview_id, actor_ref, surface, role_label,
                     confirmation_strength, token_sha256, state, issued_at_ms,
@@ -832,6 +842,31 @@ class AuditRepository:
                     (authorization_id, capability),
                 )
         return authorization_id
+
+    def mark_preview_stale(self, preview: MutationPreview) -> None:
+        """Revoke every live authorization when a prepared plan no longer matches."""
+
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT plan_hash FROM operation_previews WHERE preview_id = ?",
+                (preview.preview_ref,),
+            ).fetchone()
+            if row is None or str(row[0]) != preview.plan.plan_hash:
+                raise ValueError("stale preview does not match its durable authority")
+            conn.execute(
+                """
+                UPDATE operation_authorizations
+                SET state = 'revoked'
+                WHERE preview_id = ? AND state = 'active'
+                """,
+                (preview.preview_ref,),
+            )
+            conn.execute(
+                "UPDATE operation_previews SET state = 'stale' WHERE preview_id = ? AND state = 'prepared'",
+                (preview.preview_ref,),
+            )
+            conn.commit()
 
     def consume_authorization_and_start(self, preview: MutationPreview, authorization: MutationAuthorization) -> str:
         """Consume a token and create run, targets, and initial attempt atomically."""
@@ -882,9 +917,9 @@ class AuditRepository:
                 (token_digest.value,),
             ).fetchone()
             if row is None or str(row[1]) != preview.preview_ref:
-                raise ValueError("authorization token does not match preview")
+                raise AuthorizationMismatchError("authorization token does not match preview")
             if str(row[6]) != "active":
-                raise RuntimeError("authorization token is already consumed or revoked")
+                raise TokenConsumedError("authorization token is already consumed or revoked")
             if int(row[7]) <= now_ms:
                 conn.execute(
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
@@ -908,9 +943,9 @@ class AuditRepository:
                 or (durable_capabilities and authorization.capability not in durable_capabilities)
                 or (not durable_capabilities and authorization.capability != "")
             ):
-                raise ValueError("authorization principal mismatch")
+                raise AuthorizationMismatchError("authorization principal mismatch")
             if str(row[8]) != preview.plan.plan_hash or authorization.plan_hash != preview.plan.plan_hash:
-                raise ValueError("authorization plan mismatch")
+                raise AuthorizationMismatchError("authorization plan mismatch")
             conn.execute(
                 "UPDATE operation_authorizations SET state = 'consumed', consumed_at_ms = ? WHERE authorization_id = ?",
                 (now_ms, str(row[0])),

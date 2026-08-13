@@ -32,6 +32,7 @@ from polylogue.operations.mutation_transaction import (
     PlanStaleError,
     TargetAuthorityPolicy,
     TargetDurability,
+    TokenConsumedError,
     TokenExpiredError,
     build_plan,
 )
@@ -1127,6 +1128,47 @@ def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path
     with pytest.raises(PlanStaleError):
         executor.execute_bound(_binding(actuator), preview, authorization, object())
     assert actuator.calls == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT state FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+        ).fetchone() == ("stale",)
+        assert conn.execute(
+            "SELECT state FROM operation_authorizations WHERE authorization_id = ?",
+            (authorization.authorization_id,),
+        ).fetchone() == ("revoked",)
+    actuator.changed = False
+    with pytest.raises(TokenConsumedError):
+        executor.execute_bound(_binding(actuator), preview, authorization, object())
+
+
+def test_new_authorization_revokes_every_older_token_for_preview(tmp_path: Path) -> None:
+    audit = AuditRepository(tmp_path / "audit.db")
+    tokens = iter(("first-token", "second-token"))
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: next(tokens))
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+
+    first = executor.authorize_bound(_binding(actuator), preview, _principal())
+    second = executor.authorize_bound(_binding(actuator), preview, _principal())
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        states = conn.execute(
+            "SELECT authorization_id, state FROM operation_authorizations WHERE preview_id = ? ORDER BY issued_at_ms, authorization_id",
+            (preview.preview_ref,),
+        ).fetchall()
+    assert {state for _authorization_id, state in states} == {"active", "revoked"}
+    assert sum(state == "active" for _authorization_id, state in states) == 1
+    with pytest.raises(TokenConsumedError):
+        executor.execute_bound(_binding(actuator), preview, first, object())
+    receipt = executor.execute_bound(_binding(actuator), preview, second, object())
+    assert receipt.status == "applied"
 
 
 def test_crash_after_intent_is_queryable_unknown_and_never_completed(tmp_path: Path) -> None:

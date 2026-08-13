@@ -1433,15 +1433,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.operations.mutation_transaction import MutationPrincipal
 
         auth_header = self.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            actor_ref = f"daemon:bearer:{hashlib.sha256(auth_header[7:].encode()).hexdigest()}"
-        else:
+        if not self._auth_token:
             actor_ref = "daemon:unauthenticated-loopback"
+            role_label = "daemon-loopback-no-auth"
+        elif auth_header.startswith("Bearer "):
+            actor_ref = f"daemon:bearer:{hashlib.sha256(auth_header[7:].encode()).hexdigest()}"
+            role_label = "daemon-authenticated"
+        else:
+            raise RuntimeError("authenticated CLI mutation request has no bearer principal")
         return MutationPrincipal(
             actor_ref=actor_ref,
             capabilities=frozenset({"archive.delete_session"}),
             surface="cli",
-            role_label="daemon-authenticated",
+            role_label=role_label,
         )
 
     def _check_host_admission(self, *, credential_request: bool = False) -> bool:

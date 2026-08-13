@@ -753,6 +753,8 @@ class OperationExecutor:
             expires_at_ms=preview.plan.expires_at_ms,
         )
         if fresh_plan.plan_hash != preview.plan.plan_hash:
+            if self._audit is not None:
+                self._audit.mark_preview_stale(preview)
             raise PlanStaleError(
                 f"{binding.spec.name!r} preview {preview.plan.plan_hash!r} is stale; "
                 f"live state now resolves to {fresh_plan.plan_hash!r}"

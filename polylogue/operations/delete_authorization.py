@@ -14,6 +14,7 @@ from polylogue.operations.audit import AuditRepository, token_sha256
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
 from polylogue.operations.mutation_transaction import (
+    AuthorizationMismatchError,
     ConfirmationStrength,
     MutationAuthorization,
     MutationPlan,
@@ -22,6 +23,8 @@ from polylogue.operations.mutation_transaction import (
     MutationReceipt,
     MutationTarget,
     OperationExecutor,
+    TokenConsumedError,
+    TokenExpiredError,
 )
 from polylogue.operations.specs import build_runtime_operation_catalog
 from polylogue.storage.archive_identity import ArchiveIdentity
@@ -158,9 +161,7 @@ def consume_cli_delete(
                 authorization,
                 SessionDeleteArgs(archive=archive, session_ids=session_ids),
             )
-    except DeleteAuthorizationError:
-        raise
-    except RuntimeError as exc:
+    except (AuthorizationMismatchError, TokenConsumedError, TokenExpiredError) as exc:
         raise DeleteAuthorizationError("authorization_not_active") from exc
 
 
