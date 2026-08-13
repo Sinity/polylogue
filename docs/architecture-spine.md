@@ -55,7 +55,8 @@ Load-bearing policy files are parsed and enforced by the gate that owns their se
   durable-tier change (loses irreplaceable `user.db` assertions); and full
   Alembic-style forward/reverse upgrade chains for derived tiers (unnecessary —
   they rebuild). The `devtools lab policy schema-versioning` lint enforces the
-  boundary: numbered durable migrations allowed, derived-tier upgrade helpers forbidden.
+  boundary through numbered durable migration slots, declared derived lifecycle
+  deltas, and clone-safe SQL shapes rather than helper-name pattern matching.
 - **Constraint**: Archive SQLite file set, WAL mode. Durable-tier migration
   requires a backup manifest; derived-tier rebuild is operator-triggered on reject.
 

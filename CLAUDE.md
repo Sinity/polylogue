@@ -354,8 +354,12 @@ Don't treat CI as the first verification pass — anticipate failures locally.
 
 See [Schema regimes](#schema-regimes-durability-keyed). Durable tiers → numbered
 additive migration + backup manifest; derived tiers → edit canonical DDL +
-rebuild plan (`polylogue ops maintenance rebuild-index`), never an upgrade
-helper (`devtools lab policy schema-versioning` rejects them).
+an explicitly declared lifecycle delta. Non-semantic deltas may use the
+clone-validated `index_fast_forward_plan()` route; semantic deltas require
+`polylogue ops maintenance rebuild-index`. Ad hoc open-path upgrade code is not
+an accepted third route. `devtools lab policy schema-versioning` validates the
+declarations, durable migration slots, and same-version benign-DDL shapes; it
+does not infer architecture from helper names.
 
 ### Multi-lane / merge-train tooling — use these, don't reinvent the discipline by hand
 

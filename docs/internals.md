@@ -193,7 +193,10 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   batched before a live rebuild so the active archive is not reset repeatedly.
 - `devtools lab policy schema-versioning` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
-  derived-tier upgrade helpers remain forbidden. Parser/classifier meaning is
+  derived changes must use declared lifecycle deltas and clone-validated
+  fast-forward plans or rebuild. The gate validates those structured carriers
+  and SQL shapes rather than guessing intent from Python helper names.
+  Parser/classifier meaning is
   governed separately by production fingerprints from
   `polylogue.sources.origin_specs`: declared parser and assembly sources feed an
   origin-scoped parser fingerprint, while shared lowering, replay routing, and
@@ -688,8 +691,10 @@ copy-forward design and explicit operator consent, never a routine migration.
 `storage/sqlite/archive_tiers/bootstrap.py`
 (ingest-cursor runtime fields, cursor-lag rollups). The
 `devtools lab policy schema-versioning` lint enforces the whole boundary:
-numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
-forbidden.
+numbered durable-tier migrations are allowed; derived-tier lifecycle deltas and
+same-version DDL are validated structurally. Ad hoc open-path upgrades are not a
+supported runtime route, but the lint does not pretend to detect them from
+function names.
 
 ## Archive Activation
 

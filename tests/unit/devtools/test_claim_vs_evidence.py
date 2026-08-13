@@ -7,14 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from devtools import claim_vs_evidence
 from devtools.claim_vs_evidence import _economy_rows, build_report
 from polylogue.archive.actions.followup import classify_failed_followup_evidence
+from polylogue.config import Config
 from polylogue.demo import seed_demo_archive
+from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 
 
 def _report_args(
     *,
-    archive_root: Path,
+    archive_root: Path | None,
     out_dir: Path | None,
     limit: int,
     sample_limit: int,
@@ -40,7 +44,7 @@ def _seed_archive(root: Path) -> None:
     root.mkdir(parents=True)
     conn = sqlite3.connect(root / "index.db")
     conn.executescript(
-        """
+        f"""
         PRAGMA user_version=22;
         CREATE TABLE sessions (
             session_id TEXT PRIMARY KEY,
@@ -54,6 +58,8 @@ def _seed_archive(root: Path) -> None:
             message_id TEXT PRIMARY KEY,
             role TEXT NOT NULL,
             position INTEGER NOT NULL,
+            variant_index INTEGER NOT NULL DEFAULT 0,
+            material_origin TEXT NOT NULL DEFAULT 'assistant_authored',
             model_name TEXT
         );
         CREATE TABLE blocks (
@@ -82,25 +88,7 @@ def _seed_archive(root: Path) -> None:
         CREATE INDEX idx_blocks_tool_id ON blocks(tool_id) WHERE tool_id IS NOT NULL;
         CREATE INDEX idx_messages_session_position ON messages(session_id, position);
         CREATE VIEW actions AS
-        SELECT
-            u.session_id,
-            u.message_id,
-            u.block_id AS tool_use_block_id,
-            u.tool_name,
-            u.semantic_type,
-            u.tool_command,
-            u.tool_path,
-            u.tool_input,
-            r.text AS output_text,
-            r.tool_result_is_error AS is_error,
-            r.tool_result_exit_code AS exit_code,
-            r.block_id AS tool_result_block_id
-        FROM blocks u
-        LEFT JOIN blocks r
-            ON r.tool_id = u.tool_id
-           AND r.session_id = u.session_id
-           AND r.block_type = 'tool_result'
-        WHERE u.block_type = 'tool_use';
+        {action_relation_select_sql()};
         CREATE TABLE session_model_usage (
             session_id TEXT NOT NULL,
             model_name TEXT NOT NULL,
@@ -718,3 +706,145 @@ def test_claim_vs_evidence_keeps_same_message_tool_result_identities(tmp_path: P
     }
     assert len(report["evidence"]["member_refs"]) == report["totals"]["failed_outcomes"]
     assert all(ref.startswith("block:") for ref in report["evidence"]["member_refs"])
+
+
+def test_claim_vs_evidence_rank_pairs_reused_tool_ids_without_duplicate_members(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _seed_archive(archive)
+    conn = sqlite3.connect(archive / "index.db")
+    conn.execute(
+        "INSERT INTO sessions(session_id, origin, title, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+        ("s4", "codex-session", "reused tool id", 1, 4),
+    )
+    conn.executemany(
+        "INSERT INTO messages(session_id, message_id, role, position, model_name) VALUES (?, ?, ?, ?, ?)",
+        [
+            ("s4", "dup-tool-1", "tool", 1, "codex"),
+            ("s4", "dup-next-1", "assistant", 2, "codex"),
+            ("s4", "dup-tool-2", "tool", 3, "codex"),
+            ("s4", "dup-next-2", "assistant", 4, "codex"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO blocks(
+            message_id, session_id, position, block_type, text, tool_name, tool_id,
+            tool_input, tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("dup-tool-1", "s4", 0, "tool_use", None, "Read", "reused", '{"path":"a"}', None, None),
+            ("dup-tool-1", "s4", 1, "tool_result", "first failure", None, "reused", None, 1, None),
+            ("dup-next-1", "s4", 0, "text", "Continuing with another path.", None, None, None, None, None),
+            ("dup-tool-2", "s4", 0, "tool_use", None, "Read", "reused", '{"path":"b"}', None, None),
+            ("dup-tool-2", "s4", 1, "tool_result", "second failure", None, "reused", None, 1, None),
+            ("dup-next-2", "s4", 0, "text", "Continuing again.", None, None, None, None, None),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = build_report(_report_args(archive_root=archive, out_dir=None, limit=20, sample_limit=20))
+
+    member_refs = report["evidence"]["member_refs"]
+    assert report["totals"]["failed_outcomes"] == 6
+    assert len(member_refs) == len(set(member_refs)) == 6
+    assert {"block:dup-tool-1:1", "block:dup-tool-2:1"} <= set(member_refs)
+
+
+def test_followup_window_ignores_protocol_user_rows_and_stops_at_authored_human_turn(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _seed_archive(archive)
+    conn = sqlite3.connect(archive / "index.db")
+    conn.execute(
+        "INSERT INTO sessions(session_id, origin, title, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
+        ("s4", "codex-session", "authored boundary", 1, 5),
+    )
+    conn.executemany(
+        """
+        INSERT INTO messages(
+            session_id, message_id, role, position, variant_index, material_origin, model_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("s4", "boundary-tool", "tool", 1, 0, "tool_result", "codex"),
+            ("s4", "protocol-user", "user", 2, 0, "runtime_protocol", None),
+            ("s4", "assistant-v0", "assistant", 3, 0, "assistant_authored", "codex"),
+            ("s4", "assistant-v1", "assistant", 3, 1, "assistant_authored", "codex"),
+            ("s4", "human-turn", "user", 4, 0, "human_authored", None),
+            ("s4", "after-human", "assistant", 5, 0, "assistant_authored", "codex"),
+        ],
+    )
+    conn.executemany(
+        """
+        INSERT INTO blocks(
+            message_id, session_id, position, block_type, text, tool_name, tool_id,
+            tool_input, tool_result_is_error, tool_result_exit_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("boundary-tool", "s4", 0, "tool_use", None, "Read", "boundary", '{"path":"x"}', None, None),
+            ("boundary-tool", "s4", 1, "tool_result", "failed", None, "boundary", None, 1, None),
+            ("assistant-v0", "s4", 0, "text", "I will inspect another path.", None, None, None, None, None),
+            ("assistant-v1", "s4", 0, "text", "Alternative continuation.", None, None, None, None, None),
+            ("after-human", "s4", 0, "text", "The earlier command failed.", None, None, None, None, None),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    report = build_report(_report_args(archive_root=archive, out_dir=None, limit=20, sample_limit=20))
+    samples = [sample for bucket in report["samples_by_classification"].values() for sample in bucket]
+    sample = next(item for item in samples if item["tool_result_tool_id"] == "boundary")
+
+    assert sample["next_message_ref"] == "message:assistant-v0"
+    assert sample["next3_message_refs"] == ["message:assistant-v0", "message:assistant-v1"]
+    assert "message:after-human" not in sample["next3_message_refs"]
+
+
+def test_split_index_root_is_the_report_file_set_authority(tmp_path: Path) -> None:
+    default_root = tmp_path / "default"
+    split_root = tmp_path / "split"
+    _seed_archive(split_root)
+    config = Config(
+        archive_root=default_root,
+        render_root=tmp_path / "render",
+        sources=[],
+        db_path=split_root / "index.db",
+    )
+
+    report = build_report(
+        _report_args(archive_root=None, out_dir=None, limit=10, sample_limit=10),
+        config=config,
+    )
+
+    assert report["archive_root"] == str(split_root)
+    assert report["index_db"] == str(split_root / "index.db")
+
+
+def test_materializing_cli_holds_writer_exclusion_before_report_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    def _build_report_under_lease(_args: argparse.Namespace, *, config: Config | None = None) -> dict[str, object]:
+        del config
+        competing_writer = ActiveWriterLease(archive)
+        with pytest.raises(RebuildLeaseUnavailableError):
+            competing_writer.acquire()
+        return {"archive_root": str(archive), "index_db": str(archive / "index.db"), "totals": {}}
+
+    monkeypatch.setattr(claim_vs_evidence, "build_report", _build_report_under_lease)
+    monkeypatch.setattr(
+        "devtools.claim_vs_evidence_evidence.materialize_claim_vs_evidence_evidence_under_lease",
+        lambda *_args, **_kwargs: {
+            "query_ref": "query:test",
+            "result_set_ref": "result-set:test",
+            "receipt_id": "receipt-test",
+            "finding_assertion_ids": [],
+            "public_claim_written": False,
+        },
+    )
+
+    assert claim_vs_evidence.main(["--archive-root", str(archive), "--materialize-evidence", "--json"]) == 0

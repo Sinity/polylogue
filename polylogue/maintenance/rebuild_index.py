@@ -2553,8 +2553,9 @@ def rebuild_status(
     if lease.stale:
         recovery.append(
             f"lease lock file records dead pid={lease.holder_pid} host={lease.holder_host!r}; "
-            "the next RebuildLease acquisition reclaims it automatically -- no manual action required "
-            "unless a fresh attempt still refuses"
+            "the kernel lock is still authoritative, so a surviving process or inherited file descriptor "
+            "still owns the lease; locate the holder of .index-rebuild.lock (for example with lslocks or "
+            "lsof), stop that holder cleanly, and retry"
         )
     if transaction_payload is not None and transaction_payload.get("status") == "failed":
         recovery.append(

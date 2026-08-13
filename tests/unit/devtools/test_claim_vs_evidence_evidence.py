@@ -291,3 +291,15 @@ def test_materialize_refuses_a_second_writer_before_opening_user_tier(
             materialize_claim_vs_evidence_evidence(report, archive_root=archive_root, now_ms=1_000)
     finally:
         writer.close()
+
+
+def test_materialize_refuses_report_and_durable_tiers_from_different_file_sets(tmp_path: Path) -> None:
+    report_root = tmp_path / "report-archive"
+    wrong_root = tmp_path / "wrong-archive"
+    report_root.mkdir()
+    wrong_root.mkdir()
+    initialize_archive_database(wrong_root / "user.db", ArchiveTier.USER)
+    report = _report(archive_root=report_root, silent=20, acknowledged=15, ambiguous=5, n_min=30)
+
+    with pytest.raises(ValueError, match="does not match materialization root"):
+        materialize_claim_vs_evidence_evidence(report, archive_root=wrong_root, now_ms=1_000)

@@ -15,7 +15,8 @@ from sqlite3 import Connection
 from typing import Any
 
 from polylogue.archive.actions.followup import classify_failed_followup_evidence
-from polylogue.config import Config, get_config
+from polylogue.config import Config, active_archive_root, get_config
+from polylogue.storage.index_generation import RebuildLease
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _WORDLESS_CONTINUATION_TEXT_CHAR_LIMIT = 40
@@ -130,6 +131,11 @@ def _config_with_archive_root(config: Config, archive_root: Path | None) -> Conf
         drive_config=config.drive_config,
         index_config=config.index_config,
     )
+
+
+def _report_config(args: argparse.Namespace) -> Config:
+    """Resolve one file-set authority for both report reads and optional writes."""
+    return _config_with_archive_root(get_config(), args.archive_root)
 
 
 def _user_version(conn: Connection) -> int:
@@ -551,12 +557,12 @@ def _paired_failure_rows(
                     SELECT
                         w.sort_index,
                         w.session_id,
-                        u.message_id,
+                        a.message_id,
                         w.tool_result_message_id,
                         w.tool_result_block_id,
                         w.tool_result_tool_id,
-                        u.tool_name,
-                        u.tool_command,
+                        a.tool_name,
+                        a.tool_command,
                         w.origin,
                         w.is_error,
                         w.exit_code,
@@ -566,17 +572,26 @@ def _paired_failure_rows(
                             SELECT nm.message_id
                             FROM messages AS nm
                             WHERE nm.session_id = w.session_id
-                              AND nm.role = 'assistant'
+                              AND nm.material_origin = 'assistant_authored'
                               AND nm.position > rm.position
-                            ORDER BY nm.position
+                              AND nm.position < COALESCE(
+                                  (
+                                      SELECT MIN(next_human.position)
+                                      FROM messages AS next_human
+                                      WHERE next_human.session_id = w.session_id
+                                        AND next_human.material_origin = 'human_authored'
+                                        AND next_human.position > rm.position
+                                  ),
+                                  9223372036854775807
+                              )
+                            ORDER BY nm.position, nm.variant_index, nm.message_id
                             LIMIT 1
                         ) AS next_message_id
                     FROM wanted AS w
-                    JOIN blocks AS u INDEXED BY idx_blocks_tool_id
-                      ON u.tool_id = w.tool_result_tool_id
-                     AND u.session_id = w.session_id
-                     AND u.block_type = 'tool_use'
-                    JOIN messages AS m ON m.message_id = u.message_id
+                    JOIN actions AS a
+                      ON a.session_id = w.session_id
+                     AND a.tool_result_block_id = w.tool_result_block_id
+                    JOIN messages AS m ON m.message_id = a.message_id
                     JOIN messages AS rm ON rm.message_id = w.tool_result_message_id
                 )
                 SELECT
@@ -630,7 +645,7 @@ def _assistant_window_details(
                         SELECT MIN(next_user.position)
                         FROM messages AS next_user
                         WHERE next_user.session_id = w.session_id
-                          AND next_user.role = 'user'
+                          AND next_user.material_origin = 'human_authored'
                           AND next_user.position > w.result_position
                     ) AS next_user_position
                 FROM wanted AS w
@@ -640,14 +655,15 @@ def _assistant_window_details(
                     b.sort_index,
                     m.message_id,
                     m.position,
-                    ROW_NUMBER() OVER (
+                    m.variant_index,
+                    DENSE_RANK() OVER (
                         PARTITION BY b.sort_index
                         ORDER BY m.position
                     ) AS assistant_rank
                 FROM bounded AS b
                 JOIN messages AS m
                   ON m.session_id = b.session_id
-                 AND m.role = 'assistant'
+                 AND m.material_origin = 'assistant_authored'
                  AND m.position > b.result_position
                  AND (
                     b.next_user_position IS NULL
@@ -668,7 +684,7 @@ def _assistant_window_details(
                 COALESCE(b.text, '') AS text
             FROM top_window AS w
             LEFT JOIN blocks AS b ON b.message_id = w.message_id
-            ORDER BY w.sort_index, w.assistant_rank, b.position
+            ORDER BY w.sort_index, w.assistant_rank, w.variant_index, w.message_id, b.position
             """,
             [*params, window_size],
         )
@@ -954,7 +970,7 @@ def _calibration_labels_path(args: argparse.Namespace) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def build_report(args: argparse.Namespace) -> dict[str, Any]:
+def build_report(args: argparse.Namespace, *, config: Config | None = None) -> dict[str, Any]:
     if args.limit < 1:
         raise ValueError("--limit must be positive")
     if args.sample_limit < 1:
@@ -963,7 +979,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--n-min must be positive")
     if args.calibration_size < 0:
         raise ValueError("--calibration-size must be non-negative")
-    config = _config_with_archive_root(get_config(), args.archive_root)
+    config = config or _report_config(args)
+    file_set_root = active_archive_root(config)
     index_db = config.db_path
     conn = open_readonly_connection(index_db)
     try:
@@ -1124,7 +1141,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "report_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),
         "command": "devtools workspace claim-vs-evidence",
-        "archive_root": str(config.archive_root),
+        "archive_root": str(file_set_root),
         "index_db": str(index_db),
         "index_schema_version": schema_version,
         "limit": args.limit,
@@ -1689,19 +1706,27 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parsed = _parser().parse_args(argv)
+    config = _report_config(parsed)
+    evidence: object | None = None
     try:
-        report = build_report(parsed)
+        if parsed.materialize_evidence:
+            from devtools.claim_vs_evidence_evidence import materialize_claim_vs_evidence_evidence_under_lease
+
+            file_set_root = active_archive_root(config)
+            with RebuildLease(file_set_root):
+                report = build_report(parsed, config=config)
+                evidence = materialize_claim_vs_evidence_evidence_under_lease(
+                    report,
+                    archive_root=file_set_root,
+                    now_ms=int(datetime.now(UTC).timestamp() * 1000),
+                )
+        else:
+            report = build_report(parsed, config=config)
     except ValueError as exc:
         print(f"claim-vs-evidence: {exc}", file=sys.stderr)
         return 2
     if parsed.materialize_evidence:
-        from devtools.claim_vs_evidence_evidence import materialize_claim_vs_evidence_evidence
-
-        evidence = materialize_claim_vs_evidence_evidence(
-            report,
-            archive_root=Path(report["archive_root"]),
-            now_ms=int(datetime.now(UTC).timestamp() * 1000),
-        )
+        assert evidence is not None
         print(f"materialized evidence: {json.dumps(evidence, indent=2, sort_keys=True)}", file=sys.stderr)
     if parsed.json:
         sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
