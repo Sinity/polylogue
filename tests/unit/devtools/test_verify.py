@@ -129,8 +129,8 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
     ]
     parallel = pytest_steps[0][1]
     serial = pytest_steps[1][1]
-    assert "not load_sensitive and not tui" in _pytest_marker_expr(parallel)
-    assert "load_sensitive or tui" in _pytest_marker_expr(serial)
+    assert _pytest_marker_expr(parallel) == "not load_sensitive"
+    assert _pytest_marker_expr(serial) == "load_sensitive"
     assert parallel[parallel.index("-n") + 1] == "8"
     assert serial[serial.index("-n") + 1] == "0"
     for _label, command in pytest_steps:
@@ -150,7 +150,7 @@ def test_native_corpus_excludes_only_benchmark_directory() -> None:
 
     complete_command = next(command for label, command in complete_steps if "parallel" in label)
     complete_expr = _pytest_marker_expr(complete_command)
-    assert complete_expr == "not load_sensitive and not tui"
+    assert complete_expr == "not load_sensitive"
     assert "--ignore=tests/benchmarks" in complete_command
     assert "--ignore=tests/integration" not in complete_command
 

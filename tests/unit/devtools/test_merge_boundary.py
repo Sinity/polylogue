@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from devtools import merge_boundary, merge_gate, pr_scope
+from devtools import click_dispatch, merge_boundary, merge_gate, pr_scope
 from devtools.checkout_guard import checkout_environment_fingerprint
 from tests.infra.frozen_clock import FrozenClock
 
@@ -201,6 +201,44 @@ def test_main_accepts_documented_direct_pr_form(monkeypatch: pytest.MonkeyPatch)
 
     assert merge_boundary.main(["3948", "--dry-run"]) == 0
     assert captured == [3948]
+
+
+def test_workspace_merge_dispatches_documented_direct_pr_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[int, bool]] = []
+
+    def merge(pr: int, **kwargs: object) -> int:
+        captured.append((pr, bool(kwargs["dry_run"])))
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "cmd_merge", merge)
+
+    assert click_dispatch._dispatch(["workspace", "merge", "3952", "--dry-run"]) == 0
+    assert captured == [(3952, True)]
+
+
+def test_workspace_merge_preserves_train_status_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(merge_boundary, "cmd_train_status", lambda as_json: calls.append(as_json) or 0)
+
+    assert click_dispatch._dispatch(["workspace", "merge", "train-status", "--json"]) == 0
+    assert calls == [True]
+
+
+def test_workspace_merge_preserves_record_full_verify_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(merge_boundary, "_reconciled_terminal_verify_snapshot", lambda: {})
+    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", lambda: "master-sha")
+    monkeypatch.setattr(
+        merge_boundary,
+        "_run_post_merge_terminal_verify",
+        lambda command, target_sha, **_kwargs: captured.append((command, target_sha)) or 0,
+    )
+
+    assert (
+        click_dispatch._dispatch(["workspace", "merge", "record-full-verify", "--command", "devtools verify --all"])
+        == 0
+    )
+    assert captured == [("devtools verify --all", "master-sha")]
 
 
 # ---------------------------------------------------------------------------

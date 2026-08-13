@@ -2170,7 +2170,7 @@ def build_verify_steps(
         parallel_cmd = [
             *pytest_cmd,
             "-m",
-            "not load_sensitive and not tui",
+            "not load_sensitive",
             *native_args,
             *_pytest_worker_args(),
         ]
@@ -2187,7 +2187,7 @@ def build_verify_steps(
         serial_cmd.extend(
             [
                 "-m",
-                "load_sensitive or tui",
+                "load_sensitive",
                 *native_args,
                 "-p",
                 "no:randomly",

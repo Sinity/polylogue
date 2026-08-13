@@ -40,7 +40,6 @@ from devtools.verify_runs import (
     resolve_pytest_basetemp_root,
 )
 from devtools.verify_runs import pytest_basetemp_claim_path as _basetemp_claim_path
-from tests.infra.archive_templates import clone_archive_template
 
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
 # before test execution can import product modules: a shared/editable venv's
@@ -845,6 +844,8 @@ def workspace_env(
     monkeypatch: pytest.MonkeyPatch,
     empty_archive_template: Path,
 ) -> dict[str, Path]:
+    from tests.infra.archive_templates import clone_archive_template
+
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
@@ -917,6 +918,8 @@ def cli_workspace(
     Returns:
         dict with paths: archive_root, data_root, inbox_dir, db_path
     """
+    from tests.infra.archive_templates import clone_archive_template
+
     # Create directory structure
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"

@@ -138,10 +138,54 @@ def _fingerprint_inputs(
     return digest.hexdigest()
 
 
+def _pytest_plugins_assignment(node: ast.stmt) -> ast.expr | None:
+    match node:
+        case ast.Assign(targets=targets, value=value) if any(
+            isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets
+        ):
+            return value
+        case ast.AnnAssign(target=ast.Name(id="pytest_plugins"), value=value):
+            return value
+        case _:
+            return None
+
+
+def _declared_pytest_plugin_names(root: Path) -> set[str]:
+    """Read static local plugin declarations that pytest loads at collection."""
+    names: set[str] = set()
+    candidates = set(root.glob("tests/**/conftest.py"))
+    for path in root.glob("tests/**/*.py"):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "pytest_plugins" not in source:
+            continue
+        candidates.add(path)
+    for path in candidates:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        for node in tree.body:
+            value = _pytest_plugins_assignment(node)
+            if value is None:
+                continue
+            with contextlib.suppress(ValueError, TypeError):
+                declared = ast.literal_eval(value)
+                if isinstance(declared, str):
+                    names.add(declared)
+                elif isinstance(declared, tuple | list):
+                    names.update(name for name in declared if isinstance(name, str))
+    return names
+
+
 def _active_local_pytest_plugin_paths(root: Path) -> set[str]:
-    """Resolve explicitly active local pytest plugins regardless of filename."""
+    """Resolve collection-active local pytest plugins regardless of filename."""
     paths: set[str] = set()
-    for raw_name in os.environ.get("PYTEST_PLUGINS", "").split(","):
+    plugin_names = _declared_pytest_plugin_names(root)
+    plugin_names.update(os.environ.get("PYTEST_PLUGINS", "").split(","))
+    for raw_name in plugin_names:
         module_name = raw_name.strip()
         if not module_name or any(part in {"", ".", ".."} for part in module_name.split(".")):
             continue
@@ -161,7 +205,6 @@ def _environment_input_paths(root: Path) -> tuple[str, ...]:
     patterns = (
         "devtools/pytest*.py",
         "tests/**/conftest.py",
-        "tests/infra/**/*.py",
     )
     for pattern in patterns:
         paths.update(path.relative_to(root).as_posix() for path in root.glob(pattern) if path.is_file())

@@ -62,7 +62,7 @@ addopts = "-p no:randomly"
 cache_dir = ".cache/pytest"
 markers = [
   "load_sensitive: serial native-testmon lane",
-  "tui: serial native-testmon lane",
+  "tui: Textual interaction category",
 ]
 """.lstrip(),
         encoding="utf-8",
@@ -108,7 +108,7 @@ def _run_lane(
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(artifact_dir / "summary.json"),
         }
     )
-    semantic_marker = "not load_sensitive and not tui" if lane == "parallel" else "load_sensitive or tui"
+    semantic_marker = "not load_sensitive" if lane == "parallel" else "load_sensitive"
     marker = semantic_marker if base_marker is None else f"({base_marker}) and ({semantic_marker})"
     selection = "--testmon-forceselect" if mode == "affected" else "--testmon-noselect"
     command = [
@@ -638,3 +638,50 @@ def test_environment_and_plugin_identity_changes_start_real_fresh_bootstraps(
         result.completed.returncode
         for result in _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=plugin_mutated.environment_name)
     ] == [0, 0]
+
+
+def test_runtime_helper_mutation_stays_incremental_and_selects_owner(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    infra = repo / "tests" / "infra"
+    infra.mkdir()
+    (repo / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (infra / "__init__.py").write_text("", encoding="utf-8")
+    helper = infra / "runtime_helper.py"
+    helper.write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (repo / "tests" / "test_runtime_helper.py").write_text(
+        """
+import pytest
+
+def test_runtime_helper_owner():
+    from tests.infra.runtime_helper import answer
+    assert answer() == 42
+
+@pytest.mark.load_sensitive
+def test_runtime_helper_serial_owner():
+    from tests.infra.runtime_helper import answer
+    assert answer() == 42
+""".lstrip(),
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+
+    preparation = prepare_native_testmon_environment(repo)
+    bootstrap = _run_plain_verify_corpus(
+        repo,
+        mode="bootstrap",
+        environment_name=preparation.environment_name,
+    )
+    assert [result.completed.returncode for result in bootstrap] == [0, 0]
+
+    helper.write_text("def answer() -> int:\n    return 0\n", encoding="utf-8")
+    affected = prepare_native_testmon_environment(repo)
+    assert affected.selection_mode == "affected"
+    results = _run_plain_verify_corpus(repo, mode="affected", environment_name=affected.environment_name)
+
+    assert [result.completed.returncode for result in results] == [1, 1]
+    assert _selected(*results) == {
+        "tests/test_runtime_helper.py::test_runtime_helper_owner",
+        "tests/test_runtime_helper.py::test_runtime_helper_serial_owner",
+    }

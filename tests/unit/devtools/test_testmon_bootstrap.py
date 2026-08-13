@@ -54,10 +54,6 @@ def test_environment_digest_changes_with_collection_semantics(
 
     (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-ra'\n", encoding="utf-8")
     config_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
-    plugin = tmp_path / "tests" / "infra" / "new_plugin.py"
-    plugin.parent.mkdir(parents=True)
-    plugin.write_text("pytest_plugins = ()\n", encoding="utf-8")
-    harness_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
     monkeypatch.setattr("devtools.testmon_bootstrap._installed_distributions", lambda: (("pytest", "changed"),))
     distributions_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
     monkeypatch.setenv("PYTEST_ADDOPTS", "--strict-markers")
@@ -69,14 +65,37 @@ def test_environment_digest_changes_with_collection_semantics(
             {
                 initial,
                 config_changed,
-                harness_changed,
                 distributions_changed,
                 environment_changed,
                 profile_changed,
             }
         )
-        == 6
+        == 5
     )
+
+
+def test_inactive_runtime_helper_does_not_force_fresh_environment(tmp_path: Path) -> None:
+    helper = tmp_path / "tests" / "infra" / "runtime_helper.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("def answer() -> int:\n    return 41\n", encoding="utf-8")
+    initial = _testmon_environment_digest(tmp_path)
+
+    helper.write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) == initial
+
+
+def test_declared_local_fixture_plugin_changes_environment(tmp_path: Path) -> None:
+    conftest = tmp_path / "tests" / "conftest.py"
+    plugin = tmp_path / "tests" / "infra" / "fixture_plugin.py"
+    plugin.parent.mkdir(parents=True)
+    conftest.write_text('pytest_plugins = ("tests.infra.fixture_plugin",)\n', encoding="utf-8")
+    plugin.write_text("import pytest\n\n@pytest.fixture\ndef value():\n    return 1\n", encoding="utf-8")
+    initial = _testmon_environment_digest(tmp_path)
+
+    plugin.write_text("import pytest\n\n@pytest.fixture\ndef value():\n    return 2\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) != initial
 
 
 def test_environment_digest_hashes_explicit_local_plugin_regardless_of_name(

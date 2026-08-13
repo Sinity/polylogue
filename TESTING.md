@@ -57,9 +57,17 @@ receipt or resume command: pytest-testmon keeps failed, unfinished, and new
 tests selected on the next plain invocation.
 
 The native environment key includes Python, active distributions, lock and
-project metadata, pytest configuration, `tests/conftest.py`, and the managed
-pytest plugins and harness. Product source changes stay incremental. A change
-to collection or dependency semantics starts a fresh native environment.
+project metadata, pytest configuration, every `conftest.py`, and collection-active
+local pytest plugins. Ordinary `tests/infra` helpers stay incremental: import
+them from an executing fixture or test when their module initialization is
+dependency-bearing, so pytest-testmon observes that initialization and helper
+execution instead of forcing a complete-corpus bootstrap for every helper edit.
+Product source changes likewise stay incremental. A genuine collection or
+dependency-semantics change starts a fresh native environment.
+The 2026-08-13 audit reduced this key from all 83 `tests/infra` Python files to
+23 actual inputs (configuration, conftests, and active plugins); discovery took
+0.95s. A real isolated mutation of a runtime-imported helper retained the same
+environment and selected both owning tests through native dependency edges.
 
 Plain focused `pytest` runs are single-process by default so small inner-loop
 checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
@@ -74,10 +82,23 @@ roughly 768 MiB per worker, reserve host and tmpfs headroom, and reduce
 concurrency when memory pressure is elevated.
 
 Every native run has exactly two semantic lanes over one environment and one
-database: a parallel lane for tests that are neither `load_sensitive` nor
-`tui`, followed by a serial lane for either marker. Ordinary test failures in
-the parallel lane do not suppress the serial lane. Typed collection,
-containment, resource, or timeout failures do.
+database: a parallel lane for tests not marked `load_sensitive`, followed by a
+serial lane for the load-sensitive set. Ordinary test failures in the parallel
+lane do not suppress the serial lane. Typed collection, containment, resource,
+or timeout failures do.
+
+The lane boundary is evidence-based. On 2026-08-13 the complete correctness
+corpus collected 20,447 nodes in 35.06s; only 17 were `load_sensitive`, while
+16 were tagged `tui` with no overlap. A managed serial run retained 93.09s of
+call time for the load-sensitive set (real PTYs, loopback servers, timing SLAs,
+and process/cgroup teardown), versus 7.10s for TUI (0.74s maximum). The same 16
+TUI nodes passed under two xdist workers in 45.22s including duplicate worker
+collection, so `tui` remains a useful category but is not a serial-execution
+boundary. The captured serial run passed 32 nodes; one process-owner SIGKILL
+probe missed its five-second readiness poll twice, then passed a diagnostic
+live-output rerun in 6.28s. That host-timing sensitivity supports retaining the
+probe in the serial lane. Performance benchmarks remain outside this
+correctness corpus.
 
 Every collected test has a 120-second `pytest-timeout` budget. A test that
 genuinely needs longer must declare the exception at the test site with
