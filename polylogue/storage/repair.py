@@ -4484,7 +4484,11 @@ def raw_materialization_whale_pass_candidate(
     ):
         if not candidates.raw_ids:
             continue
-        ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+        ordered_components = _raw_materialization_ordered_components(
+            candidates,
+            archive_root=archive_root,
+            index_db_path=_raw_materialization_index_path(config, archive_root),
+        )
         for component in ordered_components:
             if census_only and not blocked_raw_ids.intersection(component):
                 continue
