@@ -31,6 +31,7 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
+from polylogue.sources.live.archive_open import _source_tier_acquisition_required
 from polylogue.sources.live.batch import (
     CursorAuthorityBlockedError,
     LiveBatchEventEmitter,
@@ -1289,6 +1290,11 @@ class LiveWatcher:
         cached connection would keep reading a replaced index.db inode
         across a blue-green generation swap.
         """
+        if _source_tier_acquisition_required():
+            self._archived_cursor_conns = None
+            self._archived_cursor_index_untrusted = False
+            yield
+            return
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
         index_db = resolve_active_index_path(archive_root)
@@ -1447,6 +1453,11 @@ class LiveWatcher:
         archived prefix so catch-up can take the append path instead of
         parsing the whole active JSONL again.
         """
+        if _source_tier_acquisition_required():
+            # Derived corroboration is inapplicable in acquire-only mode.
+            # Force a fresh source observation instead of deferring on an
+            # index that this mode is explicitly forbidden to read.
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         shared = self._archived_cursor_conns
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
@@ -1683,14 +1694,30 @@ class LiveWatcher:
             return None
         return None if any(source.ignores_directory(Path(part)) for part in relative.parts) else source
 
+    def _directory_is_watch_relevant(self, path: Path) -> bool:
+        """Return whether a directory is owned or leads to a configured source root."""
+
+        if self._source_for_directory(path) is not None:
+            return True
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        for source in self._sources:
+            try:
+                if source.root.resolve().is_relative_to(resolved):
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
     def _enqueue_added_directory(self, directory: Path) -> None:
         """Cover files created before a recursive watcher installs its new sub-watch."""
 
-        source = self._source_for_directory(directory)
-        if source is None:
+        if not self._directory_is_watch_relevant(directory):
             return
         for parent, dir_names, file_names in os.walk(directory):
-            dir_names[:] = [name for name in dir_names if not source.ignores_directory(Path(name))]
+            dir_names[:] = [name for name in dir_names if self._directory_is_watch_relevant(Path(parent) / name)]
             for name in file_names:
                 candidate = Path(parent) / name
                 canonical = self._canonical_watch_path(candidate)
@@ -1708,7 +1735,7 @@ class LiveWatcher:
         """
         observed_path = Path(path)
         return self._canonical_watch_path(observed_path) is not None or (
-            observed_path.is_dir() and self._source_for_directory(observed_path) is not None
+            observed_path.is_dir() and self._directory_is_watch_relevant(observed_path)
         )
 
 

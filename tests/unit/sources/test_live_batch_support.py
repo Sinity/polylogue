@@ -220,7 +220,7 @@ def _seed_live_append_plan(
     archive_root: Path,
     *,
     native_id: str,
-) -> tuple[Path, _AppendPlan, object]:
+) -> tuple[Path, _AppendPlan, object, LiveBatchProcessor]:
     root = archive_root / "sessions"
     root.mkdir()
     path = root / f"{native_id}.jsonl"
@@ -248,7 +248,7 @@ def _seed_live_append_plan(
         handle.write(append)
     plan = processor._append_plan(path)
     assert isinstance(plan, _AppendPlan)
-    return path, plan, _append_owner(archive_root)
+    return path, plan, _append_owner(archive_root), processor
 
 
 def test_live_append_replay_streams_retained_jsonl_raw(
@@ -258,7 +258,7 @@ def test_live_append_replay_streams_retained_jsonl_raw(
     """Append replay must not resurrect eager blob materialization."""
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
-    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="streamed-append")
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="streamed-append")
     monkeypatch.setattr(
         ArchiveBlobPublisher,
         "read_all",
@@ -274,7 +274,7 @@ def test_live_append_replay_streams_retained_jsonl_raw(
 def test_live_append_acquires_with_unreadable_active_pointer(tmp_path: Path) -> None:
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="degraded-append")
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="degraded-append")
     (tmp_path / ".index-active-pointer").write_bytes(b"\xff")
     set_degraded(
         DegradedReason(
@@ -290,6 +290,49 @@ def test_live_append_acquires_with_unreadable_active_pointer(tmp_path: Path) -> 
 
     assert result.succeeded == [plan]
     assert result.failed == []
+
+
+def test_derived_only_live_append_candidate_uses_source_acquisition(tmp_path: Path) -> None:
+    """The managed batch route must not plan an index-backed append while derived-only."""
+
+    import hashlib
+
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    path, _plan, _owner, processor = _seed_live_append_plan(tmp_path, native_id="degraded-managed-append")
+    index_db = tmp_path / "index.db"
+    index_digest_before = hashlib.sha256(index_db.read_bytes()).hexdigest()
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_count_before = int(
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_path = ?", (str(path),)).fetchone()[0]
+        )
+    pointer = tmp_path / ".index-active-pointer"
+    pointer.write_bytes(b"\xff")
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        metrics = asyncio.run(processor.ingest_files([path], emit_event=False))
+    finally:
+        clear_degraded()
+
+    assert metrics.succeeded_file_count == 1
+    assert metrics.append_file_count == 0
+    assert metrics.full_file_count == 1
+    assert pointer.read_bytes() == b"\xff"
+    assert hashlib.sha256(index_db.read_bytes()).hexdigest() == index_digest_before
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            """SELECT parsed_at_ms, parse_error FROM raw_sessions
+               WHERE source_path = ? ORDER BY acquired_at_ms DESC, raw_id DESC""",
+            (str(path),),
+        ).fetchall()
+    assert len(rows) == raw_count_before + 1
+    assert rows[0] == (None, None)
 
 
 def test_live_full_replay_streams_retained_jsonl_raw(
@@ -4816,7 +4859,7 @@ def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retri
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="append-admission-retry")
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="append-admission-retry")
     original_bind = ArchiveStore.bind_raw_revision
     fail_once = True
 
@@ -5060,7 +5103,7 @@ def test_append_index_failure_never_marks_raw_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="index-fail")
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="index-fail")
 
     def fail_index(*_args: object, **_kwargs: object) -> object:
         raise sqlite3.IntegrityError("injected index commit failure")
@@ -5081,7 +5124,7 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path, plan, owner = _seed_live_append_plan(tmp_path, native_id="append-multi")
+    path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="append-multi")
     # polylogue-9ykn: a message-less ParsedSession carries no positive
     # conversational evidence and is refused before this test's own
     # "more than one session" check ever runs -- give each session one real
@@ -6762,7 +6805,7 @@ def test_append_crash_after_index_commit_repairs_idempotently(
     class SimulatedProcessCrash(BaseException):
         pass
 
-    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="crash-retry")
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="crash-retry")
     # polylogue-1r9c: mark_raw_parse_succeeded is called internally by
     # revision_governance.py (a direct module-internal function reference),
     # not through ArchiveStore's `self.` dispatch -- patch it there.
