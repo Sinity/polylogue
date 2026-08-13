@@ -480,8 +480,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Beads plus typed dispositions. The PR body stays stable across commits; `sync --pr` reports the "
             "current head- and Bead-bound attestation consumed by merge-gate. The trusted GitHub "
             "pull_request_target authority workflow validates its event number and revisions from base code, reads "
-            "candidate Beads through Git objects, and posts `polylogue/pr-scope-authority`; CircleCI remains a "
-            "Phase A bootstrap check. The command never interprets acceptance prose."
+            "candidate Beads through Git objects, and must be installed as an exact required-workflow ruleset; "
+            "CircleCI remains a Phase A bootstrap check. The authority workflow deliberately publishes no commit "
+            "status because candidate workflows can spoof named statuses. The command never interprets acceptance prose."
         ),
         examples=(
             "devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md",
