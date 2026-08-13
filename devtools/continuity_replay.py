@@ -93,6 +93,8 @@ def _hermetic_stdio_environment(*, runtime_root: Path, archive_root: Path) -> di
     return {
         **{name: str(path) for name, path in roots.items()},
         "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
+        "POLYLOGUE_CONFIG": str(runtime_root / "config" / "absent-polylogue.toml"),
+        "POLYLOGUE_SITE_CONFIG": "",
         "POLYLOGUE_DAEMON": "off",
         "POLYLOGUE_NO_DAEMON": "1",
         "POLYLOGUE_DAEMON_URL": _CONTINUITY_DAEMON_SINK_URL,

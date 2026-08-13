@@ -852,6 +852,54 @@ def test_expected_delta_authority_rejects_unrelated_table() -> None:
         reindex_canary_module._validate_expected_review_authorities((unrelated,))
 
 
+def test_expected_delta_authority_rejects_session_outside_declared_origin() -> None:
+    """A table declaration cannot authorize rows outside its reprocess scope."""
+
+    difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "chatgpt-export:sample"),),
+        before={"title_ref": None},
+        after={"title_ref": "message:chatgpt-export:sample:user"},
+        changed_columns=("title_ref",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    outside_scope = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="unrelated origin",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="outside origin codex-session"):
+        reindex_canary_module._validate_expected_review_authorities((outside_scope,))
+
+
+def test_expected_delta_authority_rejects_undeclared_changed_column() -> None:
+    """A semantic delta authorizes named values, not every column in its table."""
+
+    difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:sample"),),
+        before={"content_hash": "before"},
+        after={"content_hash": "after"},
+        changed_columns=("content_hash",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    undeclared_column = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="unrelated column",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare changed columns"):
+        reindex_canary_module._validate_expected_review_authorities((undeclared_column,))
+
+
 def test_expected_delta_authority_rejects_nonsemantic_delta() -> None:
     """A DDL-only delta cannot authorize a changed row value."""
 
@@ -1880,7 +1928,7 @@ def test_review_manifest_accepts_packaged_delta_and_nonapproving_successor(
                     {
                         "table": "sessions",
                         "operation": "changed",
-                        "identity": {"session_id": "expected"},
+                        "identity": {"session_id": "codex-session:expected"},
                         "changed_columns": ["title_ref"],
                         "classification": "expected",
                         "reference": "delta:44",

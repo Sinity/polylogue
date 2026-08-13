@@ -630,7 +630,7 @@ def _resume_and_drain(topology: PreparedTopology) -> tuple[dict[str, object], ..
                     for outcome in result.plan_outcomes
                     if outcome.status not in {RawReplayPlanStatus.EXECUTED, RawReplayPlanStatus.CARRIED_FORWARD}
                 )
-                expected_failure = bool(exceptional)
+                expected_failure = {outcome.plan_id for outcome in exceptional} == set(expected)
                 for outcome in exceptional:
                     expected_outcome = expected.get(outcome.plan_id)
                     expected_failure = (

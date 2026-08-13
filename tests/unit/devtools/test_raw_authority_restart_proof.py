@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -146,6 +147,28 @@ def test_raw_authority_restart_proof_rejects_postcondition_mutation_after_crash(
             """,
             (topology.plan_ids_by_role["solo-one"],),
         ).fetchone() == (RawReplayPlanStatus.REJECTED_STALE.value,)
+
+
+def test_raw_authority_restart_proof_requires_every_expected_non_success_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One retained expected outcome cannot hide another missing outcome."""
+
+    topology = proof._prepare_case(tmp_path / "missing-expected-outcome")
+    real_repair = repair.repair_raw_materialization
+    deferred_plan_id = topology.plan_ids_by_role["membership-deferred"]
+
+    def omit_deferred_outcome(*args: object, **kwargs: object) -> repair.RepairResult:
+        result = real_repair(*args, **kwargs)  # type: ignore[arg-type]
+        return replace(
+            result,
+            plan_outcomes=tuple(outcome for outcome in result.plan_outcomes if outcome.plan_id != deferred_plan_id),
+        )
+
+    monkeypatch.setattr(repair, "repair_raw_materialization", omit_deferred_outcome)
+
+    with pytest.raises(proof.RawAuthorityRestartProofError, match="unexplained failure"):
+        proof._resume_and_drain(topology)
 
 
 def test_raw_authority_restart_proof_cli_and_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

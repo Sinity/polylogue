@@ -296,12 +296,16 @@ def test_explicit_no_daemon_mode_emits_no_call_log_delivery(monkeypatch: pytest.
     from polylogue.mcp.server_support import _safe_call
 
     submitted: list[object] = []
+    registered: list[object] = []
     monkeypatch.setenv("POLYLOGUE_DAEMON", "off")
     monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
     monkeypatch.setattr(call_log._DISPATCHER, "submit", lambda _config, event: submitted.append(event))
+    monkeypatch.setattr(call_log._DISPATCHER, "register", lambda config: registered.append(config))
 
     assert _safe_call("status", lambda: '{"ok": true}') == '{"ok": true}'
+    call_log.start_mcp_call_log()
     assert submitted == []
+    assert registered == []
 
 
 def test_daemon_outage_and_dispatcher_restart_drain_durable_outbox(

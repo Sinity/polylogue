@@ -1811,6 +1811,37 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
             unrelated_reviews.append(f"delta {authority_id} does not declare comparable table scope")
         elif review.table not in declared_tables:
             unrelated_reviews.append(f"delta {authority_id} does not declare table {review.table}")
+            continue
+        else:
+            matching_changes = tuple(
+                change
+                for change in declaration.expected_canary_changes
+                if change.table == review.table and review.operation.value in change.operations
+            )
+            if not matching_changes:
+                unrelated_reviews.append(
+                    f"delta {authority_id} does not declare {review.operation.value} canary changes for "
+                    f"table {review.table}"
+                )
+                continue
+            if not any(set(review.changed_columns) <= set(change.columns) for change in matching_changes):
+                unrelated_reviews.append(
+                    f"delta {authority_id} does not declare changed columns {review.changed_columns!r} "
+                    f"for table {review.table}"
+                )
+                continue
+            scope = declaration.reprocess_scope
+            if scope is not None:
+                identity = dict(review.identity)
+                session_id = identity.get("session_id")
+                if not isinstance(session_id, str):
+                    unrelated_reviews.append(f"delta {authority_id} requires a session_id row identity")
+                elif scope.origin is not None and not session_id.startswith(f"{scope.origin}:"):
+                    unrelated_reviews.append(
+                        f"delta {authority_id} does not declare session {session_id} outside origin {scope.origin}"
+                    )
+                elif scope.session_ids and session_id not in scope.session_ids:
+                    unrelated_reviews.append(f"delta {authority_id} does not declare session {session_id}")
     if unrelated_reviews:
         raise UnclassifiedCanaryDiffError(
             "expected canary authority does not cover the reviewed difference: " + "; ".join(unrelated_reviews)

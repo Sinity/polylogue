@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 
 class DerivedDeltaClass(StrEnum):
@@ -77,6 +77,22 @@ class TargetedReprocessScope:
         return " AND ".join(clauses), tuple(params)
 
 
+CanaryChangeOperation = Literal["added", "removed", "changed"]
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedCanaryChange:
+    """One row-difference shape that a semantic delta may authorize."""
+
+    table: str
+    operations: tuple[CanaryChangeOperation, ...]
+    columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.table or not self.operations or not self.columns:
+            raise ValueError("ExpectedCanaryChange requires table, operations, and columns")
+
+
 class FastForwardOperationKind(StrEnum):
     """Generated-SQL operation backed by canonical index DDL."""
 
@@ -108,6 +124,7 @@ class IndexDeltaDeclaration:
     # (enforced by ``__post_init__``): the exact bounded scope a fast-forward
     # of this version must enqueue for reprocessing, expressed as data.
     reprocess_scope: TargetedReprocessScope | None = None
+    expected_canary_changes: tuple[ExpectedCanaryChange, ...] = ()
 
     def __post_init__(self) -> None:
         declares_class = DerivedDeltaClass.SHAPE_FORWARD_TARGETED_REPROCESS in self.classes
@@ -117,6 +134,8 @@ class IndexDeltaDeclaration:
                 f"index delta v{self.version}: SHAPE_FORWARD_TARGETED_REPROCESS and reprocess_scope "
                 f"must be declared together (class present={declares_class!r}, scope present={has_scope!r})"
             )
+        if self.expected_canary_changes and not (self.requires_semantic_reparse or self.requires_targeted_reprocess):
+            raise ValueError(f"index delta v{self.version}: expected canary changes require semantic work")
 
     @property
     def requires_semantic_reparse(self) -> bool:
@@ -462,6 +481,13 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
         reprocess_scope=TargetedReprocessScope(origin="codex-session"),
+        expected_canary_changes=(
+            ExpectedCanaryChange(
+                table="sessions",
+                operations=("changed",),
+                columns=("title_ref", "title_confidence"),
+            ),
+        ),
     ),
     IndexDeltaDeclaration(
         version=45,
@@ -1043,7 +1069,9 @@ def get_semantic_reparse_blocking_version_pair(
 
 
 __all__ = [
+    "CanaryChangeOperation",
     "DerivedDeltaClass",
+    "ExpectedCanaryChange",
     "FastForwardOperation",
     "FastForwardOperationKind",
     "INDEX_DELTA_DECLARATIONS",

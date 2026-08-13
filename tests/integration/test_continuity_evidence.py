@@ -82,6 +82,8 @@ async def test_supplied_archive_uses_matching_catalog_without_runtime_writes(
     monkeypatch.setenv("POLYLOGUE_MCP_JUDGE_ENABLED", "1")
     monkeypatch.setenv("POLYLOGUE_MCP_MAINTENANCE_ENABLED", "1")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "inherited-live-data"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "polylogue.toml").write_text("this is not valid TOML = [", encoding="utf-8")
 
     try:
         report = await run_continuity_evidence(
