@@ -744,11 +744,20 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
     )
 
 
-def build_raw_replay_plans(archive_root: Path, components: Sequence[tuple[str, ...]]) -> tuple[RawReplayPlan, ...]:
+def build_raw_replay_plans(
+    archive_root: Path,
+    components: Sequence[tuple[str, ...]],
+    *,
+    index_db_path: Path | None = None,
+) -> tuple[RawReplayPlan, ...]:
     if not components:
         return ()
+    if index_db_path is None:
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        index_db_path = resolve_active_index_path(archive_root)
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
         return tuple(build_raw_replay_plan(conn, component) for component in components)
 
 
@@ -1275,9 +1284,18 @@ def record_raw_authority_census(
     )
 
 
-def validate_raw_replay_plan(archive_root: Path, plan: RawReplayPlan) -> tuple[bool, JSONDocument]:
+def validate_raw_replay_plan(
+    archive_root: Path,
+    plan: RawReplayPlan,
+    *,
+    index_db_path: Path | None = None,
+) -> tuple[bool, JSONDocument]:
     try:
-        observed = build_raw_replay_plans(archive_root, (plan.input_raw_ids,))[0]
+        observed = build_raw_replay_plans(
+            archive_root,
+            (plan.input_raw_ids,),
+            index_db_path=index_db_path,
+        )[0]
     except Exception as exc:
         logger.warning("raw replay plan validation could not rebuild %s", plan.plan_id, exc_info=True)
         return False, json_document({"error": f"{type(exc).__name__}: {exc}"})
