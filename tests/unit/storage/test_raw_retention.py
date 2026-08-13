@@ -779,6 +779,83 @@ def test_resolution_carrier_cannot_authorize_cursor_without_accepted_head(tmp_pa
     assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
 
 
+def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_path: Path) -> None:
+    """A successful production parse state makes an old terminal carrier historical."""
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "reparsed-export.json"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, parse_error
+            ) VALUES (?, ?, ?, ?, 0, ?, 1, 1, ?)
+            """,
+            (
+                "raw-terminal-reparsed",
+                "codex-session",
+                "reparsed",
+                str(source_path),
+                bytes(32),
+                "ValueError: unsupported export shape",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index,
+                artifact_kind, support_status, classification_reason,
+                parse_as_session, schema_eligible, malformed_jsonl_lines,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0, 0, 0, 1, 1)
+            """,
+            (
+                "artifact-terminal-reparsed",
+                "raw-terminal-reparsed",
+                "codex-session",
+                str(source_path),
+                "terminal_unsupported_shape",
+                "unsupported_parseable",
+                "terminal parse failure",
+            ),
+        )
+        conn.commit()
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=source_path, byte_offset=1)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        before = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            ops_db_path=tmp_path / "ops.db",
+        )
+    assert before.cursor_ahead_status == "healthy"
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_succeeded("raw-terminal-reparsed", provider=Provider.CODEX)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        state = conn.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?",
+            ("raw-terminal-reparsed",),
+        ).fetchone()
+        stale_artifact = conn.execute(
+            "SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?",
+            ("raw-terminal-reparsed",),
+        ).fetchone()
+        after = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            ops_db_path=tmp_path / "ops.db",
+        )
+
+    assert state is not None and state[0] is not None and state[1] is None
+    assert stale_artifact == ("terminal_unsupported_shape",)
+    assert after.cursor_ahead_status == "unknown"
+    assert after.cursor_authority_gap_count == 1
+    assert after.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
 def test_terminal_artifact_retention_batches_source_paths_below_sqlite_limit(tmp_path: Path) -> None:
     """Terminal evidence remains protectable when more than one SQL batch is needed."""
 
