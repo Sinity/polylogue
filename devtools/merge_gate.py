@@ -80,7 +80,7 @@ from typing import Any
 
 from devtools import pr_scope
 from devtools.testmon_state import TerminalAuthorization, VerificationScope
-from devtools.verify_runs import CURRENT_RUN_PATH
+from devtools.verify_runs import CURRENT_RUN_PATH as CURRENT_RUN_PATH
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
