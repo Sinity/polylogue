@@ -142,6 +142,22 @@ def test_environment_digest_hashes_explicit_local_plugin_regardless_of_name(
     assert _testmon_environment_digest(tmp_path) != initial
 
 
+@pytest.mark.parametrize("addopts", ["-p local_plugin", "-p=local_plugin"])
+def test_environment_digest_hashes_local_plugin_from_pytest_addopts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    addopts: str,
+) -> None:
+    plugin = tmp_path / "local_plugin.py"
+    plugin.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_ADDOPTS", addopts)
+
+    initial = _testmon_environment_digest(tmp_path)
+    plugin.write_text("VALUE = 'v2'\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) != initial
+
+
 def test_environment_digest_stops_at_invocation_deadline(tmp_path: Path) -> None:
     with pytest.raises(NativeTestmonDeadlineError, match="invocation deadline"):
         _testmon_environment_digest(tmp_path, deadline_monotonic=0.0)

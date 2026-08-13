@@ -618,7 +618,7 @@ def test_environment_and_plugin_identity_changes_start_real_fresh_bootstraps(
         "def test_initial():\n    assert True\n\ndef test_plugin(native_identity):\n    assert native_identity == 'v1'\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("PYTEST_PLUGINS", "local_plugin")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p local_plugin")
     plugin_changed = prepare_native_testmon_environment(repo)
     assert plugin_changed.selection_mode == "bootstrap"
     assert plugin_changed.environment_name != environment_changed.environment_name

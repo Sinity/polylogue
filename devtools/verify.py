@@ -2489,6 +2489,7 @@ def _finalize_preflight_failure(
         final_worktree_fingerprint=final_worktree_fingerprint,
         checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
         checkout_diagnosis=checkout_diagnosis,
+        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     history_entry = {
         **payload,
@@ -2932,7 +2933,7 @@ def _main(argv: list[str] | None = None) -> int:
     if run_diagnosis is not None:
         history_entry["diagnosis"] = run_diagnosis
 
-    verify_run.finish(
+    finalized_payload = verify_run.finish(
         exit_code=exit_code,
         duration_s=total_duration,
         diagnosis=run_diagnosis,
@@ -2942,7 +2943,9 @@ def _main(argv: list[str] | None = None) -> int:
         checkout_mutation_path=mutation_observation.observed_path,
         checkout_diagnosis=checkout_diagnosis,
         pytest_aggregate=pytest_aggregate,
+        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
+    history_entry["pytest_aggregate"] = finalized_payload["pytest_aggregate"]
     if use_json:
         _print_json(history_entry)
     elif exit_code == 0:
@@ -2998,10 +3001,10 @@ def _finalize_verify_runner_exception(
         verification_scope=verification_scope.value,
         release_baseline_allowed=False,
         final_worktree_fingerprint=final_worktree_fingerprint,
+        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)
-    payload["invocation_budget_s"] = VERIFY_INVOCATION_BUDGET_S
     _save_history(payload)
     if use_json:
         _print_json(payload)

@@ -1633,6 +1633,7 @@ class VerifyRun:
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
         pytest_aggregate: Mapping[str, Any] | None = None,
+        invocation_budget_s: float | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -1646,11 +1647,14 @@ class VerifyRun:
             self._payload["checkout_mutation_path"] = checkout_mutation_path
         if checkout_diagnosis is not None:
             self._payload["checkout_diagnosis"] = checkout_diagnosis
+        if invocation_budget_s is not None:
+            self._payload["invocation_budget_s"] = invocation_budget_s
         if pytest_aggregate is not None:
             self._payload["pytest_aggregate"] = dict(pytest_aggregate)
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed
+        self._payload.setdefault("pytest_aggregate", _history_pytest_aggregate(self._payload))
         self.write()
         return dict(self._payload)
 

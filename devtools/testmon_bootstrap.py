@@ -26,6 +26,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -190,6 +191,17 @@ def _active_local_pytest_plugin_paths(root: Path) -> set[str]:
     paths: set[str] = set()
     plugin_names = _declared_pytest_plugin_names(root)
     plugin_names.update(os.environ.get("PYTEST_PLUGINS", "").split(","))
+    try:
+        addopts = shlex.split(os.environ.get("PYTEST_ADDOPTS", ""))
+    except ValueError as exc:
+        raise NativeTestmonRepairError(f"cannot parse PYTEST_ADDOPTS for native environment: {exc}") from exc
+    for index, option in enumerate(addopts):
+        if option == "-p" and index + 1 < len(addopts):
+            plugin_names.add(addopts[index + 1])
+        elif option.startswith("-p="):
+            plugin_names.add(option.removeprefix("-p="))
+        elif option.startswith("-p") and len(option) > 2:
+            plugin_names.add(option.removeprefix("-p"))
     for raw_name in plugin_names:
         module_name = raw_name.strip()
         if not module_name or any(part in {"", ".", ".."} for part in module_name.split(".")):

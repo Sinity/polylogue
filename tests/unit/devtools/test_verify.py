@@ -3503,8 +3503,15 @@ def test_read_pytest_report_parses_valid_payload(tmp_path: Path) -> None:
     assert parsed == {"summary": {"passed": 3}, "duration": 1.0}
 
 
-def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[str]) -> None:
+def test_verify_continues_after_failed_cheap_step(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[str] = []
+    receipt = tmp_path / "quick-receipt.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "quick-failure")
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
 
     def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         calls.append(label)
@@ -3525,6 +3532,9 @@ def test_verify_continues_after_failed_cheap_step(capsys: pytest.CaptureFixture[
     assert payload["exit_code"] == 1
     assert payload["verification_scope"] == "non-test"
     assert payload["release_baseline_allowed"] is False
+    assert payload["pytest_aggregate"]["selection_mode"] == "none"
+    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": True}
+    assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
 
 
 @pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
@@ -3770,7 +3780,10 @@ def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
     assert normalized["timestamp"]
     assert normalized["pytest_aggregate"]["selection_mode"] == "none"
     assert normalized["diagnosis"] == "checkout_import_mismatch"
-    assert json.loads(receipt.read_text())["diagnosis"] == "checkout_import_mismatch"
+    receipt_payload = json.loads(receipt.read_text())
+    assert receipt_payload["diagnosis"] == "checkout_import_mismatch"
+    assert receipt_payload["pytest_aggregate"] == history["pytest_aggregate"]
+    assert receipt_payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": True}
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_import_mismatch"
 
 

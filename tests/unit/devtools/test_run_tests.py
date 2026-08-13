@@ -267,6 +267,8 @@ def test_main_persists_interrupted_checkout_diagnosis_to_all_run_artifacts(
     for payload in (history, run_payload, current_payload, receipt_payload):
         assert payload["diagnosis"] == "pytest_interrupted"
         assert payload["checkout_diagnosis"] == "checkout_changed_during_focused_test"
+        assert payload["pytest_aggregate"]["selection_mode"] == "focused"
+    assert history["pytest_aggregate"] == receipt_payload["pytest_aggregate"]
 
 
 def test_normalize_selection_paths_preserves_pytest_path_option_semantics(
