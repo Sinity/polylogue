@@ -64,7 +64,7 @@ def test_parent_cardinality_and_parent_cycle_are_rejected() -> None:
 
 
 def test_blocks_cycle_is_rejected_from_export_without_invoking_bd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     export = tmp_path / "issues.jsonl"
     export.write_text(
@@ -80,6 +80,9 @@ def test_blocks_cycle_is_rejected_from_export_without_invoking_bd(
     )
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("bd must not run"))
     assert verify_bead_graph.main(["--export", str(export), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["cycles"]["ok"] is False
+    assert report["counts"]["blocks-cycle"] > 0
 
 
 @pytest.mark.parametrize("payload", [["not-an-issue"], [{"id": ""}], [{"id": 42}], [{"id": "a"}, {"id": "a"}]])

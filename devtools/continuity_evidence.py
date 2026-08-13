@@ -16,9 +16,9 @@ This module is that wiring, not a fourth reimplementation:
   family, not just executed it once the runner already knew it.
 - :func:`run_continuity_evidence` calls
   :func:`devtools.continuity_replay.replay_archive` unmodified against either
-  a supplied archive root (an authorized live-scale replay) or a freshly
-  seeded synthetic corpus (the default, privacy-safe CI lane), then combines
-  both executable lanes into one JSON artifact. :func:`redact_report`
+  a supplied archive paired with its explicit corpus/oracle catalog or a
+  freshly seeded synthetic corpus (the default, privacy-safe CI lane), then
+  combines both executable lanes into one JSON artifact. :func:`redact_report`
   strips raw evidence prose from that
   artifact (keeping refs/hashes/counts) for the live-archive lane; the
   synthetic lane never touches private content so redaction there is a no-op
@@ -160,6 +160,7 @@ def redact_report(document: JSONValue) -> JSONValue:
 async def run_continuity_evidence(
     *,
     archive_root: Path | None = None,
+    catalog_path: Path | None = None,
     scenario_names: Sequence[str] | None = None,
     redact: bool = True,
     keep_archive: bool = False,
@@ -168,15 +169,17 @@ async def run_continuity_evidence(
 
     When ``archive_root`` is ``None`` (the default), a fresh, privacy-safe
     synthetic continuity corpus is seeded and torn down automatically -- the
-    CI/deterministic lane. Passing an authorized live archive root runs the
-    identical mechanism against it (the live-scale lane); pair that with
-    ``redact=True`` (the default) so evidence prose never leaves this
-    process's stdout/artifact file.
+    CI/deterministic lane. A supplied archive must also name the independent
+    corpus/oracle catalog that describes that archive. Reusing the planted
+    synthetic catalog against unrelated live data would test fixture identity,
+    not continuity behavior, so that ambiguous mode is rejected.
     """
 
     started_ns = time.perf_counter_ns()
-    catalog = load_continuity_catalog()
     live_archive = archive_root is not None
+    if live_archive and catalog_path is None:
+        raise ValueError("--archive-root requires --catalog for the selected archive")
+    catalog = load_continuity_catalog(catalog_path)
     workdir: TemporaryDirectory[str] | None = None
 
     resolved_root: Path
@@ -203,6 +206,9 @@ async def run_continuity_evidence(
     report: dict[str, object] = {
         "schema_version": 3,
         "live_archive": live_archive,
+        "catalog_sha256": hashlib.sha256(
+            json.dumps(catalog, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
         "archive_root": str(resolved_root.resolve()) if keep_archive or live_archive else None,
         "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
         "status": overall_status,
@@ -225,8 +231,9 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         "--archive-root",
         type=Path,
         default=None,
-        help="Authorized live archive to replay against; omit for the default synthetic CI lane.",
+        help="Archive to replay; requires an exact matching --catalog.",
     )
+    parser.add_argument("--catalog", type=Path, help="Corpus/oracle catalog describing --archive-root")
     parser.add_argument("--scenario", default="all", help="all or a comma-separated scenario id list")
     parser.add_argument("--no-redact", action="store_true", help="Disable evidence redaction (CI/synthetic lane only)")
     parser.add_argument("--keep-archive", action="store_true")
@@ -236,6 +243,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     report = asyncio.run(
         run_continuity_evidence(
             archive_root=args.archive_root,
+            catalog_path=args.catalog,
             scenario_names=_scenario_names(args.scenario),
             redact=not args.no_redact,
             keep_archive=args.keep_archive,

@@ -1807,7 +1807,9 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
             for object_kind, object_name in operation.objects
             if object_kind == "table"
         }
-        if declared_tables and review.table not in declared_tables:
+        if not declared_tables:
+            unrelated_reviews.append(f"delta {authority_id} does not declare comparable table scope")
+        elif review.table not in declared_tables:
             unrelated_reviews.append(f"delta {authority_id} does not declare table {review.table}")
     if unrelated_reviews:
         raise UnclassifiedCanaryDiffError(

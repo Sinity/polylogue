@@ -9,6 +9,8 @@ fixed catalog shape.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from devtools import continuity_evidence as mcr
@@ -45,6 +47,20 @@ def test_discovery_coverage_flags_a_regressed_catalog(monkeypatch: pytest.Monkey
     assert report.status == "fail"
     assert any(gap.plan_atom == "query:runs" for gap in report.gaps)
     assert report.covered_steps == report.checked_steps - len(report.gaps)
+
+
+# ── Live archive authority ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_live_archive_requires_its_own_oracle_catalog(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+
+    with pytest.raises(ValueError, match="requires --catalog"):
+        await mcr.run_continuity_evidence(archive_root=archive_root)
+
+    assert list(archive_root.iterdir()) == []
 
 
 # ── Redaction ──────────────────────────────────────────────────────────

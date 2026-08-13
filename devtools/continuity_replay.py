@@ -22,6 +22,7 @@ from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
 
 if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
@@ -308,6 +309,7 @@ class StdioMCPContinuityRoute:
         self.read_timeout_seconds = read_timeout_seconds
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        self._runtime_workdir: TemporaryDirectory[str] | None = None
         self._discovery: JSONDocument = {}
         self._invocation_count = 0
 
@@ -323,7 +325,8 @@ class StdioMCPContinuityRoute:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        runtime_root = self.archive_root / ".continuity-runtime"
+        runtime_workdir = TemporaryDirectory(prefix="polylogue-continuity-runtime-")
+        runtime_root = Path(runtime_workdir.name)
         environment = dict(os.environ)
         environment.update(
             {
@@ -360,6 +363,7 @@ class StdioMCPContinuityRoute:
                     break
         except Exception as exc:
             await stack.aclose()
+            runtime_workdir.cleanup()
             raise ContinuityReplayError(
                 f"failed to initialize MCP stdio route: {exc}",
                 kind="stdio_initialization_failed",
@@ -368,6 +372,7 @@ class StdioMCPContinuityRoute:
 
         self._stack = stack
         self._session = session
+        self._runtime_workdir = runtime_workdir
         self._discovery = _stdio_discovery(initialize, tools, self.transport_name)
         if self.discovery_mutator is not None:
             self._discovery = require_json_document(
@@ -378,10 +383,16 @@ class StdioMCPContinuityRoute:
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
         stack = self._stack
+        runtime_workdir = self._runtime_workdir
         self._stack = None
         self._session = None
-        if stack is not None:
-            await stack.aclose()
+        self._runtime_workdir = None
+        try:
+            if stack is not None:
+                await stack.aclose()
+        finally:
+            if runtime_workdir is not None:
+                runtime_workdir.cleanup()
 
     async def invoke(self, tool: str, arguments: Mapping[str, object]) -> str:
         session = self._session

@@ -1582,13 +1582,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.continuity_evidence",
         use_when=(
             "Replay the continuity scenario catalog over MCP stdio JSON-RPC and cross-check "
-            "its query routes against discovery. The default is a synthetic archive; pass "
-            "--archive-root only for an authorized live read-only replay."
+            "its query routes against discovery. The default seeds the packaged synthetic corpus. "
+            "A supplied --archive-root must be paired with the exact --catalog that describes it; "
+            "the runner rejects an unrelated live archive rather than applying synthetic oracles."
         ),
         examples=(
             "devtools workspace continuity-evidence",
             "devtools workspace continuity-evidence --output .cache/continuity-evidence.json",
-            "devtools workspace continuity-evidence --archive-root /path/to/authorized/archive --keep-archive",
+            "devtools workspace continuity-evidence --archive-root /path/to/archive --catalog /path/to/catalog.json",
         ),
     ),
 )

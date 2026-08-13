@@ -876,6 +876,30 @@ def test_expected_delta_authority_rejects_nonsemantic_delta() -> None:
         reindex_canary_module._validate_expected_review_authorities((constraint_only,))
 
 
+def test_expected_delta_authority_rejects_unscoped_semantic_delta() -> None:
+    """A semantic label without comparable objects cannot bless every table."""
+
+    difference = RowDifference(
+        table="session_events",
+        operation=DifferenceOperation.REMOVED,
+        identity=(("event_id", "event"),),
+        before={"event_type": "agent_message"},
+        after=None,
+        changed_columns=("event_type",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    unscoped = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:42",
+        rationale="unscoped writer-materialization delta",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare comparable table scope"):
+        reindex_canary_module._validate_expected_review_authorities((unscoped,))
+
+
 def test_unknown_expected_delta_authority_fails_closed() -> None:
     difference = RowDifference(
         table="blocks",

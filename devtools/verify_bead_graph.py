@@ -176,12 +176,13 @@ def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
 
 def build_report(issues: list[dict[str, Any]], *, cycles_ok: bool, cycles_output: str) -> dict[str, Any]:
     findings = collect_findings(issues)
+    structured_cycles_ok = not any(finding.kind in {"parent-cycle", "blocks-cycle"} for finding in findings)
     counts: dict[str, int] = defaultdict(int)
     for finding in findings:
         counts[finding.kind] += 1
     return {
         "report_version": 2,
-        "cycles": {"ok": cycles_ok, "output": cycles_output},
+        "cycles": {"ok": cycles_ok and structured_cycles_ok, "output": cycles_output},
         "issues_scanned": len(issues),
         "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
         "counts": dict(sorted(counts.items())),

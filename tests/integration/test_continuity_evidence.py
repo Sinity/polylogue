@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from devtools.continuity_evidence import main, run_continuity_evidence
+from tests.infra.continuity import continuity_catalog_path, load_continuity_catalog, seed_continuity_archive
 
 
 @pytest.mark.asyncio
@@ -36,6 +37,24 @@ async def test_continuity_evidence_end_to_end_synthetic_lane() -> None:
 
     # Full report round-trips through JSON (it must be a valid standalone artifact).
     json.dumps(report)
+
+
+@pytest.mark.asyncio
+async def test_supplied_archive_uses_matching_catalog_without_runtime_writes(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    seed_continuity_archive(archive_root, catalog=load_continuity_catalog())
+
+    report = await run_continuity_evidence(
+        archive_root=archive_root,
+        catalog_path=continuity_catalog_path(),
+        scenario_names=("resume",),
+        redact=False,
+    )
+
+    assert report["status"] == "pass"
+    assert report["live_archive"] is True
+    assert isinstance(report["catalog_sha256"], str)
+    assert not (archive_root / ".continuity-runtime").exists()
 
 
 def test_main_cli_writes_json_output_and_returns_pass_exit_code(
