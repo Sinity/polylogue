@@ -3949,10 +3949,14 @@ def _raw_materialization_candidate_ids(
                 s_by_native.native_id IS NULL
                 OR existing_native_raw.raw_id IS NULL
               )
-              -- A failed worker validation is not replay authority.  Keep
-              -- the raw bytes and their diagnostics, but require a fresh
-              -- validation outcome before materialization can select them.
-              AND COALESCE(r.validation_status, '') != 'failed'
+              -- A failed worker validation is replay authority only until a
+              -- successful parse records a durable parsed timestamp. Keep
+              -- that historical diagnostic, but do not let it block an
+              -- index reset from replaying successfully parsed raw bytes.
+              AND NOT (
+                COALESCE(r.validation_status, '') = 'failed'
+                AND r.parsed_at_ms IS NULL
+              )
               AND (
                 r.parse_error IS NULL
                 OR r.parse_error = 'OperationalError: database is locked'
@@ -3980,6 +3984,13 @@ def _raw_materialization_candidate_ids(
                   {_raw_artifact_coordinate_predicate(artifact_alias="terminal_evidence", raw_alias="r")}
                   AND (terminal_evidence.artifact_kind, terminal_evidence.support_status) IN (
                     {terminal_pair_placeholders}
+                  )
+                  AND (
+                    r.parse_error IS NOT NULL
+                    OR (
+                      r.validation_status = 'failed'
+                      AND r.parsed_at_ms IS NULL
+                    )
                   )
               )
               AND NOT (
@@ -4688,6 +4699,7 @@ def _raw_replay_plan_outcome(
             FROM raw_sessions
             WHERE raw_id IN ({placeholders})
               AND validation_status = 'failed'
+              AND parsed_at_ms IS NULL
             UNION ALL
             SELECT 1
             FROM raw_sessions
