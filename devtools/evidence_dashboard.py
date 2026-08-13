@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
-from devtools.verify_runs import VERIFY_HISTORY_PATH
+from devtools.verify_runs import VERIFY_HISTORY_PATH, git_head
 
 ROOT = _get_root()
 
@@ -227,6 +227,8 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
 def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     history_path = VERIFY_HISTORY_PATH
     last_result_path = root / LAST_VERIFY_RESULT_REL
+    checkout_root = str(root.resolve())
+    checkout_head = git_head(root)
 
     # Prefer last-verify-result.json (the most recent run) then walk back through
     # history to find the last status for each gate.
@@ -263,6 +265,8 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     # appearance in history.
     if history_entries:
         for entry in reversed(history_entries):
+            if entry.get("checkout_root") != checkout_root or entry.get("git_head") != checkout_head:
+                continue
             steps = entry.get("steps", [])
             for step in steps:
                 if not isinstance(step, dict):

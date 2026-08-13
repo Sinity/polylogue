@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
@@ -864,17 +864,55 @@ def pytest_basetemp_claim_path(basetemp: Path, *, kind: str) -> Path:
 
     Pytest lazily clears an explicit ``--basetemp`` before first use, so an
     ownership record inside that tree cannot survive normal initialization.
-    Claims live beside the tree and are keyed by its absolute path, not by a
-    reusable basename.
+    Claims live beside the tree and are keyed by its canonical filesystem
+    path, not by a reusable basename.  A configured symlink and an explicit
+    real-path spelling must therefore serialize through the same claim.
     """
-    digest = hashlib.sha256(str(basetemp.absolute()).encode("utf-8")).hexdigest()[:20]
-    return basetemp.parent / f"{_PYTEST_BASETEMP_CLAIM_PREFIX}{kind}-{digest}"
+    try:
+        canonical = basetemp.resolve()
+    except OSError:
+        canonical = basetemp.absolute()
+    digest = hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()[:20]
+    return canonical.parent / f"{_PYTEST_BASETEMP_CLAIM_PREFIX}{kind}-{digest}"
 
 
 def clear_managed_pytest_basetemp_claim(basetemp: Path) -> None:
     """Remove the durable claim after a managed run's tree is reclaimed."""
     with contextlib.suppress(OSError):
         pytest_basetemp_claim_path(basetemp, kind="managed").unlink()
+
+
+def _try_acquire_pytest_basetemp_claim_lock(basetemp: Path) -> TextIO | None:
+    """Acquire the adjacent claim lock without waiting on another pytest run."""
+    lock_path = pytest_basetemp_claim_path(basetemp, kind="lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        handle.close()
+        return None
+    return handle
+
+
+def _managed_pytest_basetemp_owner_alive(basetemp: Path) -> bool | None:
+    """Return whether a positive managed claim still names a live process."""
+    try:
+        raw_identity = pytest_basetemp_claim_path(basetemp, kind="managed").read_text(encoding="utf-8").strip()
+        raw_pid, separator, raw_start_ticks = raw_identity.partition(":")
+        pid = int(raw_pid)
+        start_ticks = int(raw_start_ticks) if separator else None
+    except (OSError, ValueError):
+        return None
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        current_start_ticks = int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return False
+    return start_ticks is None or current_start_ticks == start_ticks
 
 
 def pytest_tmpfs_budget_exceeded(sample: Mapping[str, Any], *, budget_kb: int) -> bool:
@@ -1411,18 +1449,35 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
     basetemp = pytest_basetemp_path(root=root, run_id=run_id, env=env)
     if not basetemp.name.startswith("pytest-polylogue-") or "-seeded-" in basetemp.name:
         return None
-    # A serial pytest child may already have reclaimed this exact run-owned
-    # directory in sessionfinish. That is a completed cleanup, not an absent
-    # receipt for the durable summary to misclassify.
-    if not basetemp.exists():
-        clear_managed_pytest_basetemp_claim(basetemp)
-        return basetemp
-    with contextlib.suppress(OSError):
-        if basetemp.exists():
-            shutil.rmtree(basetemp)
-            if not basetemp.exists():
+    claim_lock = _try_acquire_pytest_basetemp_claim_lock(basetemp)
+    if claim_lock is None:
+        # A successor with the same inherited run id owns this path.  Leave
+        # both its claim and its fixture tree for that invocation to finish.
+        return None
+    try:
+        owner_alive = _managed_pytest_basetemp_owner_alive(basetemp)
+        if owner_alive is True:
+            return None
+        # A serial pytest child may already have reclaimed this exact run-owned
+        # directory in sessionfinish. That is a completed cleanup, not an absent
+        # receipt for the durable summary to misclassify.
+        if not basetemp.exists():
+            if owner_alive is False:
                 clear_managed_pytest_basetemp_claim(basetemp)
-                return basetemp
+            return basetemp
+        # Reclaim only a positively claimed tree whose owner is confirmed dead.
+        # An unknown claim/tree may be caller-owned or belong to a newer runner.
+        if owner_alive is not False:
+            return None
+        with contextlib.suppress(OSError):
+            if basetemp.exists():
+                shutil.rmtree(basetemp)
+                if not basetemp.exists():
+                    clear_managed_pytest_basetemp_claim(basetemp)
+                    return basetemp
+    finally:
+        with contextlib.suppress(OSError):
+            claim_lock.close()
     return None
 
 

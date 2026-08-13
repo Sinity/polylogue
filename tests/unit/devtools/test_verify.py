@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -7,8 +8,10 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -77,6 +80,7 @@ from devtools.verify import (
 )
 from devtools.verify_runs import (
     PytestResourceError,
+    PytestStepArtifacts,
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_runtime_policy,
@@ -1320,6 +1324,39 @@ def test_run_terminalizes_containment_failure_without_cleaning_basetemp(tmp_path
     assert metadata["diagnosis"] == "pytest_containment_unproven"
     assert run._payload["steps"][0]["status"] == "failed"
     assert run._payload["steps"][0]["termination_reason"].startswith("pytest containment did not quiesce")
+
+
+def test_run_recovers_xdist_collection_facts_after_containment_failure(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+
+    def _write_worker_facts(*_args: object, artifacts: PytestStepArtifacts, **_kwargs: object) -> None:
+        artifacts.events_dir.mkdir(parents=True, exist_ok=True)
+        for worker_id, pid, duration in (("gw1", 11, 1.5), ("gw0", 10, 2.5)):
+            (artifacts.events_dir / f"{worker_id}-{pid}.collection.json").write_text(
+                json.dumps(
+                    {
+                        "worker_id": worker_id,
+                        "pid": pid,
+                        "selected_count": 3,
+                        "deselected_count": 2,
+                        "selected_nodeids": ["tests/unit/example.py::test_selected"],
+                        "collection_duration_s": duration,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        raise verify.PytestContainmentError("controller interrupted")
+
+    with patch("devtools.verify._run_pytest_with_heartbeat", side_effect=_write_worker_facts):
+        rc, _elapsed, metadata = _run("pytest focused", ["pytest", "-n", "2"], run=run)
+
+    assert rc == 125
+    assert metadata["selected_count"] == 3
+    assert metadata["deselected_count"] == 2
+    assert metadata["collection_duration_s"] == 2.5
+    selection = json.loads((run.run_dir / "steps" / "01-pytest-focused" / "selection.json").read_text())
+    assert selection["recovered_after_interruption"] is True
+    assert selection["worker_id"] == "runner"
 
 
 def test_verify_main_records_containment_failure_as_terminal_history(
@@ -3147,11 +3184,62 @@ def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> Non
     env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
     basetemp = pytest_basetemp_path(root=tmp_path, run_id="run-1", env=env)
     (basetemp / "worker-output").mkdir(parents=True)
+    verify_runs.pytest_basetemp_claim_path(basetemp, kind="managed").write_text("999999:1", encoding="utf-8")
 
     cleaned = cleanup_managed_pytest_basetemp(root=tmp_path, run_id="run-1", env=env)
 
     assert cleaned == basetemp
     assert not basetemp.exists()
+
+
+def test_pytest_basetemp_claim_path_canonicalizes_symlink_aliases(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+
+    real_basetemp = real_root / "pytest-polylogue-run"
+    linked_basetemp = linked_root / "pytest-polylogue-run"
+
+    assert verify_runs.pytest_basetemp_claim_path(real_basetemp, kind="lock") == verify_runs.pytest_basetemp_claim_path(
+        linked_basetemp, kind="lock"
+    )
+
+
+def test_cleanup_managed_pytest_basetemp_leaves_successor_claim_while_locked(tmp_path: Path) -> None:
+    env = {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(tmp_path)}
+    basetemp = pytest_basetemp_path(root=tmp_path, run_id="reused-run", env=env)
+    basetemp.mkdir(parents=True)
+    (basetemp / "successor-fixture").write_text("live", encoding="utf-8")
+    claim_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="managed")
+    claim_path.write_text("999999:1", encoding="utf-8")
+    lock_path = verify_runs.pytest_basetemp_claim_path(basetemp, kind="lock")
+
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        assert cleanup_managed_pytest_basetemp(root=tmp_path, run_id="reused-run", env=env) is None
+
+    assert basetemp.exists()
+    assert claim_path.exists()
+
+
+def test_pytest_workload_receipt_uses_allocated_basetemp_peak() -> None:
+    receipt = verify._pytest_workload_receipt(
+        label="pytest sparse",
+        cmd=["pytest", "tests/unit/example.py"],
+        elapsed_s=1.0,
+        returncode=0,
+        termination_reason=None,
+        resource_summary={"peak_basetemp_size_kb": 64 * 1024, "peak_basetemp_allocated_kb": 8},
+        last_resource_sample={"tree_rss_kb": 0, "tree_pss_kb": 0, "tree_cpu_s": 0.0},
+        tmpfs_budget_mb=1,
+        basetemp_cleanup=None,
+        concurrency=1,
+    )
+
+    execute = next(phase for phase in receipt["phases"] if phase["name"] == "execute")
+    assert execute["temp_storage_bytes"] == 8 * 1024
+    assert "Logical basetemp peak retained as diagnostic evidence: 67108864 bytes." in receipt["notes"]
 
 
 def test_cleanup_managed_pytest_basetemp_recognizes_child_cleanup(tmp_path: Path) -> None:
@@ -3250,6 +3338,83 @@ def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     assert rc == 0
     cleanup.assert_called_once()
     assert metadata["basetemp_cleanup"] == str(cleaned)
+
+
+@pytest.mark.uses_real_clock("the heartbeat loop computes elapsed containment time")
+def test_heartbeat_persists_drained_output_before_interrupting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest buffered", cmd=["pytest"])
+    stdout_read, stdout_write = os.pipe()
+    stderr_read, stderr_write = os.pipe()
+    os.write(stdout_write, b"buffered stdout before interrupt\n")
+    os.close(stdout_write)
+    os.close(stderr_write)
+    stdout_pipe = os.fdopen(stdout_read, "rb", closefd=True)
+    stderr_pipe = os.fdopen(stderr_read, "rb", closefd=True)
+
+    class _Process:
+        pid = os.getpid()
+        stdout = stdout_pipe
+        stderr = stderr_pipe
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    class _InterruptingSelector:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def register(self, _fileobj: object, _events: int, _data: str) -> None:
+            return None
+
+        def get_map(self) -> dict[int, object]:
+            return {1: object()}
+
+        def select(self, timeout: float | None = None) -> list[tuple[SimpleNamespace, int]]:
+            del timeout
+            if self.calls == 0:
+                self.calls += 1
+                return [(SimpleNamespace(fd=stdout_pipe.fileno(), data="stdout", fileobj=stdout_pipe), 1)]
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            return None
+
+    launch = SimpleNamespace(
+        argv=["pytest"],
+        receipt_path=tmp_path / "containment.json",
+        request_path=tmp_path / "request.json",
+        mode="process-group",
+        unit=None,
+        cgroup_path=None,
+        fallback_argv=None,
+        runtime_cap_s=0.0,
+    )
+    try:
+        with (
+            patch("devtools.verify.enable_child_subreaper", return_value=True),
+            patch("devtools.verify.descendant_process_identities", return_value=()),
+            patch("devtools.verify.build_supervisor_launch", return_value=launch),
+            patch("devtools.verify.subprocess.Popen", return_value=_Process()),
+            patch("devtools.verify._wait_for_supervisor_start", return_value={"status": "started"}),
+            patch("devtools.verify.selectors.DefaultSelector", _InterruptingSelector),
+            patch("devtools.verify._await_interrupted_pytest_containment"),
+            patch("devtools.verify._write_pytest_progress"),
+            patch("devtools.verify.ResourceSampler", return_value=MagicMock()),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                verify._run_pytest_with_heartbeat(
+                    ["pytest"], cwd=str(tmp_path), env={}, t0=time.monotonic(), run=run, artifacts=artifacts
+                )
+    finally:
+        stdout_pipe.close()
+        stderr_pipe.close()
+
+    assert artifacts.stdout_path.read_text(encoding="utf-8") == "buffered stdout before interrupt\n"
+    assert artifacts.stderr_path.read_text(encoding="utf-8") == ""
+    assert artifacts.output_path.read_text(encoding="utf-8") == "buffered stdout before interrupt\n"
+    assert (tmp_path / PYTEST_OUTPUT_PATH).read_text(encoding="utf-8") == "buffered stdout before interrupt\n"
 
 
 def test_explicit_basetemp_root_retains_managed_resource_monitoring(

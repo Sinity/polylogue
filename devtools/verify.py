@@ -466,7 +466,8 @@ def _pytest_workload_receipt(
     peak_swap_pss_kb = resource_summary.get("peak_tree_swap_pss_kb")
     read_bytes = resource_summary.get("tree_read_bytes_delta")
     write_bytes = resource_summary.get("tree_write_bytes_delta")
-    peak_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
+    peak_basetemp_kb = resource_summary.get("peak_basetemp_allocated_kb")
+    logical_basetemp_kb = resource_summary.get("peak_basetemp_size_kb")
     final_rss_kb = last_resource_sample.get("tree_rss_kb") if last_resource_sample is not None else None
     final_pss_kb = last_resource_sample.get("tree_pss_kb") if last_resource_sample is not None else None
     total_cpu_s = last_resource_sample.get("tree_cpu_s") if last_resource_sample is not None else None
@@ -564,7 +565,14 @@ def _pytest_workload_receipt(
         ),
         cancellation_requested=termination_reason is not None,
         cleanup_complete=True if basetemp_cleanup is not None else None,
-        notes=("Managed pytest process-tree sampler adapter.",),
+        notes=(
+            "Managed pytest process-tree sampler adapter.",
+            (
+                f"Logical basetemp peak retained as diagnostic evidence: {logical_basetemp_kb * 1024} bytes."
+                if isinstance(logical_basetemp_kb, int)
+                else "Logical basetemp peak unavailable."
+            ),
+        ),
     )
     return dict(receipt.to_payload())
 
@@ -613,6 +621,15 @@ def _write_pytest_output(stdout: str, stderr: str) -> None:
     """Persist captured pytest output for killed runs and post-mortem review."""
     PYTEST_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     PYTEST_OUTPUT_PATH.write_text(stdout + ("\n" if stdout and stderr else "") + stderr, encoding="utf-8")
+
+
+def _persist_pytest_output(stdout: str, stderr: str, *, artifacts: PytestStepArtifacts | None) -> None:
+    """Persist drained pytest output on both ordinary and exceptional exits."""
+    _write_pytest_output(stdout, stderr)
+    if artifacts is not None:
+        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
+        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
+        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
 
 
 def _write_pytest_progress(
@@ -1473,12 +1490,19 @@ def _run_pytest_with_heartbeat(
             if process.poll() is not None and not selector.get_map():
                 break
     except BaseException:
-        _await_interrupted_pytest_containment(
-            process,
-            launch,
-            term_grace_s=term_grace_s,
-            preserved_runner_descendants=preserved_runner_descendants,
-        )
+        try:
+            _await_interrupted_pytest_containment(
+                process,
+                launch,
+                term_grace_s=term_grace_s,
+                preserved_runner_descendants=preserved_runner_descendants,
+            )
+        finally:
+            _persist_pytest_output(
+                b"".join(output["stdout"]).decode(errors="replace"),
+                b"".join(output["stderr"]).decode(errors="replace"),
+                artifacts=artifacts,
+            )
         raise
     finally:
         selector.close()
@@ -1547,11 +1571,7 @@ def _run_pytest_with_heartbeat(
             events_path=events_path,
             events_dir=events_dir,
         )
-    _write_pytest_output(stdout, stderr)
-    if artifacts is not None:
-        artifacts.stdout_path.write_text(stdout, encoding="utf-8")
-        artifacts.stderr_path.write_text(stderr, encoding="utf-8")
-        artifacts.output_path.write_text(stdout + stderr, encoding="utf-8")
+    _persist_pytest_output(stdout, stderr, artifacts=artifacts)
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
@@ -1715,6 +1735,11 @@ def _run(
             if isinstance(termination_reason, str):
                 metadata["termination_reason"] = termination_reason
         selection_path = artifacts.selection_path if artifacts is not None else PYTEST_SELECTION_PATH
+        if interrupted or containment_error is not None:
+            _recover_worker_collection_facts(
+                events_dir=artifacts.events_dir if artifacts is not None else Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]),
+                selection_path=selection_path,
+            )
         selection = _read_json_artifact(selection_path)
         if selection is not None:
             selected_count = selection.get("selected_count")
@@ -2582,6 +2607,50 @@ def _testmon_seed_identity(
 def _read_testmon_seed_attempt() -> dict[str, Any] | None:
     payload = _read_json_artifact(TESTMON_SEED_ATTEMPT)
     return payload if isinstance(payload, dict) else None
+
+
+def _recover_worker_collection_facts(*, events_dir: Path, selection_path: Path) -> bool:
+    """Publish xdist worker collection facts when its controller never finishes.
+
+    The progress plugin normally merges these facts during controller
+    ``pytest_sessionfinish``. Interrupted containment bypasses that hook, so
+    the runner recovers the same canonical worker fact before it terminalizes
+    the durable step record.
+    """
+    payloads: list[tuple[str, int, str, dict[str, Any]]] = []
+    for path in events_dir.glob("*.collection.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        worker_id = payload.get("worker_id")
+        pid = payload.get("pid")
+        if isinstance(worker_id, str) and isinstance(pid, int):
+            payloads.append((worker_id, pid, path.name, payload))
+    if not payloads:
+        return False
+    payloads.sort()
+    selection = dict(payloads[0][3])
+    durations = [payload.get("collection_duration_s") for *_ignored, payload in payloads]
+    numeric_durations = [duration for duration in durations if isinstance(duration, int | float)]
+    if numeric_durations:
+        selection["collection_duration_s"] = max(numeric_durations)
+    selection.update(
+        {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "worker_id": "runner",
+            "pid": os.getpid(),
+            "recovered_after_interruption": True,
+        }
+    )
+    try:
+        selection_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = selection_path.with_name(f"{selection_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(selection, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(selection_path)
+    except OSError:
+        return False
+    return True
 
 
 def _flatten_seed_outcomes(attempt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
