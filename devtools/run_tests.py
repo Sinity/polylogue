@@ -46,11 +46,22 @@ from devtools.verify import (
     PYTEST_SUMMARY_PATH,
     _clear_pytest_report,
     _run,
+    _worktree_fingerprint,
 )
 from devtools.verify_runs import VerifyRun, append_verify_history, git_head
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOCK_PATH = ROOT / ".cache" / "test-run.lock"
+
+
+def _anchor_test_paths() -> None:
+    """Anchor focused-test artifacts to this checkout when called below it."""
+    current = Path.cwd().resolve()
+    try:
+        current.relative_to(ROOT.resolve())
+    except ValueError:
+        return
+    os.chdir(ROOT)
 
 
 def _has_worker_flag(selection: list[str]) -> bool:
@@ -112,6 +123,7 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _anchor_test_paths()
     try:
         fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
@@ -147,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             root=ROOT,
             polylogue_import_path=str(polylogue_import_path),
             environment_fingerprint=environment_fingerprint,
+            worktree_fingerprint=_worktree_fingerprint(ROOT),
         )
         started = time.monotonic()
         try:

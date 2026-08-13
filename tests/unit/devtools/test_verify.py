@@ -445,7 +445,7 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
                 "event": "test_report",
                 "nodeid": f"{ordered[0]}@web-reader",
                 "when": "call",
-                "outcome": "passed",
+                "outcome": "xfailed",
             }
         )
         + "\n"
@@ -459,7 +459,7 @@ def test_seed_shard_checkpoint_preserves_completed_shards_for_resume(
 
     assert checkpointed["shards"][0]["status"] == "complete"
     assert checkpointed["shards"][1]["status"] == "pending"
-    assert json.loads(TESTMON_SEED_ATTEMPT.read_text())["shards"][0]["node_outcomes"][0]["outcome"] == "passed"
+    assert json.loads(TESTMON_SEED_ATTEMPT.read_text())["shards"][0]["node_outcomes"][0]["outcome"] == "xfailed"
     resumed = _prepare_testmon_seed_attempt(
         identity={
             "git_head": "head",
@@ -1968,6 +1968,39 @@ def test_seed_node_outcomes_accept_setup_skip_as_terminal_skip(tmp_path: Path) -
     ]
 
 
+def test_seed_node_outcomes_preserve_call_and_fixture_xfail_xpass(tmp_path: Path) -> None:
+    """Durable pytest reports, including fixture ``pytest.xfail()``, finish seed nodes."""
+    events = tmp_path / "events.jsonl"
+    nodes = [
+        "tests/test_a.py::test_call_xfailed",
+        "tests/test_a.py::test_call_xpassed",
+        "tests/test_a.py::test_setup_xfailed",
+    ]
+    events.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {"event": "test_report", "nodeid": nodes[0], "when": "call", "outcome": "xfailed"},
+                {"event": "test_report", "nodeid": nodes[1], "when": "call", "outcome": "xpassed"},
+                {"event": "test_report", "nodeid": nodes[2], "when": "setup", "outcome": "xfailed"},
+            )
+        )
+        + "\n"
+    )
+
+    outcomes = _seed_node_outcomes_from_events(
+        events,
+        expected_nodeids=nodes,
+        database={"node_outcomes": {}},
+        pytest_step={},
+        use_database_fallback=False,
+    )
+
+    assert {item["nodeid"]: item["outcome"] for item in outcomes} == dict(
+        zip(nodes, ("xfailed", "xpassed", "xfailed"), strict=True)
+    )
+
+
 def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text(
@@ -1978,18 +2011,27 @@ def test_resumed_seed_carries_forward_prior_terminal_outcome(tmp_path: Path) -> 
     )
     outcomes = _seed_node_outcomes_from_events(
         events,
-        expected_nodeids=["tests/test_a.py::test_repaired", "tests/test_b.py::test_prior"],
+        expected_nodeids=[
+            "tests/test_a.py::test_repaired",
+            "tests/test_b.py::test_prior",
+            "tests/test_c.py::test_expected_failure",
+        ],
         database={"node_outcomes": {"tests/test_b.py::test_prior": "passed"}},
         pytest_step={},
         use_database_fallback=False,
         prior_node_outcomes={
-            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"}
+            "tests/test_b.py::test_prior": {"nodeid": "tests/test_b.py::test_prior", "outcome": "passed"},
+            "tests/test_c.py::test_expected_failure": {
+                "nodeid": "tests/test_c.py::test_expected_failure",
+                "outcome": "xfailed",
+            },
         },
     )
 
     assert {item["nodeid"]: item["outcome"] for item in outcomes} == {
         "tests/test_a.py::test_repaired": "passed",
         "tests/test_b.py::test_prior": "passed",
+        "tests/test_c.py::test_expected_failure": "xfailed",
     }
 
 

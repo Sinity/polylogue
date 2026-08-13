@@ -92,12 +92,16 @@ def test_progress_plugin_preserves_xfail_and_xpass_in_durable_statistics(
     pytest_progress_plugin.pytest_runtest_logreport(
         _Report("test_xfailed", "call", "skipped", wasxfail="known failure")
     )
-    pytest_progress_plugin.pytest_runtest_logstart("test_xpassed", ("tests/a.py", 2, "test_xpassed"))
+    pytest_progress_plugin.pytest_runtest_logstart("test_setup_xfailed", ("tests/a.py", 2, "test_setup_xfailed"))
+    pytest_progress_plugin.pytest_runtest_logreport(
+        _Report("test_setup_xfailed", "setup", "skipped", wasxfail="fixture calls pytest.xfail()")
+    )
+    pytest_progress_plugin.pytest_runtest_logstart("test_xpassed", ("tests/a.py", 3, "test_xpassed"))
     pytest_progress_plugin.pytest_runtest_logreport(_Report("test_xpassed", "call", "passed", wasxfail="known failure"))
 
     statistics = aggregate_pytest_statistics(step)
 
-    assert statistics["outcomes"] == {"xfailed": 1, "xpassed": 1}
+    assert statistics["outcomes"] == {"xfailed": 2, "xpassed": 1}
 
 
 def test_progress_plugin_skips_xdist_controller_forwarding_copy(

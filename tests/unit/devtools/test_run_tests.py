@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -115,6 +116,46 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
+
+
+def test_main_anchors_and_refreshes_root_artifacts_from_a_subdirectory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "checkout"
+    subdirectory = root / "devtools"
+    subdirectory.mkdir(parents=True)
+    stale_report = root / verify.PYTEST_REPORT_PATH
+    stale_statistics = root / verify.CURRENT_STATISTICS_PATH
+    stale_report.parent.mkdir(parents=True)
+    stale_report.write_text('{"stale": true}')
+    stale_statistics.write_text('{"stale": true}')
+    captured: dict[str, object] = {}
+
+    def fake_run(_label: str, _cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        captured["cwd"] = kwargs["cwd"]
+        Path(verify.PYTEST_REPORT_PATH).write_text('{"fresh": true}')
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.setattr(run_tests, "ROOT", root)
+    monkeypatch.setattr(run_tests, "_LOCK_PATH", root / ".cache" / "test-run.lock")
+    monkeypatch.setattr(
+        run_tests,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=root / "polylogue", as_dict=lambda: {}),
+    )
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "_worktree_fingerprint", lambda _root: "fingerprint")
+    monkeypatch.setattr(run_tests, "_run", fake_run)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
+    monkeypatch.chdir(subdirectory)
+
+    assert run_tests.main(["tests/unit/example.py"]) == 0
+
+    assert captured["cwd"] == str(root)
+    assert stale_report.read_text() == '{"fresh": true}'
+    assert not stale_statistics.exists()
+    assert not (subdirectory / ".cache").exists()
 
 
 def test_git_head_records_checkout_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

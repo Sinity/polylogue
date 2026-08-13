@@ -281,8 +281,8 @@ def aggregate_pytest_statistics(
             terminal = "error"
         elif isinstance(call, str):
             terminal = call
-        elif setup == "skipped" or teardown == "skipped":
-            terminal = "skipped"
+        elif setup in {"skipped", "xfailed", "xpassed"} or teardown in {"skipped", "xfailed", "xpassed"}:
+            terminal = setup if setup in {"skipped", "xfailed", "xpassed"} else teardown
         else:
             # A test may have emitted its start event just before an interrupt
             # or forced containment cleanup. Keep that missing terminal phase
@@ -374,9 +374,9 @@ def aggregate_pytest_statistics(
     }
 
 
-def git_dirty() -> bool:
+def git_dirty(cwd: Path | None = None) -> bool:
     try:
-        result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5, cwd=cwd)
     except (OSError, subprocess.TimeoutExpired):
         return True
     return bool(result.stdout.strip())
@@ -435,6 +435,7 @@ class VerifyRun:
         root: Path | None = None,
         polylogue_import_path: str | None = None,
         environment_fingerprint: Mapping[str, Any] | None = None,
+        worktree_fingerprint: str | None = None,
     ) -> None:
         self.root = root or Path.cwd()
         self.run_id = make_run_id(tier=tier)
@@ -444,7 +445,7 @@ class VerifyRun:
             "tier": tier,
             "argv": list(argv),
             "git_head": git_head,
-            "git_dirty": git_dirty(),
+            "git_dirty": git_dirty(self.root),
             # Receipt for the worktree-import hazard (devtools/checkout_guard.py):
             # the resolved `polylogue` package path this run actually used, so a
             # wrong-tree run is visible after the fact from the run artifact
@@ -452,6 +453,7 @@ class VerifyRun:
             # caller and this fired for a different process boundary.
             "polylogue_import_path": polylogue_import_path,
             "environment_fingerprint": dict(environment_fingerprint) if environment_fingerprint is not None else None,
+            "worktree_fingerprint": worktree_fingerprint,
             # A VerifyRun can be constructed by maintenance/test helpers that
             # do not have a checkout fingerprint. Keep its current-run marker
             # attributable to this checkout either way.

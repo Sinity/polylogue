@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
-from devtools.verify_runs import VERIFY_HISTORY_PATH, git_head
+from devtools.verify import _worktree_fingerprint
+from devtools.verify_runs import VERIFY_HISTORY_PATH, git_dirty, git_head
 
 ROOT = _get_root()
 
@@ -224,11 +225,28 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
 )
 
 
+def _static_evidence_is_bound(
+    entry: dict[str, Any],
+    *,
+    checkout_root: str,
+    checkout_head: str | None,
+    worktree_fingerprint: str,
+) -> bool:
+    """Accept only evidence tied to the exact checkout contents being viewed."""
+    return (
+        entry.get("checkout_root") == checkout_root
+        and entry.get("git_head") == checkout_head
+        and entry.get("worktree_fingerprint") == worktree_fingerprint
+    )
+
+
 def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     history_path = VERIFY_HISTORY_PATH
     last_result_path = root / LAST_VERIFY_RESULT_REL
     checkout_root = str(root.resolve())
     checkout_head = git_head(root)
+    checkout_dirty = git_dirty(root)
+    worktree_fingerprint = None if checkout_dirty else _worktree_fingerprint(root)
 
     # Prefer last-verify-result.json (the most recent run) then walk back through
     # history to find the last status for each gate.
@@ -238,7 +256,16 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
         try:
             data = json.loads(last_result_path.read_text())
             result = data.get("result") if isinstance(data, dict) else None
-            if isinstance(result, dict):
+            if (
+                isinstance(result, dict)
+                and worktree_fingerprint is not None
+                and _static_evidence_is_bound(
+                    result,
+                    checkout_root=checkout_root,
+                    checkout_head=checkout_head,
+                    worktree_fingerprint=worktree_fingerprint,
+                )
+            ):
                 for step in result.get("steps", []):
                     if isinstance(step, dict) and isinstance(step.get("name"), str):
                         last_steps[step["name"]] = step
@@ -265,7 +292,12 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     # appearance in history.
     if history_entries:
         for entry in reversed(history_entries):
-            if entry.get("checkout_root") != checkout_root or entry.get("git_head") != checkout_head:
+            if worktree_fingerprint is None or not _static_evidence_is_bound(
+                entry,
+                checkout_root=checkout_root,
+                checkout_head=checkout_head,
+                worktree_fingerprint=worktree_fingerprint,
+            ):
                 continue
             steps = entry.get("steps", [])
             for step in steps:
@@ -279,7 +311,8 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
     for gate_name in _STATIC_GATE_NAMES:
         step = last_steps.get(gate_name)
         if step is None:
-            gates.append({"name": gate_name, "available": False, "reason": "no run observed in cached history"})
+            reason = "checkout has uncommitted changes" if checkout_dirty else "no bound run observed in cached history"
+            gates.append({"name": gate_name, "available": False, "reason": reason})
             continue
         exit_code = step.get("exit", -1)
         gates.append(
@@ -294,7 +327,7 @@ def _static_gates(root: Path, *, now: datetime) -> dict[str, Any]:
         )
     failing = [g for g in gates if g.get("status") == "fail"]
     return {
-        "available": last_result_path.exists() or history_path.exists(),
+        "available": bool(last_steps) and not checkout_dirty,
         "history_path": str(history_path),
         "last_result_path": str(LAST_VERIFY_RESULT_REL),
         "total_gates_tracked": len(_STATIC_GATE_NAMES),

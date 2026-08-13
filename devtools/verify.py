@@ -59,6 +59,8 @@ from devtools.pytest_supervisor import (
 )
 from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
 from devtools.testmon_state import (
+    SUCCESSFUL_NODE_OUTCOMES,
+    TERMINAL_NODE_OUTCOMES,
     BindingMode,
     GraphStatus,
     SeedAttemptOutcome,
@@ -2540,15 +2542,16 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _worktree_fingerprint() -> str:
+def _worktree_fingerprint(root: Path | None = None) -> str:
     """Fingerprint tracked changes plus exact non-ignored untracked content."""
+    checkout_root = (root or Path.cwd()).resolve()
     digest = hashlib.sha256()
     for command in (
         ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         ["git", "diff", "--binary", "HEAD", "--"],
     ):
         try:
-            result = subprocess.run(command, capture_output=True, timeout=30)
+            result = subprocess.run(command, capture_output=True, timeout=30, cwd=checkout_root)
         except (OSError, subprocess.TimeoutExpired):
             return "unavailable"
         if result.returncode != 0:
@@ -2560,6 +2563,7 @@ def _worktree_fingerprint() -> str:
             ["git", "ls-files", "--others", "--exclude-standard", "-z"],
             capture_output=True,
             timeout=30,
+            cwd=checkout_root,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
@@ -2568,7 +2572,7 @@ def _worktree_fingerprint() -> str:
     for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
         try:
             path_text = os.fsdecode(raw_path)
-            path = Path(path_text)
+            path = checkout_root / path_text
             mode = path.lstat().st_mode
             digest.update(raw_path)
             digest.update(b"\0")
@@ -2991,7 +2995,7 @@ def _checkpoint_testmon_seed_shard(
         prior_node_outcomes=prior,
         use_database_fallback=False,
     )
-    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in outcomes)
+    terminal = all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in outcomes)
     selection_matches = selected == nodeids
     shard.update(
         {
@@ -3098,6 +3102,10 @@ def _seed_node_outcomes_from_events(
             outcome, reason = "timeout", "pytest-timeout report"
         elif any(report.get("when") in {"setup", "teardown"} for report in failed_reports):
             outcome, reason = "error", "fixture setup/teardown failed"
+        elif any(report.get("outcome") == "xfailed" for report in node_reports):
+            outcome, reason = "xfailed", "pytest expected failure"
+        elif any(report.get("outcome") == "xpassed" for report in node_reports):
+            outcome, reason = "xpassed", "pytest unexpected pass"
         elif any(report.get("outcome") == "failed" for report in call_reports):
             outcome, reason = "failed", "test call failed"
         elif any(report.get("outcome") == "passed" for report in call_reports):
@@ -3136,7 +3144,7 @@ def _seed_node_outcomes_from_events(
         elif prior_node_outcomes is not None and nodeid in prior_node_outcomes:
             prior = prior_node_outcomes[nodeid]
             prior_outcome = prior.get("outcome")
-            if prior_outcome in {"passed", "failed", "error", "skipped"}:
+            if prior_outcome in TERMINAL_NODE_OUTCOMES:
                 outcome, reason = str(prior_outcome), "terminal outcome carried from the prior seed attempt"
             else:
                 outcome, reason = "missing", "prior seed attempt has no terminal outcome"
@@ -3271,7 +3279,7 @@ def _finalize_testmon_seed_attempt(
             },
         )
     unsuccessful_nodeids = [
-        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES
     ]
     green_complete = (
         exit_code == 0
@@ -3296,7 +3304,7 @@ def _finalize_testmon_seed_attempt(
         and not database["missing_nodeids"]
         and database["orphan_execution_edges"] == 0
         and database["orphan_fingerprint_edges"] == 0
-        and all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+        and all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
     )
     outcome = _seed_attempt_outcome(
         release_eligible=release_eligible,
@@ -3312,7 +3320,7 @@ def _finalize_testmon_seed_attempt(
             {
                 "status": (
                     SeedShardStatus.COMPLETE.value
-                    if all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+                    if all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
                     else SeedShardStatus.INCOMPLETE.value
                 ),
                 "node_outcomes": node_outcomes,
@@ -3451,7 +3459,7 @@ def _refresh_testmon_selection_attempt(
         and database.get("orphan_execution_edges") == 0
         and database.get("orphan_fingerprint_edges") == 0
     )
-    terminal = all(item.get("outcome") in {"passed", "failed", "error", "skipped"} for item in node_outcomes)
+    terminal = all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
     prior_selection = attempt.get("selection")
     payload = {
         **attempt,
@@ -3482,7 +3490,7 @@ def _refresh_testmon_selection_attempt(
             )
         ),
         "unsuccessful_nodeids": [
-            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in {"passed", "skipped"}
+            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES
         ],
         "testmon_data": _file_fingerprint(TESTMON_DATA),
         "run_id": run.run_id,
@@ -3587,12 +3595,14 @@ def main(argv: list[str] | None = None) -> int:
 
     head = _git_head()
     t0 = time.monotonic()
+    worktree_fingerprint = _worktree_fingerprint()
     verify_run = VerifyRun(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
         polylogue_import_path=str(polylogue_import_path),
         environment_fingerprint=environment_fingerprint,
+        worktree_fingerprint=worktree_fingerprint,
     )
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False
@@ -3815,6 +3825,7 @@ def main(argv: list[str] | None = None) -> int:
         "tier": tier,
         "run_id": verify_run.run_id,
         "checkout_root": str(ROOT.resolve()),
+        "worktree_fingerprint": worktree_fingerprint,
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
