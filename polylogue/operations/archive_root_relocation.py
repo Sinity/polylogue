@@ -8,6 +8,7 @@ import os
 import sqlite3
 import stat
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -92,6 +93,19 @@ class RelocationSourceTrain(BaseModel):
     source_continuity_receipt_digests: tuple[str, ...]
 
 
+class RelocationActiveIndexPointer(BaseModel):
+    """The active index pointer's old target and its owned destination mapping."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    old_target: str
+    new_target: str
+    old_resolved_target: str
+    new_resolved_target: str
+    device: int
+    inode: int
+
+
 class ArchiveRootRelocationPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -111,6 +125,7 @@ class ArchiveRootRelocationPlan(BaseModel):
     backup_profile: Literal["full_evidence"]
     backup_tier_inventory: tuple[str, ...]
     tiers: tuple[RelocationTierEvidence, ...]
+    active_index_pointer: RelocationActiveIndexPointer | None
     source_trains: tuple[RelocationSourceTrain, ...]
     stopped_daemon_evidence_ref: str
     single_writer_evidence_ref: str
@@ -128,6 +143,9 @@ class ArchiveRootRelocationReceipt(BaseModel):
     authorization: str
     manifest_before_sha256: tuple[str, ...]
     manifest_after_sha256: tuple[str, ...]
+    active_index_pointer_old_target: str | None = None
+    active_index_pointer_new_target: str | None = None
+    active_index_pointer_new_resolved_target: str | None = None
     resume_command: str
     prepared_receipt_sha256: str | None = None
     receipt_sha256: str
@@ -219,11 +237,16 @@ def _tier_snapshot(
     *,
     old_device: int,
     old_inode: int,
+    active_index_pointer: RelocationActiveIndexPointer | None = None,
 ) -> RelocationTierEvidence:
-    location = ArchiveLocation.resolve(root)
-    identity = location.active_tier(tier.value)
-    path = identity.configured_path
-    resolved_path = identity.resolved_path
+    if tier is ArchiveTier.INDEX and active_index_pointer is not None:
+        path = Path(active_index_pointer.new_target)
+        resolved_path = Path(active_index_pointer.new_resolved_target)
+    else:
+        location = ArchiveLocation.resolve(root)
+        identity = location.active_tier(tier.value)
+        path = identity.configured_path
+        resolved_path = identity.resolved_path
     if tier is ArchiveTier.INDEX:
         # The promoted index route deliberately uses an active-generation
         # pointer.  Snapshot the resolved generation, never a shadow path.
@@ -263,6 +286,144 @@ def _tier_snapshot(
         content_sha256=content_sha256,
         quick_check=quick_check,
     )
+
+
+def _read_active_index_pointer(root: Path) -> tuple[Path, Path] | None:
+    """Read one absolute pointer target without resolving a stale old-root path."""
+    pointer = root / ".index-active-pointer"
+    try:
+        metadata = pointer.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ArchiveRootRelocationError(f"cannot inspect active index pointer: {pointer}") from exc
+    try:
+        if stat.S_ISLNK(metadata.st_mode):
+            raw = os.readlink(pointer)
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            raw = pointer.read_text(encoding="utf-8").strip()
+        else:
+            raise ArchiveRootRelocationError(
+                f"active index pointer is not a regular single-linked file or symlink: {pointer}"
+            )
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ArchiveRootRelocationError(f"cannot read active index pointer: {pointer}") from exc
+    target = Path(raw)
+    if not target.is_absolute() or target.name != "index.db":
+        raise ArchiveRootRelocationError(f"invalid active index pointer target: {target}")
+    return pointer, Path(os.path.abspath(target))
+
+
+def _active_index_pointer_evidence(*, old_root: Path, new_root: Path) -> RelocationActiveIndexPointer | None:
+    """Map an old-root-owned target before the relocation can publish it anew."""
+    pointer = _read_active_index_pointer(new_root)
+    if pointer is None:
+        return None
+    _pointer_path, old_target = pointer
+    try:
+        relative_target = old_target.relative_to(old_root)
+    except ValueError as exc:
+        raise ArchiveRootRelocationError(
+            "archive-root relocation active index pointer target is not owned by the old root"
+        ) from exc
+    new_target = new_root / relative_target
+    try:
+        new_resolved_target = new_target.resolve(strict=True)
+    except OSError as exc:
+        raise ArchiveRootRelocationError(f"cannot resolve mapped active index pointer target: {new_target}") from exc
+    if not new_resolved_target.is_relative_to(new_root):
+        raise ArchiveRootRelocationError(
+            "archive-root relocation mapped active index pointer target escapes the destination root"
+        )
+    metadata = _real_file(new_resolved_target, label="mapped active index pointer target")
+    old_resolved_target = old_root / new_resolved_target.relative_to(new_root)
+    return RelocationActiveIndexPointer(
+        old_target=str(old_target),
+        new_target=str(new_target),
+        old_resolved_target=str(old_resolved_target),
+        new_resolved_target=str(new_resolved_target),
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+    )
+
+
+def _validate_active_index_pointer(
+    root: Path,
+    pointer: RelocationActiveIndexPointer | None,
+) -> None:
+    """Accept only the sealed pre-publication or post-publication pointer state."""
+    if pointer is None:
+        if _read_active_index_pointer(root) is not None:
+            raise ArchiveRootRelocationError("archive-root relocation active index pointer appeared after planning")
+        return
+    current = _read_active_index_pointer(root)
+    if current is None:
+        raise ArchiveRootRelocationError("archive-root relocation active index pointer disappeared")
+    _pointer_path, target = current
+    if str(target) not in {pointer.old_target, pointer.new_target}:
+        raise ArchiveRootRelocationError("archive-root relocation active index pointer target changed")
+    if str(target) == pointer.new_target:
+        try:
+            resolved = Path(pointer.new_target).resolve(strict=True)
+        except OSError as exc:
+            raise ArchiveRootRelocationError("archive-root relocation mapped active index pointer disappeared") from exc
+        metadata = _real_file(resolved, label="mapped active index pointer target")
+        if str(resolved) != pointer.new_resolved_target or (metadata.st_dev, metadata.st_ino) != (
+            pointer.device,
+            pointer.inode,
+        ):
+            raise ArchiveRootRelocationError("archive-root relocation mapped active index pointer changed")
+
+
+def _publish_active_index_pointer(root: Path, pointer: RelocationActiveIndexPointer | None) -> None:
+    """Atomically publish the sealed mapped target beneath the owned destination root."""
+    if pointer is None:
+        return
+    _validate_active_index_pointer(root, pointer)
+    current = _read_active_index_pointer(root)
+    assert current is not None
+    _path, target = current
+    if str(target) == pointer.new_target:
+        return
+    if str(target) != pointer.old_target:
+        raise ArchiveRootRelocationError("archive-root relocation active index pointer target changed")
+    directory_fd = -1
+    temporary = f".index-active-pointer.relocation-{uuid.uuid4().hex}.tmp"
+    descriptor = -1
+    try:
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        root_metadata = root.stat()
+        pinned_metadata = os.fstat(directory_fd)
+        if (root_metadata.st_dev, root_metadata.st_ino) != (pinned_metadata.st_dev, pinned_metadata.st_ino):
+            raise ArchiveRootRelocationError(
+                "archive-root relocation destination root changed during pointer publication"
+            )
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        payload = (pointer.new_target + "\n").encode("utf-8")
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, ".index-active-pointer", src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except OSError as exc:
+        raise ArchiveRootRelocationError("cannot atomically publish mapped active index pointer") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if directory_fd >= 0:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(directory_fd)
+    _validate_active_index_pointer(root, pointer)
 
 
 def _source_trains(
@@ -435,12 +596,14 @@ def prepare_archive_root_relocation(
         manifest.get("archive_root_source_identity"), label="archive root"
     )
     old_tier_identities = _authenticated_old_tier_identities(manifest)
+    active_index_pointer = _active_index_pointer_evidence(old_root=old_resolved, new_root=new_resolved)
     snapshots = tuple(
         _tier_snapshot(
             new_resolved,
             tier,
             old_device=old_tier_identities[tier.value][0],
             old_inode=old_tier_identities[tier.value][1],
+            active_index_pointer=active_index_pointer,
         )
         for tier in ArchiveTier
     )
@@ -479,6 +642,7 @@ def prepare_archive_root_relocation(
         backup_profile="full_evidence",
         backup_tier_inventory=tuple(sorted(f"{tier}.db" for tier in _TIER_NAMES)),
         tiers=snapshots,
+        active_index_pointer=active_index_pointer,
         source_trains=trains,
         stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
         single_writer_evidence_ref=single_writer_evidence_ref,
@@ -629,12 +793,14 @@ def _revalidate_plan_live_state(
             tier,
             old_device=old_tiers[tier.value][0],
             old_inode=old_tiers[tier.value][1],
+            active_index_pointer=plan.active_index_pointer,
         )
         for tier in ArchiveTier
     )
     if snapshots != plan.tiers:
         raise ArchiveRootRelocationError("archive-root relocation tier evidence changed")
     _check_backup_against_live(root, manifest=manifest, receipt=receipt, snapshots=snapshots)
+    _validate_active_index_pointer(root, plan.active_index_pointer)
     pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
     allowed_pending_relocation_receipt_sha256 = (
         pending_receipt.receipt_sha256 if pending_receipt is not None and pending_receipt.state == "prepared" else None
@@ -731,6 +897,15 @@ def _apply_archive_root_relocation_locked(
         authorization=authorization,
         manifest_before_sha256=before_hashes,
         manifest_after_sha256=(),
+        active_index_pointer_old_target=(
+            plan.active_index_pointer.old_target if plan.active_index_pointer is not None else None
+        ),
+        active_index_pointer_new_target=(
+            plan.active_index_pointer.new_target if plan.active_index_pointer is not None else None
+        ),
+        active_index_pointer_new_resolved_target=(
+            plan.active_index_pointer.new_resolved_target if plan.active_index_pointer is not None else None
+        ),
         resume_command=command,
     )
     existing_receipt = _load_receipt_for_update(receipt_path)
@@ -738,6 +913,17 @@ def _apply_archive_root_relocation_locked(
         receipt = existing_receipt
         if receipt.plan_sha256 != plan.plan_sha256 or receipt.authorization != authorization:
             raise ArchiveRootRelocationError("archive-root relocation receipt belongs to another plan")
+        expected_pointer_receipt = (
+            plan.active_index_pointer.old_target if plan.active_index_pointer is not None else None,
+            plan.active_index_pointer.new_target if plan.active_index_pointer is not None else None,
+            plan.active_index_pointer.new_resolved_target if plan.active_index_pointer is not None else None,
+        )
+        if (
+            receipt.active_index_pointer_old_target,
+            receipt.active_index_pointer_new_target,
+            receipt.active_index_pointer_new_resolved_target,
+        ) != expected_pointer_receipt:
+            raise ArchiveRootRelocationError("archive-root relocation receipt active index pointer binding changed")
         if receipt.state == "committed":
             if tuple(_sha256_file(Path(item.path)) for item in plan.source_trains) != receipt.manifest_after_sha256:
                 raise ArchiveRootRelocationError("archive-root relocation committed receipt does not match manifests")
@@ -749,6 +935,7 @@ def _apply_archive_root_relocation_locked(
             )
     else:
         _write_receipt(receipt_path, receipt, expected=None)
+    _publish_active_index_pointer(root, plan.active_index_pointer)
     after_hashes: list[str] = []
     for item in plan.source_trains:
         path = Path(item.path)
@@ -794,6 +981,15 @@ def _apply_archive_root_relocation_locked(
         authorization=authorization,
         manifest_before_sha256=before_hashes,
         manifest_after_sha256=tuple(after_hashes),
+        active_index_pointer_old_target=(
+            plan.active_index_pointer.old_target if plan.active_index_pointer is not None else None
+        ),
+        active_index_pointer_new_target=(
+            plan.active_index_pointer.new_target if plan.active_index_pointer is not None else None
+        ),
+        active_index_pointer_new_resolved_target=(
+            plan.active_index_pointer.new_resolved_target if plan.active_index_pointer is not None else None
+        ),
         resume_command=command,
         prepared_receipt_sha256=receipt.receipt_sha256,
     )

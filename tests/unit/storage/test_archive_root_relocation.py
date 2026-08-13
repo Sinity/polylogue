@@ -53,6 +53,7 @@ from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidateDigest,
     classify_blob_ref_liveness,
 )
+from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
@@ -518,6 +519,25 @@ def _released_moved_source_train(
     write_durable_change_train_manifest(manifest, historical, expected_revision=-1)
     monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 1)
     return manifest
+
+
+def _activate_movable_index_generation(root: Path) -> Path:
+    """Promote a real generation while retaining a move-safe conventional symlink.
+
+    The active-pointer target is deliberately absolute, as it is in a live
+    generation layout.  The conventional index symlink is relative so the
+    regression isolates relocation's pointer publication rather than a second
+    broken absolute symlink.
+    """
+    store = IndexGenerationStore.for_archive_root(root)
+    generation = store.create(owner_id="relocation-test", source_snapshot="snapshot")
+    store.promote(generation)
+    target = Path(generation.index_path).resolve(strict=True)
+    conventional = root / "index.db"
+    conventional.unlink()
+    conventional.symlink_to(target.relative_to(root))
+    (root / ".index-active-pointer").write_text(str(target), encoding="utf-8")
+    return target
 
 
 def _legacy_liveness_receipt(
@@ -989,6 +1009,86 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
     assert forward is not None
     assert forward.historical_target_version == 2
     assert forward.observed_live_version == 3
+
+
+def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_publication_crash(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real relocation route must move the active generation pointer with its root.
+
+    Anti-vacuity: this uses the production index-generation promotion and the
+    real relocation prepare/apply functions.  Before the repair, preparation
+    follows the stale absolute pointer beneath ``old_root`` and rejects the
+    otherwise valid moved archive before any receipt can be written.
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    _attach_retained_source_continuity(old_root, manifest)
+    old_active_target = _activate_movable_index_generation(old_root)
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+
+    assert plan.active_index_pointer is not None
+    assert plan.active_index_pointer.old_target == str(old_active_target)
+    assert plan.active_index_pointer.new_target == str(new_root / old_active_target.relative_to(old_root))
+    real_publish = relocation._publish_active_index_pointer
+
+    def crash_after_pointer_publication(*args: object, **kwargs: object) -> None:
+        real_publish(*args, **kwargs)
+        raise RuntimeError("crash after active pointer publication")
+
+    monkeypatch.setattr(relocation, "_publish_active_index_pointer", crash_after_pointer_publication)
+    with pytest.raises(RuntimeError, match="crash after active pointer publication"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert (new_root / ".index-active-pointer").read_text(
+        encoding="utf-8"
+    ).strip() == plan.active_index_pointer.new_target
+    with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
+        assert_no_prepared_archive_root_relocation(new_root)
+
+    monkeypatch.setattr(relocation, "_publish_active_index_pointer", real_publish)
+    result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert result.state == "committed"
+    assert ArchiveLocation.resolve(new_root).active_index_path == Path(plan.active_index_pointer.new_resolved_target)
+    assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
+
+
+def test_relocation_rejects_an_active_pointer_not_owned_by_the_old_root(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remap boundary cannot turn an arbitrary external index into authority."""
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    _attach_retained_source_continuity(old_root, manifest)
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    foreign = tmp_path / "foreign" / "index.db"
+    foreign.parent.mkdir()
+    foreign.write_bytes(b"foreign")
+    (old_root / ".index-active-pointer").write_text(str(foreign), encoding="utf-8")
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+
+    with pytest.raises(ArchiveRootRelocationError, match="not owned by the old root"):
+        prepare_archive_root_relocation(
+            old_root=old_root,
+            new_root=new_root,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
 
 
 def test_plan_rejects_the_real_stale_source_train_shape_before_receipt_write(
