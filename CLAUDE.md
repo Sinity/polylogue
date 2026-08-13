@@ -407,7 +407,7 @@ workflow, not optional conveniences — use them at the point named, every time:
   then auto-records a receipt if none is fresh for the current head
   sha (running `--command`, default `devtools verify`), BLOCKs the merge on
   any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
-  exit, a changed head-bound scope attestation, or an unacked review comment newer than the head commit), strips a
+  exit, a changed head-bound scope attestation, an unresolved GitHub review thread, or a changes-requested review), strips a
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
   `gh pr merge --squash`. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal

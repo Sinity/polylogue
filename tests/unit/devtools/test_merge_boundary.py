@@ -77,17 +77,46 @@ def _fake_run(
     local_head_sha = local_head_sha if local_head_sha is not None else str(pr_view["headRefOid"])
 
     def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
-        joined = " ".join(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return MagicMock(returncode=merge_exit, stdout="merged\n", stderr="" if merge_exit == 0 else "merge failed")
-        if "/issues/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/reviews" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([comments]), stderr="")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            threads = [
+                {
+                    "id": f"thread-{comment.get('id', index)}",
+                    "isResolved": False,
+                    "isOutdated": False,
+                    "comments": {
+                        "nodes": [
+                            {
+                                "databaseId": comment.get("id"),
+                                "createdAt": comment.get("created_at"),
+                                "path": comment.get("path"),
+                                "line": comment.get("line"),
+                                "body": comment.get("body", ""),
+                            }
+                        ]
+                    },
+                }
+                for index, comment in enumerate(comments)
+            ]
+            payload = [
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewDecision": None,
+                                "reviewThreads": {
+                                    "nodes": threads,
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                },
+                            }
+                        }
+                    }
+                }
+            ]
+            return MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
         if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
             return MagicMock(returncode=0, stdout=str(Path.cwd()) + "\n", stderr="")
         if cmd[:2] == ["git", "rev-parse"]:
@@ -392,7 +421,7 @@ def test_merge_refuses_when_pr_scope_carrier_is_missing(
     assert "no fresh merge-gate receipt" not in stderr
 
 
-def test_merge_refuses_when_late_unacked_review_comment_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_merge_refuses_when_unresolved_review_thread_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
     late_comment = {

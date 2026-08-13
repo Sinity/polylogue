@@ -56,27 +56,59 @@ def _fake_run(
     dirty: bool = False,
     poll_rounds: list[list[dict[str, object]]] | None = None,
 ) -> object:
-    """``comments`` (inline review comments) is returned on every poll round
-    unless ``poll_rounds`` gives an explicit per-round sequence (for testing
-    the multi-round poll itself). Issue comments and review bodies are always
-    empty here -- covered separately in the normalization tests below."""
+    """Expose ``comments`` as unresolved structured review threads.
+
+    ``poll_rounds`` provides an explicit per-round sequence for testing the
+    grace-window poll. Ordinary PR conversation is intentionally absent from
+    this helper because it is not review disposition state.
+    """
     comment_rounds: list[list[dict[str, object]]] = poll_rounds if poll_rounds is not None else [comments]
     call_count = {"round": 0}
     pr_view.setdefault("body", _scope_body(str(pr_view["headRefOid"])))
     pr_view.setdefault("isDraft", False)
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        joined = " ".join(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
-        if "/issues/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/reviews" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/comments" in joined:
+        if cmd[:3] == ["gh", "api", "graphql"]:
             round_index = min(call_count["round"], len(comment_rounds) - 1)
             call_count["round"] += 1
-            return MagicMock(returncode=0, stdout=json.dumps([comment_rounds[round_index]]), stderr="")
+            threads = []
+            for index, comment in enumerate(comment_rounds[round_index]):
+                threads.append(
+                    {
+                        "id": f"thread-{comment.get('id', index)}",
+                        "isResolved": bool(comment.get("is_resolved", False)),
+                        "isOutdated": bool(comment.get("is_outdated", False)),
+                        "comments": {
+                            "nodes": [
+                                {
+                                    "databaseId": comment.get("id"),
+                                    "createdAt": comment.get("created_at"),
+                                    "path": comment.get("path"),
+                                    "line": comment.get("line"),
+                                    "body": comment.get("body", ""),
+                                }
+                            ]
+                        },
+                    }
+                )
+            payload = [
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewDecision": pr_view.get("_reviewDecision"),
+                                "reviewThreads": {
+                                    "nodes": threads,
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                },
+                            }
+                        }
+                    }
+                }
+            ]
+            return MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
         if cmd[:2] == ["git", "rev-parse"]:
             if "--show-toplevel" in cmd:
                 return MagicMock(returncode=0, stdout=str(Path.cwd()) + "\n", stderr="")
@@ -642,75 +674,46 @@ def test_check_catches_a_comment_that_arrives_only_on_a_later_poll_round(
     assert exit_code == 1
 
 
-def test_check_ignores_comment_older_than_head_commit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_check_blocks_on_unresolved_thread_regardless_of_comment_age(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view(committed_date="2026-08-01T12:00:00Z")
     _record(monkeypatch, pr_view)
 
-    stale_comment = [
+    unresolved_comment = [
         {
             "id": 333,
             "path": "polylogue/foo.py",
             "line": 10,
             "created_at": "2026-08-01T11:55:00Z",
-            "body": "already addressed by the fix commit",
+            "body": "unresolved finding from before the latest commit",
         }
     ]
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, stale_comment))
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, unresolved_comment))
     exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
 
-    assert exit_code == 0
+    assert exit_code == 1
 
 
-def test_check_allows_an_acknowledged_late_comment_for_the_same_head_sha(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_check_accepts_a_thread_resolved_in_github(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    pr_view = _base_pr_view(committed_date="2026-08-01T12:00:00Z")
+    pr_view = _base_pr_view()
     _record(monkeypatch, pr_view)
-
-    late_comment = [
+    resolved_thread = [
         {
             "id": 444,
             "path": "polylogue/foo.py",
             "line": 10,
             "created_at": "2026-08-01T12:05:00Z",
-            "body": "false positive, already fine",
+            "body": "fixed and resolved",
+            "is_resolved": True,
         }
     ]
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
-    merge_gate.cmd_ack(42, 444, reason="false positive")
 
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, late_comment))
-    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, resolved_thread))
 
-    assert exit_code == 0
-
-
-def test_check_ignores_an_ack_recorded_for_a_different_head_sha(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A new push must invalidate old acks -- otherwise a stale triage silently covers new code."""
-    monkeypatch.chdir(tmp_path)
-    old_pr_view = _base_pr_view(head_sha="abc123", committed_date="2026-08-01T12:00:00Z")
-    monkeypatch.setattr(subprocess, "run", _fake_run(old_pr_view, []))
-    merge_gate.cmd_ack(42, 555, reason="false positive on the old commit")
-
-    new_pr_view = _base_pr_view(head_sha="def456", committed_date="2026-08-01T13:00:00Z")
-    _record(monkeypatch, new_pr_view)
-    late_comment = [
-        {
-            "id": 555,
-            "path": "polylogue/foo.py",
-            "line": 10,
-            "created_at": "2026-08-01T13:05:00Z",
-            "body": "same comment id, but this is a new push",
-        }
-    ]
-    monkeypatch.setattr(subprocess, "run", _fake_run(new_pr_view, late_comment))
-    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
-
-    assert exit_code == 1
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 0
 
 
 def test_check_blocks_when_pr_is_not_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -779,29 +782,14 @@ def test_check_blocks_when_comment_polling_fails(monkeypatch: pytest.MonkeyPatch
     assert exit_code == 1
 
 
-def test_check_catches_a_late_review_body_not_just_inline_comments(
+def test_check_blocks_when_github_review_decision_requests_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Review summaries and issue-level comments carry findings too -- a gate
-    that only watches inline diff comments misses them."""
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view(committed_date="2026-08-01T12:00:00Z")
+    pr_view["_reviewDecision"] = "CHANGES_REQUESTED"
     _record(monkeypatch, pr_view)
-
-    def _run_with_late_review(cmd: list[str], **kwargs: object) -> MagicMock:
-        joined = " ".join(cmd)
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
-        if "/pulls/" in joined and "/reviews" in joined:
-            late_review = [{"id": 999, "submitted_at": "2026-08-01T12:10:00Z", "body": "Request changes: real bug"}]
-            return MagicMock(returncode=0, stdout=json.dumps([late_review]), stderr="")
-        if "/issues/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", _run_with_late_review)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
     exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
 
     assert exit_code == 1
