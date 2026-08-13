@@ -3733,9 +3733,10 @@ async def test_scheduled_hook_spool_retry_observes_and_logs_failure(
     try:
         watcher._schedule_hook_spool_directory_retry(shard)
         task = watcher._hook_spool_directory_retry_tasks[shard.resolve()]
-        while not task.done():
+        with contextlib.suppress(sqlite3.OperationalError):
+            await task
+        if watcher._hook_spool_directory_retry_tasks:
             await asyncio.sleep(0)
-        await asyncio.sleep(0)
     finally:
         parse_stage.shutdown()
 

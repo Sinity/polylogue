@@ -9,6 +9,7 @@ import logging
 import sys
 from io import StringIO
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -46,6 +47,10 @@ class TestConfig:
         assert len(config.sources) == 2
         assert config.sources[0].name == "inbox"
         assert config.sources[1].name == "claude-code"
+
+    def test_config_mock_spec_exposes_explicit_database_tracking(self) -> None:
+        """Consumers cloning Config can inspect its explicit-path contract."""
+        assert hasattr(MagicMock(spec=Config), "_db_path_explicit")
 
     def test_config_db_path_default(self, workspace_env: dict[str, Path]) -> None:
         """db_path defaults to the resolved index.db database path."""

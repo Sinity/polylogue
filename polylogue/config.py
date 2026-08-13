@@ -103,6 +103,7 @@ class Config:
     # the defaults makes the spec honest about the optional surface.
     drive_config: DriveConfig | None = None
     index_config: IndexConfig | None = None
+    _db_path_explicit: bool = False
     embedding_model: str = "voyage-4-lite"
     embedding_dimension: int = 1024
     judgment_automation_interval_s: int = 3600

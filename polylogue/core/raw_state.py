@@ -16,6 +16,10 @@ def raw_state_authority(
     New writes make opposing transitions strictly monotonic. Existing rows can
     predate that invariant, so an equal non-null pair remains explicitly
     indeterminate rather than being silently attributed to either stage.
+
+    A pair with both values ``None`` reports ``"validation"``. These legacy
+    rows carry no ordering evidence, so callers retain the stored validation
+    verdict instead of inventing parse authority.
     """
     if parsed_at_ms is None:
         return "validation"

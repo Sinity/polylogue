@@ -3794,6 +3794,18 @@ def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -
     """
 
 
+def _failed_validation_overrides_parse_predicate(*, raw_alias: str) -> str:
+    """Return the durable state in which validation blocks raw replay."""
+    return f"""
+                COALESCE({raw_alias}.validation_status, '') = 'failed'
+                AND (
+                  {raw_alias}.parsed_at_ms IS NULL
+                  OR {raw_alias}.validated_at_ms IS NULL
+                  OR {raw_alias}.validated_at_ms >= {raw_alias}.parsed_at_ms
+                )
+    """
+
+
 def _raw_materialization_candidate_ids(
     config: Config,
     *,
@@ -3961,17 +3973,10 @@ def _raw_materialization_candidate_ids(
               -- successful parse records a durable parsed timestamp. Keep
               -- that historical diagnostic, but do not let it block an
               -- index reset from replaying successfully parsed raw bytes.
-              AND NOT (
-                COALESCE(r.validation_status, '') = 'failed'
-                AND (
-                  r.parsed_at_ms IS NULL
-                  OR r.validated_at_ms IS NULL
-                  -- Equal legacy timestamps are indeterminate.  Do not
-                  -- replay and overwrite either authority until a new,
-                  -- monotonic transition resolves the ambiguity.
-                  OR r.validated_at_ms >= r.parsed_at_ms
-                )
-              )
+              -- Equal legacy timestamps are indeterminate. Do not replay
+              -- and overwrite either authority until a monotonic transition
+              -- resolves the ambiguity.
+              AND NOT ({_failed_validation_overrides_parse_predicate(raw_alias="r")})
               AND (
                 r.parse_error IS NULL
                 OR r.parse_error = 'OperationalError: database is locked'
@@ -4002,14 +4007,7 @@ def _raw_materialization_candidate_ids(
                   )
                   AND (
                     r.parse_error IS NOT NULL
-                    OR (
-                      r.validation_status = 'failed'
-                      AND (
-                        r.parsed_at_ms IS NULL
-                        OR r.validated_at_ms IS NULL
-                        OR r.validated_at_ms >= r.parsed_at_ms
-                      )
-                    )
+                    OR ({_failed_validation_overrides_parse_predicate(raw_alias="r")})
                   )
               )
               AND NOT (
@@ -4727,8 +4725,7 @@ def _raw_replay_plan_outcome(
             SELECT 1
             FROM raw_sessions
             WHERE raw_id IN ({placeholders})
-              AND validation_status = 'failed'
-              AND parsed_at_ms IS NULL
+              AND ({_failed_validation_overrides_parse_predicate(raw_alias="raw_sessions")})
             UNION ALL
             SELECT 1
             FROM raw_sessions
@@ -5926,10 +5923,18 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
     if dry_run:
         return _repair_superseded_raw_snapshots(config, dry_run=True)
 
-    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
 
     lease = ActiveWriterLease(_raw_materialization_archive_root(config))
-    lease.acquire()
+    try:
+        lease.acquire()
+    except RebuildLeaseUnavailableError as exc:
+        return _repair_result(
+            "superseded_raw_snapshots",
+            repaired_count=0,
+            success=False,
+            detail=f"Skipped destructive raw cleanup: {exc}",
+        )
     try:
         return _repair_superseded_raw_snapshots(config, dry_run=False)
     finally:
@@ -6288,11 +6293,19 @@ def repair_raw_materialization(
     if dry_run:
         return run()
 
-    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
 
     archive_root = _raw_materialization_archive_root(config)
     lease = ActiveWriterLease(archive_root)
-    lease.acquire()
+    try:
+        lease.acquire()
+    except RebuildLeaseUnavailableError as exc:
+        return _internal_derived_repair_result(
+            "raw_materialization",
+            repaired_count=0,
+            success=False,
+            detail=f"Skipped raw materialization while offline index rebuild owns archive: {exc}",
+        )
     try:
         return run()
     finally:

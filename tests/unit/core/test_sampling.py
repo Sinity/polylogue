@@ -283,7 +283,10 @@ class TestLoadSamplesFromDb:
             ).encode(),
         )
         with sqlite3.connect(db.with_name("source.db")) as conn:
-            conn.execute("UPDATE raw_sessions SET parsed_at_ms = 1, validated_at_ms = 0, validation_status = 'failed'")
+            cursor = conn.execute(
+                "UPDATE raw_sessions SET parsed_at_ms = 1, validated_at_ms = 0, validation_status = 'failed'"
+            )
+            assert cursor.rowcount == 1
             conn.commit()
 
         result = load_samples_from_db("claude-ai", db_path=db)
