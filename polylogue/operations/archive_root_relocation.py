@@ -15,9 +15,11 @@ from pydantic import BaseModel, ConfigDict
 
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import offline_writer_block_reason
-from polylogue.operations._maintenance_receipt_fs import (
+from polylogue.maintenance.receipt_fs import (
     MaintenanceReceiptPathError,
     atomic_replace_receipt,
+    existing_maintenance_receipt_directory,
+    iter_pinned_receipts,
     maintenance_receipt_directory,
     read_optional_receipt,
 )
@@ -39,6 +41,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     load_durable_change_train_manifest,
     rebind_released_source_train_archive_identity,
     write_durable_change_train_manifest,
+    write_source_continuity_relocation_transition,
 )
 from polylogue.storage.sqlite.migration_runner import (
     MigrationError,
@@ -126,6 +129,7 @@ class ArchiveRootRelocationReceipt(BaseModel):
     manifest_before_sha256: tuple[str, ...]
     manifest_after_sha256: tuple[str, ...]
     resume_command: str
+    prepared_receipt_sha256: str | None = None
     receipt_sha256: str
 
 
@@ -555,21 +559,29 @@ def _write_receipt(path: Path, receipt: ArchiveRootRelocationReceipt, *, expecte
 
 
 def load_archive_root_relocation_receipt(path: Path) -> ArchiveRootRelocationReceipt:
-    _real_file(path, label="archive-root relocation receipt")
     try:
-        encoded = path.read_bytes()
-    except (OSError, ValueError) as exc:
-        raise ArchiveRootRelocationError(f"invalid archive-root relocation receipt: {path}") from exc
+        root, directory_name = _receipt_directory_binding(path)
+        with existing_maintenance_receipt_directory(root, directory_name) as directory_fd:
+            if directory_fd is None:
+                raise ArchiveRootRelocationError(f"invalid archive-root relocation receipt: {path}")
+            encoded = read_optional_receipt(directory_fd, path.name)
+    except MaintenanceReceiptPathError as exc:
+        raise ArchiveRootRelocationError(f"unsafe archive-root relocation receipt path: {path}") from exc
+    if encoded is None:
+        raise ArchiveRootRelocationError(f"invalid archive-root relocation receipt: {path}")
     return _decode_receipt(encoded, path=path)
 
 
 def assert_no_prepared_archive_root_relocation(root: Path) -> None:
-    receipt_root = root / ".maintenance-state" / "archive-root-relocations"
-    if not receipt_root.exists():
-        return
-    _real_directory(receipt_root, label="archive-root relocation receipt directory")
-    for path in sorted(receipt_root.glob("*.json")):
-        receipt = load_archive_root_relocation_receipt(path)
+    try:
+        with existing_maintenance_receipt_directory(root, "archive-root-relocations") as directory_fd:
+            if directory_fd is None:
+                return
+            receipts = tuple(iter_pinned_receipts(directory_fd))
+    except MaintenanceReceiptPathError as exc:
+        raise ArchiveRootRelocationError(f"unsafe archive-root relocation receipt directory: {exc}") from exc
+    for filename, encoded in receipts:
+        receipt = _decode_receipt(encoded, path=root / ".maintenance-state" / "archive-root-relocations" / filename)
         if receipt.state == "prepared":
             raise ArchiveRootRelocationError(
                 "archive-root relocation is prepared but incomplete; rerun " + receipt.resume_command
@@ -623,6 +635,10 @@ def _revalidate_plan_live_state(
     if snapshots != plan.tiers:
         raise ArchiveRootRelocationError("archive-root relocation tier evidence changed")
     _check_backup_against_live(root, manifest=manifest, receipt=receipt, snapshots=snapshots)
+    pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
+    allowed_pending_relocation_receipt_sha256 = (
+        pending_receipt.receipt_sha256 if pending_receipt is not None and pending_receipt.state == "prepared" else None
+    )
     for item in plan.source_trains:
         path = Path(item.path)
         train = load_durable_change_train_manifest(path)
@@ -631,15 +647,6 @@ def _revalidate_plan_live_state(
             for ref in train.proof_refs
             if ref.startswith("proof:source-continuity-refresh:")
         )
-        if continuity_refs != item.source_continuity_receipt_digests:
-            raise ArchiveRootRelocationError(f"archive-root relocation continuity receipts changed: {path}")
-        if train.source_continuity_evidence is not None:
-            try:
-                _validate_source_continuity_refresh_receipt(root, train)
-            except DurableChangeTrainError as exc:
-                raise ArchiveRootRelocationError(
-                    f"archive-root relocation continuity receipt is invalid: {path}"
-                ) from exc
         before = _sha256_file(path) == item.before_manifest_sha256
         after = (
             train.revision == item.before_revision + (1 if item.requires_rebind else 0)
@@ -652,6 +659,19 @@ def _revalidate_plan_live_state(
         )
         if not before and not after:
             raise ArchiveRootRelocationError(f"archive-root relocation manifest changed: {path}")
+        if before and continuity_refs != item.source_continuity_receipt_digests:
+            raise ArchiveRootRelocationError(f"archive-root relocation continuity receipts changed: {path}")
+        if train.source_continuity_evidence is not None:
+            try:
+                _validate_source_continuity_refresh_receipt(
+                    root,
+                    train,
+                    allowed_pending_relocation_receipt_sha256=allowed_pending_relocation_receipt_sha256,
+                )
+            except DurableChangeTrainError as exc:
+                raise ArchiveRootRelocationError(
+                    f"archive-root relocation continuity receipt is invalid: {path}"
+                ) from exc
 
 
 def _require_offline_apply_boundary(root: Path) -> None:
@@ -735,10 +755,27 @@ def _apply_archive_root_relocation_locked(
         train = load_durable_change_train_manifest(path)
         actual_hash = _sha256_file(path)
         if actual_hash == item.before_manifest_sha256 and item.requires_rebind:
+            continuity_transition_ref = None
+            if train.source_continuity_evidence is not None:
+                transition_digest = write_source_continuity_relocation_transition(
+                    root,
+                    train=train,
+                    archive_identity_digest=item.after_archive_identity_digest,
+                    relocation_plan_sha256=plan.plan_sha256,
+                    relocation_receipt_sha256=receipt.receipt_sha256,
+                )
+                continuity_transition_ref = f"proof:source-continuity-relocation:{transition_digest}"
             updated = rebind_released_source_train_archive_identity(
                 train,
                 archive_identity_digest=item.after_archive_identity_digest,
-                proof_ref=f"proof:archive-root-relocation:{receipt.receipt_sha256}",
+                proof_refs=tuple(
+                    ref
+                    for ref in (
+                        f"proof:archive-root-relocation:{receipt.receipt_sha256}",
+                        continuity_transition_ref,
+                    )
+                    if ref is not None
+                ),
             )
             write_durable_change_train_manifest(path, updated, expected_revision=item.before_revision)
         elif (
@@ -758,6 +795,7 @@ def _apply_archive_root_relocation_locked(
         manifest_before_sha256=before_hashes,
         manifest_after_sha256=tuple(after_hashes),
         resume_command=command,
+        prepared_receipt_sha256=receipt.receipt_sha256,
     )
     _write_receipt(receipt_path, committed, expected=receipt.receipt_sha256)
     return ArchiveRootRelocationResult(

@@ -19,6 +19,7 @@ from polylogue.operations.archive_root_relocation import (
     RelocationTierEvidence,
     _check_backup_against_live,
     apply_archive_root_relocation,
+    assert_no_prepared_archive_root_relocation,
     prepare_archive_root_relocation,
 )
 from polylogue.operations.archive_root_relocation import (
@@ -35,6 +36,7 @@ from polylogue.operations.historical_source_continuity_recovery import (
     _table_content_digest,
     _verify_historical_operation_evidence,
     _write_refresh_receipt,
+    assert_no_prepared_historical_source_continuity_recovery,
 )
 from polylogue.operations.historical_source_continuity_recovery import (
     _legacy_liveness_receipt as _validate_legacy_liveness_receipt,
@@ -45,7 +47,7 @@ from polylogue.operations.historical_source_continuity_recovery import (
 from polylogue.operations.historical_source_continuity_recovery import (
     _write_receipt as _write_continuity_receipt,
 )
-from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
     BlobRefLivenessCandidateDigest,
@@ -58,9 +60,11 @@ from polylogue.storage.sqlite.durable_change_train import (
     rebind_released_source_train_archive_identity,
 )
 from polylogue.storage.sqlite.migration_runner import (
+    _canonical_json_sha256,
     apply_durable_change_train,
     capture_durable_database_evidence,
     capture_durable_restart_convergence,
+    capture_durable_schema_inventory,
     prove_durable_change_train,
     record_durable_writer_release,
     release_durable_change_train,
@@ -85,6 +89,21 @@ def test_archive_root_relocation_is_a_real_maintenance_route(cli_workspace: dict
     )
     assert nested.exit_code == 0, nested.output
     assert "--old-root" in nested.output
+
+
+def test_relocation_nested_dispatch_keeps_analyze_facets_on_the_real_action(cli_workspace: dict[str, object]) -> None:
+    """Nested maintenance routing must not turn the existing aggregate action into a silent no-op."""
+    archive_root = cli_workspace["archive_root"]
+    assert isinstance(archive_root, Path)
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "analyze", "--facets"],
+        env={"POLYLOGUE_ARCHIVE_ROOT": str(archive_root)},
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Facets (global)" in result.output
 
 
 def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
@@ -344,7 +363,7 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
     updated = rebind_released_source_train_archive_identity(
         before,
         archive_identity_digest="a" * 64,
-        proof_ref="proof:archive-root-relocation:receipt",
+        proof_refs=("proof:archive-root-relocation:receipt",),
     )
 
     assert updated.revision == before.revision + 1
@@ -362,13 +381,62 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
     rebound_current_authority = rebind_released_source_train_archive_identity(
         current_authority,
         archive_identity_digest="c" * 64,
-        proof_ref="proof:archive-root-relocation:receipt-current",
+        proof_refs=(
+            "proof:archive-root-relocation:receipt-current",
+            "proof:source-continuity-relocation:" + "e" * 64,
+        ),
     )
     assert current_authority.source_continuity_evidence is not None
     assert rebound_current_authority.source_continuity_evidence == replace(
         current_authority.source_continuity_evidence,
         archive_identity_digest="c" * 64,
     )
+
+
+def _attach_retained_source_continuity(root: Path, manifest: Path) -> None:
+    """Create the exact ordinary refresh artifact retained by a recovered train."""
+    train = load_durable_change_train_manifest(manifest)
+    assert train.apply_evidence is not None
+    with sqlite3.connect(root / "source.db") as connection:
+        current = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    legacy_identity_digest = ArchiveIdentity.resolve(root).authority_identity_digest
+    retained_current = replace(current, archive_identity_digest=legacy_identity_digest)
+    recovered_apply_evidence = replace(
+        train.apply_evidence,
+        post=replace(train.apply_evidence.post, archive_identity_digest=legacy_identity_digest),
+    )
+    payload = {
+        "format": "polylogue.source-continuity-refresh.v1",
+        "operation_id": "historical-recovery",
+        "evidence_ref": "proof:historical-source-continuity-recovery",
+        "backup_manifest": "/authenticated/pre/manifest.json",
+        "backup_manifest_sha256": "a" * 64,
+        "mutation_receipt": "/authenticated/liveness.jsonl",
+        "mutation_receipt_sha256": "b" * 64,
+        "train_id": train.train_id,
+        "source_before": _evidence_payload(recovered_apply_evidence.post),
+        "source_after": _evidence_payload(retained_current),
+        "refreshed_at_ms": retained_current.observed_at_ms,
+    }
+    digest = _canonical_json_sha256(payload)
+    _write_refresh_receipt(
+        root / ".maintenance-state" / "source-continuity-refreshes" / f"{digest}.json",
+        {**payload, "refresh_sha256": digest},
+    )
+    recovered = replace(
+        train,
+        revision=train.revision + 1,
+        apply_evidence=recovered_apply_evidence,
+        source_continuity_evidence=retained_current,
+        proof_refs=(*train.proof_refs, f"proof:source-continuity-refresh:{digest}"),
+    )
+    write_durable_change_train_manifest(manifest, recovered, expected_revision=train.revision)
+
+
+def _evidence_payload(evidence: object) -> dict[str, object]:
+    from polylogue.operations.historical_source_continuity_recovery import _evidence_payload as render
+
+    return render(evidence)  # type: ignore[arg-type]
 
 
 def _released_moved_source_train(
@@ -651,6 +719,110 @@ def test_receipt_writers_never_create_through_a_symlinked_maintenance_state(tmp_
     assert not tuple(outside.iterdir())
 
 
+def test_relocation_startup_reader_rejects_receipt_swapped_after_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daemon preflight reads the enumerated relocation receipt descriptor, not a replacement pathname."""
+    root = tmp_path / "archive"
+    state = root / ".maintenance-state" / "archive-root-relocations"
+    state.mkdir(parents=True)
+    receipt = state / ("a" * 64 + ".json")
+    substitute = state / "replacement.json"
+    _write_relocation_receipt(
+        receipt,
+        _sealed_relocation_receipt(
+            state="prepared",
+            revision=0,
+            plan_sha256="a" * 64,
+            authorization="a" * 64,
+            manifest_before_sha256=(),
+            manifest_after_sha256=(),
+            resume_command="resume relocation",
+        ),
+        expected=None,
+    )
+    _write_relocation_receipt(
+        substitute,
+        _sealed_relocation_receipt(
+            state="committed",
+            revision=1,
+            plan_sha256="b" * 64,
+            authorization="b" * 64,
+            manifest_before_sha256=(),
+            manifest_after_sha256=(),
+            resume_command="replacement",
+        ),
+        expected=None,
+    )
+    real_open = os.open
+    swapped = False
+
+    def swap_after_enumeration(path: str, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal swapped
+        if path == receipt.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            os.replace(substitute, receipt)
+        return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", swap_after_enumeration)
+    with pytest.raises(ArchiveRootRelocationError, match="changed during pinned enumeration"):
+        assert_no_prepared_archive_root_relocation(root)
+    assert swapped
+
+
+def test_historical_startup_reader_rejects_receipt_swapped_after_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Historical recovery preflight also pins the receipt it enumerated."""
+    root = tmp_path / "archive"
+    state = root / ".maintenance-state" / "historical-source-continuity-recoveries"
+    state.mkdir(parents=True)
+    receipt = state / ("c" * 64 + ".json")
+    substitute = state / "replacement.json"
+    _write_continuity_receipt(
+        receipt,
+        _sealed_continuity_receipt(
+            state="prepared",
+            revision=0,
+            plan_sha256="c" * 64,
+            authorization="c" * 64,
+            train_before_sha256="d" * 64,
+            train_after_sha256=None,
+            refresh_receipt_sha256="e" * 64,
+            resume_command="resume continuity",
+        ),
+        expected=None,
+    )
+    _write_continuity_receipt(
+        substitute,
+        _sealed_continuity_receipt(
+            state="committed",
+            revision=1,
+            plan_sha256="f" * 64,
+            authorization="f" * 64,
+            train_before_sha256="0" * 64,
+            train_after_sha256="1" * 64,
+            refresh_receipt_sha256="2" * 64,
+            resume_command="replacement",
+        ),
+        expected=None,
+    )
+    real_open = os.open
+    swapped = False
+
+    def swap_after_enumeration(path: str, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal swapped
+        if path == receipt.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            os.replace(substitute, receipt)
+        return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", swap_after_enumeration)
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="changed during pinned enumeration"):
+        assert_no_prepared_historical_source_continuity_recovery(root)
+    assert swapped
+
+
 def test_historical_continuity_recovery_cli_rejects_an_unbound_synthetic_operation(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -716,6 +888,7 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
 
     old_root = workspace_env["archive_root"]
     manifest = _released_moved_source_train(old_root, monkeypatch)
+    _attach_retained_source_continuity(old_root, manifest)
     backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
     assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "moved"
@@ -796,6 +969,26 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
             )
             is None
         )
+        # This is the same verifier branch that rejected the deployed v27
+        # manifest after later source trains had advanced the archive.  The
+        # real SQLite tier advances here; the fixture supplies its matching
+        # canonical inventory because it deliberately has no synthetic v3 DDL.
+        connection.execute("PRAGMA user_version = 3")
+        connection.commit()
+        advanced = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+        live_inventory = capture_durable_schema_inventory(connection)
+        forward = trains._verify_released_train_live_tier(
+            new_root,
+            connection,
+            trains.load_durable_change_train_manifest(moved_manifest),
+            current_target_version=advanced.user_version,
+            actual_evidence=advanced,
+            live_inventory=live_inventory,
+            canonical_inventory=live_inventory,
+        )
+    assert forward is not None
+    assert forward.historical_target_version == 2
+    assert forward.observed_live_version == 3
 
 
 def test_plan_rejects_the_real_stale_source_train_shape_before_receipt_write(

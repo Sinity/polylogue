@@ -50,10 +50,7 @@ class _LazyGroup(_LazyCommand, click.Group):
     """Lazy proxy for Click groups that need nested command dispatch."""
 
     def invoke(self, ctx: click.Context) -> object:
-        # Dispatch through this proxy's delegated ``get_command``.  Invoking
-        # the resolved group directly loses Click's child-command context and
-        # leaves its subcommand options attached to the parent group.
-        return click.Group.invoke(self, ctx)
+        return self._resolve().invoke(ctx)
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         return click.Group.parse_args(self, ctx, args)
@@ -85,6 +82,13 @@ class _LazyGroup(_LazyCommand, click.Group):
         if not isinstance(resolved, click.Group):
             return []
         return resolved.list_commands(ctx)
+
+
+class _NestedLazyGroup(_LazyGroup):
+    """Lazy group whose newly-added nested routes dispatch through the proxy."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        return click.Group.invoke(self, ctx)
 
 
 _SHORT_HELP: dict[str, str] = {

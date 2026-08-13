@@ -15,6 +15,7 @@ import os
 import sqlite3
 import stat
 import tempfile
+from importlib import resources
 from pathlib import Path
 from typing import Literal, cast
 
@@ -23,9 +24,11 @@ from pydantic import BaseModel, ConfigDict
 from polylogue.config import Config
 from polylogue.maintenance.blob_ref_liveness_reconciliation import census_blob_ref_liveness
 from polylogue.maintenance.offline_guard import offline_writer_block_reason
-from polylogue.operations._maintenance_receipt_fs import (
+from polylogue.maintenance.receipt_fs import (
     MaintenanceReceiptPathError,
     atomic_replace_receipt,
+    existing_maintenance_receipt_directory,
+    iter_pinned_receipts,
     maintenance_receipt_directory,
     read_optional_receipt,
 )
@@ -62,7 +65,7 @@ PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v1"] 
 RECEIPT_FORMAT: Literal["polylogue.historical-source-continuity-recovery-receipt.v1"] = (
     "polylogue.historical-source-continuity-recovery-receipt.v1"
 )
-_HISTORICAL_OPERATION_EVIDENCE = Path(__file__).with_name("historical-source-continuity-operation-20260807.json")
+_HISTORICAL_OPERATION_EVIDENCE_RESOURCE = "historical-source-continuity-operation-20260807.json"
 
 
 class HistoricalSourceContinuityRecoveryError(RuntimeError):
@@ -182,13 +185,18 @@ def _real_directory(path: Path, *, label: str) -> Path:
     return resolved
 
 
-def _historical_operation_evidence() -> HistoricalOperationEvidence:
-    _real_file(_HISTORICAL_OPERATION_EVIDENCE, label="immutable historical operation evidence")
+def _historical_operation_evidence_bytes() -> bytes:
+    """Read the immutable operation evidence from the installed package."""
     try:
-        return HistoricalOperationEvidence.model_validate_json(
-            _HISTORICAL_OPERATION_EVIDENCE.read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError) as exc:
+        return resources.files("polylogue.operations").joinpath(_HISTORICAL_OPERATION_EVIDENCE_RESOURCE).read_bytes()
+    except FileNotFoundError as exc:
+        raise HistoricalSourceContinuityRecoveryError("immutable historical operation evidence is unreadable") from exc
+
+
+def _historical_operation_evidence() -> HistoricalOperationEvidence:
+    try:
+        return HistoricalOperationEvidence.model_validate_json(_historical_operation_evidence_bytes())
+    except ValueError as exc:
         raise HistoricalSourceContinuityRecoveryError("immutable historical operation evidence is unreadable") from exc
 
 
@@ -221,7 +229,7 @@ def _verify_historical_operation_evidence(
         raise HistoricalSourceContinuityRecoveryError(
             "historical continuity recovery inputs do not match immutable offline evidence"
         )
-    return _sha256(_HISTORICAL_OPERATION_EVIDENCE)
+    return hashlib.sha256(_historical_operation_evidence_bytes()).hexdigest()
 
 
 def _sealed_plan(**values: object) -> HistoricalSourceContinuityRecoveryPlan:
@@ -846,21 +854,33 @@ def _write_receipt(path: Path, receipt: HistoricalSourceContinuityRecoveryReceip
 
 
 def load_historical_source_continuity_recovery_receipt(path: Path) -> HistoricalSourceContinuityRecoveryReceipt:
-    _real_file(path, label="historical continuity recovery receipt")
     try:
-        encoded = path.read_bytes()
-    except (OSError, ValueError) as exc:
-        raise HistoricalSourceContinuityRecoveryError("invalid historical continuity recovery receipt") from exc
+        root, directory_name = _recovery_receipt_directory_binding(path)
+        with existing_maintenance_receipt_directory(root, directory_name) as directory_fd:
+            if directory_fd is None:
+                raise HistoricalSourceContinuityRecoveryError("invalid historical continuity recovery receipt")
+            encoded = read_optional_receipt(directory_fd, path.name)
+    except MaintenanceReceiptPathError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"unsafe historical continuity recovery receipt path: {path}"
+        ) from exc
+    if encoded is None:
+        raise HistoricalSourceContinuityRecoveryError("invalid historical continuity recovery receipt")
     return _decode_recovery_receipt(encoded)
 
 
 def assert_no_prepared_historical_source_continuity_recovery(root: Path) -> None:
-    receipt_root = root / ".maintenance-state" / "historical-source-continuity-recoveries"
-    if not receipt_root.exists():
-        return
-    _real_directory(receipt_root, label="historical continuity recovery receipt directory")
-    for path in sorted(receipt_root.glob("*.json")):
-        receipt = load_historical_source_continuity_recovery_receipt(path)
+    try:
+        with existing_maintenance_receipt_directory(root, "historical-source-continuity-recoveries") as directory_fd:
+            if directory_fd is None:
+                return
+            receipts = tuple(iter_pinned_receipts(directory_fd))
+    except MaintenanceReceiptPathError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"unsafe historical continuity recovery receipt directory: {exc}"
+        ) from exc
+    for _filename, encoded in receipts:
+        receipt = _decode_recovery_receipt(encoded)
         if receipt.state == "prepared":
             raise HistoricalSourceContinuityRecoveryError(
                 "historical source continuity recovery is prepared but incomplete; rerun " + receipt.resume_command

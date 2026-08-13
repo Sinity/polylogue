@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.operations._maintenance_receipt_fs import (
+from polylogue.maintenance.receipt_fs import (
     MaintenanceReceiptPathError,
     maintenance_receipt_directory,
 )
@@ -30,7 +30,7 @@ def test_fsync_failure_removes_only_the_new_empty_receipt_directory(
             raise OSError("directory fsync failed")
         real_fsync(descriptor)
 
-    monkeypatch.setattr("polylogue.operations._maintenance_receipt_fs.os.fsync", fail_state_fsync)
+    monkeypatch.setattr("polylogue.maintenance.receipt_fs.os.fsync", fail_state_fsync)
     with pytest.raises(MaintenanceReceiptPathError, match="maintenance receipt directory"):
         with maintenance_receipt_directory(root, "new-child"):
             pytest.fail("the failed child directory must not be yielded")

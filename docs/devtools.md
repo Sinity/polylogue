@@ -233,8 +233,8 @@ These are the commands worth remembering during normal repo work:
 ## Cursor-authority reconciliation
 
 `polylogue ops maintenance cursor-authority-reconcile` is a dry-run-by-default
-repair route for exactly one proven cursor-ahead source. It reads the fixed
-`/realm/state/polylogue` archive root, requires the daemon to be stopped, and
+repair route for exactly one proven cursor-ahead source. It reads the
+configured `POLYLOGUE_ARCHIVE_ROOT` (using its resolved archive root), requires the daemon to be stopped, and
 writes a plan containing path and raw identifiers only as digests. Apply
 requires that immutable plan, a freshly verified `full_evidence` backup
 manifest with blob rollback evidence, and a new receipt path. The apply route

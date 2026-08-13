@@ -1,4 +1,4 @@
-"""Descriptor-pinned publication for retained offline-maintenance receipts."""
+"""Descriptor-pinned publication and reading of retained maintenance receipts."""
 
 from __future__ import annotations
 
@@ -60,17 +60,26 @@ def _remove_created_empty_child(parent_fd: int, name: str, *, expected: os.stat_
 
 
 @contextmanager
-def maintenance_receipt_directory(archive_root: Path, directory_name: str) -> Iterator[int]:
+def _maintenance_receipt_directory(archive_root: Path, directory_name: str, *, create: bool) -> Iterator[int | None]:
     """Yield a pinned child of an existing, non-symlink ``.maintenance-state``."""
     child_name = _simple_name(directory_name, label="maintenance receipt directory name")
     root_fd = _open_directory(archive_root, label="archive root")
     state_fd = -1
     child_fd = -1
     try:
-        state_fd = _open_directory_at(root_fd, ".maintenance-state", label="maintenance state")
+        try:
+            state_fd = _open_directory_at(root_fd, ".maintenance-state", label="maintenance state")
+        except MaintenanceReceiptPathError as exc:
+            if not create and isinstance(exc.__cause__, FileNotFoundError):
+                yield None
+                return
+            raise
         try:
             child_fd = os.open(child_name, _DIRECTORY_FLAGS, dir_fd=state_fd)
         except FileNotFoundError:
+            if not create:
+                yield None
+                return
             created_child = False
             try:
                 os.mkdir(child_name, mode=0o700, dir_fd=state_fd)
@@ -102,6 +111,24 @@ def maintenance_receipt_directory(archive_root: Path, directory_name: str) -> It
         os.close(root_fd)
 
 
+@contextmanager
+def maintenance_receipt_directory(archive_root: Path, directory_name: str) -> Iterator[int]:
+    """Yield a pinned receipt directory, creating it only for publication."""
+    with _maintenance_receipt_directory(archive_root, directory_name, create=True) as directory_fd:
+        assert directory_fd is not None
+        yield directory_fd
+
+
+@contextmanager
+def existing_maintenance_receipt_directory(archive_root: Path, directory_name: str) -> Iterator[int | None]:
+    """Yield a pinned existing receipt directory, or ``None`` when absent.
+
+    Startup guards must not create maintenance state merely by inspecting it.
+    """
+    with _maintenance_receipt_directory(archive_root, directory_name, create=False) as directory_fd:
+        yield directory_fd
+
+
 def read_optional_receipt(directory_fd: int, filename: str) -> bytes | None:
     """Read one regular, single-linked receipt relative to a pinned directory."""
     name = _simple_name(filename, label="maintenance receipt filename")
@@ -119,6 +146,49 @@ def read_optional_receipt(directory_fd: int, filename: str) -> bytes | None:
             return stream.read()
     finally:
         os.close(descriptor)
+
+
+def iter_pinned_receipts(directory_fd: int, *, suffix: str = ".json") -> Iterator[tuple[str, bytes]]:
+    """Enumerate regular receipts through one pinned directory descriptor.
+
+    The enumeration captures each directory-entry identity, then the actual
+    read verifies that the opened ``O_NOFOLLOW`` descriptor is still that
+    entry.  A rename between discovery and open therefore fails closed rather
+    than redirecting daemon preflight to a different receipt.
+    """
+    entries: list[tuple[str, tuple[int, int]]] = []
+    try:
+        with os.scandir(directory_fd) as scan:
+            for entry in scan:
+                if not entry.name.endswith(suffix):
+                    continue
+                metadata = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                    raise MaintenanceReceiptPathError(
+                        f"maintenance receipt is not a regular single-linked file: {entry.name}"
+                    )
+                entries.append((entry.name, (metadata.st_dev, metadata.st_ino)))
+    except OSError as exc:
+        raise MaintenanceReceiptPathError("cannot enumerate maintenance receipts through pinned directory") from exc
+    for name, expected_identity in sorted(entries):
+        try:
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+        except OSError as exc:
+            raise MaintenanceReceiptPathError(
+                f"cannot open maintenance receipt without following links: {name}"
+            ) from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or (metadata.st_dev, metadata.st_ino) != expected_identity
+            ):
+                raise MaintenanceReceiptPathError(f"maintenance receipt changed during pinned enumeration: {name}")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                yield name, stream.read()
+        finally:
+            os.close(descriptor)
 
 
 def atomic_replace_receipt(directory_fd: int, filename: str, payload: bytes) -> None:
@@ -153,6 +223,8 @@ def atomic_replace_receipt(directory_fd: int, filename: str, payload: bytes) -> 
 __all__ = [
     "MaintenanceReceiptPathError",
     "atomic_replace_receipt",
+    "existing_maintenance_receipt_directory",
+    "iter_pinned_receipts",
     "maintenance_receipt_directory",
     "read_optional_receipt",
 ]

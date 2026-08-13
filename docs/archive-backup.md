@@ -60,6 +60,8 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
 
 The route reads every SQLite file immutably and refuses copied files, WAL sidecars, missing HMAC authority for the old path, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, or any non-released source train. A live source train whose historical content differs from the current source must first carry receipt-backed source-continuity authority. For the one pre-#3868 liveness receipt shape, create that authority with `source-continuity-recovery` using authenticated pre/post backups and a fresh zero-orphan census; it is a separate offline transition, not an exception inside relocation. After it commits, make and verify a fresh `full_evidence` backup at the moved root before relocation. Relocation records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver, and the plan binds the resolved generation rather than a shadow index path. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises only released source train manifests and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. A prepared receipt blocks daemon startup and prints the exact resume command. Live application and post-move observation remain operator evidence, outside this code path.
 
+For a deployed archive, run these commands only from the Nix package built from the post-merge commit selected for deployment. Record that merge SHA and the resulting Nix store path in the operator receipt, verify the daemon executable resolves to that exact package, and keep `POLYLOGUE_ARCHIVE_ROOT` set to the configured deployed root. Do not resume a stopped daemon with an older deployed package or a branch checkout: its durable-train vocabulary may predate the relocation transition.
+
 ## Restore Rules
 
 Restore into an isolated archive root first:
@@ -164,8 +166,9 @@ sqlite3 <restored>/source.db "PRAGMA user_version; SELECT count(*) FROM raw_sess
 
 # Sane-lag comparison against the live archive (restored counts must be <=
 # live counts, and the gap should track the age of the chosen archive):
-sqlite3 /realm/state/polylogue/user.db "SELECT count(*) FROM assertions;"
-sqlite3 /realm/state/polylogue/source.db "SELECT count(*) FROM raw_sessions;"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:?set the configured archive root}"
+sqlite3 "$archive_root/user.db" "SELECT count(*) FROM assertions;"
+sqlite3 "$archive_root/source.db" "SELECT count(*) FROM raw_sessions;"
 ```
 
 **Negative control (deliberately corrupted restore must fail loudly)** —
@@ -192,10 +195,10 @@ schema `user_version=4`, `source.db` carried 17,839 `raw_sessions` rows at
 snapshot's 17-day age. The corruption negative control correctly failed with
 `database disk image is malformed (11)`.
 
-**CRITICAL FINDING — the live durable tier currently has NO Borg coverage.**
-`/realm/db/polylogue` (where `source.db`/`user.db` actually live; `/realm/data/captures/polylogue/*.db`
-are symlinks to it) was converted to its own nested Btrfs subvolume on
-2026-07-06 (`btrfs subvolume list /realm` shows `ID 3862 ... path db/polylogue`).
+**CRITICAL FINDING — the durable tier then under review had NO Borg coverage.**
+The configured archive root (resolved from `POLYLOGUE_ARCHIVE_ROOT`) was a nested
+Btrfs subvolume at the time of the drill. Its location is configuration, not a
+fixed runtime path; inspect the resolved root before repeating this evidence.
 btrbk/Borg snapshot the **parent** `/realm` subvolume only; a nested
 subvolume shows up as an **empty directory** in every snapshot and archive —
 confirmed directly: `borg list <latest realm archive> db/polylogue` returns

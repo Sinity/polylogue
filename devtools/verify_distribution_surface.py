@@ -23,6 +23,7 @@ RUNTIME_IMPORT_PROBES = (
     "polylogue.mcp.cli",
     "polylogue.archive.query.expression",
 )
+PACKAGE_RESOURCES = (("polylogue.operations", "historical-source-continuity-operation-20260807.json"),)
 
 
 class DistributionVerificationError(RuntimeError):
@@ -98,6 +99,10 @@ def _verify_wheel_surface(wheel: Path) -> None:
         names = set(archive.namelist())
         if "polylogue/_build_info.py" not in names:
             raise DistributionVerificationError(f"{wheel.name} is missing polylogue/_build_info.py")
+        for package, resource in PACKAGE_RESOURCES:
+            resource_path = f"{package.replace('.', '/')}/{resource}"
+            if resource_path not in names:
+                raise DistributionVerificationError(f"{wheel.name} is missing package resource {resource_path}")
         entry_points = _read_entry_points(archive)
     for script in RUNTIME_SCRIPTS:
         if f"{script} =" not in entry_points:
@@ -135,7 +140,13 @@ def _smoke_installed_wheel(wheel: Path, install_dir: Path) -> None:
 def _probe_runtime_imports(python: Path, install_dir: Path, env: dict[str, str]) -> None:
     """Import runtime entrypoint modules from the installed wheel environment."""
     modules_literal = repr(RUNTIME_IMPORT_PROBES)
-    code = f"import importlib\nmodules = {modules_literal}\nfor name in modules:\n    importlib.import_module(name)\n"
+    resources_literal = repr(PACKAGE_RESOURCES)
+    code = (
+        "import importlib\nfrom importlib import resources\n"
+        f"modules = {modules_literal}\nresources_to_read = {resources_literal}\n"
+        "for name in modules:\n    importlib.import_module(name)\n"
+        "for package, resource in resources_to_read:\n    assert resources.files(package).joinpath(resource).read_text(encoding='utf-8')\n"
+    )
     _run((str(python), "-I", "-c", code), cwd=install_dir, env=env)
 
 

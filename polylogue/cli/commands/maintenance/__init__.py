@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup
+from polylogue.cli.click_command_registration import _LazyCommand, _NestedLazyGroup
 
 # (cli name, submodule, attribute, short_help)
 _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
@@ -250,7 +250,7 @@ def maintenance_group(ctx: click.Context) -> None:
 
 for _cli_name, _submodule, _attr, _short_help in _COMMANDS:
     _command_type = (
-        _LazyGroup if _cli_name in {"archive-root-relocation", "source-continuity-recovery"} else _LazyCommand
+        _NestedLazyGroup if _cli_name in {"archive-root-relocation", "source-continuity-recovery"} else _LazyCommand
     )
     maintenance_group.add_command(
         _command_type(
