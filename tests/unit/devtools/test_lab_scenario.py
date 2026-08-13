@@ -149,7 +149,29 @@ def test_reader_visual_smoke_json_reports_artifact_inventory(
 
     report_dir = tmp_path / "reports"
     completed = SimpleNamespace(returncode=0, stdout="1 passed\n", stderr="")
-    with patch("devtools.lab_scenario.subprocess.run", return_value=completed) as run:
+
+    def completed_visual_run(*_args: object, **kwargs: object) -> object:
+        env = kwargs.get("env")
+        if env is None:
+            return completed
+        assert isinstance(env, dict)
+        artifact_dir = Path(env["POLYLOGUE_VISUAL_EVIDENCE_DIR"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "polylogue.local_reader.search.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact_id": "polylogue.local_reader.search",
+                    "route": "/",
+                    "fixture_id": "reader-visual-synthetic-v1",
+                    "checks": {"status": 200},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return completed
+
+    with patch("devtools.lab_scenario.subprocess.run", side_effect=completed_visual_run) as run:
         assert main(["run", "reader-visual-smoke", "--json", "--report-dir", str(report_dir)]) == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -158,11 +180,7 @@ def test_reader_visual_smoke_json_reports_artifact_inventory(
     assert payload["scenario"] == "reader-visual-smoke"
     assert payload["exit_code"] == 0
     assert payload["artifact_report"] == str(report_dir / "reader-visual-smoke.json")
-    assert {artifact["artifact_id"] for artifact in payload["artifact_inventory"]} >= {
-        "polylogue.local_reader.search",
-        "polylogue.local_reader.session",
-        "polylogue.local_reader.workspace.stack",
-    }
+    assert [artifact["artifact_id"] for artifact in payload["artifact_inventory"]] == ["polylogue.local_reader.search"]
     assert run.call_args.kwargs["capture_output"] is True
 
 

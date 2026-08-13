@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -104,6 +105,15 @@ def write_evidence_manifest(
         "browser_gate_followup": "#865-playwright-screenshot-lane",
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    evidence_dir_value = os.environ.get("POLYLOGUE_VISUAL_EVIDENCE_DIR")
+    if evidence_dir_value:
+        evidence_dir = Path(evidence_dir_value)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        artifact_filename = artifact_id.replace("/", "_") + ".json"
+        (evidence_dir / artifact_filename).write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     loaded = cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
     assert loaded["artifact_id"] == artifact_id
     assert loaded["checks"] == checks
@@ -164,11 +174,11 @@ ATT_RAWHTML = _attachment_native_id(READER_C1_M1, "att-rawhtml")
 # (failed), and an unpaired Task dispatch — the three AC-critical card
 # kinds plus the suppression contract for a paired tool-result message.
 READER_SEM1 = native_session_id_for("claude-code", "reader-sem1")
-READER_SEM1_SHELL_USE = f"{READER_SEM1}:reader-sem1-shell-use"
-READER_SEM1_SHELL_RESULT = f"{READER_SEM1}:reader-sem1-shell-result"
-READER_SEM1_EDIT_USE = f"{READER_SEM1}:reader-sem1-edit-use"
-READER_SEM1_EDIT_RESULT = f"{READER_SEM1}:reader-sem1-edit-result"
-READER_SEM1_TASK_USE = f"{READER_SEM1}:reader-sem1-task-use"
+READER_SEM1_SHELL_USE = archive_message_id(READER_SEM1, "reader-sem1-shell-use", position=0)
+READER_SEM1_SHELL_RESULT = archive_message_id(READER_SEM1, "reader-sem1-shell-result", position=1)
+READER_SEM1_EDIT_USE = archive_message_id(READER_SEM1, "reader-sem1-edit-use", position=2)
+READER_SEM1_EDIT_RESULT = archive_message_id(READER_SEM1, "reader-sem1-edit-result", position=3)
+READER_SEM1_TASK_USE = archive_message_id(READER_SEM1, "reader-sem1-task-use", position=4)
 
 
 def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -> None:

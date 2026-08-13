@@ -15,7 +15,9 @@ from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 # other is the CREATE VIRTUAL TABLE messages_fts definition embedded in
 # polylogue/storage/sqlite/archive_tiers/index.py); a drift-lock test keeps
 # them identical.
-FTS_MESSAGES_TABLE_SQL = """
+FTS_UNICODE_TOKENIZER = "unicode61 remove_diacritics 2"
+
+FTS_MESSAGES_TABLE_SQL = f"""
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
         block_id UNINDEXED,
         message_id UNINDEXED,
@@ -24,7 +26,7 @@ FTS_MESSAGES_TABLE_SQL = """
         text,
         content='',
         contentless_delete=1,
-        tokenize='unicode61 remove_diacritics 2'
+        tokenize='{FTS_UNICODE_TOKENIZER}'
     );
 """
 
@@ -533,6 +535,7 @@ __all__ = [
     "FTS_MESSAGES_TABLE_SQL",
     "FTS_REBUILD_SQL",
     "FTS_TRIGGER_DDL",
+    "FTS_UNICODE_TOKENIZER",
     "IndexedMessage",
     "SESSION_WORK_EVENT_FTS_TRIGGER_DDL",
     "TRIGRAM_REBUILD_DELETE_ALL_SQL",

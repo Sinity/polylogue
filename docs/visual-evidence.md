@@ -78,9 +78,11 @@ wrapper runs the same `python -m pytest -q tests/visual` command and writes the
 machine-readable report to `.local/visual/reader-smoke/reader-visual-smoke.json`.
 
 Each visual test writes a JSON evidence manifest in its pytest temp directory.
-Those per-test manifests use `schema_version: 1`, `evidence_kind: browserless-dom`,
-`command: uv run devtools test tests/visual`, the artifact id, fixture id,
-route, and the structural checks asserted by that test.
+When the lab wrapper supplies a report directory, the same production test
+helper also publishes each manifest under `reader-visual-artifacts/`; the
+wrapper reads those executed artifacts into its report. The manifests use
+`schema_version: 1`, `evidence_kind: browserless-dom`, the command, artifact
+id, fixture id, route, and structural checks asserted by that test.
 
 Both suites are part of the standard non-integration test run. There is no
 browser binary or Playwright dependency in these fast lanes: they use Python's
@@ -90,29 +92,10 @@ operator-facing wrapper for the visual/DOM lane.
 
 ## Artifact inventory
 
-The committed inventory below is exported by `devtools.visual_artifacts` and is
-checked against the literal `write_evidence_manifest(...)` calls in
-`tests/visual`, so new visual artifacts have to update the runnable inventory
-instead of drifting into a decorative table.
-
-| Artifact id | Owner | Fixture | Routes |
-|---|---|---|---|
-| `polylogue.local_reader.search` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/`<br>`/api/sessions`<br>`/api/facets`<br>`/api/facets?origin=...`<br>`/api/facets?query=...` |
-| `polylogue.local_reader.workspace.stack` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-workspace-v1` | `/w/stack?ids=...&focus=...`<br>`/api/stack?ids=...` |
-| `polylogue.local_reader.workspace.compare` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-workspace-v1` | `/w/compare?left=...&right=...&align=prompt`<br>`/api/compare?left=...&right=...&align=prompt` |
-| `polylogue.local_reader.session` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/s/{id}`<br>`/api/sessions/{id}`<br>`/api/sessions/{id}/messages`<br>`/api/sessions/{id}/raw` |
-| `polylogue.local_reader.search.query` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/api/sessions?query=...` |
-| `polylogue.local_reader.cost_panel` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/api/sessions/{id}/cost` |
-| `polylogue.local_reader.evidence_panel` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/s/{id}`<br>`/api/sessions/{id}/artifacts`<br>`/api/sessions/{id}/neighbors` |
-| `polylogue.local_reader.overlay_mutations` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/s/{id}`<br>`/api/overlays/*` |
-| `polylogue.local_reader.operator_flow` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/s/{id}`<br>`/api/sessions/{id}/context`<br>`/api/overlays/*` |
-| `polylogue.local_reader.insights_browser` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-v1` | `/api/insights/sessions/{id}` |
-| `polylogue.local_reader.degraded` | `tests/visual/test_reader_dom_smoke.py` | `reader-visual-synthetic-empty-and-degraded-v1` | `/api/sessions?query=...` |
-| `polylogue.local_reader.paste_spans` | `tests/visual/test_reader_paste_spans.py` | `reader-visual-synthetic-v1+diff` | `/p`<br>`/api/paste-browser` |
-| `polylogue.local_reader.paste_browser_empty` | `tests/visual/test_reader_paste_spans.py` | `reader-visual-empty-archive` | `/api/paste-browser` |
-| `polylogue.local_reader.attachment_surface` | `tests/visual/test_reader_attachments.py` | `reader-visual-attachments-v1` | `/a`<br>`/api/attachments`<br>`/api/sessions/{id}/attachments` |
-| `polylogue.local_reader.attachment_library_empty` | `tests/visual/test_reader_attachments.py` | `reader-visual-attachments-empty` | `/api/attachments` |
-| `polylogue.local_reader.message_card` | `tests/visual/test_reader_action_rail.py` | `reader-visual-synthetic-v1` | `/`<br>`/api/sessions`<br>`/api/messages/{id}/actions` |
+The smoke runner collects the manifests emitted by the tests themselves under
+`reader-visual-artifacts/` and embeds those payloads in its report. There is no
+second, hand-maintained artifact registry: the executed route and its asserted
+checks are the inventory.
 
 ## What the lane checks
 

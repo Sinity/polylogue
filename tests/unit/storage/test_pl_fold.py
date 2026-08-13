@@ -6,25 +6,21 @@ Covers the acceptance criteria on polylogue-9jsi:
 - ``pl_fold`` is idempotent, and the Python implementation, the registered
   SQL scalar function, and the inline ``REPLACE`` chain embedded in DDL all
   agree byte-for-byte.
-- The two canonical ``messages_fts`` DDL sites (``FTS_MESSAGES_TABLE_SQL`` in
-  ``polylogue/storage/fts/sql.py`` and the embedded definition in
-  ``polylogue/storage/sqlite/archive_tiers/index.py``) do not drift apart on
-  the tokenizer option.
+- Fresh archive DDL and the repair lifecycle create the same tokenizer behavior
+  from one canonical ``messages_fts`` definition.
 - ``unicode61 remove_diacritics 2`` (a distinct mechanism from ``pl_fold``)
   folds ordinary combining-mark diacritics (``ó``, ``ż``, ...) on its own.
 """
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from pathlib import Path
 
 from polylogue.storage.fts.pl_fold import PL_FOLD_TABLE, pl_fold, pl_fold_sql_expr, register_pl_fold
-from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL
+from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL, FTS_UNICODE_TOKENIZER
 from polylogue.storage.search.query_support import escape_fts5_query, normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from tests.infra.identity import archive_message_id
 
 # ---------------------------------------------------------------------------
@@ -103,33 +99,32 @@ def test_pl_fold_sql_expr_is_a_pure_replace_chain() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DDL-site drift lock
+# DDL behavior
 # ---------------------------------------------------------------------------
 
-_TOKENIZE_RE = re.compile(r"CREATE VIRTUAL TABLE IF NOT EXISTS (\w+) USING fts5\([^)]*tokenize='([^']*)'", re.DOTALL)
+
+def test_fresh_archive_fts_surfaces_use_the_canonical_tokenizer(tmp_path: Path) -> None:
+    with ArchiveStore(tmp_path):
+        pass
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE name IN ('messages_fts', 'session_work_events_fts')"
+        ).fetchall()
+
+    definitions = {str(row[0]): str(row[1]) for row in rows}
+    assert set(definitions) == {"messages_fts", "session_work_events_fts"}
+    assert all(f"tokenize='{FTS_UNICODE_TOKENIZER}'" in sql for sql in definitions.values())
 
 
-def _tokenizers(ddl: str) -> dict[str, str]:
-    return dict(_TOKENIZE_RE.findall(ddl))
+def test_repair_messages_fts_uses_the_same_canonical_definition() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute(FTS_MESSAGES_TABLE_SQL)
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts'").fetchone()[0]
+    finally:
+        conn.close()
 
-
-def test_messages_fts_tokenizer_matches_across_both_canonical_ddl_sites() -> None:
-    sql_site = _tokenizers(FTS_MESSAGES_TABLE_SQL)
-    index_site = _tokenizers(INDEX_DDL)
-
-    assert sql_site["messages_fts"] == "unicode61 remove_diacritics 2"
-    assert index_site["messages_fts"] == sql_site["messages_fts"], (
-        "polylogue/storage/fts/sql.py FTS_MESSAGES_TABLE_SQL and "
-        "polylogue/storage/sqlite/archive_tiers/index.py INDEX_DDL disagree on the "
-        "messages_fts tokenizer -- these two canonical DDL sites must stay in lockstep."
-    )
-
-
-def test_all_contentless_fts_surfaces_use_the_same_diacritic_folding_tokenizer() -> None:
-    """session_work_events_fts gets the same tokenizer bump as messages_fts for parity."""
-    index_site = _tokenizers(INDEX_DDL)
-    for surface in ("messages_fts", "session_work_events_fts"):
-        assert index_site[surface] == "unicode61 remove_diacritics 2", surface
+    assert f"tokenize='{FTS_UNICODE_TOKENIZER}'" in sql
 
 
 # ---------------------------------------------------------------------------
