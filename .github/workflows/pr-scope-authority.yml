@@ -8,7 +8,10 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  statuses: write
+
+concurrency:
+  group: pr-scope-authority-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   validate:
@@ -20,17 +23,6 @@ jobs:
       EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Publish pending authority status
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "${EVENT_PR}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${EVENT_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EVENT_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${EVENT_HEAD_SHA}" \
-            -f state=pending \
-            -f context=polylogue/pr-scope-authority \
-            -f description='Validating trusted PR scope authority'
       - name: Check out the event base revision
         uses: actions/checkout@v7
         with:
@@ -53,21 +45,3 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --event-head-sha "${EVENT_HEAD_SHA}" \
             --event-base-sha "${EVENT_BASE_SHA}"
-      - name: Publish success authority status
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${EVENT_HEAD_SHA}" \
-            -f state=success \
-            -f context=polylogue/pr-scope-authority \
-            -f description='Trusted PR scope authority accepted'
-      - name: Publish failure authority status
-        if: failure()
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${EVENT_HEAD_SHA}" \
-            -f state=failure \
-            -f context=polylogue/pr-scope-authority \
-            -f description='Trusted PR scope authority rejected'

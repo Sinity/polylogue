@@ -295,6 +295,62 @@ def test_authority_event_rejects_missing_or_mismatched_api_fields(
         )
 
 
+def test_authority_uses_queued_event_base_when_master_advances(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _candidate, event_base_sha, head_sha = _authority_repositories(tmp_path)
+    monkeypatch.chdir(base)
+    metadata = pr_scope.PullRequestMetadata(
+        body=_self_contained_body(),
+        head_sha=head_sha,
+        base_sha="f" * 40,
+        is_draft=False,
+        base_ref="master",
+        number=7,
+        state="open",
+    )
+
+    assert (
+        pr_scope.check_authority_metadata(
+            metadata,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=event_base_sha,
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.startswith("pr-scope OK")
+
+
+def test_authority_rejects_draft_dependency_bot_before_scope_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _candidate, base_sha, head_sha = _authority_repositories(tmp_path)
+    monkeypatch.chdir(base)
+    metadata = pr_scope.PullRequestMetadata(
+        body="",
+        head_sha=head_sha,
+        base_sha=base_sha,
+        is_draft=True,
+        base_ref="master",
+        number=7,
+        state="open",
+        author_login="dependabot[bot]",
+        author_type="Bot",
+    )
+
+    assert (
+        pr_scope.check_authority_metadata(
+            metadata,
+            event_pr=7,
+            event_head_sha=head_sha,
+            event_base_sha=base_sha,
+        )
+        == 2
+    )
+    assert "PR is draft" in capsys.readouterr().err
+
+
 def test_authority_accepts_only_the_typed_dependency_bot_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -398,7 +454,7 @@ def test_authority_carrier_ignores_arbitrary_surrounding_prose(beads_path: Path)
     assert pr_scope.validate_pr_body(body, head_sha=HEAD_SHA, is_draft=False, beads_path=beads_path).ok
 
 
-def test_authority_workflow_is_event_bound_and_publishes_pending_before_validation() -> None:
+def test_authority_workflow_is_event_bound_and_ruleset_ready() -> None:
     workflow = (Path(__file__).parents[3] / ".github" / "workflows" / "pr-scope-authority.yml").read_text()
     circle = (Path(__file__).parents[3] / ".circleci" / "config.yml").read_text()
     source = Path(pr_scope.__file__).read_text()
@@ -409,8 +465,10 @@ def test_authority_workflow_is_event_bound_and_publishes_pending_before_validati
     assert "converted_to_draft" in workflow
     assert "refs/pull/${EVENT_PR}/head" in workflow
     assert "check-authority" in workflow
-    assert workflow.index("state=pending") < workflow.index("check-authority")
-    assert workflow.count("context=polylogue/pr-scope-authority") == 3
+    assert "cancel-in-progress: true" in workflow
+    assert "group: pr-scope-authority-${{ github.event.pull_request.number }}" in workflow
+    assert "statuses: write" not in workflow
+    assert "repos/${GITHUB_REPOSITORY}/statuses" not in workflow
     assert "uv sync" not in workflow
     assert "refs/heads/${" not in workflow
     assert "/commits/${EVENT_HEAD_SHA}/pulls" not in workflow
@@ -975,6 +1033,34 @@ def test_fetch_pr_metadata_fetches_files_for_authoritative_dependabot(
         "https://api.github.com/repos/Sinity/polylogue/pulls/42",
         "https://api.github.com/repos/Sinity/polylogue/pulls/42/files?per_page=100",
     ]
+
+
+def test_fetch_pr_authority_metadata_never_fetches_mutable_file_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    def _urlopen(api_request: request.Request, *, timeout: int) -> _FakeHttpResponse:
+        assert timeout == 30
+        requests.append(api_request.full_url)
+        payload = {
+            "number": 42,
+            "state": "open",
+            "body": "",
+            "draft": False,
+            "head": {"sha": HEAD_SHA},
+            "base": {"sha": "b" * 40, "ref": "master"},
+            "user": {"login": "dependabot[bot]", "type": "Bot"},
+        }
+        return _FakeHttpResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(request, "urlopen", _urlopen)
+
+    metadata = pr_scope.fetch_pr_authority_metadata(42, repository="Sinity/polylogue")
+
+    assert metadata.author_login == "dependabot[bot]"
+    assert metadata.changed_files == ()
+    assert requests == ["https://api.github.com/repos/Sinity/polylogue/pulls/42"]
 
 
 def test_fetch_pr_files_rejects_truncated_automated_scope(

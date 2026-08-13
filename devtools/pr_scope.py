@@ -744,11 +744,22 @@ def fetch_pr_files(pr: int, *, repository: str) -> tuple[str, ...]:
     return names
 
 
-def fetch_pr_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
+def fetch_pr_authority_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
+    """Fetch only PR identity and body fields needed by the trusted workflow.
+
+    Candidate file scope is derived from the event-bound Git objects.  Keeping
+    this read separate prevents the authority path from depending on GitHub's
+    independently mutable and paginated PR-files response.
+    """
     raw = _github_request_bytes(f"repos/{repository}/pulls/{pr}")
     if raw is None:
         raise RuntimeError(f"GitHub API returned no metadata for PR #{pr}")
-    metadata = _pr_metadata_from_payload(json.loads(raw))
+    return _pr_metadata_from_payload(json.loads(raw))
+
+
+def fetch_pr_metadata(pr: int, *, repository: str) -> PullRequestMetadata:
+    """Fetch PR metadata for candidate-checkout and legacy CI validation."""
+    metadata = fetch_pr_authority_metadata(pr, repository=repository)
     if metadata.author_login == "dependabot[bot]" and metadata.author_type == "Bot":
         metadata = PullRequestMetadata(
             **{**asdict(metadata), "changed_files": fetch_pr_files(pr, repository=repository)}
@@ -835,12 +846,12 @@ def validate_authority_event(
         raise ValueError("GitHub API PR number does not match the workflow event PR number")
     if metadata.state != "open":
         raise ValueError(f"GitHub API PR state is {metadata.state!r}, not 'open'")
+    if metadata.is_draft:
+        raise ValueError("PR is draft; publish it before authority validation")
     if metadata.base_ref != "master":
         raise ValueError(f"GitHub API PR base ref is {metadata.base_ref!r}, not 'master'")
     if metadata.head_sha != event_head_sha:
         raise ValueError("GitHub API PR head SHA does not match the workflow event head SHA")
-    if metadata.base_sha != event_base_sha:
-        raise ValueError("GitHub API PR base SHA does not match the workflow event base SHA")
 
 
 def check_authority_metadata(
@@ -858,10 +869,10 @@ def check_authority_metadata(
             event_head_sha=event_head_sha,
             event_base_sha=event_base_sha,
         )
-        _ensure_local_commit(metadata.base_sha)
+        _ensure_local_commit(event_base_sha)
         _ensure_local_commit(metadata.head_sha)
         candidate_paths = changed_paths_at_revisions(
-            base_sha=metadata.base_sha,
+            base_sha=event_base_sha,
             head_sha=metadata.head_sha,
         )
         authority_metadata = PullRequestMetadata(**{**asdict(metadata), "changed_files": candidate_paths})
@@ -872,7 +883,7 @@ def check_authority_metadata(
             metadata.body,
             head_sha=metadata.head_sha,
             is_draft=metadata.is_draft,
-            base_sha=metadata.base_sha,
+            base_sha=event_base_sha,
             bead_revision=metadata.head_sha,
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -1049,7 +1060,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "check-authority":
         try:
             repository = resolve_repository(args.repo)
-            metadata = fetch_pr_metadata(args.pr, repository=repository)
+            metadata = fetch_pr_authority_metadata(args.pr, repository=repository)
             return check_authority_metadata(
                 metadata,
                 event_pr=args.pr,
