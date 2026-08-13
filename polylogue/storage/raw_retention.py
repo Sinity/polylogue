@@ -390,6 +390,9 @@ def active_raw_retention_authority(
     immutable ``superseded`` receipt tied to the current head authorizes raw
     deletion. Callers must serialize this read with source deletion under the
     daemon's single-writer contract, or stop the daemon for manual cleanup.
+    ``terminal_source_paths`` scopes terminal-artifact protection only for a
+    deletion operation constrained to those same physical paths; callers that
+    may delete archive-wide must leave it unset.
     """
     original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
