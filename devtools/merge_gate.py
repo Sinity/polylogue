@@ -84,6 +84,7 @@ _DEFAULT_MAX_AGE_S = 3600
 _DEFAULT_POLL_ROUNDS = 3
 _DEFAULT_POLL_INTERVAL_S = 20
 
+
 def _gh_json(args: list[str]) -> Any:
     result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
