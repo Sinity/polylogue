@@ -373,6 +373,60 @@ def test_serial_owner():
     assert "assert 0 == 42" in third.stderr
 
 
+def test_production_verify_all_grants_release_authority_after_complete_two_lane_run(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "app.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (repo / "tests" / "test_release.py").write_text(
+        "import pytest\n\n"
+        "def test_parallel_release_owner():\n"
+        "    from polylogue.app import answer\n"
+        "    assert answer() == 42\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_release_owner():\n"
+        "    from polylogue.app import answer\n"
+        "    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    completed, payload = _run_production_verify(repo, "--all")
+
+    assert completed.returncode == 0, completed.stderr
+    assert payload["tier"] == "full"
+    assert payload["testmon_environment"]["selection_mode"] == "full"
+    assert payload["verification_scope"] == "release-baseline"
+    assert payload["release_baseline_allowed"] is True
+    assert payload["worktree_fingerprint"] == payload["final_worktree_fingerprint"]
+    lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
+    assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
+    assert [step["name"] for step in lanes] == ["pytest native parallel (full)", "pytest native serial (full)"]
+    for step in lanes:
+        assert "--testmon-noselect" in step["statistics"]["command"]
+        assert "--testmon-forceselect" not in step["statistics"]["command"]
+    aggregate = payload["pytest_aggregate"]
+    assert aggregate["selection_mode"] == "full"
+    assert aggregate["environment"]["native_corpus_count"] == 2
+    assert aggregate["corpus"]["count"] == 2
+    assert aggregate["selected_union_count"] == 2
+    assert aggregate["terminal_union_count"] == 2
+    assert aggregate["missing_terminal_count"] == 0
+    assert aggregate["complete_corpus_covered"] is True
+    assert aggregate["terminal_green"] is True
+    assert aggregate["cleanup"] == {"complete": True}
+    assert aggregate["containment"] == {"complete": True}
+    assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
+
+
 def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
