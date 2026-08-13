@@ -4711,6 +4711,16 @@ def test_checkout_stability_failure_controls_every_broad_run_receipt(
     fingerprints: tuple[str, str],
     expected_diagnosis: str,
 ) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
     history: dict[str, Any] = {}
     receipt = tmp_path / "invocation" / "run.json"
     monkeypatch.setattr(verify, "ROOT", tmp_path)
@@ -4728,6 +4738,7 @@ def test_checkout_stability_failure_controls_every_broad_run_receipt(
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
         patch("devtools.verify._stamp_head"),
         patch("devtools.verify._notify"),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
     ):
         assert main(["--quick", "--json"]) == 125
