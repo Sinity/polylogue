@@ -3324,7 +3324,9 @@ def test_catch_up_processes_pre_existing_files(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
-def test_catch_up_acquires_source_without_reading_unavailable_index(tmp_path: Path) -> None:
+def test_catch_up_acquires_source_without_reading_unavailable_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The real catch-up planner and batch route remain source-only while derived-only."""
 
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
@@ -3348,6 +3350,7 @@ def test_catch_up_acquires_source_without_reading_unavailable_index(tmp_path: Pa
     )
     parse_stage = watcher._parse_stage
     assert parse_stage is not None
+    monkeypatch.setattr(parse_stage, "warm", lambda *_args: (_ for _ in ()).throw(AssertionError("must not prewarm")))
     set_degraded(
         DegradedReason(
             code="schema_version_mismatch",

@@ -1369,8 +1369,6 @@ def _apply_strategy(
 
     root = _archive_root(config)
     source_db = root / "source.db"
-    index_db = config.current_db_path()
-
     if item.actuator is RawAuthorityActuator.RESOLVE_CONFLICT:
         conflict = item.strategy_witness.get("conflict")
         judgment = item.strategy_witness.get("judgment")
@@ -1379,7 +1377,7 @@ def _apply_strategy(
         evidence = conflict.get("evidence")
         if not isinstance(evidence, dict) or judgment.get("disposition") != "retain_canonical_authority":
             raise RuntimeError("conflict-resolution strategy is not explicitly authorized")
-        with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
@@ -1404,7 +1402,7 @@ def _apply_strategy(
         if item.logical_source_key is None:
             raise RuntimeError("duplicate-alias plan is missing the logical source key it was proven against")
         logical_source_key = item.logical_source_key
-        with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
@@ -1471,7 +1469,7 @@ def _apply_strategy(
         from polylogue.storage.blob_publication import exclude_archive_blob_publishers
 
         with RebuildLease(root), exclude_archive_blob_publishers(source_db):
-            with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
+            with closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=ro", uri=True)) as proof_conn:
                 proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 preview = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=proof_conn)
             if _browser_strategy_witness(preview) != item.strategy_witness:
@@ -1492,7 +1490,7 @@ def _apply_strategy(
                 pass
             elif preview.status != "already_repaired":
                 raise RuntimeError(f"browser-origin strategy lost its exact proof: {preview.reason}")
-            with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+            with closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
                 conn.execute("PRAGMA foreign_keys = ON")
                 conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 conn.execute("BEGIN IMMEDIATE")
@@ -1523,7 +1521,7 @@ def _apply_strategy(
         logical_source_key = item.logical_source_key
         with RebuildLease(root), closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
             source_conn.execute("PRAGMA foreign_keys = ON")
-            _attach_repair_index(source_conn, index_db)
+            _attach_repair_index(source_conn, config.current_db_path())
             source_conn.execute("BEGIN IMMEDIATE")
             try:
                 # Apply-side stays fail-closed: an authorized plan whose single

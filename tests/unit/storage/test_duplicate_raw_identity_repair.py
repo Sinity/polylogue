@@ -196,7 +196,6 @@ def test_duplicate_alias_census_uses_active_generation_not_shadow_index(tmp_path
         archive_root=tmp_path,
         render_root=tmp_path / "render",
         sources=[],
-        db_path=tmp_path / "archive.db",
     )
     census = inspect_raw_authority_frontier(config)
 

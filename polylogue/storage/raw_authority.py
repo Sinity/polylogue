@@ -1763,6 +1763,8 @@ def finalize_raw_authority_census(
 
 def recover_interrupted_raw_authority_censuses(
     archive_root: Path,
+    *,
+    index_db_path: Path | None = None,
 ) -> tuple[tuple[str, JSONDocument], ...]:
     """Reconcile unfinished apply censuses from durable postconditions."""
     source_db = archive_root / "source.db"
@@ -1799,7 +1801,7 @@ def recover_interrupted_raw_authority_censuses(
     for row in rows:
         census_id = str(row["census_id"])
         plan = _raw_replay_plan_from_row(row)
-        receipt = raw_replay_application_receipt(archive_root, plan)
+        receipt = raw_replay_application_receipt(archive_root, plan, index_db_path=index_db_path)
         valid_receipt, problems = validate_raw_replay_application_receipt(plan, receipt)
         if valid_receipt:
             outcome = RawReplayPlanOutcome(
@@ -1812,7 +1814,7 @@ def recover_interrupted_raw_authority_censuses(
             )
             record_raw_replay_outcome(archive_root, census_id, outcome)
             continue
-        valid_plan, observed = validate_raw_replay_plan(archive_root, plan)
+        valid_plan, observed = validate_raw_replay_plan(archive_root, plan, index_db_path=index_db_path)
         if not valid_plan:
             reject_stale_raw_replay_plan(archive_root, census_id, plan, observed)
         else:

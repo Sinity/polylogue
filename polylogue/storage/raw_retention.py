@@ -1658,7 +1658,7 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
     terminal_raw_failure_kinds = tuple(sorted(_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS))
     raw_failure_placeholders = ", ".join("?" for _ in raw_failure_kinds)
     terminal_raw_failure_placeholders = ", ".join("?" for _ in terminal_raw_failure_kinds)
-    path_batch_size = 500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds)
+    path_batch_size = max(1, 500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds))
     pending = set(source_paths)
     while pending:
         batch = tuple(sorted(pending)[:path_batch_size])
@@ -1710,7 +1710,7 @@ def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -
                                   AND (
                                       evidence_raw.parsed_at_ms IS NULL
                                       OR evidence_raw.validated_at_ms IS NULL
-                                      OR evidence_raw.validated_at_ms >= evidence_raw.parsed_at_ms
+                                      OR evidence_raw.validated_at_ms > evidence_raw.parsed_at_ms
                                   )
                               )
                           )

@@ -101,7 +101,9 @@ def _seed_browser_capture_archive(
     message_count: int = 1,
     parse_error: str | None = None,
     validation_status: str | None = None,
+    validation_error: str | None = None,
     parsed_at_ms: int | None = None,
+    validated_at_ms: int | None = None,
     updated_at_ms: int | None = None,
 ) -> None:
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -114,15 +116,17 @@ def _seed_browser_capture_archive(
                 source_path TEXT,
                 parse_error TEXT,
                 validation_status TEXT,
-                parsed_at_ms INTEGER
+                validation_error TEXT,
+                parsed_at_ms INTEGER,
+                validated_at_ms INTEGER
             )
             """
         )
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, parse_error, validation_status, parsed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                raw_id, origin, native_id, source_path, parse_error, validation_status, validation_error, parsed_at_ms, validated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
@@ -131,7 +135,9 @@ def _seed_browser_capture_archive(
                 f"browser-capture/chatgpt/{native_id}.json",
                 parse_error,
                 validation_status,
+                validation_error,
                 parsed_at_ms,
+                validated_at_ms,
             ),
         )
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -784,6 +790,7 @@ def test_receiver_uses_active_index_and_ignores_historical_validation_failure(tm
         tmp_path,
         validation_status="failed",
         parsed_at_ms=1,
+        validated_at_ms=1,
         message_count=0,
     )
     active_index = tmp_path / "generations" / "active" / "index.db"
@@ -802,6 +809,26 @@ def test_receiver_uses_active_index_and_ignores_historical_validation_failure(tm
     assert state.state == "archived"
     assert state.latest_failure is None
     assert state.indexed_message_count == 1
+
+
+def test_receiver_surfaces_validation_failure_newer_than_parse(tmp_path: Path) -> None:
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(
+        tmp_path,
+        validation_status="failed",
+        parsed_at_ms=1,
+        validated_at_ms=2,
+        validation_error="strict validation rejected current bytes",
+    )
+
+    state = BrowserCaptureArchiveStatePayload.model_validate(
+        existing_capture_state("chatgpt", "conv-123", spool_path=tmp_path, archive_root=tmp_path)
+    )
+
+    assert state.state == "failed"
+    assert state.latest_failure == "strict validation rejected current bytes"
+    assert state.failure_source == "raw_validation"
 
 
 def test_receiver_echoes_safe_request_id_header(tmp_path: Path) -> None:

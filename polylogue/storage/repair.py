@@ -3966,7 +3966,7 @@ def _raw_materialization_candidate_ids(
                 AND (
                   r.parsed_at_ms IS NULL
                   OR r.validated_at_ms IS NULL
-                  OR r.validated_at_ms >= r.parsed_at_ms
+                  OR r.validated_at_ms > r.parsed_at_ms
                 )
               )
               AND (
@@ -4004,7 +4004,7 @@ def _raw_materialization_candidate_ids(
                       AND (
                         r.parsed_at_ms IS NULL
                         OR r.validated_at_ms IS NULL
-                        OR r.validated_at_ms >= r.parsed_at_ms
+                        OR r.validated_at_ms > r.parsed_at_ms
                       )
                     )
                   )
@@ -6381,7 +6381,7 @@ def _repair_raw_materialization(
 
     archive_root = _raw_materialization_archive_root(config)
     index_db = _raw_materialization_index_path(config, archive_root)
-    recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
+    recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root, index_db_path=index_db)
     for recovered_census_id, recovered_scope in recovered_censuses:
         recovered_envelope = recovered_scope.get("max_payload_bytes")
         recovered_max_payload_bytes = (

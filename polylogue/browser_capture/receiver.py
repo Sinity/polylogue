@@ -371,7 +371,7 @@ def _lookup_raw_archive_state(
             return _RawArchiveLookup()
         columns = _columns(conn, "raw_sessions")
         select = ["raw_id"] if "raw_id" in columns else []
-        for optional in ("parse_error", "validation_error", "validation_status", "parsed_at_ms"):
+        for optional in ("parse_error", "validation_error", "validation_status", "parsed_at_ms", "validated_at_ms"):
             if optional in columns:
                 select.append(optional)
         if not select:
@@ -405,7 +405,15 @@ def _lookup_raw_archive_state(
         validation_status = (
             str(row["validation_status"]) if "validation_status" in row_keys and row["validation_status"] else None
         )
-        validation_is_current = "parsed_at_ms" not in row_keys or row["parsed_at_ms"] is None
+        validation_is_current = (
+            "parsed_at_ms" not in row_keys
+            or row["parsed_at_ms"] is None
+            or (
+                "validated_at_ms" in row_keys
+                and row["validated_at_ms"] is not None
+                and row["validated_at_ms"] > row["parsed_at_ms"]
+            )
+        )
         if isinstance(parse_error, str) and parse_error:
             latest_failure = parse_error
             failure_source = "raw_parse"
