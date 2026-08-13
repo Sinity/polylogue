@@ -219,13 +219,28 @@ def _command_skips_tests(command: str) -> bool:
     return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
 
 
+def _structured_verification_receipt(stdout: str) -> dict[str, Any] | None:
+    """Read a final JSON receipt even when the verifier streamed progress first."""
+
+    candidate_start = len(stdout)
+    while candidate_start:
+        candidate_start = stdout.rfind("\n{", 0, candidate_start)
+        start = candidate_start + 1 if candidate_start >= 0 else 0
+        candidate = stdout[start:].strip()
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            if candidate_start < 0:
+                return None
+            continue
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
 def _release_baseline_permission(stdout: str) -> bool | None:
     """Read the structured verify decision when the command emitted one."""
-    try:
-        payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+    payload = _structured_verification_receipt(stdout)
+    if payload is None:
         return None
     value = payload.get("release_baseline_allowed")
     return value if isinstance(value, bool) else None
@@ -233,11 +248,8 @@ def _release_baseline_permission(stdout: str) -> bool | None:
 
 def _verification_scope(stdout: str) -> str | None:
     """Read the typed verification scope from a structured verify receipt."""
-    try:
-        payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+    payload = _structured_verification_receipt(stdout)
+    if payload is None:
         return None
     value = payload.get("verification_scope")
     return value if value in {scope.value for scope in VerificationScope} else None
@@ -245,11 +257,8 @@ def _verification_scope(stdout: str) -> str | None:
 
 def _terminal_authorization(stdout: str) -> str | None:
     """Read the typed terminal authorization from a structured receipt."""
-    try:
-        payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
+    payload = _structured_verification_receipt(stdout)
+    if payload is None:
         return None
     value = payload.get("terminal_authorization")
     return value if value in {authorization.value for authorization in TerminalAuthorization} else None
