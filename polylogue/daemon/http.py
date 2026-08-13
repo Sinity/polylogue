@@ -117,9 +117,8 @@ logger = get_logger(__name__)
 
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
 _COORDINATION_CACHE_TTL_S = 2.0
-_CLI_DELETE_SELECTION_MAX_BYTES = 65_536
+_CLI_DELETE_SELECTION_MAX_BYTES = 64 * 1024 * 1024
 _CLI_DELETE_AUTHORIZATION_MAX_BYTES = 2_048
-_CLI_DELETE_MAX_TARGETS = 256
 
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
 
@@ -5134,11 +5133,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if set(body) != {"session_ids"}:
                 raise ValueError("unexpected delete prepare fields")
             raw_session_ids = body["session_ids"]
-            if (
-                not isinstance(raw_session_ids, list)
-                or not raw_session_ids
-                or len(raw_session_ids) > _CLI_DELETE_MAX_TARGETS
-            ):
+            if not isinstance(raw_session_ids, list) or not raw_session_ids:
                 raise ValueError("invalid session_ids")
             if any(not isinstance(session_id, str) or not session_id for session_id in raw_session_ids):
                 raise ValueError("invalid session_ids")

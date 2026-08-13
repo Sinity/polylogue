@@ -199,8 +199,11 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
         stale_token = _prepare_authorize(client, (stale_a, stale_b))
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             archive.delete_sessions((stale_a,))
-        with pytest.raises(DaemonResponseError):
+        with pytest.raises(DaemonResponseError) as stale_error:
             client.request_mutation_json("POST", "/api/cli/delete", {"authorization_token": stale_token})  # type: ignore[attr-defined]
+        assert stale_error.value.status == HTTPStatus.CONFLICT
+        assert stale_error.value.code == "delete_authorization_denied"
+        assert stale_error.value.detail == "selection_changed_after_authorization"
         _assert_session_exists(archive_root, stale_b, expected=True)
 
         expiry_token = _prepare_authorize(client, (expiry_id,))
@@ -239,7 +242,7 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     assert confirmation == ("bound_token",)
 
 
-def test_cli_delete_rejects_oversize_and_reads_slow_body_before_writer_gate() -> None:
+def test_cli_delete_bounds_body_bytes_accepts_large_selection_and_reads_before_writer_gate() -> None:
     class _ExplodingBody:
         def read(self, _size: int) -> bytes:
             raise AssertionError("oversize body must not be read")
@@ -251,13 +254,15 @@ def test_cli_delete_rejects_oversize_and_reads_slow_body_before_writer_gate() ->
     oversize._do_post_impl()
     assert oversize_timeline == ["error"]
 
-    excessive_timeline: list[str] = []
-    excessive = _handler(["api", "cli", "delete", "prepare"], excessive_timeline)
-    excessive_body = json.dumps({"session_ids": [f"codex-session:{index}" for index in range(257)]}).encode()
-    excessive.headers = {"Content-Length": str(len(excessive_body))}  # type: ignore[assignment]
-    excessive.rfile = BytesIO(excessive_body)
-    excessive._do_post_impl()
-    assert excessive_timeline == ["error"]
+    large_timeline: list[str] = []
+    large = _handler(["api", "cli", "delete", "prepare"], large_timeline)
+    large_body = json.dumps({"session_ids": [f"codex-session:{index}" for index in range(257)]}).encode()
+    large.headers = {"Content-Length": str(len(large_body))}  # type: ignore[assignment]
+    large.rfile = BytesIO(large_body)
+    large._sync_run = lambda _operation: {"status": "prepared"}  # type: ignore[assignment]
+    large._send_json = lambda *_args: large_timeline.append("response")  # type: ignore[method-assign]
+    large._do_post_impl()
+    assert large_timeline == ["enter:http.cli.delete.prepare", "exit:http.cli.delete.prepare", "response"]
 
     class _SlowBody:
         def read(self, _size: int) -> bytes:
@@ -274,6 +279,24 @@ def test_cli_delete_rejects_oversize_and_reads_slow_body_before_writer_gate() ->
     slow._send_json = lambda *_args: slow_timeline.append("response")  # type: ignore[method-assign]
     slow._do_post_impl()
     assert slow_timeline == ["body-read", "enter:http.cli.delete.prepare", "exit:http.cli.delete.prepare", "response"]
+
+
+def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 257)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        token = _prepare_authorize(client, session_ids)
+        result = client.request_mutation_json(  # type: ignore[attr-defined]
+            "POST", "/api/cli/delete", {"authorization_token": token}
+        )
+
+    assert result == {"status": "deleted", "operation": "delete", "session_count": 257, "affected_count": 257}
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
 def test_cli_delete_interruption_consumes_authorization_without_deleting(tmp_path: Path) -> None:

@@ -639,6 +639,55 @@ def test_audit_repository_replays_a_prepared_mutation_with_its_original_inputs(
         )
 
 
+def test_mark_preview_stale_advances_and_replays_durable_continuity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "stale-continuity-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:stale-continuity",
+        archive_identity_digest="identity:stale-continuity",
+        parameter_digest="params:stale-continuity",
+    )
+    executor.authorize_bound(_binding(actuator), preview, _principal())
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        before_generation = int(
+            source.execute("SELECT committed_generation FROM audit_continuity_control").fetchone()[0]
+        )
+
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_after_prepare(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "mark_preview_stale" and phase == "after_source_prepare":
+            raise RuntimeError("crash after stale-preview prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_after_prepare)
+    with pytest.raises(RuntimeError, match="stale-preview prepare"):
+        audit.mark_preview_stale(preview)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
+
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "audit.db") as audit_db:
+        source_head = source.execute(
+            "SELECT committed_generation, committed_head_sha256, pending_mutation_id FROM audit_continuity_control"
+        ).fetchone()
+        audit_head = audit_db.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
+        assert source_head == (before_generation + 1, audit_head[1], None)
+        assert audit_head[0] == before_generation + 1
+        assert audit_db.execute(
+            "SELECT state FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+        ).fetchone() == ("stale",)
+        assert audit_db.execute(
+            "SELECT state FROM operation_authorizations WHERE preview_id = ?", (preview.preview_ref,)
+        ).fetchone() == ("revoked",)
+
+
 def test_replayed_start_keeps_the_crashed_owner_recoverable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Recovery never adopts an actuator-less pre-effect attempt into its own process."""
 

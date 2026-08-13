@@ -23,6 +23,7 @@ from polylogue.operations.mutation_transaction import (
     MutationReceipt,
     MutationTarget,
     OperationExecutor,
+    PlanStaleError,
     TokenConsumedError,
     TokenExpiredError,
 )
@@ -161,6 +162,8 @@ def consume_cli_delete(
                 authorization,
                 SessionDeleteArgs(archive=archive, session_ids=session_ids),
             )
+    except PlanStaleError as exc:
+        raise DeleteAuthorizationError("selection_changed_after_authorization") from exc
     except (AuthorizationMismatchError, TokenConsumedError, TokenExpiredError) as exc:
         raise DeleteAuthorizationError("authorization_not_active") from exc
 

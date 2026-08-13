@@ -500,6 +500,8 @@ class AuditRepository:
                 "preview": _preview_payload(preview),
                 "authorization": _authorization_payload(authorization),
             }
+        if kind == "mark_preview_stale":
+            return {"preview": _preview_payload(cast(MutationPreview, args[0]))}
         if kind == "finalize_attempt":
             operation_id = cast(str, args[0])
             return {
@@ -555,6 +557,11 @@ class AuditRepository:
                     _stored_authorization_digest(payload["authorization"]),
                     _preview_from_payload(payload["preview"]),
                     _authorization_from_payload(payload["authorization"]),
+                )
+            if mutation.kind == "mark_preview_stale":
+                return cast(Any, self.mark_preview_stale).__wrapped__(
+                    self,
+                    _preview_from_payload(payload["preview"]),
                 )
             if mutation.kind == "finalize_attempt":
                 return cast(Any, self.finalize_attempt).__wrapped__(
@@ -844,11 +851,12 @@ class AuditRepository:
                 )
         return authorization_id
 
+    @_continuity_mutation("mark_preview_stale")
     def mark_preview_stale(self, preview: MutationPreview) -> None:
         """Revoke every live authorization when a prepared plan no longer matches."""
 
         with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            self._begin(conn)
             row = conn.execute(
                 "SELECT plan_hash FROM operation_previews WHERE preview_id = ?",
                 (preview.preview_ref,),
@@ -867,7 +875,6 @@ class AuditRepository:
                 "UPDATE operation_previews SET state = 'stale' WHERE preview_id = ? AND state = 'prepared'",
                 (preview.preview_ref,),
             )
-            conn.commit()
 
     def consume_authorization_and_start(self, preview: MutationPreview, authorization: MutationAuthorization) -> str:
         """Consume a token and create run, targets, and initial attempt atomically."""
