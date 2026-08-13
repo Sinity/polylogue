@@ -51,6 +51,7 @@ from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord,
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
+from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
 from polylogue.storage.archive_identity import resolve_active_index_path
 
@@ -1602,35 +1603,14 @@ class LiveWatcher:
         await operation()
 
     def _source_name_for(self, path: Path) -> str:
-        resolved = path.resolve()
-        for source in self._sources:
-            try:
-                if resolved.is_relative_to(source.root.resolve()):
-                    return source.name
-            except (OSError, ValueError):
-                continue
+        source = deepest_source_for_path(path, self._sources)
+        if source is not None:
+            return source.name
         return path.parent.name
 
     def _source_accepts(self, path: Path) -> bool:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            return False
-        matches: list[tuple[int, WatchSource]] = []
-        for source in self._sources:
-            try:
-                source_root = source.root.resolve()
-                if resolved.is_relative_to(source_root):
-                    matches.append((len(source_root.parts), source))
-            except OSError:
-                continue
-        if matches:
-            # Default roots deliberately overlap (~/.codex contains its
-            # sessions subroot).  The deepest root owns a path, independent
-            # of declaration order or whether the roots were supplied by the
-            # defaults or explicit configuration.
-            return max(matches, key=lambda match: match[0])[1].accepts(path)
-        return False
+        source = deepest_source_for_path(path, self._sources)
+        return source.accepts(path) if source is not None else False
 
     def _is_hook_spool_path(self, path: Path) -> bool:
         for source in self._sources:

@@ -3773,7 +3773,8 @@ def _raw_materialization_archive_root(config: Config) -> Path:
 
 def _raw_materialization_index_path(config: Config, archive_root: Path) -> Path:
     """Return an explicit index override or the archive's active generation."""
-    return config.db_path if config.db_path.name == "index.db" else resolve_active_index_path(archive_root)
+    del archive_root
+    return config.current_db_path()
 
 
 def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
@@ -5126,7 +5127,6 @@ def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
 
 def _open_archive_index_connection() -> sqlite3.Connection:
     from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
 
     conn = sqlite3.connect(resolve_active_index_path(archive_root()))
     conn.row_factory = sqlite3.Row
@@ -6064,7 +6064,6 @@ def repair_session_insights(
     clearing the active daemon's debt ledger.
     """
     from polylogue.paths import archive_root as _resolve_archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.insights.session.rebuild import (
         rebuild_archive_session_insights,
         refresh_session_insight_aggregates_sync,
@@ -6208,6 +6207,55 @@ def _resolve_raw_authority_commit_batch_size(commit_batch_size: int | None) -> i
 
 
 def repair_raw_materialization(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+    raw_artifact_limit: int | None = None,
+    max_payload_bytes: int = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+    ingest_workers: int | None = None,
+    commit_batch_size: int | None = None,
+    progress_callback: ProgressCallback | None = None,
+    prefetch_cache: RawParsePrefetchCache | None = None,
+    max_pass_seconds: float | None = None,
+) -> RepairResult:
+    """Converge one raw-materialization pass under active-generation ownership."""
+
+    def run() -> RepairResult:
+        return _repair_raw_materialization(
+            config,
+            dry_run=dry_run,
+            raw_artifact_id=raw_artifact_id,
+            provider=provider,
+            source_family=source_family,
+            source_root=source_root,
+            raw_artifact_limit=raw_artifact_limit,
+            max_payload_bytes=max_payload_bytes,
+            ingest_workers=ingest_workers,
+            commit_batch_size=commit_batch_size,
+            progress_callback=progress_callback,
+            prefetch_cache=prefetch_cache,
+            max_pass_seconds=max_pass_seconds,
+        )
+
+    if dry_run:
+        return run()
+
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    archive_root = _raw_materialization_archive_root(config)
+    lease = ActiveWriterLease(archive_root)
+    lease.acquire()
+    try:
+        return run()
+    finally:
+        lease.close()
+
+
+def _repair_raw_materialization(
     config: Config,
     dry_run: bool = False,
     *,
@@ -6941,7 +6989,7 @@ def repair_raw_materialization(
             continue
         except Exception as exc:
             logger.exception("raw replay plan %s failed", plan.plan_id)
-            application_receipt = raw_replay_application_receipt(archive_root, plan)
+            application_receipt = raw_replay_application_receipt(archive_root, plan, index_db_path=index_db)
             receipt_valid, receipt_problems = validate_raw_replay_application_receipt(plan, application_receipt)
             if receipt_valid:
                 outcome = RawReplayPlanOutcome(
@@ -7002,7 +7050,7 @@ def repair_raw_materialization(
             archive_root, index_db, [plan], remaining=current, no_progress=no_progress
         )
         for outcome in component_outcomes:
-            application_receipt = raw_replay_application_receipt(archive_root, plan)
+            application_receipt = raw_replay_application_receipt(archive_root, plan, index_db_path=index_db)
             receipted = dataclasses.replace(outcome, application_receipt=application_receipt)
             if outcome.status is RawReplayPlanStatus.EXECUTED:
                 receipt_valid, receipt_problems = validate_raw_replay_application_receipt(plan, application_receipt)

@@ -3552,6 +3552,8 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
 
     try:
         assert watcher._source_accepts(path) is True
+        assert watcher._source_name_for(path) == "codex"
+        assert watcher._batch_processor._source_name_for(path) == "codex"
     finally:
         watcher._parse_stage.shutdown()
 

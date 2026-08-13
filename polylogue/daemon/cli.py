@@ -1319,7 +1319,7 @@ def _drain_raw_materialization_once(
             max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
         )
     finally:
-        _close_raw_materialization_fts(config.archive_root / "index.db")
+        _close_raw_materialization_fts(config.current_db_path())
     _emit_raw_materialization_pass(result)
     frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
@@ -1387,7 +1387,7 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
             raw_artifact_id=raw_artifact_id,
         )
     finally:
-        _close_raw_materialization_fts(config.archive_root / "index.db")
+        _close_raw_materialization_fts(config.current_db_path())
     _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)

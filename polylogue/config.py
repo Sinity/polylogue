@@ -122,6 +122,7 @@ class Config:
         self.archive_root = archive_root
         self.render_root = render_root
         self.sources = sources
+        self._db_path_explicit = db_path is not None
         self.db_path = db_path if db_path is not None else resolve_active_index_path(archive_root)
         self.drive_config = drive_config
         self.index_config = index_config
@@ -136,6 +137,13 @@ class Config:
                 raise ConfigError(f"Config.{attr} must be an absolute path, got {value!r}")
         if isinstance(judgment_automation_interval_s, bool) or not isinstance(judgment_automation_interval_s, int):
             raise ConfigError("Config.judgment_automation_interval_s must be an integer")
+
+    def current_db_path(self) -> Path:
+        """Resolve the current generation unless the caller pinned an override."""
+
+        if self._db_path_explicit and self.db_path.name == "index.db":
+            return self.db_path
+        return resolve_active_index_path(self.archive_root)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Config):

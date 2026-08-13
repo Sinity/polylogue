@@ -78,7 +78,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
-from polylogue.sources.live.archive_open import _open_archive_for_live_write
+from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
@@ -133,6 +133,7 @@ from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
+from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
@@ -159,11 +160,13 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ActiveByteRevisionChainError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
+    archive_tier_spec,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root as initialize_archive_root,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -1744,13 +1747,9 @@ class LiveBatchProcessor:
         return self._parser_fingerprint
 
     def _source_name_for(self, path: Path) -> str:
-        resolved = path.resolve()
-        for source in self._sources:
-            try:
-                if resolved.is_relative_to(source.root.resolve()):
-                    return str(source.name)
-            except OSError:
-                continue
+        source = deepest_source_for_path(path, self._sources)
+        if source is not None:
+            return str(source.name)
         return path.parent.name
 
     def _can_ingest_appends_directly(self) -> bool:
@@ -1852,7 +1851,9 @@ class LiveBatchProcessor:
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         acquisition_capture_mode = fallback_provider
 
-        archive_bootstrapped = not self._archive_active(archive_root)
+        source_only = _source_tier_acquisition_required()
+        archive_active = self._archive_active(archive_root)
+        archive_bootstrapped = not archive_active and (not source_only or not (archive_root / "source.db").exists())
         if archive_bootstrapped:
             initialize_archive_root(archive_root)
         archive_active = self._archive_active(archive_root)
@@ -2350,6 +2351,8 @@ class LiveBatchProcessor:
         return result
 
     def _archive_active(self, archive_root: Path) -> bool:
+        if _source_tier_acquisition_required():
+            return (archive_root / "source.db").exists() and (archive_root / "user.db").exists()
         return (
             ArchiveLocation.resolve(archive_root).active_index_path.exists() and (archive_root / "source.db").exists()
         )
@@ -2361,14 +2364,26 @@ class LiveBatchProcessor:
         archive_active: bool,
         archive_bootstrapped: bool,
     ) -> dict[str, object]:
-        tier_paths = {
-            spec.tier.value: (
-                ArchiveLocation.resolve(archive_root).active_index_path
-                if spec.tier.value == "index"
-                else archive_root / spec.filename
-            )
-            for spec in ARCHIVE_TIER_SPECS.values()
-        }
+        if _source_tier_acquisition_required():
+            tier_paths = {
+                tier.value: archive_root / archive_tier_spec(tier).filename
+                for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
+            }
+            storage_route = "archive_source_acquisition"
+            storage_tiers = ",".join(tier_paths)
+            storage_write_tiers = ArchiveTier.SOURCE.value
+        else:
+            tier_paths = {
+                spec.tier.value: (
+                    ArchiveLocation.resolve(archive_root).active_index_path
+                    if spec.tier.value == "index"
+                    else archive_root / spec.filename
+                )
+                for spec in ARCHIVE_TIER_SPECS.values()
+            }
+            storage_route = "archive_full"
+            storage_tiers = _ARCHIVE_RUNTIME_TIERS
+            storage_write_tiers = _ARCHIVE_NATIVE_WRITE_TIERS
         present = [tier for tier, path in tier_paths.items() if path.exists()]
         missing = [tier for tier, path in tier_paths.items() if not path.exists()]
         user_versions: dict[str, int | None] = {}
@@ -2385,9 +2400,9 @@ class LiveBatchProcessor:
             except sqlite3.Error:
                 user_versions[tier] = -1
         return {
-            "storage_route": "archive_full",
-            "storage_tiers": _ARCHIVE_RUNTIME_TIERS,
-            "storage_write_tiers": _ARCHIVE_NATIVE_WRITE_TIERS,
+            "storage_route": storage_route,
+            "storage_tiers": storage_tiers,
+            "storage_write_tiers": storage_write_tiers,
             "archive_active": archive_active,
             "archive_bootstrapped": archive_bootstrapped,
             "archive_present_tiers": ",".join(present),

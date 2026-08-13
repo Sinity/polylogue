@@ -20,7 +20,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
-from polylogue.sources.live.archive_open import _open_archive_for_live_write
+from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -73,9 +73,12 @@ def _ingest_append_plans_archive(
     archive_root: Path,
 ) -> _AppendResult:
     timings: dict[str, float] = {}
-    index_db = resolve_active_index_path(archive_root)
     source_db = archive_root / "source.db"
-    if not index_db.exists() or not source_db.exists():
+    source_only = _source_tier_acquisition_required()
+    archive_missing = not source_db.exists()
+    if not source_only:
+        archive_missing = archive_missing or not resolve_active_index_path(archive_root).exists()
+    if archive_missing:
         t0 = time.perf_counter()
         initialize_active_archive_root(archive_root)
         _add_timing(timings, "append.archive_init", t0)

@@ -271,6 +271,27 @@ def test_live_append_replay_streams_retained_jsonl_raw(
     assert result.failed == []
 
 
+def test_live_append_acquires_with_unreadable_active_pointer(tmp_path: Path) -> None:
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="degraded-append")
+    (tmp_path / ".index-active-pointer").write_bytes(b"\xff")
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        result = ingest_append_plans(cast(Any, owner), [plan])
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [plan]
+    assert result.failed == []
+
+
 def test_live_full_replay_streams_retained_jsonl_raw(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -402,6 +423,7 @@ def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
     finally:
         conn.close()
     index_digest_before = hashlib.sha256(index_db.read_bytes()).hexdigest()
+    (tmp_path / ".index-active-pointer").write_bytes(b"\xff")
 
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),

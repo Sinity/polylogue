@@ -1054,6 +1054,11 @@ def test_raw_materialization_closes_fts_on_cancellation(
     from polylogue.daemon import cli as daemon_cli
 
     archive = tmp_path / "archive"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    active_index.touch()
+    archive.mkdir()
+    (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
     closed: list[Path] = []
 
     class FakeRestoreResult:
@@ -1075,7 +1080,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
     with pytest.raises(asyncio.CancelledError):
         daemon_cli._drain_raw_materialization_once()
 
-    assert closed == [archive / "index.db"]
+    assert closed == [active_index]
 
 
 def test_raw_materialization_fts_failure_records_durable_debt(
