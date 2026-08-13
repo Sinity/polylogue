@@ -408,17 +408,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace bead-batch-show",
-        "workspace",
-        "Batch-show beads: id, status, prio, title, desc head, deps, notes tail.",
-        "devtools.bead_batch_show",
-        use_when=(
-            "Skim several beads at once (e.g. a fanout cluster or a discovered-follow-up batch) "
-            "without a separate `bd show` round-trip per id."
-        ),
-        examples=("devtools workspace bead-batch-show polylogue-kapb polylogue-2yax",),
-    ),
-    CommandSpec(
         "workspace bead-cluster",
         "workspace",
         "Footprint/overlap/contention clustering of ready Beads (execution frontier).",
