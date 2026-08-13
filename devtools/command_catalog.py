@@ -206,6 +206,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify ci-commands",
+        "verification",
+        "Validate devtools invocations in structured CI run fields.",
+        "devtools.verify_ci_commands",
+        use_when="Catch CI scripts that reference a removed or misspelled devtools command.",
+        examples=("devtools verify ci-commands", "devtools verify ci-commands --json"),
+    ),
+    CommandSpec(
         "verify corpus-fidelity",
         "verification",
         "Run the production corpus-fidelity acceptance gate against an archive root.",
