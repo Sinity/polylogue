@@ -146,7 +146,6 @@ if TYPE_CHECKING:
         AssertionClaimPayload,
         AssertionEvidenceResolutionState,
         AssertionJudgmentResultPayload,
-        BulkDeleteSessionResult,
         BulkTagMutationResult,
         DeleteSessionResult,
         FacetsResponse,
@@ -6601,47 +6600,6 @@ class PolylogueArchiveMixin:
             outcome="deleted" if deleted else "not_found",
             session_id=resolved,
             detail=None if deleted else "session_not_found",
-        )
-
-    async def delete_sessions_safe(
-        self,
-        session_ids: Sequence[str],
-        *,
-        actor: str = "user:api",
-    ) -> BulkDeleteSessionResult:
-        """Delete a resolved session set in one authorized transaction.
-
-        The daemon CLI bridge uses this batch form after resolving the user's
-        complete selection. ``SessionDeleteActuator`` prepares the still-live
-        subset and ``ArchiveStore.delete_sessions`` commits that subset once;
-        a failed apply therefore cannot expose a partially committed prefix.
-        """
-        from polylogue.operations.bindings import runtime_operation_binding
-        from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.surfaces.payloads import BulkDeleteSessionResult
-
-        requested = tuple(dict.fromkeys(session_ids))
-        root = _active_archive_root(self.config)
-        with ArchiveStore.open_existing(root, read_only=False) as archive:
-            actuator = SessionDeleteActuator()
-            executor = OperationExecutor.for_archive_root(root)
-            args = SessionDeleteArgs(archive=archive, session_ids=requested)
-            binding = runtime_operation_binding(actuator)
-            principal = MutationPrincipal(actor, frozenset({"archive.delete_session"}), "api", "write")
-            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-            authorization = executor.authorize_bound(
-                binding,
-                preview,
-                principal,
-                confirmation_strength="confirm_flag",
-            )
-            receipt = executor.execute_bound(binding, preview, authorization, args)
-        return BulkDeleteSessionResult(
-            outcome="deleted" if receipt.affected_count else "not_found",
-            session_count=len(requested),
-            affected_count=receipt.affected_count,
         )
 
     async def add_tag(

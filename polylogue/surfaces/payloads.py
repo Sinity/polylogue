@@ -3641,17 +3641,6 @@ class DeleteSessionResult(SurfacePayloadModel):
         return self.outcome == "deleted"
 
 
-class BulkDeleteSessionResult(SurfacePayloadModel):
-    """Typed result for one atomic session-delete batch."""
-
-    outcome: Literal["deleted", "not_found"]
-    session_count: int
-    affected_count: int
-
-    def __bool__(self) -> bool:
-        return self.affected_count > 0
-
-
 class BulkTagMutationResult(SurfacePayloadModel):
     """Typed result for bulk tag mutations.
 
@@ -4100,7 +4089,6 @@ __all__ = [
     "AssertionJudgmentPayload",
     "AssertionJudgmentResultPayload",
     "BlockQueryRowPayload",
-    "BulkDeleteSessionResult",
     "BulkTagMutationResult",
     "SessionDetailPayload",
     "SessionDetailResponse",
