@@ -307,6 +307,32 @@ def changed_bead_ids(*, base_sha: str, head_sha: str) -> list[str]:
     return sorted(bead_id for bead_id in set(before) | set(after) if before.get(bead_id) != after.get(bead_id))
 
 
+def changed_paths_at_revisions(*, base_sha: str, head_sha: str) -> tuple[str, ...]:
+    """Return every path endpoint changed by one immutable candidate revision.
+
+    Rename detection is deliberately disabled: a rename is represented as a
+    deletion plus an addition, so an allowlist must admit both the source and
+    destination paths.  This is also independent of GitHub's mutable PR-files
+    endpoint; the trusted workflow has already fetched ``head_sha`` as data.
+    """
+    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha) or not _GIT_OBJECT_PATTERN.fullmatch(head_sha):
+        raise ValueError("base and head revisions must be hexadecimal Git object names")
+    _ensure_local_commit(base_sha)
+    _ensure_local_commit(head_sha)
+    merge_base = _merge_base(base_sha, head_sha)
+    result = subprocess.run(
+        ["git", "diff", "--no-renames", "--name-only", "-z", merge_base, head_sha, "--"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or result.stderr.strip():
+        raise ValueError("cannot resolve candidate changed-file scope from immutable Git revisions")
+    paths = tuple(sorted(os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw))
+    if not paths:
+        raise ValueError("candidate changed-file scope is empty")
+    return paths
+
+
 def _validate_dispositions(
     dispositions: object,
     *,
@@ -834,11 +860,13 @@ def check_authority_metadata(
         )
         _ensure_local_commit(metadata.base_sha)
         _ensure_local_commit(metadata.head_sha)
-        if _automated_dependency_scope_allowed(metadata):
-            print(
-                "pr-scope authority OK: typed automated-dependency disposition "
-                f"(files={','.join(metadata.changed_files)})"
-            )
+        candidate_paths = changed_paths_at_revisions(
+            base_sha=metadata.base_sha,
+            head_sha=metadata.head_sha,
+        )
+        authority_metadata = PullRequestMetadata(**{**asdict(metadata), "changed_files": candidate_paths})
+        if _automated_dependency_scope_allowed(authority_metadata):
+            print(f"pr-scope authority OK: typed automated-dependency disposition (files={','.join(candidate_paths)})")
             return 0
         verdict = validate_pr_body(
             metadata.body,

@@ -298,12 +298,21 @@ def test_authority_event_rejects_missing_or_mismatched_api_fields(
 def test_authority_accepts_only_the_typed_dependency_bot_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    base, _candidate, base_sha, head_sha = _authority_repositories(tmp_path)
-    monkeypatch.chdir(base)
+    base, candidate, _base_sha, _head_sha = _authority_repositories(tmp_path)
+    (base / "pyproject.toml").write_text("[project]\nname = 'polylogue'\n", encoding="utf-8")
+    (base / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    _git(base, "add", "pyproject.toml", "uv.lock")
+    dependency_base = _commit(base, "add dependency inputs")
+    _git(base, "push", "origin", "master", "--force")
+    _git(candidate, "fetch", "origin", "master")
+    _git(candidate, "reset", "--hard", "origin/master")
+    (candidate / "uv.lock").write_text("version = 2\n", encoding="utf-8")
+    dependency_head = _commit(candidate, "update dependency")
+    monkeypatch.chdir(candidate)
     metadata = pr_scope.PullRequestMetadata(
         body="",
-        head_sha=head_sha,
-        base_sha=base_sha,
+        head_sha=dependency_head,
+        base_sha=dependency_base,
         is_draft=False,
         base_ref="master",
         number=7,
@@ -317,19 +326,63 @@ def test_authority_accepts_only_the_typed_dependency_bot_scope(
         pr_scope.check_authority_metadata(
             metadata,
             event_pr=7,
-            event_head_sha=head_sha,
-            event_base_sha=base_sha,
+            event_head_sha=dependency_head,
+            event_base_sha=dependency_base,
         )
         == 0
     )
     assert "typed automated-dependency disposition" in capsys.readouterr().out
 
-    widened = pr_scope.PullRequestMetadata(
-        **{**asdict(metadata), "changed_files": (*metadata.changed_files, "polylogue/config.py")}
-    )
+    (candidate / "polylogue").mkdir(exist_ok=True)
+    (candidate / "polylogue" / "config.py").write_text("VALUE = 1\n", encoding="utf-8")
+    widened_head = _commit(candidate, "widen dependency change")
+    widened = pr_scope.PullRequestMetadata(**{**asdict(metadata), "head_sha": widened_head})
     assert (
         pr_scope.check_authority_metadata(
             widened,
+            event_pr=7,
+            event_head_sha=widened_head,
+            event_base_sha=dependency_base,
+        )
+        == 1
+    )
+    assert "missing the structured pr-scope carrier" in capsys.readouterr().out
+
+
+def test_authority_dependency_scope_counts_both_rename_endpoints(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, candidate, _base_sha, _head_sha = _authority_repositories(tmp_path)
+    (base / "polylogue").mkdir(exist_ok=True)
+    (base / "polylogue" / "config.py").write_text("dependency = true\n", encoding="utf-8")
+    _git(base, "add", "polylogue/config.py")
+    base_sha = _commit(base, "add non-allowlisted dependency input")
+    _git(base, "push", "origin", "master", "--force")
+    _git(candidate, "fetch", "origin", "master")
+    _git(candidate, "reset", "--hard", "origin/master")
+    _git(candidate, "mv", "polylogue/config.py", "uv.lock")
+    head_sha = _commit(candidate, "rename into dependency allowlist")
+    monkeypatch.chdir(candidate)
+    metadata = pr_scope.PullRequestMetadata(
+        body="",
+        head_sha=head_sha,
+        base_sha=base_sha,
+        is_draft=False,
+        base_ref="master",
+        number=7,
+        state="open",
+        author_login="dependabot[bot]",
+        author_type="Bot",
+        changed_files=("uv.lock",),
+    )
+
+    assert pr_scope.changed_paths_at_revisions(base_sha=base_sha, head_sha=head_sha) == (
+        "polylogue/config.py",
+        "uv.lock",
+    )
+    assert (
+        pr_scope.check_authority_metadata(
+            metadata,
             event_pr=7,
             event_head_sha=head_sha,
             event_base_sha=base_sha,
