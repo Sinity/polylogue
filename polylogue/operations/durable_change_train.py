@@ -723,9 +723,14 @@ def _audit_file_identity(path: Path) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
-def _audit_live_metadata(audit_path: Path) -> tuple[int, int, tuple[str, ...]]:
-    """Read the durable markers that remain valid after an in-place migration."""
-    uri = f"{audit_path.resolve(strict=False).as_uri()}?mode=ro"
+def _audit_live_metadata(
+    audit_path: Path,
+    *,
+    immutable: bool = False,
+) -> tuple[int, int, tuple[str, ...]]:
+    """Read durable markers, without mutating an immutable backup artifact."""
+    mode = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+    uri = f"{audit_path.resolve(strict=False).as_uri()}{mode}"
     with closing(sqlite3.connect(uri, uri=True)) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0] or 0)
@@ -1372,7 +1377,10 @@ def restore_adopted_audit_tier(
     expected_initial_version = adoption.get("audit_user_version")
     if not isinstance(expected_application_id, int) or not isinstance(expected_initial_version, int):
         raise MigrationError("audit adoption receipt lacks its durable SQLite markers")
-    backup_version, backup_application_id, backup_quick_check = _audit_live_metadata(manifest_path.parent / "audit.db")
+    backup_version, backup_application_id, backup_quick_check = _audit_live_metadata(
+        manifest_path.parent / "audit.db",
+        immutable=True,
+    )
     if (
         backup_version != artifact_version
         or backup_version != ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]

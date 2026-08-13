@@ -12,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
@@ -30,10 +30,9 @@ RESET_DELETION_CASES = [
 
 
 def _seed_archive_session(archive_root: Path, *, native_id: str, source_path: Path | None = None) -> str:
+    initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
     session_id = f"codex-session:{native_id}"
     raw_id = f"raw-{native_id}"
     with sqlite3.connect(source_db) as conn:
