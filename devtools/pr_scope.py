@@ -131,6 +131,15 @@ def load_bead_records(path: Path = _BEADS_PATH) -> dict[str, dict[str, Any]]:
     return _parse_bead_records(path.read_text(encoding="utf-8").splitlines(), line_label="line")
 
 
+def load_committed_bead_records() -> dict[str, dict[str, Any]]:
+    """Load the exact HEAD Bead snapshot without invoking ``bd``.
+
+    Callers whose authorization depends on tracker state need Git's committed
+    object rather than a mutable worktree file or Beads' shared Dolt state.
+    """
+    return _bead_records_at(_git_head_sha())
+
+
 def canonical_beads_digest(
     records: dict[str, dict[str, Any]], bead_ids: list[str], *, carrier_version: int = _V1
 ) -> str:

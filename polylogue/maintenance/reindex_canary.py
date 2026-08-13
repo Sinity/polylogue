@@ -1774,15 +1774,8 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
 
 
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
-    """Resolve machine-owned expected-difference authorities.
-
-    Bead and successor identifiers remain structured review references, but
-    their existence is tracker state rather than product semantics.  A frozen
-    package-local copy of every tracker id could detect a typo while being
-    unable to prove that the cited issue authorized the difference.  Index
-    deltas, by contrast, are an executable product vocabulary and are checked
-    against their canonical declarations here.
-    """
+    """Resolve every review authority from its independent canonical source."""
+    from devtools.pr_scope import load_committed_bead_records
     from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
 
     expected_deltas = {
@@ -1797,6 +1790,49 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
     if unknown_deltas:
         detail = ", ".join(f"unknown index delta {delta}" for delta in unknown_deltas)
         raise UnclassifiedCanaryDiffError(f"expected canary authority is not declared in packaged evidence: {detail}")
+
+    try:
+        bead_records = load_committed_bead_records()
+    except (OSError, ValueError) as exc:
+        raise UnclassifiedCanaryDiffError(
+            "cannot resolve canary review authority from committed Bead evidence"
+        ) from exc
+
+    expected_beads = {
+        review.authority_id
+        for review in reviews
+        if review.classification is DifferenceClassification.EXPECTED
+        and review.authority_kind is CanaryAuthorityKind.BEAD
+        and review.authority_id is not None
+    }
+    unknown_beads = sorted(bead_id for bead_id in expected_beads if bead_id not in bead_records)
+    if unknown_beads:
+        detail = ", ".join(f"unknown Bead {bead_id}" for bead_id in unknown_beads)
+        raise UnclassifiedCanaryDiffError(
+            f"expected canary authority is not declared in committed Bead evidence: {detail}"
+        )
+
+    successors = {
+        review.authority_id
+        for review in reviews
+        if review.classification is DifferenceClassification.UNEXPECTED
+        and review.authority_kind is CanaryAuthorityKind.SUCCESSOR
+        and review.authority_id is not None
+    }
+    unknown_successors = sorted(successor_id for successor_id in successors if successor_id not in bead_records)
+    if unknown_successors:
+        detail = ", ".join(f"unknown successor {successor_id}" for successor_id in unknown_successors)
+        raise UnclassifiedCanaryDiffError(
+            f"unexpected canary authority is not open in committed Bead evidence: {detail}"
+        )
+    closed_successors = sorted(
+        successor_id for successor_id in successors if bead_records[successor_id].get("status") != "open"
+    )
+    if closed_successors:
+        detail = ", ".join(f"closed successor {successor_id}" for successor_id in closed_successors)
+        raise UnclassifiedCanaryDiffError(
+            f"unexpected canary authority is not open in committed Bead evidence: {detail}"
+        )
 
 
 def _fsync_directory(directory: Path) -> None:
