@@ -804,8 +804,11 @@ def test_live_materializer_fingerprint_rejects_changed_running_code(monkeypatch:
         reindex_canary_module._validate_live_materializer_fingerprint("recorded-materializer")
 
 
-def test_expected_delta_and_committed_bead_authorities_resolve() -> None:
-    """Expected reviews use executable deltas and committed Bead authority."""
+def test_expected_delta_authority_resolves_outside_a_git_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Installed canaries resolve semantic authority from packaged declarations."""
+    monkeypatch.chdir(tmp_path)
     difference = RowDifference(
         table="blocks",
         operation=DifferenceOperation.CHANGED,
@@ -822,14 +825,7 @@ def test_expected_delta_and_committed_bead_authorities_resolve() -> None:
         reference="delta:33",
         rationale="declared index delta",
     )
-    bead = CanaryDifferenceReview.for_difference(
-        difference,
-        classification=DifferenceClassification.EXPECTED,
-        reference="bead:polylogue-0x7nh",
-        rationale="packaged Bead authority",
-    )
-
-    reindex_canary_module._validate_expected_review_authorities((delta, bead))
+    reindex_canary_module._validate_expected_review_authorities((delta,))
 
 
 def test_unknown_expected_delta_authority_fails_closed() -> None:
@@ -1702,7 +1698,7 @@ def test_review_authority_kind_is_bound_to_classification() -> None:
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="bead:polylogue-0x7nh",
+            reference="delta:33",
             rationale="wrong authority kind",
         )
 
@@ -1721,8 +1717,8 @@ def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_pat
                         "identity": {"block_id": "block"},
                         "changed_columns": ["text"],
                         "classification": "expected",
-                        "reference": "bead:claimed-authority",
-                        "authority": {"kind": "bead", "id": "different-authority"},
+                        "reference": "delta:33",
+                        "authority": {"kind": "delta", "id": "34"},
                         "rationale": "contradictory manifest audit fields",
                     }
                 ]
@@ -1735,8 +1731,10 @@ def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_pat
         load_canary_review_manifest(manifest)
 
 
-def test_review_manifest_accepts_known_open_bead_and_successor_references(tmp_path: Path) -> None:
-    """The CLI accepts reviews backed by the committed open authority snapshot."""
+def test_review_manifest_accepts_packaged_delta_and_nonapproving_successor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review loading works outside Git and keeps unresolved differences red."""
 
     manifest = tmp_path / "reviews.json"
     manifest.write_text(
@@ -1749,9 +1747,9 @@ def test_review_manifest_accepts_known_open_bead_and_successor_references(tmp_pa
                         "identity": {"block_id": "expected"},
                         "changed_columns": ["text"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-0x7nh",
-                        "authority": {"kind": "bead", "id": "polylogue-0x7nh"},
-                        "rationale": "committed Bead declares this expected difference",
+                        "reference": "delta:33",
+                        "authority": {"kind": "delta", "id": "33"},
+                        "rationale": "the packaged index delta declares this expected difference",
                     },
                     {
                         "table": "blocks",
@@ -1769,11 +1767,16 @@ def test_review_manifest_accepts_known_open_bead_and_successor_references(tmp_pa
         encoding="utf-8",
     )
 
-    assert len(load_canary_review_manifest(manifest)) == 2
+    monkeypatch.chdir(tmp_path)
+    reviews = load_canary_review_manifest(manifest)
+    assert [review.classification for review in reviews] == [
+        DifferenceClassification.EXPECTED,
+        DifferenceClassification.UNEXPECTED,
+    ]
 
 
-def test_review_manifest_rejects_unknown_bead_authority(tmp_path: Path) -> None:
-    """An expected difference cannot cite a fabricated Bead identifier."""
+def test_review_manifest_rejects_bead_as_semantic_authority(tmp_path: Path) -> None:
+    """Planning state cannot authorize a candidate's semantic difference."""
 
     manifest = tmp_path / "reviews.json"
     manifest.write_text(
@@ -1796,63 +1799,7 @@ def test_review_manifest_rejects_unknown_bead_authority(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(UnclassifiedCanaryDiffError, match="unknown Bead polylogue-does-not-exist"):
-        load_canary_review_manifest(manifest)
-
-
-def test_review_manifest_rejects_closed_successor_authority(tmp_path: Path) -> None:
-    """An unexpected difference needs a still-open successor Bead."""
-
-    manifest = tmp_path / "reviews.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "reviews": [
-                    {
-                        "table": "blocks",
-                        "operation": "changed",
-                        "identity": {"block_id": "closed-successor"},
-                        "changed_columns": ["text"],
-                        "classification": "unexpected",
-                        "reference": "successor:polylogue-2yivh",
-                        "authority": {"kind": "successor", "id": "polylogue-2yivh"},
-                        "rationale": "closed Bead cannot own unresolved work",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(UnclassifiedCanaryDiffError, match="closed successor polylogue-2yivh"):
-        load_canary_review_manifest(manifest)
-
-
-def test_review_manifest_rejects_unknown_successor_authority(tmp_path: Path) -> None:
-    """An unexpected difference cannot cite an invented successor Bead."""
-
-    manifest = tmp_path / "reviews.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "reviews": [
-                    {
-                        "table": "blocks",
-                        "operation": "changed",
-                        "identity": {"block_id": "unknown-successor"},
-                        "changed_columns": ["text"],
-                        "classification": "unexpected",
-                        "reference": "successor:polylogue-does-not-exist",
-                        "authority": {"kind": "successor", "id": "polylogue-does-not-exist"},
-                        "rationale": "fabricated successor cannot own unresolved work",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(UnclassifiedCanaryDiffError, match="unknown successor polylogue-does-not-exist"):
+    with pytest.raises(UnclassifiedCanaryDiffError, match="invalid structured authority"):
         load_canary_review_manifest(manifest)
 
 

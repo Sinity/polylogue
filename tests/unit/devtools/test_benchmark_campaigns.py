@@ -112,7 +112,9 @@ def test_daemon_live_workload_generation_replaces_stale_jsonl(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_run_campaign_skips_seed_archive_for_daemon_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_run_campaign_skips_seed_archive_for_daemon_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     from devtools import run_campaign
 
     stale_file = tmp_path / "archive-large" / "stale.db"
@@ -130,7 +132,7 @@ async def test_run_campaign_skips_seed_archive_for_daemon_live(monkeypatch: pyte
         return CampaignResult(
             campaign_name="daemon-live-convergence",
             scale_level="",
-            metrics={"total_wall_s": 1.0},
+            metrics={"rebuild_wall_s": 1.25, "profiles_rebuilt": 2},
             db_stats={},
         )
 
@@ -149,6 +151,7 @@ async def test_run_campaign_skips_seed_archive_for_daemon_live(monkeypatch: pyte
     )
 
     assert result == 0
+    assert 'daemon-live-convergence: {"profiles_rebuilt": 2, "rebuild_wall_s": 1.25}' in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

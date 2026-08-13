@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import inspect
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -155,7 +156,7 @@ async def _run(args: argparse.Namespace) -> int:
         results = [result]
 
     for result in results:
-        print(f"{result.campaign_name}: {result.metrics.get('total_wall_s', 0.0):.4f}s")
+        print(f"{result.campaign_name}: {json.dumps(result.metrics, sort_keys=True)}")
 
     return 0
 

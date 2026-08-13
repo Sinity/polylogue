@@ -40,7 +40,6 @@ class DifferenceClassification(StrEnum):
 class CanaryAuthorityKind(StrEnum):
     """Structured authority attached to one reviewed difference."""
 
-    BEAD = "bead"
     DELTA = "delta"
     SUCCESSOR = "successor"
 
@@ -600,27 +599,28 @@ class CanaryDifferenceReview:
             raise UnclassifiedCanaryDiffError("canary review authority must provide both kind and id")
         if kind is None or authority_id is None:
             prefix, separator, value = self.reference.partition(":")
-            if separator and prefix in {item.value for item in CanaryAuthorityKind}:
-                kind = CanaryAuthorityKind(prefix)
+            if separator:
+                try:
+                    kind = CanaryAuthorityKind(prefix)
+                except ValueError as exc:
+                    raise UnclassifiedCanaryDiffError("canary review reference has an invalid authority kind") from exc
                 authority_id = value
-            elif self.classification is DifferenceClassification.EXPECTED:
+            elif self.classification is DifferenceClassification.UNEXPECTED:
                 # Preserve compatibility for in-process callers. The durable
                 # representation below is always structured.
-                kind = CanaryAuthorityKind.BEAD
-                authority_id = self.reference
-            else:
                 kind = CanaryAuthorityKind.SUCCESSOR
                 authority_id = self.reference
+            else:
+                raise UnclassifiedCanaryDiffError(
+                    "expected canary differences require an explicit declared delta authority"
+                )
         if not str(authority_id).strip() or any(character.isspace() for character in str(authority_id)):
             raise UnclassifiedCanaryDiffError("canary review authority must have a structured non-empty id")
         canonical_reference = f"{kind.value}:{authority_id}"
         if has_explicit_authority and self.reference != canonical_reference:
             raise UnclassifiedCanaryDiffError("canary review reference disagrees with its structured authority")
-        if self.classification is DifferenceClassification.EXPECTED and kind not in {
-            CanaryAuthorityKind.BEAD,
-            CanaryAuthorityKind.DELTA,
-        }:
-            raise UnclassifiedCanaryDiffError("expected canary differences require a Bead or delta authority")
+        if self.classification is DifferenceClassification.EXPECTED and kind is not CanaryAuthorityKind.DELTA:
+            raise UnclassifiedCanaryDiffError("expected canary differences require a declared delta authority")
         if self.classification is DifferenceClassification.UNEXPECTED and kind is not CanaryAuthorityKind.SUCCESSOR:
             raise UnclassifiedCanaryDiffError("unexpected canary differences require a structured successor id")
         object.__setattr__(self, "authority_kind", kind)
@@ -1774,8 +1774,13 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
 
 
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
-    """Resolve every review authority from its independent canonical source."""
-    from devtools.pr_scope import load_committed_bead_records
+    """Resolve approval-capable authorities from packaged product declarations.
+
+    An expected semantic difference can approve a canary, so it must name an
+    executable index delta shipped in the same package.  A Bead is planning
+    state, not semantic evidence.  Unexpected differences may name a successor
+    for human follow-up, but approval rejects them regardless of that label.
+    """
     from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
 
     expected_deltas = {
@@ -1790,49 +1795,6 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
     if unknown_deltas:
         detail = ", ".join(f"unknown index delta {delta}" for delta in unknown_deltas)
         raise UnclassifiedCanaryDiffError(f"expected canary authority is not declared in packaged evidence: {detail}")
-
-    try:
-        bead_records = load_committed_bead_records()
-    except (OSError, ValueError) as exc:
-        raise UnclassifiedCanaryDiffError(
-            "cannot resolve canary review authority from committed Bead evidence"
-        ) from exc
-
-    expected_beads = {
-        review.authority_id
-        for review in reviews
-        if review.classification is DifferenceClassification.EXPECTED
-        and review.authority_kind is CanaryAuthorityKind.BEAD
-        and review.authority_id is not None
-    }
-    unknown_beads = sorted(bead_id for bead_id in expected_beads if bead_id not in bead_records)
-    if unknown_beads:
-        detail = ", ".join(f"unknown Bead {bead_id}" for bead_id in unknown_beads)
-        raise UnclassifiedCanaryDiffError(
-            f"expected canary authority is not declared in committed Bead evidence: {detail}"
-        )
-
-    successors = {
-        review.authority_id
-        for review in reviews
-        if review.classification is DifferenceClassification.UNEXPECTED
-        and review.authority_kind is CanaryAuthorityKind.SUCCESSOR
-        and review.authority_id is not None
-    }
-    unknown_successors = sorted(successor_id for successor_id in successors if successor_id not in bead_records)
-    if unknown_successors:
-        detail = ", ".join(f"unknown successor {successor_id}" for successor_id in unknown_successors)
-        raise UnclassifiedCanaryDiffError(
-            f"unexpected canary authority is not open in committed Bead evidence: {detail}"
-        )
-    closed_successors = sorted(
-        successor_id for successor_id in successors if bead_records[successor_id].get("status") != "open"
-    )
-    if closed_successors:
-        detail = ", ".join(f"closed successor {successor_id}" for successor_id in closed_successors)
-        raise UnclassifiedCanaryDiffError(
-            f"unexpected canary authority is not open in committed Bead evidence: {detail}"
-        )
 
 
 def _fsync_directory(directory: Path) -> None:
