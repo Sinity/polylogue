@@ -351,23 +351,6 @@ class VerifiedAuditLeaf:
                     f"audit tier sidecar changed during SQLite access: {self._archive_root / filename}"
                 )
 
-    def cleanup_pinned_writable_sidecars(self) -> None:
-        """Remove only the still-verified WAL/SHM pair created for this writer."""
-
-        if self._directory_fd is None:
-            raise RuntimeError("audit leaf descriptor is closed")
-        self._assert_pinned_sidecars(allow_absent=True)
-        for filename in self._sidecar_identities:
-            try:
-                os.unlink(filename, dir_fd=self._directory_fd)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise AuditLeafError(
-                    f"cannot clean verified audit tier sidecar: {self._archive_root / filename}"
-                ) from exc
-        os.fsync(self._directory_fd)
-
     @staticmethod
     def _stat_path(path: Path) -> os.stat_result:
         return os.stat(path)
@@ -410,20 +393,14 @@ def open_verified_audit_connection(path: Path) -> Iterator[sqlite3.Connection]:
 
     with VerifiedAuditLeaf(path.parent, filename=path.name, lock_writer=True) as leaf:
         connection = sqlite3.connect(leaf.sqlite_uri(), uri=True)
-        clean_sidecars = False
         try:
             leaf.prepare_writable_sqlite(connection)
             leaf.install_transaction_guard(connection)
             yield connection
             leaf.assert_unchanged()
-            clean_sidecars = True
         finally:
-            if clean_sidecars:
-                connection.rollback()
-                connection.execute("PRAGMA journal_mode = DELETE")
+            connection.rollback()
             connection.close()
-            if clean_sidecars:
-                leaf.cleanup_pinned_writable_sidecars()
 
 
 @contextmanager

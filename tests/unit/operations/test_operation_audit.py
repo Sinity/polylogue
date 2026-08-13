@@ -469,6 +469,23 @@ def test_verified_audit_reader_observes_a_committed_live_wal_head(tmp_path: Path
             ).fetchone() == (archive_id,)
 
 
+def test_verified_audit_writer_coexists_with_an_older_read_transaction(tmp_path: Path) -> None:
+    """Persistent WAL mode lets a later writer proceed while a reader retains its snapshot."""
+
+    initialize_active_archive_root(tmp_path)
+    audit_path = tmp_path / "audit.db"
+    with open_verified_audit_connection(audit_path) as writer:
+        assert writer.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+    with open_verified_audit_read_connection(audit_path) as reader:
+        reader.execute("BEGIN")
+        reader.execute("SELECT generation FROM audit_continuity_head").fetchone()
+        with open_verified_audit_connection(audit_path) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE audit_continuity_head SET advanced_at_ms = advanced_at_ms")
+            writer.commit()
+
+
 def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:
     """A second composition-root call recognizes the first executor's owner."""
     initialize_active_archive_root(tmp_path)
