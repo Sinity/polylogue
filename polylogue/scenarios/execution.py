@@ -8,14 +8,12 @@ from enum import Enum
 from polylogue.insights.authored_payloads import (
     PayloadDict,
     PayloadMap,
-    merge_unique_string_tuples,
     payload_float,
     payload_int,
     payload_mapping,
     payload_string,
     payload_string_tuple,
 )
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 
 from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata
@@ -64,139 +62,6 @@ _KNOWN_POLYLOGUE_SUBCOMMANDS = frozenset(
         "tags",
     }
 )
-_INSIGHT_OPERATION_BY_METHOD = {
-    "list_session_profile_insights": "query-session-profiles",
-    "list_session_work_event_insights": "query-session-work-events",
-    "list_session_phase_insights": "query-session-phases",
-    "list_thread_insights": "query-threads",
-    "list_session_tag_rollup_insights": "query-session-tag-rollups",
-    "list_archive_coverage_insights": "query-archive-coverage",
-    "list_tool_usage_insights": "query-tool-usage",
-    "list_archive_debt_insights": "query-archive-debt",
-}
-_INSIGHT_SUBCOMMAND_OPERATION_NAMES = {
-    "status": "query-session-insight-status",
-    "debt": "query-archive-debt",
-}
-
-
-def _metadata_for_operations(*operation_names: str) -> ScenarioMetadata:
-    from polylogue.operations import build_runtime_operation_catalog
-
-    target_names = merge_unique_string_tuples(tuple(name for name in operation_names if name))
-    operations = build_runtime_operation_catalog().resolve(target_names)
-    return ScenarioMetadata(
-        path_targets=merge_unique_string_tuples(
-            tuple(path for operation in operations for path in operation.path_targets)
-        ),
-        artifact_targets=merge_unique_string_tuples(
-            tuple(artifact for operation in operations for artifact in (*operation.consumes, *operation.produces))
-        ),
-        operation_targets=target_names,
-    )
-
-
-def _find_repeated_flag_values(argv: tuple[str, ...], flag: str) -> tuple[str, ...]:
-    values: list[str] = []
-    for index, item in enumerate(argv[:-1]):
-        if item == flag:
-            values.append(argv[index + 1])
-    return tuple(values)
-
-
-def _first_non_option(argv: tuple[str, ...]) -> str | None:
-    for item in argv:
-        if not item.startswith("-"):
-            return item
-    return None
-
-
-def _metadata_for_polylogue_insights(argv: tuple[str, ...]) -> ScenarioMetadata:
-    from polylogue.insights.registry import INSIGHT_REGISTRY
-
-    try:
-        insights_index = argv.index("insights")
-    except ValueError:
-        return ScenarioMetadata()
-    if insights_index + 1 >= len(argv):
-        return ScenarioMetadata()
-    subcommand = argv[insights_index + 1]
-    direct_operation = _INSIGHT_SUBCOMMAND_OPERATION_NAMES.get(subcommand)
-    if direct_operation:
-        return _metadata_for_operations(direct_operation)
-    operation_name = next(
-        (
-            _INSIGHT_OPERATION_BY_METHOD[insight.operations_method_name]
-            for insight in INSIGHT_REGISTRY.values()
-            if insight.resolved_cli_command_name == subcommand
-            and insight.operations_method_name in _INSIGHT_OPERATION_BY_METHOD
-        ),
-        "",
-    )
-    return _metadata_for_operations(operation_name) if operation_name else ScenarioMetadata()
-
-
-def _metadata_for_devtools(subcommand: str) -> ScenarioMetadata:
-    parts = tuple(part for part in subcommand.split() if part)
-    if parts[:2] != ("lab", "schema") or len(parts) < 3:
-        return ScenarioMetadata()
-    schema_command = parts[2]
-    if schema_command == "list":
-        return _metadata_for_operations("query-schema-catalog")
-    if schema_command == "explain":
-        return _metadata_for_operations("query-schema-explanations")
-    return ScenarioMetadata()
-
-
-def _metadata_for_polylogue_doctor(argv: tuple[str, ...]) -> ScenarioMetadata:
-    operations: list[str] = []
-    if _argv_requests_json(argv):
-        operations.append("cli.json-contract")
-    targets = tuple(target for target in _find_repeated_flag_values(argv, "--target") if target)
-    catalog = build_maintenance_target_catalog()
-    resolved_target_names = tuple(spec.name for spec in catalog.resolve(targets))
-    if targets:
-        if "--repair" in argv and "--preview" not in argv:
-            operations.extend(catalog.doctor_repair_operations_for_names(targets))
-        operations.extend(catalog.doctor_readiness_operations_for_names(targets))
-    else:
-        operations.append("project-archive-readiness")
-    return ScenarioMetadata(maintenance_targets=resolved_target_names).merged(_metadata_for_operations(*operations))
-
-
-def _metadata_for_polylogue_embed(argv: tuple[str, ...]) -> ScenarioMetadata:
-    operations: list[str] = []
-    if "--stats" in argv:
-        operations.extend(("project-retrieval-band-readiness", "query-embedding-status"))
-    else:
-        operations.append("materialize-transcript-embeddings")
-    if _argv_requests_json(argv):
-        operations.append("cli.json-contract")
-    return _metadata_for_operations(*operations)
-
-
-def _default_metadata_for_polylogue(argv: tuple[str, ...]) -> ScenarioMetadata:
-    if "insights" in argv:
-        return _metadata_for_polylogue_insights(argv)
-    if "doctor" in argv:
-        return _metadata_for_polylogue_doctor(argv)
-    if "embed" in argv:
-        return _metadata_for_polylogue_embed(argv[argv.index("embed") + 1 :])
-    first_token = _first_non_option(argv)
-    if first_token in _KNOWN_POLYLOGUE_SUBCOMMANDS or not argv:
-        return ScenarioMetadata()
-    return _metadata_for_operations("query-sessions")
-
-
-def _default_metadata_for_pipeline_probe(request: PipelineProbeRequest) -> ScenarioMetadata:
-    if request.stage == "parse":
-        return _metadata_for_operations(
-            "acquire-raw-sessions",
-            "plan-validation-backlog",
-            "plan-parse-backlog",
-            "ingest-archive-runtime",
-        )
-    return ScenarioMetadata()
 
 
 @dataclass(frozen=True, slots=True)
@@ -543,30 +408,23 @@ def polylogue_execution(*argv: str, metadata: ScenarioMetadata | None = None) ->
         argv = argv[2:]
     elif argv[:1] == ("polylogue",):
         argv = argv[1:]
-    defaults = _default_metadata_for_polylogue(tuple(argv))
-    return ExecutionSpec(
-        kind=ExecutionKind.POLYLOGUE,
-        argv=tuple(argv),
-        metadata=defaults if metadata is None else metadata.with_default_targets(defaults),
-    )
+    return ExecutionSpec(kind=ExecutionKind.POLYLOGUE, argv=tuple(argv), metadata=metadata or ScenarioMetadata())
 
 
 def devtools_execution(subcommand: str, *argv: str, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
-    defaults = _metadata_for_devtools(subcommand)
     return ExecutionSpec(
         kind=ExecutionKind.DEVTOOLS,
         subcommand=subcommand,
         argv=tuple(argv),
-        metadata=defaults if metadata is None else metadata.with_default_targets(defaults),
+        metadata=metadata or ScenarioMetadata(),
     )
 
 
 def pipeline_probe_execution(request: PipelineProbeRequest, metadata: ScenarioMetadata | None = None) -> ExecutionSpec:
-    defaults = _default_metadata_for_pipeline_probe(request)
     return ExecutionSpec(
         kind=ExecutionKind.PIPELINE_PROBE,
         pipeline_probe=request,
-        metadata=defaults if metadata is None else metadata.with_default_targets(defaults),
+        metadata=metadata or ScenarioMetadata(),
     )
 
 

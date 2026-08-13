@@ -2,27 +2,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
-from polylogue.scenarios import (
-    ScenarioMetadata,
-    declared_operation_target_names,
-    runtime_artifact_graph,
-    runtime_artifact_target_names,
-    runtime_maintenance_target_names,
-    runtime_operation_target_names,
-    runtime_path_target_names,
-)
+from polylogue.scenarios import ScenarioMetadata
 
 
-def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None:
+def test_scenario_metadata_from_payload_preserves_human_facing_fields() -> None:
     metadata = ScenarioMetadata.from_payload(
         {
             "origin": "generated.contract",
-            "path_targets": ["session-insight-repair-loop"],
-            "artifact_targets": ["doctor_runtime", "message_fts"],
-            "operation_targets": ("cli.doctor",),
-            "maintenance_targets": ["session_insights"],
             "tags": ["generated", "json-contract"],
             "docs_role": "quickstart",
             "caption": "Doctor detects repairable session-insight gaps.",
@@ -36,10 +22,6 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
     )
 
     assert metadata.origin == "generated.contract"
-    assert metadata.path_targets == ("session-insight-repair-loop",)
-    assert metadata.artifact_targets == ("doctor_runtime", "message_fts")
-    assert metadata.operation_targets == ("cli.doctor",)
-    assert metadata.maintenance_targets == ("session_insights",)
     assert metadata.tags == ("generated", "json-contract")
     assert metadata.docs_role == "quickstart"
     assert metadata.caption == "Doctor detects repairable session-insight gaps."
@@ -51,27 +33,15 @@ def test_scenario_metadata_from_payload_normalizes_strings_and_targets() -> None
     assert metadata.visual_style == "plain-terminal"
 
 
-def test_scenario_metadata_from_object_falls_back_for_mock_attributes() -> None:
-    obj = MagicMock()
+def test_scenario_metadata_from_object_uses_empty_defaults() -> None:
+    metadata = ScenarioMetadata.from_object(MagicMock())
 
-    metadata = ScenarioMetadata.from_object(obj)
-
-    assert metadata.origin == "authored"
-    assert metadata.artifact_targets == ()
-    assert metadata.operation_targets == ()
-    assert metadata.maintenance_targets == ()
-    assert metadata.tags == ()
-    assert metadata.docs_role == ""
-    assert metadata.narrative_order is None
+    assert metadata == ScenarioMetadata()
 
 
 def test_scenario_metadata_payload_omits_empty_collections() -> None:
     metadata = ScenarioMetadata(
         origin="generated.contract",
-        path_targets=("raw-reparse-loop",),
-        artifact_targets=("doctor_runtime",),
-        operation_targets=(),
-        maintenance_targets=("session_insights",),
         tags=("generated",),
         docs_role="reference",
         caption="Session insights are visible to docs projections.",
@@ -85,9 +55,6 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
 
     assert metadata.to_payload() == {
         "origin": "generated.contract",
-        "path_targets": ["raw-reparse-loop"],
-        "artifact_targets": ["doctor_runtime"],
-        "maintenance_targets": ["session_insights"],
         "tags": ["generated"],
         "docs_role": "reference",
         "caption": "Session insights are visible to docs projections.",
@@ -100,8 +67,8 @@ def test_scenario_metadata_payload_omits_empty_collections() -> None:
     }
 
 
-def test_scenario_metadata_merges_presentation_fields_generally() -> None:
-    default = ScenarioMetadata(
+def test_scenario_metadata_merges_presentation_fields() -> None:
+    defaults = ScenarioMetadata(
         docs_role="tour",
         caption="Default caption",
         narrative_order=30,
@@ -120,7 +87,7 @@ def test_scenario_metadata_merges_presentation_fields_generally() -> None:
         tags=("explicit",),
     )
 
-    merged = explicit.with_default_targets(default)
+    merged = explicit.with_defaults(defaults)
 
     assert merged.docs_role == "tour"
     assert merged.caption == "Explicit caption"
@@ -131,95 +98,3 @@ def test_scenario_metadata_merges_presentation_fields_generally() -> None:
     assert merged.media == ("screenshot",)
     assert merged.visual_style == "plain"
     assert merged.tags == ("explicit", "default")
-
-
-def test_runtime_target_names_include_declared_runtime_specs() -> None:
-    assert "session_insight_rows" in runtime_artifact_target_names()
-    assert "project-session-insight-readiness" in runtime_operation_target_names()
-    assert "session-insight-repair-loop" in runtime_path_target_names()
-    assert "session_insights" in runtime_maintenance_target_names()
-    assert "cli.json-contract" in declared_operation_target_names()
-    assert "benchmark.storage.crud" in declared_operation_target_names()
-
-
-def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
-    metadata = ScenarioMetadata(
-        origin="generated.contract",
-        path_targets=("session-insight-repair-loop",),
-        artifact_targets=("session_insight_rows", "message_fts"),
-        conceptual_path_targets=("verification-fixture-substrate",),
-        conceptual_artifact_targets=("archive_scenario_fixtures",),
-        operation_targets=("project-session-insight-readiness", "benchmark.storage.crud"),
-        maintenance_targets=("session_insights",),
-    )
-
-    assert metadata.runtime_path_targets() == ("session-insight-repair-loop",)
-    assert metadata.runtime_artifact_targets() == ("session_insight_rows", "message_fts")
-    assert metadata.runtime_operation_targets() == ("project-session-insight-readiness",)
-    assert metadata.runtime_maintenance_targets() == ("session_insights",)
-    assert metadata.conceptual_path_targets == ("verification-fixture-substrate",)
-    assert metadata.conceptual_artifact_targets == ("archive_scenario_fixtures",)
-
-
-def test_runtime_artifact_graph_exposes_resolved_specs() -> None:
-    graph = runtime_artifact_graph()
-
-    assert "session_insight_rows" in graph.artifact_names()
-    assert "materialize-session-insights" in graph.operation_names()
-    assert "session_insights" in graph.maintenance_target_names()
-
-
-def test_scenario_metadata_resolves_runtime_specs() -> None:
-    metadata = ScenarioMetadata(
-        origin="generated.contract",
-        path_targets=("session-insight-repair-loop",),
-        artifact_targets=("session_insight_rows", "message_fts"),
-        operation_targets=("project-session-insight-readiness", "benchmark.storage.crud"),
-        maintenance_targets=("session_insights",),
-    )
-
-    assert tuple(path.name for path in metadata.resolve_runtime_paths()) == ("session-insight-repair-loop",)
-    assert tuple(artifact.name for artifact in metadata.resolve_runtime_artifacts()) == (
-        "session_insight_rows",
-        "message_fts",
-    )
-    assert tuple(operation.name for operation in metadata.resolve_runtime_operations()) == (
-        "project-session-insight-readiness",
-    )
-    assert tuple(target.name for target in metadata.resolve_runtime_maintenance_targets()) == ("session_insights",)
-
-
-def test_scenario_metadata_rejects_unknown_runtime_graph_targets() -> None:
-    metadata = ScenarioMetadata(
-        path_targets=("missing-path",),
-        artifact_targets=("missing-artifact",),
-        operation_targets=("missing-operation",),
-        maintenance_targets=("missing-maintenance",),
-    )
-
-    with pytest.raises(KeyError, match="missing-path"):
-        metadata.resolve_runtime_paths()
-    with pytest.raises(KeyError, match="missing-artifact"):
-        metadata.resolve_runtime_artifacts()
-    with pytest.raises(KeyError, match="missing-operation"):
-        metadata.resolve_runtime_operations()
-    with pytest.raises(KeyError, match="missing-maintenance"):
-        metadata.resolve_runtime_maintenance_targets()
-
-
-def test_scenario_metadata_resolves_declared_operation_targets() -> None:
-    metadata = ScenarioMetadata(
-        origin="generated.contract",
-        operation_targets=("project-session-insight-readiness", "benchmark.storage.crud"),
-    )
-
-    assert metadata.declared_operation_targets() == (
-        "project-session-insight-readiness",
-        "benchmark.storage.crud",
-    )
-    assert tuple(operation.name for operation in metadata.resolve_declared_operations()) == (
-        "project-session-insight-readiness",
-        "benchmark.storage.crud",
-    )
-    with pytest.raises(KeyError, match="missing.operation"):
-        ScenarioMetadata(operation_targets=("missing.operation",)).resolve_declared_operations()

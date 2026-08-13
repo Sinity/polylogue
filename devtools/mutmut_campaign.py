@@ -84,9 +84,6 @@ class CampaignResult:
     exit_code: int
     notes: list[str]
     origin: str = "authored"
-    path_targets: list[str] = field(default_factory=list)
-    artifact_targets: list[str] = field(default_factory=list)
-    operation_targets: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
 
@@ -351,9 +348,6 @@ def run_campaign(
             exit_code=completed.returncode,
             notes=list(campaign.notes),
             origin="authored.mutation-campaign" if campaign.origin == "authored" else campaign.origin,
-            path_targets=list(campaign.path_targets),
-            artifact_targets=list(campaign.artifact_targets),
-            operation_targets=list(campaign.operation_targets),
             tags=list(campaign.tags or ("mutation",)),
         )
         write_json_artifact(result, json_out=json_out)

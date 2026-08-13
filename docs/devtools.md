@@ -56,7 +56,6 @@ They are not a proof ledger or end-user archive workflow.
 | Command | Role |
 | --- | --- |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
-| `devtools lab graph` | Inspect declared runtime artifacts, operations, paths, and maintenance targets. |
 | `devtools lab testmon-proof` | Validate the affected-test harness itself: a disposable copy of a real Polylogue module and existing route test is seeded, semantically mutated, edge-severed, restored, and checked for bounded unrelated-change selection. |
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
@@ -128,7 +127,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools lab graph` | Render the runtime artifact and operation graph. |
 | `devtools lab policy bead-graph` | Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |

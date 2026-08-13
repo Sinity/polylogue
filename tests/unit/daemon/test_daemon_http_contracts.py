@@ -21,8 +21,7 @@ This module pins the *operational* contracts of the daemon HTTP surface:
    session — adjacent rows are never leaked through ``id``,
    ``title``, ``messages``, or ``raw`` fields.
 5. Every authored ``OperationSpec`` declares the minimum fields the
-   verification catalog and control-plane surfaces rely on (name,
-   description, kind, effects, code_refs).
+   control-plane surfaces rely on (name, description, kind, effects).
 
 Tests use the in-process handler pattern from
 ``test_daemon_http_security.py`` — no real daemon, no socket listener.
@@ -960,7 +959,6 @@ class TestPrivacyContract:
 # Declared scenario/benchmark entries are namespaced (``benchmark.query.foo``).
 _RUNTIME_NAME_RE = re.compile(r"^[a-z][a-z0-9\-]*$")
 _DECLARED_NAME_RE = re.compile(r"^[a-z][a-z0-9\-]*(\.[a-z][a-z0-9\-]*)*$")
-_CODE_REF_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$")
 _KNOWN_EFFECTS = frozenset({"Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"})
 _MUTATING_EFFECTS = frozenset({"DbWrite", "FileWrite", "Destructive"})
 _KNOWN_SAFETY_GUARDS = frozenset({"write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"})
@@ -973,10 +971,8 @@ class TestOperationSpecContract:
     Two tiers of strictness:
 
     - ``RUNTIME_OPERATION_SPECS``: production daemon operations.  Must
-      declare code_refs (the verification catalog uses them to attribute
-      checks to source), effects (so previewable/idempotency tooling
-      knows which ones to flag), and ``mutates_state=True`` for any
-      write/destructive effect.
+      declare effects (so previewable/idempotency tooling knows which ones
+      to flag), and ``mutates_state=True`` for any write/destructive effect.
     - ``DECLARED_OPERATION_SPECS``: superset including scenario /
       benchmark / fixture entries.  Only structural fields (name,
       description, effects enum membership) are enforced — these
@@ -997,12 +993,6 @@ class TestOperationSpecContract:
                 issues.append(f"bad name: {spec.name!r}")
             if not spec.description or len(spec.description) < 10:
                 issues.append("description too short")
-            if not spec.code_refs:
-                issues.append("no code_refs")
-            else:
-                for ref in spec.code_refs:
-                    if not _CODE_REF_RE.match(ref):
-                        issues.append(f"malformed code_ref: {ref!r}")
             if not spec.effects:
                 issues.append("no effects declared")
             else:
@@ -1031,10 +1021,8 @@ class TestOperationSpecContract:
     def test_declared_operations_have_structural_fields(self) -> None:
         """Light-touch contract for the declared (superset) catalog.
 
-        Scenario / benchmark entries in the declared catalog may omit
-        code_refs (they describe scenarios, not call sites), but must
-        still have a name, a description, and known effects if any are
-        declared.
+        Scenario / benchmark entries in the declared catalog must have a
+        name, a description, and known effects if any are declared.
         """
         catalog = build_declared_operation_catalog()
         assert catalog.specs, "declared operation catalog must not be empty"

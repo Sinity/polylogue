@@ -504,9 +504,8 @@ class TestWriteToolRoutesThroughOperationExecutor:
     t46.9 phases 1-6 (PRs #3249/#3253/#3258/#3262/#3294/#3376) routed every
     reversible mutation family through ``OperationExecutor`` at the facade
     layer (``polylogue/api/archive.py``); ``write()`` already calls those same
-    facade methods (``OperationSpec.code_refs``
-    entries name ``polylogue.mcp.server_cutover._dispatch_write`` for each
-    executor-routed operation). So t46.8.3 required no *new* MCP-layer wiring
+    facade methods for each executor-routed operation). So t46.8.3 required
+    no *new* MCP-layer wiring
     -- but nothing previously proved that claim at the MCP adapter boundary
     itself: ``test_mutation_actuators.py`` proves the facade methods use the
     executor, and the round trips above in ``TestWriteTool``/

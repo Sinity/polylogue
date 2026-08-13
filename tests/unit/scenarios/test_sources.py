@@ -17,7 +17,6 @@ def test_named_scenario_source_projects_name_and_description() -> None:
         name="contract-help",
         description="contract help text",
         origin="generated.test",
-        artifact_targets=("archive_readiness",),
         tags=("contract", "help"),
     )
 
@@ -27,5 +26,4 @@ def test_named_scenario_source_projects_name_and_description() -> None:
     assert projection.name == "contract-help"
     assert projection.description == "contract help text"
     assert projection.origin == "generated.test"
-    assert projection.artifact_targets == ("archive_readiness",)
     assert projection.tags == ("contract", "help")

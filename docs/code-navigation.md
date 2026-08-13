@@ -102,7 +102,6 @@ enforced boundary authority.
 - `core/` — dependency-light types, errors, enums, identity laws, and helpers.
 - `declarations/` — declaration/derivation machinery shared by typed registries.
 - `paths/` — canonical filesystem resolution and path sanitization.
-- `artifacts/` — typed runtime-artifact descriptors and graphs.
 
 ### Acquisition and normalization
 

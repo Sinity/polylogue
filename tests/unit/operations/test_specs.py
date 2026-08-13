@@ -76,50 +76,15 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     }
     assert specs["acquire-raw-sessions"].kind is OperationKind.MATERIALIZATION
     assert specs["acquire-raw-sessions"].mutates_state is True
-    assert specs["acquire-raw-sessions"].produces == ("raw_validation_state", "artifact_observation_rows")
-    assert specs["acquire-raw-sessions"].path_targets == ("source-acquisition-loop",)
     assert specs["plan-validation-backlog"].kind is OperationKind.PLANNING
-    assert specs["plan-validation-backlog"].path_targets == ("raw-reparse-loop", "raw-archive-ingest-loop")
     assert specs["ingest-archive-runtime"].kind is OperationKind.MATERIALIZATION
     assert specs["ingest-archive-runtime"].mutates_state is True
-    assert specs["ingest-archive-runtime"].produces == ("raw_validation_state", "archive_session_rows")
-    assert specs["ingest-archive-runtime"].path_targets == ("raw-archive-ingest-loop",)
     assert specs["materialize-transcript-embeddings"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-transcript-embeddings"].mutates_state is True
-    assert specs["materialize-transcript-embeddings"].produces == (
-        "embedding_metadata_rows",
-        "embedding_status_rows",
-        "message_embedding_vectors",
-    )
-    assert specs["materialize-transcript-embeddings"].path_targets == ("embedding-materialization-loop",)
     assert specs["materialize-session-insights"].kind is OperationKind.MATERIALIZATION
     assert specs["materialize-session-insights"].mutates_state is True
-    assert "session_insight_rows" in specs["materialize-session-insights"].produces
-    assert "session_insight_fts" in specs["materialize-session-insights"].produces
-    assert "session_profile_rows" in specs["materialize-session-insights"].produces
-    assert "thread_fts" in specs["materialize-session-insights"].produces
-    assert specs["materialize-session-insights"].path_targets == ("session-insight-repair-loop",)
     assert specs["project-retrieval-band-readiness"].previewable is True
-    assert specs["project-retrieval-band-readiness"].path_targets == ("retrieval-band-readiness-loop",)
-    assert specs["query-embedding-status"].path_targets == ("embedding-status-query-loop",)
     assert specs["project-session-insight-readiness"].previewable is True
-    assert specs["query-session-profiles"].path_targets == ("session-profile-query-loop",)
-    assert specs["query-session-work-events"].path_targets == ("session-work-event-query-loop",)
-    assert specs["query-session-insight-status"].path_targets == ("session-insight-status-query-loop",)
-    assert specs["query-archive-debt"].path_targets == ("archive-debt-query-loop",)
-    assert specs["query-archive-coverage"].path_targets == ("archive-coverage-query-loop",)
-    assert specs["compile-session-digest"].path_targets == ("session-digest-transform-loop",)
-    assert specs["compile-session-digest"].produces == ("session_digest", "forensic_index", "resume_bundle")
-    assert specs["render-session-report"].path_targets == ("session-digest-transform-loop",)
-    assert specs["render-session-report"].produces == ("session_report_markdown",)
-    assert specs["compile-inferred-corpus-specs"].path_targets == ("inferred-corpus-compilation-loop",)
-    assert specs["compile-inferred-corpus-scenarios"].path_targets == ("inferred-corpus-compilation-loop",)
-    assert specs["query-schema-catalog"].path_targets == ("schema-list-query-loop",)
-    assert specs["query-schema-explanations"].path_targets == ("schema-explain-query-loop",)
-    assert specs["project-archive-readiness"].path_targets == (
-        "message-fts-readiness-loop",
-        "retrieval-band-readiness-loop",
-    )
     for operation in ("mutate-rebuild-index", "mutate-update-index", "mutate-rebuild-insights"):
         assert specs[operation].mutates_state is True
         assert specs[operation].previewable is True
@@ -133,10 +98,9 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["mutate-import-annotation-batch"].executor_status == "executor-routed"
 
 
-def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:
+def test_runtime_operation_catalog_has_declared_surfaces() -> None:
     for spec in build_runtime_operation_catalog().specs:
         assert spec.surfaces
-        assert spec.code_refs
 
 
 def test_raw_authority_recovery_specs_declare_their_exact_target_kinds() -> None:
