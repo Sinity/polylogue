@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,15 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.daemon.backup import backup_archive
 from polylogue.operations.archive_root_relocation import ArchiveRootRelocationError, prepare_archive_root_relocation
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import rebind_released_source_train_archive_identity
+from polylogue.storage.sqlite.migration_runner import (
+    apply_durable_change_train,
+    capture_durable_restart_convergence,
+    prove_durable_change_train,
+    record_durable_writer_release,
+    release_durable_change_train,
+)
 
 
 def test_archive_root_relocation_is_a_real_maintenance_route(cli_workspace: dict[str, object]) -> None:
@@ -51,3 +62,47 @@ def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
     assert after == before
+
+
+def test_rebind_rewrites_only_the_released_source_identity_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the real durable-train lifecycle, then its relocation revision helper."""
+    from tests.unit.storage import test_durable_change_train as trains
+
+    database = tmp_path / "source.db"
+    trains._create_current_database(database)
+    trains._install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
+    train = trains._admitted(ArchiveTier.SOURCE)
+    with sqlite3.connect(database) as connection:
+        train = trains._reserve_and_authorize(connection, train, archive_root=tmp_path)
+        train = apply_durable_change_train(connection, train)
+    train = record_durable_writer_release(train, evidence_ref="proof:release")
+    with sqlite3.connect(database) as connection:
+        restart = capture_durable_restart_convergence(
+            connection,
+            train,
+            runtime_consumers=trains._runtime_results(),
+            evidence_ref="proof:restart",
+        )
+    train = prove_durable_change_train(
+        train,
+        fresh_ddl_parity=trains._parity(ArchiveTier.SOURCE),
+        runtime_consumers=trains._runtime_results(),
+        restart_convergence=restart,
+    )
+    released = release_durable_change_train(train, evidence_ref="proof:released")
+    assert released.apply_evidence is not None
+    before = released
+    updated = rebind_released_source_train_archive_identity(
+        before,
+        archive_identity_digest="a" * 64,
+        proof_ref="proof:archive-root-relocation:receipt",
+    )
+
+    assert updated.revision == before.revision + 1
+    assert updated.apply_evidence == replace(
+        before.apply_evidence,
+        post=replace(before.apply_evidence.post, archive_identity_digest="a" * 64),
+    )
+    assert updated.proof_refs == (*before.proof_refs, "proof:archive-root-relocation:receipt")

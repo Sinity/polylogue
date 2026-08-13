@@ -432,6 +432,52 @@ def assert_no_prepared_archive_root_relocation(root: Path) -> None:
             )
 
 
+def _revalidate_plan_live_state(
+    root: Path,
+    plan: ArchiveRootRelocationPlan,
+    *,
+    stopped_daemon_evidence_ref: str,
+    single_writer_evidence_ref: str,
+) -> None:
+    """Recheck every immutable plan binding while allowing CAS resume states."""
+    if stopped_daemon_evidence_ref != plan.stopped_daemon_evidence_ref:
+        raise ArchiveRootRelocationError("archive-root relocation stopped-daemon evidence changed")
+    if single_writer_evidence_ref != plan.single_writer_evidence_ref:
+        raise ArchiveRootRelocationError("archive-root relocation single-writer evidence changed")
+    root_metadata = root.stat()
+    if (root_metadata.st_dev, root_metadata.st_ino) != (plan.new_root_device, plan.new_root_inode):
+        raise ArchiveRootRelocationError("archive-root relocation configured root identity changed")
+    _reject_sidecars(root)
+    try:
+        manifest_path, receipt_path, manifest, receipt = validate_full_evidence_backup_for_archive_root_relocation(
+            Path(plan.backup_manifest_path), old_archive_root=Path(plan.old_resolved_root)
+        )
+    except MigrationError as exc:
+        raise ArchiveRootRelocationError(str(exc)) from exc
+    if (
+        str(manifest_path) != plan.backup_manifest_path
+        or str(receipt_path) != plan.backup_receipt_path
+        or _sha256_file(manifest_path) != plan.backup_manifest_sha256
+        or _sha256_file(receipt_path) != plan.backup_receipt_sha256
+    ):
+        raise ArchiveRootRelocationError("archive-root relocation backup authority changed")
+    snapshots = tuple(_tier_snapshot(root, tier) for tier in ArchiveTier)
+    if snapshots != plan.tiers:
+        raise ArchiveRootRelocationError("archive-root relocation tier evidence changed")
+    _check_backup_against_live(root, manifest=manifest, receipt=receipt, snapshots=snapshots)
+    for item in plan.source_trains:
+        path = Path(item.path)
+        train = load_durable_change_train_manifest(path)
+        before = _sha256_file(path) == item.before_manifest_sha256
+        after = (
+            train.revision == item.before_revision + 1
+            and train.apply_evidence is not None
+            and train.apply_evidence.post.archive_identity_digest == item.after_archive_identity_digest
+        )
+        if not before and not after:
+            raise ArchiveRootRelocationError(f"archive-root relocation manifest changed: {path}")
+
+
 def apply_archive_root_relocation(
     *,
     root: Path,
@@ -447,15 +493,12 @@ def apply_archive_root_relocation(
     resolved = _real_directory(root, label="configured archive root")
     if str(root.absolute()) != plan.new_configured_root or str(resolved) != plan.new_resolved_root:
         raise ArchiveRootRelocationError("archive-root relocation plan is bound to a different configured root")
-    current = prepare_archive_root_relocation(
-        old_root=Path(plan.old_configured_root),
-        new_root=root,
-        backup_manifest=Path(plan.backup_manifest_path),
+    _revalidate_plan_live_state(
+        resolved,
+        plan,
         stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
         single_writer_evidence_ref=single_writer_evidence_ref,
     )
-    if current.plan_sha256 != plan.plan_sha256:
-        raise ArchiveRootRelocationError("archive-root relocation evidence changed after planning")
     receipt_path = _receipt_path(resolved, plan)
     command = (
         f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance archive-root-relocation "
