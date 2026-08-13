@@ -23,22 +23,16 @@ Why this is a meaningful (non-vacuous) proof, not just a green assertion:
   (small ``raw_batch_size``, parse pre-warmed off the writer hold by
   ``DaemonParseStage`` per #3168) instead of holding the writer for an
   entire corpus in one sweep.
-* Manual measurement during development, at this exact fixture shape
-  (150-raw corpus, batch=8, 3 concurrent small actors): bounded passes held
-  the writer for ~0.04-0.34s each and small-actor queued wait had p99
-  ~0.32s. Collapsing the SAME corpus into one UNBOUNDED pass (batch=150,
-  the whole backlog in a single writer hold -- reproducing a regression
-  that removed per-pass batching, e.g. dropping ``RebuildIndexRequest``'s
-  paged ``raw_batch_size`` back to "whole backlog") measured a single
-  ~1.28s writer hold and pushed small-actor p99 wait to ~1.26s -- a small
-  actor queued behind that one giant hold waits for nearly the WHOLE
-  drain, not a bounded fraction of it. This test's budget (see
-  ``_SMALL_ACTOR_WAIT_BUDGET_SECONDS`` below) sits between those two
-  measurements: comfortably above the bounded-pass p99 (headroom against
-  host CPU contention -- this repo commonly runs concurrent agent/rebuild
-  load) while still well below what the unbounded-pass regression produces
-  at this exact fixture size, so a real regression to unbounded passes
-  would fail this test, not just a hypothetical one at a different scale.
+* The semantic guarantee is admission ordering, not an absolute wall-clock
+  duration. A full-IO host can stall a bounded writer hold longer than an
+  old measurement of an unbounded one, so a p99-second threshold cannot
+  distinguish a product regression from unrelated scheduler pressure. The
+  coordinator's real event stream instead proves the intended property:
+  every pair of bounded bulk-pass acquisitions has a live writer acquisition
+  between it. Collapsing the corpus into one unbounded pass fails the
+  multi-pass floor; bypassing the coordinator fails the bulk-event floor;
+  requeueing bulk work without yielding fails the per-pair interleaving
+  assertion.
 """
 
 from __future__ import annotations
@@ -51,6 +45,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.daemon.write_coordinator as write_coordinator_module
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import run_daemon_bulk_rebuild_pass
@@ -58,24 +53,13 @@ from polylogue.daemon.parse_prefetch import DaemonParseStage
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_receipt import write_current_rebuild_receipt
 
 _RAW_COUNT = 150
 _BULK_BATCH_SIZE = 8  # forces >= 10 bounded passes over the fixture corpus
 _SMALL_ACTOR_COUNT = 3
 _SMALL_ACTOR_INTERVAL_SECONDS = 0.02
 _MAX_PAYLOAD_BYTES = 10_000_000
-
-# Manually measured at this exact fixture shape (150 raws, batch=8, 3
-# concurrent small actors): the correct bounded-pass implementation saw p99
-# queued wait ~0.32s (max single writer hold ~0.34s). Collapsing the SAME
-# 150-raw corpus into one unbounded pass (batch=150) pushed p99 wait to
-# ~1.26s. This budget sits between those two measurements: several times
-# the bounded-pass p99 (headroom against host CPU contention -- this repo
-# commonly runs concurrent agent/rebuild load) while staying below the
-# unbounded-pass regression's measurement at this same fixture size, so
-# this is a real (not merely hypothetical) regression detector, not just a
-# loose ceiling nothing could ever hit.
-_SMALL_ACTOR_WAIT_BUDGET_SECONDS = 1.0
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -107,10 +91,11 @@ def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(count):
-            archive.write_raw_payload(
+            native_id = f"responsiveness-session-{index}"
+            raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=_codex_session(
-                    f"responsiveness-session-{index}",
+                    native_id,
                     (
                         ("user", f"question {index}"),
                         ("assistant", f"searchable answer {index}" * 10),
@@ -118,6 +103,18 @@ def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
                 ),
                 source_path=f"responsiveness-corpus-{index}.jsonl",
                 acquired_at_ms=index,
+                native_id=native_id,
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    logical_source_key=f"codex-session:{native_id}",
+                    kind=RawRevisionKind.FULL,
+                    source_revision=f"responsiveness:{index}",
+                    acquisition_generation=0,
+                    baseline_raw_id=raw_id,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
             )
 
 
@@ -200,6 +197,8 @@ def test_small_writer_actors_stay_responsive_during_bulk_rebuild_drain(
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     _seed_corpus(tmp_path)
+    schema_receipt = write_current_rebuild_receipt(tmp_path, tmp_path.parent / "schema-inference-gate-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(schema_receipt))
 
     events: list[DaemonWriteEvent] = []
     coordinator = DaemonWriteCoordinator(observer=events.append)
@@ -235,26 +234,33 @@ def test_small_writer_actors_stay_responsive_during_bulk_rebuild_drain(
 
     pass_count = asyncio.run(scenario())
 
-    small_actor_waits = sorted(
-        event.wait_seconds
-        for event in events
-        if event.phase == "acquired" and event.actor.startswith("live.append.") and event.wait_seconds is not None
-    )
+    small_actor_acquisitions = [
+        event for event in events if event.phase == "acquired" and event.actor.startswith("live.append.")
+    ]
     bulk_pass_events = [
         event for event in events if event.phase == "acquired" and event.actor == "maintenance.bulk_rebuild"
     ]
 
     # Sanity floor on the scenario itself: a single pass or a handful of
-    # small-actor samples would make the p99 assertion below vacuous (no
+    # small-actor samples would make the interleaving assertion below vacuous (no
     # real concurrency to interleave against).
     assert pass_count >= 10, "fixture must force multiple bounded bulk passes to be a meaningful concurrency proof"
     assert len(bulk_pass_events) == pass_count
-    assert len(small_actor_waits) >= 10, "small actors must genuinely interleave with the drain, not merely bookend it"
+    assert len(small_actor_acquisitions) >= 10, (
+        "small actors must genuinely interleave with the drain, not merely bookend it"
+    )
 
-    p99_index = min(len(small_actor_waits) - 1, int(len(small_actor_waits) * 0.99))
-    p99_wait = small_actor_waits[p99_index]
-    assert p99_wait < _SMALL_ACTOR_WAIT_BUDGET_SECONDS, (
-        f"small writer actor p99 queued-wait {p99_wait:.3f}s exceeded the "
-        f"{_SMALL_ACTOR_WAIT_BUDGET_SECONDS}s budget while a real bulk-rebuild pass was draining "
-        f"({len(small_actor_waits)} samples across {pass_count} bulk passes)"
+    # The exact scheduling guarantee: the daemon must surrender the writer
+    # between each pair of bounded maintenance passes whenever live writers
+    # are present. Sequence values are allocated by the real coordinator at
+    # queue admission, so this does not use a test-local scheduler model or
+    # a host-pressure-sensitive elapsed-time threshold.
+    gaps_without_live_admission = [
+        (left.sequence, right.sequence)
+        for left, right in zip(bulk_pass_events, bulk_pass_events[1:], strict=False)
+        if not any(left.sequence < live.sequence < right.sequence for live in small_actor_acquisitions)
+    ]
+    assert not gaps_without_live_admission, (
+        "bulk rebuild reacquired the daemon writer before any live writer in "
+        f"{len(gaps_without_live_admission)} bounded-pass gap(s): {gaps_without_live_admission}"
     )
