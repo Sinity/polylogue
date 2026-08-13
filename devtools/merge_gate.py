@@ -80,6 +80,7 @@ from typing import Any
 
 from devtools import pr_scope
 from devtools.testmon_state import TerminalAuthorization, VerificationScope
+from devtools.verify_runs import CURRENT_RUN_PATH
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
@@ -237,6 +238,40 @@ def _structured_verification_receipt(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+def _current_run_bytes() -> bytes | None:
+    try:
+        return CURRENT_RUN_PATH.read_bytes()
+    except OSError:
+        return None
+
+
+def _current_run_receipt(
+    *,
+    previous: bytes | None,
+    head_sha: str,
+    command_exit: int,
+) -> dict[str, Any] | None:
+    """Load the exact run artifact produced when a verifier writes no stdout receipt."""
+
+    current = _current_run_bytes()
+    if current is None or current == previous:
+        return None
+    try:
+        payload = json.loads(current)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("git_head") != head_sha or payload.get("exit_code") != command_exit:
+        return None
+    checkout_root = payload.get("checkout_root")
+    if not isinstance(checkout_root, str) or Path(checkout_root).resolve(strict=False) != Path.cwd().resolve(
+        strict=False
+    ):
+        return None
+    return payload
+
+
 def _release_baseline_permission(stdout: str) -> bool | None:
     """Read the structured verify decision when the command emitted one."""
     payload = _structured_verification_receipt(stdout)
@@ -330,6 +365,7 @@ def cmd_record(pr: int, command: str) -> int:
     if not argv:
         print("REFUSING to record: --command is empty after shell splitting.", file=sys.stderr)
         return 2
+    previous_current_run = _current_run_bytes()
     started = time.time()
     try:
         result = subprocess.run(argv, capture_output=True, text=True)
@@ -337,6 +373,12 @@ def cmd_record(pr: int, command: str) -> int:
         print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
         return 2
     duration_s = round(time.time() - started, 2)
+    verification_receipt = _structured_verification_receipt(result.stdout) or _current_run_receipt(
+        previous=previous_current_run,
+        head_sha=head_sha,
+        command_exit=result.returncode,
+    )
+    verification_payload = json.dumps(verification_receipt) if verification_receipt is not None else ""
 
     receipt = {
         "pr": pr,
@@ -353,9 +395,9 @@ def cmd_record(pr: int, command: str) -> int:
         "branch": info["headRefName"],
         "command": command,
         "skips_tests": _command_skips_tests(command),
-        "verification_scope": _verification_scope(result.stdout),
-        "release_baseline_allowed": _release_baseline_permission(result.stdout),
-        "terminal_authorization": _terminal_authorization(result.stdout),
+        "verification_scope": _verification_scope(verification_payload),
+        "release_baseline_allowed": _release_baseline_permission(verification_payload),
+        "terminal_authorization": _terminal_authorization(verification_payload),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),
