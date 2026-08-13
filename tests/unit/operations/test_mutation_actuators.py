@@ -339,6 +339,7 @@ class TestTagAddActuator:
 
         audit_lock = threading.Lock()
         execute_barrier = threading.Barrier(2)
+        first_scope_installed = threading.Event()
         first_execute_done = threading.Event()
         original_consume = AuditRepository.consume_authorization_and_start
         original_finalize = AuditRepository.finalize_attempt
@@ -376,6 +377,8 @@ class TestTagAddActuator:
             authorization: MutationAuthorization,
             args: Any,
         ) -> MutationReceipt:
+            if actuator is actuators[0]:
+                first_scope_installed.set()
             execute_barrier.wait(timeout=10)
             if actuator is actuators[0]:
                 try:
@@ -391,6 +394,8 @@ class TestTagAddActuator:
         monkeypatch.setattr(OperationExecutor, "execute", synchronized_execute)
 
         def execute_tag(index: int) -> MutationReceipt:
+            if index == 1 and not first_scope_installed.wait(timeout=10):
+                raise TimeoutError("first bound execution did not install its scope")
             with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
                 args = TagAddArgs(
                     archive=archive,
