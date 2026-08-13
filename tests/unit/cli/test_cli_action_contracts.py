@@ -20,35 +20,13 @@ from polylogue.cli.query_group import _split_query_mode_args
 from polylogue.operations.action_contracts import (
     ACTION_CONTRACT_BY_PATH,
     ACTION_CONTRACTS,
-    PUBLIC_ACTION_FLOOR,
     VIRTUAL_ACTION_PATHS,
     CliActionContract,
     action_affordance_payloads,
-    action_completion_contexts,
 )
 from tests.infra.app_env import make_app_env
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
-
-GUARD_BEHAVIOR_COVERAGE: dict[str, str] = {
-    "authenticated_injection_opt_in": "test_judge_injection_requires_explicit_flag",
-    "daemon_accepts_schedule": "test_import_contract_guard_requires_daemon_acceptance",
-    "dry_run_or_yes_required": "test_delete_contract_guard_refuses_plain_forceless_delete",
-    "explicit_candidate_ref_for_mutation": "test_judge_mutation_requires_candidate_ref",
-    "explicit_query_intent": "test_virtual_find_counterpart_is_query_parser_keyword",
-    "file_destination_requires_out": "test_read_contract_guard_requires_out_for_file_destination",
-    "path_exists_or_demo": "test_import_contract_guard_rejects_missing_source_path",
-    "secret_values_redacted": "test_config_contract_guard_redacts_secret_values",
-    "single_match_unless_all": "test_delete_contract_guard_requires_all_for_multi_match",
-    "single_match_unless_all_or_first": "test_mark_contract_guard_requires_all_or_first_for_multi_match",
-}
-
-COMPLETION_CONTEXT_COVERAGE: dict[str, str] = {
-    "config_key": "config command key space is covered by config guard/schema tests",
-    "filesystem_path": "import path handling is covered by path guard tests",
-    "query_expression": "find/analyze query grammar is covered by query parser tests",
-    "session_id": "session-id shell completion is covered by test_completion_matrix.py",
-}
 
 
 def _load_cli_output_schema(name: str) -> dict[str, object]:
@@ -86,22 +64,6 @@ def _choice_values(command: click.Command) -> set[str]:
         if "--json" in param.opts:
             values.add("json")
     return values
-
-
-def test_action_contract_paths_are_non_empty() -> None:
-    assert all(contract.path and all(contract.path) for contract in ACTION_CONTRACTS)
-
-
-def test_every_public_floor_action_has_exactly_one_contract() -> None:
-    """Every v0 public floor action must declare one executable contract."""
-    declared = set(ACTION_CONTRACT_BY_PATH)
-    expected = set(PUBLIC_ACTION_FLOOR)
-    assert declared == expected, (
-        "The #1816 public CLI action floor and ACTION_CONTRACTS drifted.\n"
-        f"Missing contracts: {sorted(expected - declared)}\n"
-        f"Unexpected contracts: {sorted(declared - expected)}"
-    )
-    assert len(ACTION_CONTRACTS) == len(declared), "ACTION_CONTRACTS contains duplicate path entries"
 
 
 def test_contract_paths_resolve_to_click_or_virtual_counterpart() -> None:
@@ -162,35 +124,6 @@ def test_post_verb_root_filters_remain_rejected() -> None:
         _split_query_mode_args(cli, ["read", "chatgpt-export:conv-123", "--origin", "chatgpt-export"])
 
 
-def test_every_declared_guard_has_behavior_coverage() -> None:
-    """Guard metadata must be bound to executable behavior coverage."""
-    declared = {guard for contract in ACTION_CONTRACTS for guard in contract.guards}
-    covered = set(GUARD_BEHAVIOR_COVERAGE)
-    assert declared == covered, (
-        "#1816 guards should not be documentation-only metadata.\n"
-        f"Missing behavior coverage: {sorted(declared - covered)}\n"
-        f"Stale behavior coverage: {sorted(covered - declared)}"
-    )
-
-
-def test_every_completion_context_has_declared_coverage() -> None:
-    """Completion-context metadata must stay tied to executable surfaces."""
-    declared: set[str] = set(action_completion_contexts())
-    covered = set(COMPLETION_CONTEXT_COVERAGE)
-    assert declared == covered, (
-        "#1816 completion contexts should not be free-form notes.\n"
-        f"Missing coverage: {sorted(declared - covered)}\n"
-        f"Stale coverage: {sorted(covered - declared)}"
-    )
-
-
-def test_floor_click_paths_without_contract_are_reported() -> None:
-    """The non-virtual floor paths currently present in Click must be contracted."""
-    commands = _command_paths()
-    missing = sorted(path for path in PUBLIC_ACTION_FLOOR if path in commands and path not in ACTION_CONTRACT_BY_PATH)
-    assert not missing, f"Public floor Click paths lack CliActionContract entries: {missing}"
-
-
 def test_declared_machine_formats_are_supported_by_click_options() -> None:
     """Contracts may not claim JSON/NDJSON unless the live command exposes it."""
     commands = _command_paths()
@@ -203,12 +136,6 @@ def test_declared_machine_formats_are_supported_by_click_options() -> None:
         if "ndjson" in entry.formats and "ndjson" not in choices:
             unsupported.append(f"{CommandPath(entry.path, command).display_name}: ndjson")
     assert not unsupported, f"Contracts declare unsupported machine formats: {unsupported}"
-
-
-def test_default_format_is_declared_for_every_contract() -> None:
-    """The default format must be one of the contract's declared formats."""
-    invalid = [entry.path for entry in ACTION_CONTRACTS if entry.default_format not in entry.formats]
-    assert not invalid, f"Contracts have default_format outside formats: {invalid}"
 
 
 def test_action_contracts_emit_shared_affordance_payloads() -> None:

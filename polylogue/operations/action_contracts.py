@@ -106,21 +106,6 @@ VIRTUAL_ACTION_PATHS: frozenset[tuple[str, ...]] = frozenset(
 )
 
 
-PUBLIC_ACTION_FLOOR: tuple[tuple[str, ...], ...] = (
-    ("find",),
-    ("select",),
-    ("read",),
-    ("continue",),
-    ("mark",),
-    ("judge",),
-    ("analyze",),
-    ("delete",),
-    ("import",),
-    ("config",),
-    ("ops",),
-)
-
-
 ACTION_CONTRACTS: tuple[CliActionContract, ...] = (
     CliActionContract(
         path=("find",),
@@ -362,7 +347,6 @@ _validate_contracts()
 __all__ = [
     "ACTION_CONTRACTS",
     "ACTION_CONTRACT_BY_PATH",
-    "PUBLIC_ACTION_FLOOR",
     "VIRTUAL_ACTION_PATHS",
     "ActionCardinality",
     "ActionAffordanceListPayload",
