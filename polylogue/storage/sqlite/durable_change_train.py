@@ -122,6 +122,50 @@ class _SourceContinuityAuthorityNode:
     source_after: object
 
 
+def _legacy_source_continuity_evidence_matches(before: object, after: object) -> bool:
+    """Compare sealed V1 evidence while ignoring its observation timestamp.
+
+    V1 refreshes captured a fresh pre-mutation observation for every run, so
+    the next receipt's ``source_before`` can differ from the preceding
+    ``source_after`` only in ``observed_at_ms``. The rest of the evidence is
+    still sealed and must decode as durable source evidence before it can
+    establish a legacy predecessor.
+    """
+    try:
+        decoded_before = _migration_runner._decode_manifest_value(
+            DurableDatabaseEvidence, before, label="legacy source continuity predecessor evidence"
+        )
+        decoded_after = _migration_runner._decode_manifest_value(
+            DurableDatabaseEvidence, after, label="legacy source continuity successor evidence"
+        )
+    except DurableChangeTrainError as exc:
+        raise DurableChangeTrainError("legacy source continuity evidence is malformed") from exc
+    if not isinstance(decoded_before, DurableDatabaseEvidence) or not isinstance(
+        decoded_after, DurableDatabaseEvidence
+    ):
+        raise DurableChangeTrainError("legacy source continuity evidence decoded to the wrong type")
+    return replace(decoded_before, observed_at_ms=0) == replace(decoded_after, observed_at_ms=0)
+
+
+def _legacy_source_continuity_refresh_timestamp(payload: dict[str, object]) -> int:
+    """Return the source-after observation time sealed by one V1 receipt."""
+    refreshed_at_ms = payload.get("refreshed_at_ms")
+    source_after = payload.get("source_after")
+    try:
+        decoded_after = _migration_runner._decode_manifest_value(
+            DurableDatabaseEvidence, source_after, label="legacy source continuity refresh evidence"
+        )
+    except DurableChangeTrainError as exc:
+        raise DurableChangeTrainError("legacy source continuity evidence is malformed") from exc
+    if (
+        type(refreshed_at_ms) is not int
+        or not isinstance(decoded_after, DurableDatabaseEvidence)
+        or decoded_after.observed_at_ms != refreshed_at_ms
+    ):
+        raise DurableChangeTrainError("legacy source continuity refresh timestamp is invalid")
+    return refreshed_at_ms
+
+
 def _durable_train_manifest_sha256(train: DurableChangeTrain) -> str:
     payload = durable_change_train_to_payload(train)
     encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
@@ -1238,12 +1282,14 @@ def _validate_source_continuity_refresh_receipt(
             continue
         ref = _SourceContinuityAuthorityRef("refresh", digest)
         source_before = payload.get("source_before")
+        refreshed_at_ms = _legacy_source_continuity_refresh_timestamp(payload)
         candidates = [
             _SourceContinuityAuthorityRef("refresh", candidate_digest)
             for candidate_digest, candidate_payload in refresh_payloads.items()
             if candidate_digest != digest
             and candidate_payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V1_FORMAT
-            and candidate_payload.get("source_after") == source_before
+            and _legacy_source_continuity_refresh_timestamp(candidate_payload) < refreshed_at_ms
+            and _legacy_source_continuity_evidence_matches(candidate_payload.get("source_after"), source_before)
         ]
         if len(candidates) > 1:
             raise DurableChangeTrainError("legacy source continuity authority has ambiguous predecessor evidence")
@@ -1287,7 +1333,12 @@ def _validate_source_continuity_refresh_receipt(
         predecessor_node = nodes[current]
         for transition_ref in reversed(trail):
             payload = transition_payloads[transition_ref]
-            if payload.get("source_before") != predecessor_node.source_after:
+            preserves_predecessor = payload.get("source_before") == predecessor_node.source_after
+            if payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V1_FORMAT:
+                preserves_predecessor = _legacy_source_continuity_evidence_matches(
+                    predecessor_node.source_after, payload.get("source_before")
+                )
+            if not preserves_predecessor:
                 raise DurableChangeTrainError("source continuity transition does not preserve predecessor authority")
             node = _SourceContinuityAuthorityNode(
                 ref=transition_ref,

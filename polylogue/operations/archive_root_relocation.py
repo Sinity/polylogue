@@ -1433,6 +1433,48 @@ def _pointer_receipt_fields(
     return (pointer.old_target, pointer.new_target, pointer.new_resolved_target)
 
 
+def _has_matching_prepared_publication_receipt(
+    plan: ArchiveRootRelocationPlan, receipt: ArchiveRootRelocationReceipt | None
+) -> bool:
+    """Return whether ``receipt`` proves this plan reached publication.
+
+    A revision-1 receipt replaces the revision-0 preparation receipt in place.
+    Its retained digest must therefore recreate that exact preparation receipt,
+    rather than merely asserting that a post-publication manifest tuple exists.
+    """
+    if receipt is None or receipt.state not in {"prepared", "committed"} or receipt.revision < 1:
+        return False
+    before_hashes = tuple(item.before_manifest_sha256 for item in plan.durable_trains)
+    pointer_fields = _pointer_receipt_fields(plan.active_index_pointer)
+    if (
+        receipt.plan_sha256 != plan.plan_sha256
+        or receipt.authorization != plan.plan_sha256
+        or receipt.manifest_before_sha256 != before_hashes
+        or len(receipt.manifest_after_sha256) != len(plan.durable_trains)
+        or (
+            receipt.active_index_pointer_old_target,
+            receipt.active_index_pointer_new_target,
+            receipt.active_index_pointer_new_resolved_target,
+        )
+        != pointer_fields
+        or receipt.prepared_receipt_sha256 is None
+    ):
+        return False
+    preparation = _sealed_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256=plan.plan_sha256,
+        authorization=plan.plan_sha256,
+        manifest_before_sha256=before_hashes,
+        manifest_after_sha256=(),
+        active_index_pointer_old_target=pointer_fields[0],
+        active_index_pointer_new_target=pointer_fields[1],
+        active_index_pointer_new_resolved_target=pointer_fields[2],
+        resume_command=receipt.resume_command,
+    )
+    return receipt.prepared_receipt_sha256 == preparation.receipt_sha256
+
+
 def _relocated_train(
     root: Path,
     *,
@@ -1559,12 +1601,7 @@ def _revalidate_plan_live_state(
     if len(plan.tiers) != len(ArchiveTier) or set(backup_tiers) != {tier.value for tier in ArchiveTier}:
         raise ArchiveRootRelocationError("archive-root relocation plan tier evidence is incomplete")
     pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
-    prepared_publication = pending_receipt is not None and (
-        pending_receipt.state in {"prepared", "committed"}
-        and pending_receipt.revision >= 1
-        and pending_receipt.prepared_receipt_sha256 is not None
-        and len(pending_receipt.manifest_after_sha256) == len(plan.durable_trains)
-    )
+    prepared_publication = _has_matching_prepared_publication_receipt(plan, pending_receipt)
     if plan.format == _LEGACY_PLAN_FORMAT and not prepared_publication:
         raise ArchiveRootRelocationError(
             "archive-root relocation v3 plan lacks sealed leaf identities before publication; create a v4 plan"

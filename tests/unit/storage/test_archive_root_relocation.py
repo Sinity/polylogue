@@ -1227,7 +1227,7 @@ def test_source_continuity_admits_connected_multi_refresh_v1_history(
     terminal = replace(
         observed,
         archive_identity_digest=first.source_continuity_evidence.archive_identity_digest,
-        observed_at_ms=first.source_continuity_evidence.observed_at_ms + 1,
+        observed_at_ms=first.source_continuity_evidence.observed_at_ms + 3,
     )
     second_payload = {
         "format": "polylogue.source-continuity-refresh.v1",
@@ -1238,7 +1238,11 @@ def test_source_continuity_admits_connected_multi_refresh_v1_history(
         "mutation_receipt": "/authenticated/second.jsonl",
         "mutation_receipt_sha256": "d" * 64,
         "train_id": first.train_id,
-        "source_before": _evidence_payload(first.source_continuity_evidence),
+        "source_before": _evidence_payload(
+            replace(
+                first.source_continuity_evidence, observed_at_ms=first.source_continuity_evidence.observed_at_ms + 2
+            )
+        ),
         "source_after": _evidence_payload(terminal),
         "refreshed_at_ms": terminal.observed_at_ms,
     }
@@ -1256,6 +1260,50 @@ def test_source_continuity_admits_connected_multi_refresh_v1_history(
     write_durable_change_train_manifest(manifest, updated, expected_revision=first.revision)
 
     assert_source_continuity_apply_allowed(root)
+
+
+def test_relocation_revalidation_rejects_an_unbound_prepared_receipt_for_post_state(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-state leaves need the exact retained preparation receipt, not a shaped receipt.
+
+    Anti-vacuity: the generation metadata is atomically replaced with the
+    planned after bytes and a revision-1 receipt has the expected structural
+    fields but a foreign preparation digest. The old structural gate admitted
+    it before the first publication attempt.
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    new_root, plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    generation = plan.index_generations[0]
+    metadata_path = Path(generation.metadata_path)
+    before = metadata_path.read_bytes()
+    payload = relocation._index_generation_payload_for_state(generation, after=False, encoded=before)
+    after = relocation._index_generation_metadata_bytes(
+        {**payload, "archive_root": generation.after_archive_root, "index_path": generation.after_index_path}
+    )
+    replacement = metadata_path.with_name(".generation.json.after")
+    replacement.write_bytes(after)
+    os.replace(replacement, metadata_path)
+
+    pointer_fields = relocation._pointer_receipt_fields(plan.active_index_pointer)
+    unbound = _sealed_relocation_receipt(
+        state="prepared",
+        revision=1,
+        plan_sha256=plan.plan_sha256,
+        authorization=plan.plan_sha256,
+        manifest_before_sha256=tuple(item.before_manifest_sha256 for item in plan.durable_trains),
+        manifest_after_sha256=tuple("0" * 64 for _item in plan.durable_trains),
+        active_index_pointer_old_target=pointer_fields[0],
+        active_index_pointer_new_target=pointer_fields[1],
+        active_index_pointer_new_resolved_target=pointer_fields[2],
+        resume_command="polylogue ops maintenance archive-root-relocation apply",
+        prepared_receipt_sha256="f" * 64,
+    )
+    _write_relocation_receipt(relocation._receipt_path(new_root, plan), unbound, expected=None)
+
+    with pytest.raises(ArchiveRootRelocationError, match="post-publication state without a prepared receipt"):
+        relocation._revalidate_plan_live_state(new_root, plan)
 
 
 def test_receipt_directory_swap_cannot_redirect_either_operation_outside_archive(
