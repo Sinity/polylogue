@@ -754,6 +754,53 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     ]
 
 
+def test_source_only_full_ingest_bounds_oversized_ndjson_sampling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production NDJSON route reaches streaming retention before eager decode."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    initialize_active_archive_root(tmp_path)
+    root = tmp_path / "inbox"
+    root.mkdir()
+    source = root / "oversized.ndjson"
+    payload = (
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"id": "oversized-record", "padding": "x" * 128_000},
+            }
+        ).encode()
+        + b"\n"
+    )
+    source.write_bytes(payload)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="inbox", root=root, suffixes=(".ndjson",)),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch_support.json_loads",
+        lambda _raw: (_ for _ in ()).throw(AssertionError("sampling must not decode an oversized physical record")),
+    )
+
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    try:
+        result = processor._ingest_full_paths_sync([source], source_name="inbox")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [source]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT origin, blob_size, parsed_at_ms, parse_error FROM raw_sessions").fetchall() == [
+            ("unknown-export", len(payload), None, None)
+        ]
+
+
 def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -898,6 +945,14 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
         (f"{bundle}:first/conversations.json", 0, "unknown-export"),
         (f"{bundle}:second/conversations.json", 1, "unknown-export"),
     ]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT raw_id, coordinate_format, entry_ordinal, split_index "
+            "FROM raw_container_coordinates ORDER BY entry_ordinal"
+        ).fetchall() == [
+            (before_replay[0][0], "zip-v2", 0, 0),
+            (before_replay[1][0], "zip-v2", 1, 0),
+        ]
 
     replay = backfill_historical_revision_evidence(tmp_path)
 
@@ -908,6 +963,30 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
         assert conn.execute("SELECT origin, detected_provider FROM raw_sessions ORDER BY source_index").fetchall() == [
             ("unknown-export", "chatgpt"),
             ("unknown-export", "chatgpt"),
+        ]
+        assert conn.execute(
+            "SELECT raw_id, coordinate_format, entry_ordinal, split_index "
+            "FROM raw_container_coordinates ORDER BY entry_ordinal"
+        ).fetchall() == [
+            (before_replay[0][0], "zip-v2", 0, 0),
+            (before_replay[1][0], "zip-v2", 1, 0),
+        ]
+
+    reobserved = processor._ingest_full_paths_sync([bundle], source_name="unknown")
+
+    assert reobserved.succeeded == [bundle]
+    assert reobserved.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT origin, detected_provider FROM raw_sessions ORDER BY source_index").fetchall() == [
+            ("unknown-export", "chatgpt"),
+            ("unknown-export", "chatgpt"),
+        ]
+        assert conn.execute(
+            "SELECT raw_id, coordinate_format, entry_ordinal, split_index "
+            "FROM raw_container_coordinates ORDER BY entry_ordinal"
+        ).fetchall() == [
+            (before_replay[0][0], "zip-v2", 0, 0),
+            (before_replay[1][0], "zip-v2", 1, 0),
         ]
 
 

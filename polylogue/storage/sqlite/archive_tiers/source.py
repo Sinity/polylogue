@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,detected_provider       TEXT CHECK ({nullable_check("detected_provider", Provider)})
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS raw_container_coordinates (
+    raw_id             TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    coordinate_format  TEXT NOT NULL CHECK(coordinate_format = 'zip-v2'),
+    entry_ordinal      INTEGER NOT NULL CHECK(entry_ordinal >= 0),
+    split_index        INTEGER NOT NULL CHECK(split_index >= 0)
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin
 ON raw_sessions(origin);
 

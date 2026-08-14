@@ -33,23 +33,30 @@ VerificationUpdate: TypeAlias = tuple[str, str, str, str | None]
 
 
 def verification_provider_clause(providers: list[str]) -> tuple[str, tuple[str, ...]]:
-    """Build a `raw_sessions.origin` filter for requested providers.
+    """Build a detected-provider-aware filter for requested providers.
 
-    raw rows carry a single ``origin`` token rather than the
-    legacy ``payload_provider`` / ``source_name`` pair. Each requested
-    provider token is mapped to its archive origin via
-    :func:`origin_from_provider`; the row matches when its ``origin`` is in
-    that set.
+    Parser classification outranks acquisition origin once present. Rows that
+    have not been classified retain the origin fallback used by older source
+    schemas and ordinary provider-owned acquisition.
     """
-    origins = [origin_from_provider(Provider.from_string(p)).value for p in providers]
-    placeholders = ",".join("?" for _ in origins)
-    clause = f"origin IN ({placeholders})"
-    return clause, tuple(origins)
+    provider_tokens = [Provider.from_string(provider).value for provider in providers]
+    origins = [origin_from_provider(Provider.from_string(provider)).value for provider in providers]
+    provider_placeholders = ",".join("?" for _ in provider_tokens)
+    origin_placeholders = ",".join("?" for _ in origins)
+    clause = (
+        f"(detected_provider IN ({provider_placeholders}) OR "
+        f"(detected_provider IS NULL AND origin IN ({origin_placeholders})))"
+    )
+    return clause, (*provider_tokens, *origins)
 
 
 def _row_payload_data(row: sqlite3.Row) -> VerificationRow:
-    origin = str(row["origin"])
-    provider = provider_from_origin(Origin.from_string(origin), family_hint=Provider.DRIVE).value
+    detected_provider = row["detected_provider"]
+    if detected_provider is not None:
+        provider = Provider.from_string(str(detected_provider)).value
+    else:
+        origin = str(row["origin"])
+        provider = provider_from_origin(Origin.from_string(origin), family_hint=Provider.DRIVE).value
     return (
         str(row["raw_id"]),
         provider,
@@ -97,7 +104,7 @@ def iter_verification_rows(
                 return
             last_rowid = row[0]
 
-        base_query = "SELECT rowid, raw_id, origin, source_path, blob_hash FROM raw_sessions "
+        base_query = "SELECT rowid, raw_id, origin, detected_provider, source_path, blob_hash FROM raw_sessions "
         records_fetched = 0
         while True:
             if bounded_limit is not None:

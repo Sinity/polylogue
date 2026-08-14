@@ -18,7 +18,11 @@ from polylogue.archive.raw_payload import (
     RawPayloadEnvelope,
     build_raw_payload_envelope,
 )
-from polylogue.archive.raw_payload.decode import JSONLSessionArtifactScan, scan_jsonl_session_artifact
+from polylogue.archive.raw_payload.decode import (
+    JSONL_RECORD_INSPECTION_BYTES,
+    JSONLSessionArtifactScan,
+    scan_jsonl_session_artifact,
+)
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
@@ -240,7 +244,7 @@ def _support_status(
     return ArtifactSupportStatus.UNSUPPORTED_PARSEABLE
 
 
-_INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
+_INSPECTION_PREFIX_BYTES = JSONL_RECORD_INSPECTION_BYTES
 _FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
 
 

@@ -242,6 +242,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
+    record_raw_container_coordinate,
     write_source_hook_event,
 )
 from polylogue.storage.sqlite.archive_tiers.types import (
@@ -2459,6 +2460,23 @@ class ArchiveStore:
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
             post_parse=post_parse,
+        )
+
+    def record_raw_container_coordinate(
+        self,
+        raw_id: str,
+        *,
+        coordinate_format: Literal["zip-v2"],
+        entry_ordinal: int,
+        split_index: int,
+    ) -> None:
+        self._require_writable("record source.db container coordinate")
+        record_raw_container_coordinate(
+            self._ensure_source_conn(),
+            raw_id,
+            coordinate_format=coordinate_format,
+            entry_ordinal=entry_ordinal,
+            split_index=split_index,
         )
 
     def admit_raw_artifact_payload(

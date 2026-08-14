@@ -90,6 +90,9 @@ class JSONLSessionArtifactScan:
     oversized_records: int = 0
 
 
+JSONL_RECORD_INSPECTION_BYTES = 64 * 1024
+
+
 def _bounded_raw_lines(
     stream: IO[bytes] | IO[str],
     *,
@@ -589,6 +592,7 @@ __all__ = [
     "JSONValue",
     "RawPayloadEnvelope",
     "JSONLSessionArtifactScan",
+    "JSONL_RECORD_INSPECTION_BYTES",
     "WireFormat",
     "build_raw_payload_envelope",
     "jsonl_session_artifact",

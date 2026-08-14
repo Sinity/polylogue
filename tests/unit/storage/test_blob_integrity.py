@@ -1023,69 +1023,44 @@ def test_blob_recovery_rejects_duplicate_container_member_before_open(
 
 
 def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_path: Path) -> None:
-    """Durable live-ZIP identities reacquire the exact duplicate-name entry."""
+    """ZIP coordinates survive one replacement and authorize the next recovery."""
+    initialize_active_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
     store = BlobStore(tmp_path / "blob")
     zip_source = tmp_path / "duplicate-v2.zip"
     member = "sessions/duplicate.json"
-    member_payloads = (
-        b'[{"member":"first-zero"},{"member":"first-one"}]',
-        b'[{"member":"second-zero"},{"member":"second-one"}]',
+    old_selected_payloads = (b'{"member":"old-first-one"}', b'{"member":"old-second-one"}')
+    current_member_payloads = (
+        b'[{"member":"current-first-zero"},{"member":"current-first-one"}]',
+        b'[{"member":"current-second-zero"},{"member":"current-second-one"}]',
     )
-    selected_payloads = (b'{"member":"first-one"}', b'{"member":"second-one"}')
+    current_selected_payloads = (
+        b'{"member":"current-first-one"}',
+        b'{"member":"current-second-one"}',
+    )
     split_index = 1
     with zipfile.ZipFile(zip_source, "w") as archive:
-        archive.writestr(member, member_payloads[0])
+        archive.writestr(member, current_member_payloads[0])
         with pytest.warns(UserWarning, match="Duplicate name"):
-            archive.writestr(member, member_payloads[1])
+            archive.writestr(member, current_member_payloads[1])
 
     source_path = f"{zip_source}:{member}"
-    hashes = tuple(hashlib.sha256(payload).hexdigest() for payload in selected_payloads)
+    old_hashes = tuple(hashlib.sha256(payload).hexdigest() for payload in old_selected_payloads)
+    current_hashes = tuple(hashlib.sha256(payload).hexdigest() for payload in current_selected_payloads)
     coordinates = tuple(
         zip_member_source_index(entry_ordinal=ordinal, split_index=split_index)
-        for ordinal in range(len(member_payloads))
+        for ordinal in range(len(current_member_payloads))
     )
     raw_ids = tuple(
         zip_member_raw_id(
             source_path=source_path,
             entry_ordinal=ordinal,
             split_index=split_index,
-            blob_hash=hashes[ordinal],
+            blob_hash=old_hashes[ordinal],
         )
-        for ordinal in range(len(member_payloads))
+        for ordinal in range(len(current_member_payloads))
     )
     with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                source_index INTEGER,
-                blob_hash BLOB,
-                blob_size INTEGER NOT NULL,
-                acquired_at_ms INTEGER,
-                file_mtime_ms INTEGER
-            );
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                ref_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                acquired_at_ms INTEGER NOT NULL,
-                PRIMARY KEY(blob_hash, ref_type, ref_id)
-            );
-            CREATE TABLE blob_publication_reservations (
-                publication_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                size_bytes INTEGER NOT NULL,
-                publisher_id TEXT NOT NULL,
-                reserved_at_ms INTEGER NOT NULL
-            );
-            """
-        )
         conn.executemany(
             """
             INSERT INTO raw_sessions (
@@ -1096,7 +1071,7 @@ def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_p
             [
                 (raw_id, source_path, source_index, bytes.fromhex(blob_hash), len(payload))
                 for raw_id, source_index, blob_hash, payload in zip(
-                    raw_ids, coordinates, hashes, selected_payloads, strict=True
+                    raw_ids, coordinates, old_hashes, old_selected_payloads, strict=True
                 )
             ],
         )
@@ -1107,25 +1082,49 @@ def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_p
             """,
             [
                 (bytes.fromhex(blob_hash), raw_id, source_path, len(payload))
-                for raw_id, blob_hash, payload in zip(raw_ids, hashes, selected_payloads, strict=True)
+                for raw_id, blob_hash, payload in zip(raw_ids, old_hashes, old_selected_payloads, strict=True)
             ],
         )
 
-    report = replace_raw_backed_blob_reference_debt_from_source(
+    first = replace_raw_backed_blob_reference_debt_from_source(
         source_db,
         store=store,
         dry_run=False,
-        manifest_path=tmp_path / "duplicate-v2-replacement.jsonl",
+        manifest_path=tmp_path / "duplicate-v2-first-replacement.jsonl",
     )
 
-    assert report.replaced_rows == 2
-    assert report.written_blobs == 2
-    assert all(store.exists(blob_hash) for blob_hash in hashes)
-    assert tuple(store.read_all(blob_hash) for blob_hash in hashes) == selected_payloads
+    assert first.replaced_rows == 2
+    assert first.written_blobs == 2
+    assert all(store.exists(blob_hash) for blob_hash in current_hashes)
     with sqlite3.connect(source_db) as conn:
         assert conn.execute(
             "SELECT raw_id, lower(hex(blob_hash)), source_index FROM raw_sessions ORDER BY source_index"
-        ).fetchall() == list(zip(raw_ids, hashes, coordinates, strict=True))
+        ).fetchall() == list(zip(raw_ids, current_hashes, coordinates, strict=True))
+        assert conn.execute(
+            "SELECT raw_id, coordinate_format, entry_ordinal, split_index "
+            "FROM raw_container_coordinates ORDER BY entry_ordinal"
+        ).fetchall() == [
+            (raw_ids[0], "zip-v2", 0, split_index),
+            (raw_ids[1], "zip-v2", 1, split_index),
+        ]
+
+    for blob_hash in current_hashes:
+        store.blob_path(blob_hash).unlink()
+
+    second = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "duplicate-v2-second-replacement.jsonl",
+    )
+
+    assert second.replaced_rows == 2
+    assert second.written_blobs == 2
+    assert tuple(store.read_all(blob_hash) for blob_hash in current_hashes) == current_selected_payloads
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute(
+            "SELECT raw_id, lower(hex(blob_hash)), source_index FROM raw_sessions ORDER BY source_index"
+        ).fetchall() == list(zip(raw_ids, current_hashes, coordinates, strict=True))
 
 
 def test_blob_recovery_rejects_oversized_container_member_before_open(

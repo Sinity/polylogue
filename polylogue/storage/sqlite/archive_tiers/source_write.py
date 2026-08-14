@@ -280,6 +280,40 @@ def record_capture_mode_observation(
     )
 
 
+def record_raw_container_coordinate(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    *,
+    coordinate_format: Literal["zip-v2"],
+    entry_ordinal: int,
+    split_index: int,
+    manage_transaction: bool = True,
+) -> None:
+    """Persist one content-independent container coordinate for a raw row."""
+    if entry_ordinal < 0 or split_index < 0:
+        raise ValueError("container entry ordinal and split index must be non-negative")
+    with conn if manage_transaction else nullcontext():
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO raw_container_coordinates (
+                raw_id, coordinate_format, entry_ordinal, split_index
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (raw_id, coordinate_format, entry_ordinal, split_index),
+        )
+        stored = conn.execute(
+            """
+            SELECT coordinate_format, entry_ordinal, split_index
+            FROM raw_container_coordinates
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+        expected = (coordinate_format, entry_ordinal, split_index)
+        if stored is None or tuple(stored) != expected:
+            raise ValueError(f"raw container coordinate changed for {raw_id}")
+
+
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:
     """Read every acquisition mode ever observed for ``raw_id``, explicitly ambiguous or not.
 
@@ -1463,6 +1497,7 @@ __all__ = [
     "read_raw_artifact",
     "read_archive_raw_session_envelope",
     "record_capture_mode_observation",
+    "record_raw_container_coordinate",
     "record_excised_blob_hash",
     "pending_raw_logical_source_key",
     "upsert_raw_artifact",

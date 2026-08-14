@@ -1056,18 +1056,31 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
     blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "NULL"
     acquired_at_ms_column = "acquired_at_ms" if _column_exists(conn, "raw_sessions", "acquired_at_ms") else "NULL"
     file_mtime_ms_column = "file_mtime_ms" if _column_exists(conn, "raw_sessions", "file_mtime_ms") else "NULL"
+    has_container_coordinates = _table_exists(conn, "raw_container_coordinates")
+    coordinate_join = (
+        "LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id"
+        if has_container_coordinates
+        else ""
+    )
+    coordinate_format_column = "coordinate.coordinate_format" if has_container_coordinates else "NULL"
+    entry_ordinal_column = "coordinate.entry_ordinal" if has_container_coordinates else "NULL"
+    split_index_column = "coordinate.split_index" if has_container_coordinates else "NULL"
     rows = conn.execute(
         f"""
         SELECT lower(hex(blob_hash)) AS blob_hash,
-               raw_id,
+               raw_sessions.raw_id AS raw_id,
                {origin_column} AS origin,
                {native_id_column} AS native_id,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
                {blob_size_column} AS expected_size_bytes,
                {acquired_at_ms_column} AS acquired_at_ms,
-               {file_mtime_ms_column} AS file_mtime_ms
+               {file_mtime_ms_column} AS file_mtime_ms,
+               {coordinate_format_column} AS coordinate_format,
+               {entry_ordinal_column} AS entry_ordinal,
+               {split_index_column} AS split_index
         FROM raw_sessions
+        {coordinate_join}
         WHERE blob_hash IS NOT NULL
         ORDER BY origin, source_path, source_index, raw_id
         """
@@ -1122,6 +1135,7 @@ def _current_raw_payload_bytes(
     *,
     raw_id: str | None = None,
     blob_hash: str | None = None,
+    zip_coordinate: tuple[int, int] | None = None,
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
 ) -> tuple[bytes | None, str | None]:
@@ -1132,9 +1146,9 @@ def _current_raw_payload_bytes(
         zip_path, member = split
         if not zip_path.exists():
             return None, "source_missing"
-        entry_ordinal: int | None = None
-        split_index = source_index
-        if raw_id is not None and blob_hash is not None and source_index is not None:
+        entry_ordinal: int | None = zip_coordinate[0] if zip_coordinate is not None else None
+        split_index = zip_coordinate[1] if zip_coordinate is not None else source_index
+        if zip_coordinate is None and raw_id is not None and blob_hash is not None and source_index is not None:
             coordinate = zip_member_identity_coordinate(
                 raw_id=raw_id,
                 source_path=source_path,
@@ -1212,6 +1226,26 @@ def _current_raw_payload_bytes(
         return path.read_bytes(), None
     except OSError as exc:
         return None, f"error:{exc}"
+
+
+def _raw_zip_coordinate(row: dict[str, Any]) -> tuple[int, int] | None:
+    if row.get("coordinate_format") == "zip-v2":
+        entry_ordinal = row.get("entry_ordinal")
+        split_index = row.get("split_index")
+        if entry_ordinal is not None and split_index is not None:
+            return int(entry_ordinal), int(split_index)
+    source_path = _optional_str(row.get("source_path"))
+    source_index = row.get("source_index")
+    raw_id = str(row.get("raw_id") or "")
+    blob_hash = str(row.get("blob_hash") or "")
+    if not source_path or not _path_is_container_member(source_path) or source_index is None:
+        return None
+    return zip_member_identity_coordinate(
+        raw_id=raw_id,
+        source_path=source_path,
+        source_index=int(source_index),
+        blob_hash=blob_hash,
+    )
 
 
 def _delete_blob_refs_for_raw_id(conn: sqlite3.Connection, raw_id: str) -> None:
@@ -1507,7 +1541,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
     manifest_rows: list[dict[str, object]] = []
     by_origin: Counter[str] = Counter()
     by_source_shape: Counter[str] = Counter()
-    candidate_updates: list[tuple[dict[str, Any], str, int, int | None, int]] = []
+    candidate_updates: list[tuple[dict[str, Any], str, int, int | None, int, tuple[int, int] | None]] = []
     skipped_existing_blob = 0
     skipped_no_source_path = 0
     skipped_source_missing = 0
@@ -1542,12 +1576,14 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 )
             continue
 
+        zip_coordinate = _raw_zip_coordinate(row)
         try:
             payload_bytes, reason = _current_raw_payload_bytes(
                 source_path,
                 int(row["source_index"]) if row.get("source_index") is not None else None,
                 raw_id=raw_id,
                 blob_hash=old_blob_hash,
+                zip_coordinate=zip_coordinate,
                 source_bytes_cache=source_bytes_cache,
                 decoded_payload_cache=decoded_payload_cache,
             )
@@ -1603,7 +1639,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
             "new_equals_old": new_blob_hash == old_blob_hash,
         }
         manifest_rows.append(manifest_row)
-        candidate_updates.append((row, new_blob_hash, new_blob_size, file_mtime_ms, acquired_at_ms))
+        candidate_updates.append((row, new_blob_hash, new_blob_size, file_mtime_ms, acquired_at_ms, zip_coordinate))
         if len(samples) < max(0, sample_size):
             samples.append(
                 BlobReferenceSourceReplaceSample(
@@ -1633,7 +1669,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
         apply_decoded_payload_cache: dict[str, object] = {}
         publisher = ArchiveBlobPublisher(source_db, blob_store.root, store=blob_store)
         publication_receipts: list[str | None] = []
-        for row, new_blob_hash, _new_blob_size, _file_mtime_ms, _acquired_at_ms in candidate_updates:
+        for row, new_blob_hash, _new_blob_size, _file_mtime_ms, _acquired_at_ms, zip_coordinate in candidate_updates:
             receipt_id: str | None = None
             existed_before_publication = blob_store.exists(new_blob_hash)
             source_path = str(row["source_path"])
@@ -1642,6 +1678,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 int(row["source_index"]) if row.get("source_index") is not None else None,
                 raw_id=str(row["raw_id"]),
                 blob_hash=str(row.get("blob_hash") or ""),
+                zip_coordinate=zip_coordinate,
                 source_bytes_cache=apply_source_bytes_cache,
                 decoded_payload_cache=apply_decoded_payload_cache,
             )
@@ -1662,12 +1699,27 @@ def replace_raw_backed_blob_reference_debt_from_source(
                     new_blob_size,
                     file_mtime_ms,
                     acquired_at_ms,
+                    zip_coordinate,
                 ), publication_receipt_id in zip(candidate_updates, publication_receipts, strict=True):
                     raw_id = str(row["raw_id"])
                     source_path = str(row["source_path"])
                     if not blob_store.exists(new_blob_hash):
                         skipped_error += 1
                         continue
+                    if zip_coordinate is not None and _table_exists(conn, "raw_container_coordinates"):
+                        entry_ordinal, split_index = zip_coordinate
+                        from polylogue.storage.sqlite.archive_tiers.source_write import (
+                            record_raw_container_coordinate,
+                        )
+
+                        record_raw_container_coordinate(
+                            conn,
+                            raw_id,
+                            coordinate_format="zip-v2",
+                            entry_ordinal=entry_ordinal,
+                            split_index=split_index,
+                            manage_transaction=False,
+                        )
                     _delete_blob_refs_for_raw_id(conn, raw_id)
                     _update_raw_session_blob_ref(
                         conn,

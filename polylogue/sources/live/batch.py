@@ -51,7 +51,11 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_index
+from polylogue.core.raw_coordinates import (
+    zip_member_identity_coordinate,
+    zip_member_raw_id,
+    zip_member_source_index,
+)
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
@@ -390,6 +394,32 @@ def _blob_jsonl_has_session_evidence(
         return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
     except (OSError, ValueError):
         return False
+
+
+def _record_zip_container_coordinate(
+    archive: Any,
+    record: RawSessionRecord,
+    *,
+    source_raw_id: str,
+    blob_hash: str,
+) -> None:
+    if record.source_index is None:
+        return
+    coordinate = zip_member_identity_coordinate(
+        raw_id=source_raw_id,
+        source_path=record.source_path,
+        source_index=record.source_index,
+        blob_hash=blob_hash,
+    )
+    if coordinate is None:
+        return
+    entry_ordinal, split_index = coordinate
+    archive.record_raw_container_coordinate(
+        source_raw_id,
+        coordinate_format="zip-v2",
+        entry_ordinal=entry_ordinal,
+        split_index=split_index,
+    )
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
@@ -2247,9 +2277,7 @@ class LiveBatchProcessor:
                     raw_id=raw_id,
                     blob_hash=(blob_hash if acquired_via_sqlite_snapshot and blob_hash is not None else None),
                     payload_provider=provider,
-                    capture_mode=(
-                        acquisition_capture_mode if acquisition_capture_mode is not Provider.UNKNOWN else provider
-                    ),
+                    capture_mode=acquisition_capture_mode,
                     source_name=source_name,
                     source_path=(
                         str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
@@ -2470,6 +2498,7 @@ class LiveBatchProcessor:
                     record_timings: dict[str, float] = {}
                     t0 = time.perf_counter()
                     provider = record.payload_provider or Provider.from_string(record.source_name)
+                    acquisition_provider = record.capture_mode or provider
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
@@ -2508,7 +2537,7 @@ class LiveBatchProcessor:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(
-                                provider=provider,
+                                provider=acquisition_provider,
                                 blob_hash_hex=blob_hash,
                                 blob_size=record.blob_size,
                                 source_path=record.source_path,
@@ -2520,7 +2549,7 @@ class LiveBatchProcessor:
                             ).raw_id
                         else:
                             source_raw_id = archive.admit_raw_artifact_payload(
-                                provider=provider,
+                                provider=acquisition_provider,
                                 payload=payload,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
@@ -2529,13 +2558,19 @@ class LiveBatchProcessor:
                                 classification=artifact_classification,
                                 blob_publication_receipt_id=record.blob_publication_receipt_id,
                             ).raw_id
+                        _record_zip_container_coordinate(
+                            archive,
+                            record,
+                            source_raw_id=source_raw_id,
+                            blob_hash=blob_hash,
+                        )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     source_write_started = time.perf_counter()
                     if payload is None:
                         source_raw_id = archive.write_raw_blob_ref(
-                            provider=provider,
+                            provider=acquisition_provider,
                             capture_mode=record.capture_mode,
                             blob_hash_hex=blob_hash,
                             blob_size=record.blob_size,
@@ -2557,7 +2592,7 @@ class LiveBatchProcessor:
                         source_write_name = "full.source_raw_blob_ref_write"
                     else:
                         source_raw_id = archive.write_raw_payload(
-                            provider=provider,
+                            provider=acquisition_provider,
                             capture_mode=record.capture_mode,
                             payload=payload,
                             source_path=record.source_path,
@@ -2567,6 +2602,12 @@ class LiveBatchProcessor:
                             post_parse=True,
                         )
                         source_write_name = "full.source_raw_write"
+                    _record_zip_container_coordinate(
+                        archive,
+                        record,
+                        source_raw_id=source_raw_id,
+                        blob_hash=blob_hash,
+                    )
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
                     degraded = degraded_reason()
                     if degraded is not None and degraded.derived_only:
@@ -3308,11 +3349,7 @@ class LiveBatchProcessor:
                                         raw_id=member_raw_id,
                                         blob_hash=raw_data.blob_hash,
                                         payload_provider=member_provider,
-                                        capture_mode=(
-                                            fallback_provider
-                                            if fallback_provider is not Provider.UNKNOWN
-                                            else member_provider
-                                        ),
+                                        capture_mode=fallback_provider,
                                         source_name=member_provider.value,
                                         source_path=raw_data.source_path,
                                         source_index=source_index,

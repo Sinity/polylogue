@@ -17,7 +17,11 @@ from polylogue.archive.artifact_taxonomy import (
     classify_artifact_path,
     strong_path_classification,
 )
-from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+from polylogue.archive.raw_payload.decode import (
+    JSONL_RECORD_INSPECTION_BYTES,
+    _sample_jsonl_payload_with_detail,
+    jsonl_session_artifact,
+)
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
@@ -540,18 +544,15 @@ def _browser_capture_provider_from_path(path: Path) -> Provider | None:
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
-    records: list[JSONValue] = []
-    with path.open("rb") as handle:
-        for line in handle:
-            if len(records) >= max_records:
-                break
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                records.append(json_loads(raw))
-            except JSONDecodeError:
-                continue
+    try:
+        records, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
+            path,
+            max_samples=max_records,
+            scan_full=False,
+            max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
+        )
+    except ValueError:
+        return []
     return records
 
 
