@@ -68,8 +68,6 @@ from pathlib import Path
 
 import tomllib
 
-from devtools.testmon_state import attempt_is_checkout_bound, seed_marker_is_checkout_bound
-
 
 class CheckoutImportMismatchError(RuntimeError):
     """``import polylogue`` resolved to a package outside the invoking checkout."""
@@ -106,7 +104,6 @@ class CheckoutEnvironmentFingerprint:
     python_executable: Path
     python_environment_root: Path | None
     linked_worktree: bool
-    testmon_state_origin: Path | None
     verify_state_origin: Path | None
     artifacts: tuple[EnvironmentArtifact, ...]
 
@@ -123,16 +120,11 @@ class CheckoutEnvironmentFingerprint:
                 str(self.python_environment_root) if self.python_environment_root is not None else None
             ),
             "linked_worktree": self.linked_worktree,
-            "testmon_state_origin": str(self.testmon_state_origin) if self.testmon_state_origin else None,
             "verify_state_origin": str(self.verify_state_origin) if self.verify_state_origin else None,
             "artifacts": [artifact.as_dict() for artifact in self.artifacts],
         }
 
 
-_TESTMON_STATE_DIR = Path(".cache/testmon")
-_TESTMON_STATE_MARKER = _TESTMON_STATE_DIR / "seed.json"
-_TESTMON_SEED_ATTEMPT = _TESTMON_STATE_DIR / "seed-attempt.json"
-_TESTMON_SEED_PROTOCOL_VERSION = 7
 _VERIFY_STATE_DIR = Path(".cache/verify")
 _VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
 
@@ -265,76 +257,6 @@ def _marker_origin(marker: Path) -> Path | None:
     return Path(raw).resolve()
 
 
-def _is_valid_in_progress_testmon_seed_attempt(attempt: Path, *, checkout_root: Path) -> bool:
-    """Recognize the live seed ledger before its completion marker exists.
-
-    ``verify --seed-testmon`` writes this receipt before pytest starts and
-    rewrites it after the run. It is the only unmarked testmon state that a
-    linked worktree may trust. Keep this contract local to the guard so a
-    random JSON file cannot turn an inherited cache into accepted state.
-    """
-    try:
-        payload = json.loads(attempt.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, Mapping) or payload.get("status") not in {
-        "running",
-        "incomplete",
-        "reusable",
-        "complete",
-    }:
-        return False
-    if payload.get("status") == "complete":
-        return attempt_is_checkout_bound(
-            payload,
-            checkout_root=checkout_root,
-            protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
-        )
-    if payload.get("status") == "reusable":
-        return attempt_is_checkout_bound(
-            payload,
-            checkout_root=checkout_root,
-            protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
-        )
-    protocol_version = payload.get("protocol_version")
-    if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version <= 0:
-        return False
-    identity = payload.get("identity")
-    if not isinstance(identity, Mapping):
-        return False
-    if not isinstance(identity.get("worktree_fingerprint"), str) or not identity["worktree_fingerprint"]:
-        return False
-    if not isinstance(identity.get("python"), str) or not identity["python"]:
-        return False
-    if not isinstance(identity.get("skip_slow"), bool) or not isinstance(identity.get("lab"), bool):
-        return False
-    git_head = identity.get("git_head")
-    if git_head is not None and (not isinstance(git_head, str) or not git_head):
-        return False
-    if "checkout_root" in payload:
-        return False
-    expected_nodeids = payload.get("expected_nodeids")
-    if not isinstance(expected_nodeids, list) or any(
-        not isinstance(nodeid, str) or not nodeid for nodeid in expected_nodeids
-    ):
-        return False
-    expected_count = payload.get("expected_count")
-    if (
-        not isinstance(expected_count, int)
-        or isinstance(expected_count, bool)
-        or expected_count != len(expected_nodeids)
-    ):
-        return False
-    if not isinstance(payload.get("resume"), bool):
-        return False
-    for key in ("started_at", "run_id", "artifact_dir", "testmon_data_before"):
-        value = payload.get(key)
-        if not isinstance(value, str) or not value:
-            return False
-    artifact_dir = Path(payload["artifact_dir"])
-    return not artifact_dir.is_absolute() and artifact_dir.parts[:3] == (".cache", "verify", "runs")
-
-
 def _cache_artifact(
     *,
     repo_root: Path,
@@ -355,34 +277,7 @@ def _cache_artifact(
     marker_path = repo_root / marker
     origin = _marker_origin(marker_path)
     if origin == repo_root:
-        if state_dir == _TESTMON_STATE_DIR and not seed_marker_is_checkout_bound(
-            marker_path,
-            checkout_root=repo_root,
-            protocol_version=_TESTMON_SEED_PROTOCOL_VERSION,
-        ):
-            return (
-                origin,
-                EnvironmentArtifact(
-                    kind="invalid_testmon_seed",
-                    path=marker_path,
-                    detail="testmon seed marker is stale, malformed, or its SQLite graph is incomplete",
-                    remediation=(
-                        f"remove {state_path} and run `devtools verify --seed-testmon` "
-                        "to rebuild the typed testmon state"
-                    ),
-                ),
-            )
         return origin, None
-    if (
-        origin is None
-        and not marker_path.exists()
-        and state_dir == _TESTMON_STATE_DIR
-        and _is_valid_in_progress_testmon_seed_attempt(
-            repo_root / _TESTMON_SEED_ATTEMPT,
-            checkout_root=repo_root,
-        )
-    ):
-        return None, None
     if origin is None:
         detail = f"{state_path} has no verifiable checkout-root marker"
     else:
@@ -418,7 +313,6 @@ def checkout_environment_fingerprint(
     executable = executable_input.resolve()
     linked = _is_linked_worktree(resolved_root)
     artifacts: list[EnvironmentArtifact] = []
-    testmon_origin: Path | None = None
     verify_origin: Path | None = None
 
     if linked:
@@ -457,16 +351,6 @@ def checkout_environment_fingerprint(
                     remediation=f"remove {node_modules} before running the lane verification",
                 )
             )
-        testmon_origin, testmon_artifact = _cache_artifact(
-            repo_root=resolved_root,
-            state_dir=_TESTMON_STATE_DIR,
-            marker=_TESTMON_STATE_MARKER,
-            kind="inherited_testmon_cache",
-            remediation=(
-                f"remove {resolved_root / _TESTMON_STATE_DIR} and let `devtools verify --seed-testmon` "
-                "or the managed bootstrap recreate it"
-            ),
-        )
         verify_origin, verify_artifact = _cache_artifact(
             repo_root=resolved_root,
             state_dir=_VERIFY_STATE_DIR,
@@ -474,8 +358,6 @@ def checkout_environment_fingerprint(
             kind="inherited_verify_cache",
             remediation=f"remove {resolved_root / _VERIFY_STATE_DIR} and rerun the managed devtools command",
         )
-        if testmon_artifact is not None:
-            artifacts.append(testmon_artifact)
         if verify_artifact is not None:
             artifacts.append(verify_artifact)
 
@@ -485,7 +367,6 @@ def checkout_environment_fingerprint(
         python_executable=executable,
         python_environment_root=environment_root,
         linked_worktree=linked,
-        testmon_state_origin=testmon_origin,
         verify_state_origin=verify_origin,
         artifacts=tuple(artifacts),
     )

@@ -1,29 +1,16 @@
-"""Tiered scale tests demonstrating the small/medium/large fixture contract.
+"""Query probes over the benchmark runner's shared database sizes.
 
 Each test exercises a measured surface (FTS5 search, hybrid RRF search,
-list_sessions) against the corresponding scale fixture and asserts
-basic shape so a regression in the seeder or query path surfaces even
-when ``--benchmark-disable`` is in effect.
-
-Marker plumbing (issue #1183):
-
-  ``@pytest.mark.scale_small``  — default ``devtools verify`` gate.
-  ``@pytest.mark.scale_medium`` — ``devtools verify --lab`` only.
-  ``@pytest.mark.scale_large``  — nightly CI / explicit campaigns only.
-
-The default ``devtools verify`` pytest step passes ``-m "not scale_medium
-and not scale_large"`` so only the small tier runs in the inner loop.
-Tests that want measured timings should also carry ``@pytest.mark.benchmark``
-and run under the direct pytest-benchmark nightly workflow.
+list_sessions) against the benchmark fixtures and asserts basic shape. The
+entire file is an explicit performance-plugin surface; native correctness
+verification excludes ``tests/benchmarks`` by path instead of tier markers.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from tests.benchmarks.helpers import open_bench_store
+from tests.benchmarks.helpers import BenchmarkFixture, open_bench_store
 
 
 def _fts_query(db_path: Path, term: str, *, limit: int = 20) -> int:
@@ -40,43 +27,39 @@ def _list_query(db_path: Path, *, limit: int = 20) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Small tier — runs in default `devtools verify` baseline.
+# Small benchmark database.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.scale_small
-def test_scale_small_fts_search_returns_results(tier_small_db: Path) -> None:
+def test_bench_1k_fts_search_returns_results(bench_db_1k: Path) -> None:
     """FTS5 search over the small tier returns at most ``limit`` rows."""
-    hits = _fts_query(tier_small_db, "analysis", limit=10)
+    hits = _fts_query(bench_db_1k, "analysis", limit=10)
     assert 0 <= hits <= 10
 
 
-@pytest.mark.scale_small
-def test_scale_small_list_sessions(tier_small_db: Path) -> None:
+def test_bench_1k_list_sessions(bench_db_1k: Path) -> None:
     """``list_summaries`` returns up to ``limit`` entries from the small tier."""
-    rows = _list_query(tier_small_db, limit=10)
+    rows = _list_query(bench_db_1k, limit=10)
     assert 0 < rows <= 10
 
 
 # ---------------------------------------------------------------------------
-# Medium tier — runs in `devtools verify --lab`.
+# Medium benchmark database.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.scale_medium
-def test_scale_medium_fts_search_returns_results(tier_medium_db: Path) -> None:
-    hits = _fts_query(tier_medium_db, "analysis", limit=20)
+def test_bench_10k_fts_search_returns_results(bench_db_10k: Path) -> None:
+    hits = _fts_query(bench_db_10k, "analysis", limit=20)
     assert 0 <= hits <= 20
 
 
-@pytest.mark.scale_medium
-def test_scale_medium_list_sessions(tier_medium_db: Path) -> None:
-    rows = _list_query(tier_medium_db, limit=20)
+def test_bench_10k_list_sessions(bench_db_10k: Path) -> None:
+    rows = _list_query(bench_db_10k, limit=20)
     assert 0 < rows <= 20
 
 
 # ---------------------------------------------------------------------------
-# Large tier — runs in nightly CI / explicit campaigns only.
+# Large benchmark database — direct file/node campaigns only.
 #
 # The fixture creation cost dominates wall-clock time for this tier
 # (~tens of seconds to minutes depending on host). The tests below are
@@ -86,13 +69,11 @@ def test_scale_medium_list_sessions(tier_medium_db: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.scale_large
-def test_scale_large_fts_search_returns_results(tier_large_db: Path) -> None:
-    hits = _fts_query(tier_large_db, "analysis", limit=50)
+def test_bench_50k_fts_search_returns_results(benchmark: BenchmarkFixture, bench_db_50k: Path) -> None:
+    hits = benchmark(lambda: _fts_query(bench_db_50k, "analysis", limit=50))
     assert 0 <= hits <= 50
 
 
-@pytest.mark.scale_large
-def test_scale_large_list_sessions(tier_large_db: Path) -> None:
-    rows = _list_query(tier_large_db, limit=50)
+def test_bench_50k_list_sessions(benchmark: BenchmarkFixture, bench_db_50k: Path) -> None:
+    rows = benchmark(lambda: _list_query(bench_db_50k, limit=50))
     assert 0 < rows <= 50

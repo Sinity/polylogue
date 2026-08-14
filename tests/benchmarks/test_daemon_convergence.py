@@ -167,25 +167,8 @@ class _BenchmarkPolylogue:
 # ── Benchmark tests ─────────────────────────────────────────────────
 
 
-# Tiers whose per-iteration runtime exceeds the default benchmark budget
-# (multiple minutes per repeat in CI) are routed to the ``scale_large``
-# nightly marker. The xxl mega-session tier ingests 100k messages from a
-# single file and is the canonical regression probe for #1244 / #845-A.
-_NIGHTLY_TIERS = {"xxl-mega-session"}
-
-
-def _tier_params() -> list[Any]:
-    params: list[Any] = []
-    for tier in _SCALE_TIERS:
-        if tier in _NIGHTLY_TIERS:
-            params.append(pytest.param(tier, marks=[pytest.mark.scale_large]))
-        else:
-            params.append(pytest.param(tier))
-    return params
-
-
 @pytest.mark.benchmark
-@pytest.mark.parametrize("tier", _tier_params())
+@pytest.mark.parametrize("tier", _SCALE_TIERS)
 def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """Measure convergence throughput at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier)
@@ -339,7 +322,6 @@ def test_convergence_large_session_memory(
 
 
 @pytest.mark.benchmark
-@pytest.mark.scale_large
 def test_convergence_huge_session_memory_bounded(
     benchmark: BenchmarkFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

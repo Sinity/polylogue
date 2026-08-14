@@ -556,7 +556,7 @@ def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_p
             "pytest",
             "--basetemp",
             str(explicit),
-            "tests/unit/test_pytest_temp_policy.py::test_archive_template_clone_is_private",
+            "tests/unit/infra/test_archive_templates.py::test_clone_fallback_is_private_writable_and_symlink_safe",
         ],
         cwd=repo_root,
         env=env,
@@ -921,33 +921,3 @@ def test_sessionfinish_retains_explicit_diagnostic_basetemp(
     conftest.pytest_sessionfinish(cast("pytest.Session", session), 1)
 
     assert explicit.exists()
-
-
-def test_archive_template_clone_is_private(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    destination = tmp_path / "destination"
-    source.mkdir()
-    (source / "index.db").write_bytes(b"immutable-template")
-
-    conftest._clone_archive_template(source, destination)
-    (destination / "index.db").write_bytes(b"private-mutation")
-
-    assert (source / "index.db").read_bytes() == b"immutable-template"
-
-
-def test_archive_template_clone_rebinds_durable_identity(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    source = tmp_path / "source"
-    destination = tmp_path / "destination"
-    marker_relative = Path(".maintenance-state/durable-change-trains/.bootstrap")
-    with ArchiveStore(source):
-        pass
-    source_marker = (source / marker_relative).read_bytes()
-
-    conftest._clone_archive_template(source, destination)
-
-    assert (destination / marker_relative).read_bytes() != source_marker
-    with ArchiveStore(destination):
-        pass
-    assert (source / marker_relative).read_bytes() == source_marker

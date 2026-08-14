@@ -1790,12 +1790,12 @@ class TestInfraTagAssignment:
         empty_archive_template: Path,
     ) -> None:
         """Strategy-generated tags are retrievable and counted consistently."""
-        from tests.conftest import _clone_archive_template
         from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
+        from tests.infra.archive_templates import clone_archive_template
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             archive_root = Path(tmp_dir) / "archive"
-            _clone_archive_template(empty_archive_template, archive_root)
+            clone_archive_template(empty_archive_template, archive_root)
             db_path = archive_root / "index.db"
             seed_session_graph(db_path, spec.sessions)
 

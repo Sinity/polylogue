@@ -84,7 +84,7 @@ wrapper reads those executed artifacts into its report. The manifests use
 `schema_version: 1`, `evidence_kind: browserless-dom`, the command, artifact
 id, fixture id, route, and structural checks asserted by that test.
 
-Both suites are part of the standard non-integration test run. There is no
+Both suites are part of the standard correctness corpus. There is no
 browser binary or Playwright dependency in these fast lanes: they use Python's
 standard `http.server`, `urllib.request`, and `html.parser` against the real
 `DaemonAPIHTTPServer`. The `devtools lab smoke` command is the

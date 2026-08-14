@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from devtools import merge_boundary, merge_gate, pr_scope
+from devtools import click_dispatch, merge_boundary, merge_gate, pr_scope
 from devtools.checkout_guard import checkout_environment_fingerprint
 from tests.infra.frozen_clock import FrozenClock
 
@@ -26,10 +26,19 @@ _SCOPE_BEAD = {
 
 
 @pytest.fixture(autouse=True)
-def _scope_bead_record(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    beads_dir = tmp_path / ".beads"
-    beads_dir.mkdir()
-    (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
+def _scope_bead_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give merge-flow tests a canonical Bead snapshot without faking validation.
+
+    Production scope validation reads the candidate and prospective records from
+    committed Git revisions. These unit tests deliberately use placeholder PR
+    SHAs, so inject that storage boundary and retain the real carrier,
+    disposition, digest, and merge-gate validation paths.
+    """
+
+    def canonical_records(_revision: str) -> dict[str, dict[str, object]]:
+        return {_SCOPE_BEAD["id"]: dict(_SCOPE_BEAD)}
+
+    monkeypatch.setattr(pr_scope, "_bead_records_at", canonical_records)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
 
@@ -137,7 +146,6 @@ def _fake_run(
                         "exit_code": local_exit,
                         "verification_scope": "affected",
                         "release_baseline_allowed": False,
-                        "terminal_authorization": None,
                     }
                 )
             )
@@ -156,7 +164,6 @@ def _write_terminal_receipt(
     head: str = "merged-master",
     scope: str = "release-baseline",
     release_allowed: bool = True,
-    terminal_authorization: str | None = None,
 ) -> None:
     env = kwargs["env"]
     assert isinstance(env, dict)
@@ -170,7 +177,6 @@ def _write_terminal_receipt(
                 "exit_code": 0,
                 "verification_scope": scope,
                 "release_baseline_allowed": release_allowed,
-                "terminal_authorization": terminal_authorization,
             }
         )
     )
@@ -204,6 +210,50 @@ def test_main_accepts_documented_direct_pr_form(monkeypatch: pytest.MonkeyPatch)
 
     assert merge_boundary.main(["3948", "--dry-run"]) == 0
     assert captured == [3948]
+
+
+def test_workspace_merge_dispatches_documented_direct_pr_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[int, bool]] = []
+
+    def merge(pr: int, **kwargs: object) -> int:
+        captured.append((pr, bool(kwargs["dry_run"])))
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "cmd_merge", merge)
+
+    assert click_dispatch._dispatch(["workspace", "merge", "3952", "--dry-run"]) == 0
+    assert captured == [(3952, True)]
+
+
+def test_workspace_merge_preserves_train_status_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    def train_status(as_json: bool) -> int:
+        calls.append(as_json)
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "cmd_train_status", train_status)
+
+    assert click_dispatch._dispatch(["workspace", "merge", "train-status", "--json"]) == 0
+    assert calls == [True]
+
+
+def test_workspace_merge_preserves_record_full_verify_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, str]] = []
+
+    def record(command: str, target_sha: str, **_kwargs: object) -> int:
+        captured.append((command, target_sha))
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "_reconciled_terminal_verify_snapshot", lambda: {})
+    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", lambda: "master-sha")
+    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", record)
+
+    assert (
+        click_dispatch._dispatch(["workspace", "merge", "record-full-verify", "--command", "devtools verify --all"])
+        == 0
+    )
+    assert captured == [("devtools verify --all", "master-sha")]
 
 
 # ---------------------------------------------------------------------------
@@ -903,6 +953,48 @@ def test_train_status_blocks_when_pr_merged_after_last_full_verify(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
+def test_train_status_requires_release_baseline_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+    output = capsys.readouterr().out
+    assert "devtools verify --all" in output
+    assert "narrower agreed selection" not in output
+    assert "does not grant the release-baseline authority" in output
+
+
+def test_train_status_reads_historical_scope_without_granting_release_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rejecting unknown historical scopes would make old ledgers unreadable."""
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._write_ledger(
+        {
+            "merges": [],
+            "last_full_verify": {
+                "at": 1000.0,
+                "verification_started_at": 1000.0,
+                "duration_s": 1.0,
+                "command": "devtools verify --affected",
+                "exit_code": 0,
+                "verification_scope": "narrow-terminal",
+                "release_baseline_allowed": True,
+                "merge_sequence": 0,
+                "accepted": True,
+            },
+        }
+    )
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+
+    assert merge_boundary._read_ledger()["last_full_verify"]["verification_scope"] == "narrow-terminal"
+    assert merge_boundary._pending_prs_since_last_full_verify(merge_boundary._read_ledger())
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
 def test_train_status_rejects_untyped_accepted_terminal_ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     merge_boundary._write_ledger(
@@ -1009,47 +1101,6 @@ def test_record_full_verify_rejects_success_without_structured_release_permissio
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
-
-
-def test_record_full_verify_rejects_skip_slow_without_typed_authorization(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    merge_boundary._append_merge_entry(1, "sha1", "some title")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda _cmd, **_kwargs: MagicMock(
-            returncode=0,
-            stdout=json.dumps({"verification_scope": "narrow-terminal", "release_baseline_allowed": False}),
-            stderr="",
-        ),
-    )
-
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 1
-    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
-    assert merge_boundary.cmd_train_status(as_json=False) == 1
-
-
-def test_record_full_verify_accepts_explicit_typed_narrow_terminal_authorization(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    merge_boundary._append_merge_entry(1, "sha1", "some title")
-
-    def run(_cmd: list[str], **kwargs: Any) -> MagicMock:
-        _write_terminal_receipt(
-            kwargs,
-            scope="narrow-terminal",
-            terminal_authorization="narrow-terminal",
-        )
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all --skip-slow", target_sha="merged-master") == 0
-    assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is True
-    assert merge_boundary.cmd_train_status(as_json=False) == 0
 
 
 def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(

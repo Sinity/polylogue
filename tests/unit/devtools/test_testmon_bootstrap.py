@@ -1,830 +1,477 @@
-"""Tests for the worktree testmon-seed bootstrap (devtools/testmon_bootstrap.py).
-
-Covers polylogue-mq4vx: a fresh agent worktree lane starts with no local
-`.cache/testmon/testmondata`, either paying the full `--seed-testmon` cost
-again or hitting the unseeded-refusal preflight in `devtools/verify.py`. The
-main checkout's testmondata is copyable (file_fp entries are relative paths
-with per-file checksums, so a stale copy self-invalidates changed files), so
-`maybe_bootstrap_testmon_seed` copies it in before that preflight runs.
-
-These tests target `decide_testmon_bootstrap` (the pure decision) and
-`bootstrap_testmon_seed_files` (the copy action) directly with tmp dirs --
-not the full `devtools verify` pipeline, per the bootstrap's own module
-docstring contract.
-"""
-
 from __future__ import annotations
 
-import hashlib
-import json
-import sqlite3
-from collections.abc import Callable
+import os
 from pathlib import Path
-from typing import cast
 
 import pytest
 
-import devtools.checkout_guard as checkout_guard
-import devtools.testmon_bootstrap as testmon_bootstrap
-import devtools.verify as verify
 from devtools.testmon_bootstrap import (
-    BootstrapDecision,
-    bootstrap_testmon_seed_files,
-    decide_testmon_bootstrap,
+    NativeTestmonDeadlineError,
+    NativeTestmonRepairError,
+    _testmon_schema_version,
+    classify_native_testmon_changes,
+    classify_source_ast,
+    executable_python_paths,
+    inspect_native_testmon_environment,
+    prepare_native_testmon_environment,
+    remove_invalid_native_testmon_state,
+    validate_native_testmon_state_ownership,
 )
-from devtools.testmon_state import (
-    BaselineStatus,
-    BindingMode,
-    CollectionStatus,
-    GraphInspection,
-    GraphStatus,
-    file_fingerprint,
-)
-from devtools.testmon_state import (
-    TestmonBinding as _TestmonBinding,
-)
-from devtools.testmon_state import (
-    TestmonIdentity as _TestmonIdentity,
-)
-from devtools.testmon_state import (
-    TestmonSeedStamp as _TestmonSeedStamp,
+from devtools.testmon_bootstrap import (
+    testmon_environment_digest as _testmon_environment_digest,
 )
 
-PROTOCOL_VERSION = 4
 
-
-def _write_valid_seed_stamp(path: Path, *, protocol_version: int = PROTOCOL_VERSION) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = path.parent / "testmondata"
-    if not data.exists():
-        _write_sqlite_db(data)
-    with sqlite3.connect(data) as conn:
-        nodeids = tuple(row[0] for row in conn.execute("select test_name from test_execution"))
-    graph = GraphInspection(GraphStatus.COMPLETE, len(nodeids), len(nodeids), (), 0, 0, None, ())
-    stamp = _TestmonSeedStamp(
-        protocol_version,
-        CollectionStatus.COMPLETE,
-        nodeids,
-        0,
-        BaselineStatus.GREEN,
-        True,
-        0,
-        graph,
-        _TestmonIdentity("head", "tree", "python", True, False, None, "narrow-terminal"),
-        _TestmonBinding(BindingMode.EXACT, str(path.parent.resolve())),
-        file_fingerprint(data),
-        "seed",
-        ".cache/verify/runs/seed",
+def test_ast_classification_distinguishes_declarations_from_execution(tmp_path: Path) -> None:
+    declarations = tmp_path / "types.py"
+    declarations.write_text(
+        '"""Types only."""\nname: str\n\nclass Record:\n    identifier: int\n\n    def label(self) -> str: ...\n',
+        encoding="utf-8",
     )
-    artifact_dir = path.parent / ".cache" / "verify" / "runs" / "seed"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "seed",
-                "checkout_root": str(path.parent.resolve()),
-                "artifact_dir": ".cache/verify/runs/seed",
-            }
-        )
+    executable = tmp_path / "runtime.py"
+    executable.write_text("VALUE: int = 3\n", encoding="utf-8")
+
+    assert classify_source_ast(declarations) == "declaration-only"
+    assert classify_source_ast(executable) == "executable"
+
+
+def test_ast_classification_treats_type_checking_guards_as_declarations(tmp_path: Path) -> None:
+    declarations = tmp_path / "protocols.py"
+    declarations.write_text(
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from polylogue.archive.models import Session\n\n"
+        "class SessionReader:\n"
+        "    session: 'Session'\n"
+        "    def read(self) -> 'Session': ...\n",
+        encoding="utf-8",
     )
-    path.write_text(json.dumps(stamp.as_dict()))
+
+    assert classify_source_ast(declarations) == "declaration-only"
+
+    declarations.write_text(declarations.read_text(encoding="utf-8") + "\nVALUE = build_runtime_value()\n")
+
+    assert classify_source_ast(declarations) == "executable"
 
 
-def _write_sqlite_db(path: Path, *, rows: tuple[str, ...] = ("a", "b")) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+def test_ast_classification_treats_ordinary_imports_as_executable(tmp_path: Path) -> None:
+    """Removing ordinary-import execution from the classifier makes this fail."""
+    module = tmp_path / "runtime.py"
+    module.write_text("from package.runtime import value\n", encoding="utf-8")
+
+    assert classify_source_ast(module) == "executable"
+
+
+def test_pure_enum_contracts_are_non_traceable_runtime_inputs(tmp_path: Path) -> None:
+    module = tmp_path / "devtools" / "verification_contracts.py"
+    module.parent.mkdir()
+    module.write_text(
+        "from enum import StrEnum\n\n"
+        "class VerificationScope(StrEnum):\n"
+        "    AFFECTED = 'affected'\n"
+        "    RELEASE_BASELINE = 'release-baseline'\n",
+        encoding="utf-8",
+    )
+
+    assert classify_source_ast(module) == "declaration-only"
+    impact = classify_native_testmon_changes(tmp_path, ("devtools/verification_contracts.py",))
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == ("devtools/verification_contracts.py",)
+
+
+def test_executable_paths_require_current_runtime_modules_and_deleted_modules(tmp_path: Path) -> None:
+    module = tmp_path / "polylogue" / "runtime.py"
+    module.parent.mkdir()
+    module.write_text("VALUE = factory()\n", encoding="utf-8")
+    malformed = module.with_name("malformed.py")
+    malformed.write_text("def broken(:\n", encoding="utf-8")
+
+    assert executable_python_paths(
+        tmp_path,
+        ("polylogue/runtime.py", "polylogue/malformed.py", "polylogue/deleted.py"),
+    ) == (
+        "polylogue/deleted.py",
+        "polylogue/malformed.py",
+        "polylogue/runtime.py",
+    )
+
+
+def test_package_runtime_data_changes_force_full_native_selection(tmp_path: Path) -> None:
+    runtime = tmp_path / "polylogue" / "archive" / "semantic" / "data" / "prices.json"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("{}\n", encoding="utf-8")
+    declaration = runtime.with_name("types.pyi")
+    declaration.write_text("VALUE: int\n", encoding="utf-8")
+
+    impact = classify_native_testmon_changes(
+        tmp_path,
+        (
+            "polylogue/archive/semantic/data/prices.json",
+            "polylogue/archive/semantic/data/deleted.json",
+            "polylogue/archive/semantic/data/types.pyi",
+            "docs/prices.json",
+        ),
+    )
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == (
+        "polylogue/archive/semantic/data/deleted.json",
+        "polylogue/archive/semantic/data/prices.json",
+        "polylogue/archive/semantic/data/types.pyi",
+    )
+
+
+def test_test_runtime_data_changes_force_full_native_selection(tmp_path: Path) -> None:
+    runtime = tmp_path / "tests" / "data" / "payload.json"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("{}\n", encoding="utf-8")
+
+    impact = classify_native_testmon_changes(
+        tmp_path,
+        (
+            "tests/data/payload.json",
+            "tests/data/deleted.json",
+            "docs/payload.json",
+        ),
+    )
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == (
+        "tests/data/deleted.json",
+        "tests/data/payload.json",
+    )
+
+
+def test_benchmarks_are_not_required_graph_paths_and_packaging_is_untraceable(tmp_path: Path) -> None:
+    """Restoring benchmark graph edges or dropping packaging inputs makes this fail."""
+    benchmark = tmp_path / "tests" / "benchmarks" / "test_scale.py"
+    benchmark.parent.mkdir(parents=True)
+    benchmark.write_text("def test_scale(): pass\n", encoding="utf-8")
+    packaging_python = tmp_path / "packaging" / "hatch_build.py"
+    packaging_python.parent.mkdir()
+    packaging_python.write_text("def build_hook(): pass\n", encoding="utf-8")
+
+    impact = classify_native_testmon_changes(
+        tmp_path,
+        (
+            "tests/benchmarks/test_scale.py",
+            "tests/benchmarks/deleted.py",
+            "packaging/polylogue.nix",
+            "packaging/hatch_build.py",
+            "docs/release.md",
+        ),
+    )
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == ("packaging/hatch_build.py", "packaging/polylogue.nix")
+
+
+def test_testmon_schema_matches_the_tested_dependency_contract(tmp_path: Path) -> None:
+    """Changing the pinned testmon schema or required columns makes this fail."""
+    import testmon.db
+
+    database = tmp_path / "testmondata"
+    db = testmon.db.DB(str(database))
     try:
-        conn.execute("CREATE TABLE environment (id INTEGER PRIMARY KEY, environment_name TEXT)")
-        conn.execute("CREATE TABLE file_fp (id INTEGER PRIMARY KEY, filename TEXT, fsha TEXT)")
-        conn.execute(
-            "CREATE TABLE test_execution (id INTEGER PRIMARY KEY, environment_id INTEGER, test_name TEXT, failed INTEGER)"
-        )
-        conn.execute("CREATE TABLE test_execution_file_fp (test_execution_id INTEGER, fingerprint_id INTEGER)")
-        conn.executemany("INSERT INTO file_fp(filename, fsha) VALUES (?, ?)", [(row, f"sha-{row}") for row in rows])
-        conn.executemany("INSERT INTO test_execution(test_name, failed) VALUES (?, 0)", [(row,) for row in rows])
-        conn.executemany(
-            "INSERT INTO test_execution_file_fp VALUES (?, ?)",
-            [(index, index) for index, _row in enumerate(rows, start=1)],
-        )
-        conn.commit()
+        assert _testmon_schema_version() == 14
+        assert tuple(db.con.execute("PRAGMA user_version").fetchone()) == (14,)
+        for table, expected in {
+            "environment": {"id", "environment_name", "system_packages", "python_version"},
+            "file_fp": {"id", "filename", "method_checksums", "mtime", "fsha"},
+            "test_execution": {"id", "environment_id", "test_name", "duration", "failed", "forced"},
+            "test_execution_file_fp": {"test_execution_id", "fingerprint_id"},
+        }.items():
+            columns = {row[1] for row in db.con.execute(f"PRAGMA table_info({table})")}
+            assert expected <= columns
     finally:
-        conn.close()
+        db.con.close()
 
 
-def _red_attempt_decision(tmp_path: Path) -> tuple[BootstrapDecision, Path, Path, Path, Path]:
-    main_root = tmp_path / "main"
-    main_data = main_root / "testmondata"
-    _write_sqlite_db(main_data, rows=("tests/test.py::test_passed", "tests/test.py::test_failed"))
-    attempt = main_root / "seed-attempt.json"
-    attempt.write_text(
-        json.dumps(
-            {
-                "protocol_version": PROTOCOL_VERSION,
-                "status": "reusable",
-                "identity": {
-                    "git_head": "head",
-                    "worktree_fingerprint": "tree",
-                    "python": "python",
-                    "skip_slow": True,
-                    "lab": False,
-                },
-                "selection": {"selected_count": 2, "selected_nodeids_omitted": 0},
-                "expected_nodeids": ["tests/test.py::test_passed", "tests/test.py::test_failed"],
-                "expected_count": 2,
-                "expected_digest": hashlib.sha256(
-                    "\n".join(sorted(["tests/test.py::test_passed", "tests/test.py::test_failed"])).encode()
-                ).hexdigest(),
-                "testmon_data": file_fingerprint(main_data),
-                "node_outcomes": [
-                    {"nodeid": "tests/test.py::test_passed", "outcome": "passed"},
-                    {"nodeid": "tests/test.py::test_failed", "outcome": "failed"},
-                ],
-                "exit_code": 1,
-                "run_id": "red-run",
-                "artifact_dir": ".cache/verify/runs/red-run",
-            }
-        )
-    )
-    artifact = main_root / ".cache" / "verify" / "runs" / "red-run"
-    artifact.mkdir(parents=True, exist_ok=True)
-    (artifact / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "red-run",
-                "checkout_root": str(main_root.resolve()),
-                "artifact_dir": ".cache/verify/runs/red-run",
-            }
-        )
-    )
-    lane = tmp_path / "lane"
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=lane / "testmondata",
-        local_seed_stamp=lane / "seed.json",
-        local_seed_attempt=lane / "seed-attempt.json",
-        main_testmon_data=main_data,
-        main_seed_stamp=main_root / "seed.json",
-        main_seed_attempt=attempt,
-        protocol_version=PROTOCOL_VERSION,
-        main_checkout_root=main_root,
-        local_checkout_root=lane,
-    )
-    return decision, lane / "testmondata", lane / "seed.json", lane / "seed-attempt.json", lane
-
-
-def test_not_a_linked_worktree_never_bootstraps(tmp_path: Path) -> None:
-    """The main checkout itself must never "bootstrap from itself"."""
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=False,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=tmp_path / "main" / "testmondata",
-        main_seed_stamp=tmp_path / "main" / "seed.json",
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert decision == BootstrapDecision(False, decision.reason)
-    assert not decision.should_bootstrap
-
-
-def test_local_seed_already_present_skips_bootstrap(tmp_path: Path) -> None:
-    """A worktree that already seeded itself must not be clobbered by main's copy."""
-    local_data = tmp_path / "local" / "testmondata"
-    local_stamp = tmp_path / "local" / "seed.json"
-    _write_sqlite_db(local_data)
-    _write_valid_seed_stamp(local_stamp)
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        main_testmon_data=main_data,
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert not decision.should_bootstrap
-    assert "already has" in decision.reason
-
-
-def test_invalid_local_seed_does_not_block_valid_main_bootstrap(tmp_path: Path) -> None:
-    local_data = tmp_path / "local" / "testmondata"
-    local_stamp = tmp_path / "local" / "seed.json"
-    _write_sqlite_db(local_data)
-    _write_valid_seed_stamp(local_stamp)
-    local_data.write_bytes(local_data.read_bytes() + b"stale")
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        main_testmon_data=main_data,
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-
-    assert decision.should_bootstrap
-
-
-def test_main_seed_absent_skips_bootstrap(tmp_path: Path) -> None:
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=tmp_path / "main" / "testmondata",
-        main_seed_stamp=tmp_path / "main" / "seed.json",
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert not decision.should_bootstrap
-    assert "testmondata file is missing" in decision.reason
-
-
-def test_main_seed_stamp_wrong_protocol_version_skips_bootstrap(tmp_path: Path) -> None:
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_valid_seed_stamp(main_stamp, protocol_version=PROTOCOL_VERSION + 1)
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=tmp_path / "main" / "testmondata",
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert not decision.should_bootstrap
-    assert "stale" in decision.reason or "no validated" in decision.reason
-
-
-def test_main_seed_stamp_incomplete_status_skips_bootstrap(tmp_path: Path) -> None:
-    main_stamp = tmp_path / "main" / "seed.json"
-    main_stamp.parent.mkdir(parents=True, exist_ok=True)
-    main_stamp.write_text(json.dumps({"protocol_version": PROTOCOL_VERSION, "status": "incomplete"}))
-    _write_sqlite_db(tmp_path / "main" / "testmondata")
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=tmp_path / "main" / "testmondata",
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert not decision.should_bootstrap
-
-
-def test_main_seed_stamp_unreadable_json_skips_bootstrap(tmp_path: Path) -> None:
-    main_stamp = tmp_path / "main" / "seed.json"
-    main_stamp.parent.mkdir(parents=True, exist_ok=True)
-    main_stamp.write_text("{not valid json")
-    _write_sqlite_db(tmp_path / "main" / "testmondata")
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=tmp_path / "main" / "testmondata",
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert not decision.should_bootstrap
-
-
-def test_valid_seed_stamp_but_missing_testmondata_skips_bootstrap(tmp_path: Path) -> None:
-    """A seed stamp claims completeness but the db file itself vanished -- don't copy nothing."""
-    main_stamp = tmp_path / "main" / "seed.json"
-    main_stamp.parent.mkdir(parents=True, exist_ok=True)
-    main_stamp.write_text(json.dumps({"protocol_version": PROTOCOL_VERSION, "status": "usable"}))
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=tmp_path / "main" / "testmondata",
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert not decision.should_bootstrap
-    assert "testmondata file is missing" in decision.reason
-
-
-def test_valid_main_seed_and_empty_local_bootstraps(tmp_path: Path) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=tmp_path / "local" / "seed.json",
-        main_testmon_data=main_data,
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert decision.should_bootstrap
-    assert decision.main_testmon_data == main_data
-    assert decision.main_seed_stamp == main_stamp
-
-
-def test_complete_red_attempt_bootstraps_as_selection_only_state(tmp_path: Path) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    _write_sqlite_db(main_data, rows=("tests/test.py::test_passed", "tests/test.py::test_failed"))
-    attempt = tmp_path / "main" / "seed-attempt.json"
-    attempt.write_text(
-        json.dumps(
-            {
-                "protocol_version": PROTOCOL_VERSION,
-                "status": "reusable",
-                "identity": {
-                    "git_head": "head",
-                    "worktree_fingerprint": "tree",
-                    "python": "python",
-                    "skip_slow": True,
-                    "lab": False,
-                },
-                "selection": {"selected_count": 2, "selected_nodeids_omitted": 0},
-                "expected_nodeids": ["tests/test.py::test_passed", "tests/test.py::test_failed"],
-                "expected_count": 2,
-                "expected_digest": hashlib.sha256(
-                    "\n".join(sorted(["tests/test.py::test_passed", "tests/test.py::test_failed"])).encode()
-                ).hexdigest(),
-                "testmon_data": file_fingerprint(main_data),
-                "node_outcomes": [
-                    {"nodeid": "tests/test.py::test_passed", "outcome": "passed"},
-                    {"nodeid": "tests/test.py::test_failed", "outcome": "failed"},
-                ],
-                "exit_code": 1,
-                "run_id": "red-run",
-                "artifact_dir": ".cache/verify/runs/red-run",
-            }
-        )
-    )
-    red_artifact = tmp_path / "main" / ".cache" / "verify" / "runs" / "red-run"
-    red_artifact.mkdir(parents=True, exist_ok=True)
-    (red_artifact / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "red-run",
-                "checkout_root": str((tmp_path / "main").resolve()),
-                "artifact_dir": ".cache/verify/runs/red-run",
-            }
-        )
-    )
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "lane" / "testmondata",
-        local_seed_stamp=tmp_path / "lane" / "seed.json",
-        main_testmon_data=main_data,
-        main_seed_stamp=tmp_path / "main" / "seed.json",
-        main_seed_attempt=attempt,
-        protocol_version=PROTOCOL_VERSION,
-    )
-
-    assert decision.should_bootstrap
-    assert decision.main_seed_attempt == attempt
-    local_data = tmp_path / "lane" / "testmondata"
-    local_stamp = tmp_path / "lane" / "seed.json"
-    local_attempt = tmp_path / "lane" / "seed-attempt.json"
-    assert bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        local_seed_attempt=local_attempt,
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
-    )
-    assert not local_stamp.exists()
-    rebound_attempt = json.loads(local_attempt.read_text())
-    assert rebound_attempt["artifact_dir"] == ".cache/verify/runs/red-run"
-    assert rebound_attempt["testmon_data"] == file_fingerprint(local_data)
-    rebound_receipt = json.loads(
-        (tmp_path / "lane" / ".cache" / "verify" / "runs" / "red-run" / "run.json").read_text()
-    )
-    assert rebound_receipt["run_id"] == "red-run"
-    assert rebound_receipt["checkout_root"] == str((tmp_path / "lane").resolve())
-    current_run = json.loads((tmp_path / "lane" / ".cache" / "verify" / "current-run.json").read_text())
-    assert current_run["run_id"] == "red-run"
-    assert current_run["checkout_root"] == str((tmp_path / "lane").resolve())
-
-    rebound_decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        local_seed_attempt=local_attempt,
-        main_testmon_data=main_data,
-        main_seed_stamp=tmp_path / "main" / "seed.json",
-        main_seed_attempt=attempt,
-        protocol_version=PROTOCOL_VERSION,
-        main_checkout_root=tmp_path / "main",
-        local_checkout_root=tmp_path / "lane",
-    )
-    assert not rebound_decision.should_bootstrap
-    assert "checkout-bound selection attempt" in rebound_decision.reason
-
-
-def test_complete_typed_markerless_green_attempt_bootstraps_only_as_selection_state(tmp_path: Path) -> None:
-    main_root = tmp_path / "main"
-    main_data = main_root / "testmondata"
-    _write_sqlite_db(main_data, rows=("tests/test.py::test_passed",))
-    attempt = main_root / "seed-attempt.json"
-    attempt.write_text(
-        json.dumps(
-            {
-                "protocol_version": PROTOCOL_VERSION,
-                "status": "complete",
-                "identity": {
-                    "git_head": "head",
-                    "worktree_fingerprint": "tree",
-                    "python": "python",
-                    "skip_slow": False,
-                    "lab": False,
-                    "terminal_authorization": None,
-                },
-                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
-                "expected_nodeids": ["tests/test.py::test_passed"],
-                "expected_count": 1,
-                "expected_digest": hashlib.sha256(b"tests/test.py::test_passed").hexdigest(),
-                "node_outcomes": [{"nodeid": "tests/test.py::test_passed", "outcome": "passed"}],
-                "exit_code": 0,
-                "verification_scope": "release-baseline",
-                "release_baseline_allowed": True,
-                "run_id": "green-run",
-                "artifact_dir": ".cache/verify/runs/green-run",
-                "testmon_data": file_fingerprint(main_data),
-            }
-        )
-    )
-    artifact = main_root / ".cache" / "verify" / "runs" / "green-run"
-    artifact.mkdir(parents=True)
-    (artifact / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "green-run",
-                "checkout_root": str(main_root.resolve()),
-                "artifact_dir": ".cache/verify/runs/green-run",
-            }
-        )
-    )
-
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "lane" / "testmondata",
-        local_seed_stamp=tmp_path / "lane" / "seed.json",
-        main_testmon_data=main_data,
-        main_seed_stamp=main_root / "seed.json",
-        main_seed_attempt=attempt,
-        protocol_version=PROTOCOL_VERSION,
-    )
-
-    assert decision.should_bootstrap
-    assert decision.selection_only
-    assert bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=tmp_path / "lane" / "testmondata",
-        local_seed_stamp=tmp_path / "lane" / "seed.json",
-        local_seed_attempt=tmp_path / "lane" / "seed-attempt.json",
-        checkout_root=tmp_path / "lane",
-        inherited_from=main_root,
-    )
-    assert not (tmp_path / "lane" / "seed.json").exists()
-
-
-def test_markerless_complete_bootstrap_passes_guard_and_verify_preflight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_environment_digest_changes_with_collection_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    main_root = tmp_path / "main"
-    main_data = main_root / "testmondata"
-    nodeid = "tests/test.py::test_passed"
-    _write_sqlite_db(main_data, rows=(nodeid,))
-    attempt = main_root / "seed-attempt.json"
-    attempt.write_text(
-        json.dumps(
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-q'\n", encoding="utf-8")
+    initial = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-ra'\n", encoding="utf-8")
+    config_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    monkeypatch.setattr("devtools.testmon_bootstrap._installed_distributions", lambda: (("pytest", "changed"),))
+    distributions_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    monkeypatch.setenv("POLYLOGUE_CI", "testmon-digest-contract")
+    managed_environment_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    profile_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=exclude")
+
+    assert (
+        len(
             {
-                "protocol_version": PROTOCOL_VERSION,
-                "status": "complete",
-                "identity": {
-                    "git_head": "head",
-                    "worktree_fingerprint": "tree",
-                    "python": "python",
-                    "skip_slow": False,
-                    "lab": False,
-                    "terminal_authorization": None,
-                },
-                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
-                "expected_nodeids": [nodeid],
-                "expected_count": 1,
-                "expected_digest": hashlib.sha256(nodeid.encode()).hexdigest(),
-                "node_outcomes": [{"nodeid": nodeid, "outcome": "passed"}],
-                "exit_code": 0,
-                "verification_scope": "release-baseline",
-                "release_baseline_allowed": True,
-                "run_id": "green-run",
-                "artifact_dir": ".cache/verify/runs/green-run",
-                "testmon_data": file_fingerprint(main_data),
+                initial,
+                config_changed,
+                distributions_changed,
+                managed_environment_changed,
+                profile_changed,
             }
         )
-    )
-    artifact = main_root / ".cache" / "verify" / "runs" / "green-run"
-    artifact.mkdir(parents=True)
-    (artifact / "run.json").write_text(
-        json.dumps(
-            {
-                "run_id": "green-run",
-                "checkout_root": str(main_root.resolve()),
-                "artifact_dir": ".cache/verify/runs/green-run",
-            }
-        )
+        == 5
     )
 
-    lane = tmp_path / "lane"
-    lane.mkdir()
-    (lane / ".git").write_text("gitdir: /main/.git/worktrees/lane\n")
-    (lane / ".venv" / "bin").mkdir(parents=True)
-    package = lane / "polylogue"
-    package.mkdir()
-    (package / "__init__.py").write_text("")
-    local_data = lane / ".cache" / "testmon" / "testmondata"
-    local_stamp = lane / ".cache" / "testmon" / "seed.json"
-    local_attempt = lane / ".cache" / "testmon" / "seed-attempt.json"
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        main_testmon_data=main_data,
-        main_seed_stamp=main_root / "seed.json",
-        main_seed_attempt=attempt,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert decision.selection_only
-    assert bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        local_seed_attempt=local_attempt,
-        checkout_root=lane,
-        inherited_from=main_root,
+
+def test_environment_digest_changes_when_root_conftest_is_added(tmp_path: Path) -> None:
+    initial = _testmon_environment_digest(tmp_path)
+
+    (tmp_path / "conftest.py").write_text(
+        "def pytest_collection_modifyitems(items):\n    items.reverse()\n",
+        encoding="utf-8",
     )
 
-    monkeypatch.setattr(checkout_guard, "_is_linked_worktree", lambda _root: True)
-    fingerprint = checkout_guard.checkout_environment_fingerprint(
-        lane,
-        polylogue_import_path=package / "__init__.py",
-        python_executable=lane / ".venv" / "bin" / "python",
-    )
-    assert not fingerprint.clean
-    monkeypatch.setattr(verify, "ROOT", lane)
-    monkeypatch.setattr(verify, "TESTMON_DATA", local_data)
-    monkeypatch.setattr(verify, "TESTMON_SEED_STAMP", local_stamp)
-    monkeypatch.setattr(verify, "TESTMON_SEED_ATTEMPT", local_attempt)
-    assert verify._testmon_preflight(seed_testmon=False, full_pytest=False, quick=False, commit=False) is not None
-    assert json.loads(local_attempt.read_text())["release_baseline_allowed"] is False
+    assert _testmon_environment_digest(tmp_path) != initial
 
 
-def test_local_seed_missing_only_stamp_still_bootstraps(tmp_path: Path) -> None:
-    """Partial local state (e.g. a stale stamp with no db, or vice versa) still needs a fresh copy."""
-    local_stamp = tmp_path / "local" / "seed.json"
-    local_stamp.parent.mkdir(parents=True, exist_ok=True)
-    local_stamp.write_text(json.dumps({"protocol_version": PROTOCOL_VERSION, "status": "usable"}))
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
+def test_environment_digest_ignores_benchmark_conftest_and_its_plugin_declaration(tmp_path: Path) -> None:
+    benchmark_conftest = tmp_path / "tests" / "benchmarks" / "conftest.py"
+    benchmark_conftest.parent.mkdir(parents=True)
+    benchmark_conftest.write_text("pytest_plugins = dynamic_plugin_names\n", encoding="utf-8")
 
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=True,
-        local_testmon_data=tmp_path / "local" / "testmondata",
-        local_seed_stamp=local_stamp,
-        main_testmon_data=main_data,
-        main_seed_stamp=main_stamp,
-        protocol_version=PROTOCOL_VERSION,
-    )
-    assert decision.should_bootstrap
+    initial = _testmon_environment_digest(tmp_path)
+    benchmark_conftest.write_text("pytest_plugins = other_dynamic_plugin_names\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
-def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
-    main_data = tmp_path / "main?fragment#1" / "testmondata"
-    main_stamp = tmp_path / "main?fragment#1" / "seed.json"
-    _write_sqlite_db(main_data, rows=("x", "y", "z"))
-    _write_valid_seed_stamp(main_stamp)
-    local_data = tmp_path / "local" / "testmondata"
-    local_stamp = tmp_path / "local" / "seed.json"
+def test_inactive_runtime_helper_does_not_force_fresh_environment(tmp_path: Path) -> None:
+    helper = tmp_path / "tests" / "infra" / "runtime_helper.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("def answer() -> int:\n    return 41\n", encoding="utf-8")
+    initial = _testmon_environment_digest(tmp_path)
 
-    decision = BootstrapDecision(
-        True,
-        "test",
-        main_testmon_data=main_data,
-        main_seed_stamp=main_stamp,
-    )
-    assert bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        checkout_root=tmp_path / "local",
-        inherited_from=tmp_path / "main?fragment#1",
+    helper.write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) == initial
+
+
+def test_declared_local_fixture_plugin_changes_environment(tmp_path: Path) -> None:
+    conftest = tmp_path / "tests" / "conftest.py"
+    plugin = tmp_path / "tests" / "infra" / "fixture_plugin.py"
+    plugin.parent.mkdir(parents=True)
+    conftest.write_text('pytest_plugins = ("tests.infra.fixture_plugin",)\n', encoding="utf-8")
+    plugin.write_text("import pytest\n\n@pytest.fixture\ndef value():\n    return 1\n", encoding="utf-8")
+    initial = _testmon_environment_digest(tmp_path)
+
+    plugin.write_text("import pytest\n\n@pytest.fixture\ndef value():\n    return 2\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) != initial
+
+
+def test_dynamic_pytest_plugin_declaration_fails_closed(tmp_path: Path) -> None:
+    conftest = tmp_path / "tests" / "conftest.py"
+    conftest.parent.mkdir(parents=True)
+    conftest.write_text(
+        "from plugin_config import plugin_names\n\npytest_plugins = plugin_names\n",
+        encoding="utf-8",
     )
 
-    local_payload = json.loads(local_stamp.read_text())
-    source_payload = json.loads(main_stamp.read_text())
-    comparable_keys = set(source_payload) - {"binding", "testmon_data"}
-    assert {key: local_payload[key] for key in comparable_keys} == {key: source_payload[key] for key in comparable_keys}
-    assert local_payload["binding"]["checkout_root"] == str(tmp_path / "local")
-    assert local_payload["binding"]["source_checkout_root"] == str(tmp_path / "main?fragment#1")
-    conn = sqlite3.connect(local_data)
-    try:
-        rows = conn.execute("SELECT filename, fsha FROM file_fp ORDER BY filename").fetchall()
-    finally:
-        conn.close()
-    assert rows == [("x", "sha-x"), ("y", "sha-y"), ("z", "sha-z")]
-    # No temp files left behind.
-    assert sorted(p.name for p in local_data.parent.iterdir()) == [".cache", "seed.json", "testmondata"]
+    with pytest.raises(NativeTestmonRepairError, match="must be a literal string/list/tuple"):
+        _testmon_environment_digest(tmp_path)
 
-
-def test_bootstrap_seed_files_marks_destination_and_source_checkout(tmp_path: Path) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-    local_data = tmp_path / "lane" / "testmondata"
-    local_stamp = tmp_path / "lane" / "seed.json"
-
-    bootstrap_testmon_seed_files(
-        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
+    conftest.write_text(
+        'pytest_plugins = []\npytest_plugins.append("tests.infra.fixture_plugin")\n',
+        encoding="utf-8",
     )
+    with pytest.raises(NativeTestmonRepairError, match="must be one literal assignment"):
+        _testmon_environment_digest(tmp_path)
 
-    payload = json.loads(local_stamp.read_text())
-    assert payload["binding"]["checkout_root"] == str((tmp_path / "lane").resolve())
-    assert payload["binding"]["source_checkout_root"] == str((tmp_path / "main").resolve())
-    source = json.loads(main_stamp.read_text())
-    assert {key: payload[key] for key in source if key not in {"binding", "testmon_data"}} == {
-        key: source[key] for key in source if key not in {"binding", "testmon_data"}
-    }
-
-
-def test_bootstrap_seed_files_rejects_paths_outside_or_colliding_with_destination(tmp_path: Path) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-    decision = BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp)
-    local_data = tmp_path / "lane" / "testmondata"
-
-    assert not bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=tmp_path / "outside" / "seed.json",
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
+    conftest.write_text(
+        'globals()["pytest_plugins"] = ("tests.infra.fixture_plugin",)\n',
+        encoding="utf-8",
     )
-    assert not (tmp_path / "outside" / "seed.json").exists()
-    assert not local_data.exists()
-
-    assert not bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_data,
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
-    )
-    assert not local_data.exists()
+    with pytest.raises(NativeTestmonRepairError, match="must be one literal assignment"):
+        _testmon_environment_digest(tmp_path)
 
 
-def test_bootstrap_seed_files_keeps_copied_state_when_stamp_turns_invalid(tmp_path: Path) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    main_stamp.parent.mkdir(parents=True, exist_ok=True)
-    main_stamp.write_text("{concurrent rewrite")
-    local_data = tmp_path / "lane" / "testmondata"
-    local_stamp = tmp_path / "lane" / "seed.json"
-
-    stamped = bootstrap_testmon_seed_files(
-        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
-    )
-
-    assert stamped is False
-    assert not local_data.exists()
-    assert not local_stamp.exists()
-
-
-def test_bootstrap_graph_mismatch_publishes_no_destination_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_environment_digest_ignores_neutralized_pytest_plugins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-    local_data = tmp_path / "lane" / "testmondata"
-    local_stamp = tmp_path / "lane" / "seed.json"
-    monkeypatch.setattr(testmon_bootstrap, "refresh_stamp", lambda *_args, **_kwargs: None)
+    plugin = tmp_path / "local_plugin.py"
+    plugin.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_PLUGINS", "local_plugin")
 
-    assert not bootstrap_testmon_seed_files(
-        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
-    )
-    assert not local_data.exists()
-    assert not local_stamp.exists()
-    assert not (tmp_path / "lane" / ".cache" / "verify" / "current-run.json").exists()
+    initial = _testmon_environment_digest(tmp_path)
+    plugin.write_text("VALUE = 'v2'\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
-def test_bootstrap_receipt_rebind_failure_publishes_no_destination_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("addopts", ["-p local_plugin", "-p=local_plugin"])
+def test_environment_digest_ignores_plugins_from_neutralized_pytest_addopts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    addopts: str,
 ) -> None:
-    main_data = tmp_path / "main" / "testmondata"
-    main_stamp = tmp_path / "main" / "seed.json"
-    _write_sqlite_db(main_data)
-    _write_valid_seed_stamp(main_stamp)
-    local_data = tmp_path / "lane" / "testmondata"
-    local_stamp = tmp_path / "lane" / "seed.json"
-    monkeypatch.setattr(testmon_bootstrap, "_rebind_run_receipt", lambda **_kwargs: False)
+    plugin = tmp_path / "local_plugin.py"
+    plugin.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    monkeypatch.setenv("PYTEST_ADDOPTS", addopts)
 
-    assert not bootstrap_testmon_seed_files(
-        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        checkout_root=tmp_path / "lane",
-        inherited_from=tmp_path / "main",
-    )
-    assert not local_data.exists()
-    assert not local_stamp.exists()
-    assert not (tmp_path / "lane" / ".cache" / "verify" / "current-run.json").exists()
+    initial = _testmon_environment_digest(tmp_path)
+    plugin.write_text("VALUE = 'v2'\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
-def test_bootstrap_rebound_attempt_failure_publishes_no_destination_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_environment_digest_ignores_neutralized_pytest_addopts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    decision, local_data, local_stamp, local_attempt, lane = _red_attempt_decision(tmp_path)
-    original_stamp_from_attempt = cast(Callable[..., object], testmon_bootstrap.__dict__["stamp_from_attempt"])
-    calls = 0
+    initial = _testmon_environment_digest(tmp_path)
 
-    def fail_rebound_attempt(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            return None
-        return original_stamp_from_attempt(*args, **kwargs)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only --ignore-glob=tests/**")
 
-    monkeypatch.setattr(testmon_bootstrap, "stamp_from_attempt", fail_rebound_attempt)
-
-    assert not bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_data,
-        local_seed_stamp=local_stamp,
-        local_seed_attempt=local_attempt,
-        checkout_root=lane,
-        inherited_from=tmp_path / "main",
-    )
-    assert not local_data.exists()
-    assert not local_stamp.exists()
-    assert not local_attempt.exists()
-    assert not (lane / ".cache" / "verify" / "current-run.json").exists()
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
-def test_maybe_bootstrap_does_not_migrate_an_untyped_legacy_local_stamp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_environment_digest_stops_at_invocation_deadline(tmp_path: Path) -> None:
+    with pytest.raises(NativeTestmonDeadlineError, match="invocation deadline"):
+        _testmon_environment_digest(tmp_path, deadline_monotonic=0.0)
+
+
+def test_plugin_declaration_discovery_stops_at_invocation_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    lane = tmp_path / "lane"
-    main = tmp_path / "main"
-    local_data = lane / "cache" / "testmondata"
-    local_stamp = lane / "cache" / "seed.json"
-    _write_sqlite_db(local_data)
-    local_stamp.parent.mkdir(parents=True, exist_ok=True)
-    local_stamp.write_text(json.dumps({"protocol_version": PROTOCOL_VERSION, "status": "complete"}))
-    monkeypatch.setattr(testmon_bootstrap, "_git_worktree_info", lambda _root: (True, main))
+    plugin_declaration = tmp_path / "tests" / "test_plugins.py"
+    plugin_declaration.parent.mkdir()
+    plugin_declaration.write_text('pytest_plugins = ("fixture_plugin",)\n', encoding="utf-8")
+    clock = {"value": 0.0}
+    original_read_text = Path.read_text
 
-    message = testmon_bootstrap.maybe_bootstrap_testmon_seed(
-        lane,
-        testmon_data_relpath="cache/testmondata",
-        seed_stamp_relpath="cache/seed.json",
-        protocol_version=PROTOCOL_VERSION,
+    def expire_after_plugin_discovery(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        source = original_read_text(path, encoding=encoding, errors=errors)
+        if path == plugin_declaration:
+            clock["value"] = 1.0
+        return source
+
+    monkeypatch.setattr("devtools.testmon_bootstrap.time.monotonic", lambda: clock["value"])
+    monkeypatch.setattr(Path, "read_text", expire_after_plugin_discovery)
+
+    with pytest.raises(NativeTestmonDeadlineError, match="invocation deadline"):
+        _testmon_environment_digest(tmp_path, deadline_monotonic=0.5)
+
+
+def test_invalid_cleanup_removes_only_owned_sqlite_and_sidecars(tmp_path: Path) -> None:
+    state_dir = tmp_path / ".cache" / "testmon"
+    state_dir.mkdir(parents=True)
+    owned = [state_dir / "testmondata", state_dir / "testmondata-wal", state_dir / "testmondata-shm"]
+    unrelated = state_dir / "keep.txt"
+    for path in (*owned, unrelated):
+        path.write_text(path.name, encoding="utf-8")
+
+    removed = remove_invalid_native_testmon_state(tmp_path)
+
+    assert set(removed) == set(owned)
+    assert unrelated.read_text(encoding="utf-8") == "keep.txt"
+
+
+def test_invalid_cleanup_refuses_directory_at_database_path(tmp_path: Path) -> None:
+    (tmp_path / ".cache" / "testmon" / "testmondata").mkdir(parents=True)
+
+    with pytest.raises(NativeTestmonRepairError, match="refusing to remove directory"):
+        remove_invalid_native_testmon_state(tmp_path)
+
+
+@pytest.mark.parametrize("symlinked_parent", [".cache", ".cache/testmon"])
+def test_invalid_cleanup_refuses_symlinked_state_parents(
+    tmp_path: Path,
+    symlinked_parent: str,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "testmon" / "testmondata" if symlinked_parent == ".cache" else outside / "testmondata"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("external state", encoding="utf-8")
+    parent = tmp_path / symlinked_parent
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(NativeTestmonRepairError, match="symlinked owned testmon parent"):
+        remove_invalid_native_testmon_state(tmp_path)
+
+    assert sentinel.read_text(encoding="utf-8") == "external state"
+
+
+def test_native_preparation_rejects_symlinked_state_parent_before_inspection(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    (cache / "testmon").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(NativeTestmonRepairError, match="symlinked owned testmon parent"):
+        prepare_native_testmon_environment(tmp_path)
+
+
+def test_native_inspection_rejects_symlinked_database_before_sqlite_open(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.db"
+    outside.write_text("external state", encoding="utf-8")
+    data = tmp_path / "testmondata"
+    data.symlink_to(outside)
+
+    state = inspect_native_testmon_environment(data, environment_name="owned-environment")
+
+    assert state.status == "invalid"
+    assert state.reason == "native testmon database is not a single-link regular file"
+    assert outside.read_text(encoding="utf-8") == "external state"
+
+
+def test_native_inspection_rejects_symlinked_sidecar_before_sqlite_open(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    data.write_text("not opened", encoding="utf-8")
+    outside = tmp_path / "outside-wal"
+    outside.write_text("external sidecar", encoding="utf-8")
+    sidecar = Path(f"{data}-wal")
+    sidecar.symlink_to(outside)
+
+    state = inspect_native_testmon_environment(data, environment_name="owned-environment")
+
+    assert state.status == "invalid"
+    assert state.reason == f"native testmon sidecar is not a single-link regular file: {sidecar}"
+    assert outside.read_text(encoding="utf-8") == "external sidecar"
+
+
+@pytest.mark.parametrize("suffix", ("", "-wal"))
+def test_native_testmon_ownership_rejects_hardlinked_database_and_sidecars(tmp_path: Path, suffix: str) -> None:
+    state_dir = tmp_path / ".cache" / "testmon"
+    state_dir.mkdir(parents=True)
+    outside = tmp_path / f"outside{suffix}"
+    outside.write_text("external state", encoding="utf-8")
+    owned = state_dir / f"testmondata{suffix}"
+    os.link(outside, owned)
+
+    with pytest.raises(NativeTestmonRepairError, match="single-link regular file"):
+        validate_native_testmon_state_ownership(tmp_path)
+
+    assert outside.read_text(encoding="utf-8") == "external state"
+
+
+@pytest.mark.parametrize("suffix", ("", "-wal"))
+def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Path, suffix: str) -> None:
+    data = tmp_path / "testmondata"
+    if suffix:
+        data.write_text("not opened", encoding="utf-8")
+    outside = tmp_path / f"outside{suffix}"
+    outside.write_text("external state", encoding="utf-8")
+    owned = Path(f"{data}{suffix}")
+    os.link(outside, owned)
+
+    state = inspect_native_testmon_environment(data, environment_name="owned-environment")
+
+    assert state.status == "invalid"
+    subject = "database" if not suffix else "sidecar"
+    assert state.reason == f"native testmon {subject} is not a single-link regular file" + (
+        "" if not suffix else f": {owned}"
     )
-
-    assert message is None
-    assert json.loads(local_stamp.read_text())["status"] == "complete"
-
-
-def test_bootstrap_seed_files_noop_when_decision_says_no(tmp_path: Path) -> None:
-    local_data = tmp_path / "local" / "testmondata"
-    local_stamp = tmp_path / "local" / "seed.json"
-    decision = BootstrapDecision(False, "not needed")
-
-    bootstrap_testmon_seed_files(decision, local_testmon_data=local_data, local_seed_stamp=local_stamp)
-
-    assert not local_data.exists()
-    assert not local_stamp.exists()
+    assert outside.read_text(encoding="utf-8") == "external state"

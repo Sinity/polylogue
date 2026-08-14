@@ -37,8 +37,8 @@ which:
   6. Runs the actual ``gh pr merge --squash``.
   7. Appends a merge-train ledger entry (``.cache/verify/merge-gate/merge-train-ledger.json``)
      and, unless ``--with-verify`` was given, prints a reminder that the
-     ledger's terminal step -- one full-suite ``devtools verify --all`` (or
-     narrower agreed selection) since the last one -- has not yet been
+     ledger's terminal step -- one release-baseline ``devtools verify --all``
+     since the last one -- has not yet been
      recorded for this train.
 
 ``devtools workspace merge train-status`` inspects the ledger and reports
@@ -79,7 +79,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import merge_gate, pr_scope
-from devtools.testmon_state import TerminalAuthorization, VerificationScope
+from devtools.verification_contracts import VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
 _LEDGER_PENDING_PATH = _LEDGER_PATH.with_name(f"{_LEDGER_PATH.name}.pending")
@@ -207,12 +207,12 @@ def _validate_ledger(data: object) -> dict[str, Any]:
     ):
         raise LedgerStateError("merge-train terminal receipt has malformed status fields")
     scope = receipt.get("verification_scope")
-    if scope is not None and scope not in {item.value for item in VerificationScope}:
-        raise LedgerStateError("merge-train terminal receipt has an invalid verification scope")
+    if scope is not None and not isinstance(scope, str):
+        raise LedgerStateError("merge-train terminal receipt has a malformed verification scope")
     permission = receipt.get("release_baseline_allowed")
     if permission is not None and not isinstance(permission, bool):
         raise LedgerStateError("merge-train terminal receipt has malformed release permission")
-    for key in ("terminal_authorization", "verified_head_sha", "target_sha", "merged_master_sha"):
+    for key in ("verified_head_sha", "target_sha", "merged_master_sha"):
         value = receipt.get(key)
         if value is not None and (not isinstance(value, str) or not value):
             raise LedgerStateError(f"merge-train terminal receipt has malformed {key!r}")
@@ -396,13 +396,7 @@ def _pending_prs_since_last_full_verify(ledger: dict[str, Any]) -> list[dict[str
         if last_verify.get("accepted") is True
         and last_verify.get("exit_code") == 0
         and last_verify.get("release_baseline_allowed") is True
-        and (
-            scope == VerificationScope.RELEASE_BASELINE.value
-            or (
-                scope == VerificationScope.NARROW_TERMINAL.value
-                and last_verify.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
-            )
-        )
+        and scope == VerificationScope.RELEASE_BASELINE.value
         else 0.0
     )
     snapshot_sequence = last_verify.get("merge_sequence")
@@ -781,7 +775,8 @@ def cmd_train_status(as_json: bool) -> int:
         print(f"  PR #{entry['pr']} @ {entry['head_sha'][:8]}: {entry['title']}")
     print(
         'Run `devtools workspace merge record-full-verify --command "devtools verify --all"` '
-        "(or the narrower agreed selection) before declaring this merge-train session done -- "
+        "before declaring this merge-train session done. A narrower successful selection does not "
+        "grant the release-baseline authority this ledger requires. "
         "per-PR CI skips the heavy suite, so nothing else will catch a master-red class only "
         "visible on the merged whole."
     )
@@ -834,18 +829,11 @@ def cmd_record_full_verify(
     duration_s = round(time.time() - started, 2)
     release_allowed = merge_gate._release_baseline_permission(receipt)
     verification_scope = merge_gate._verification_scope(receipt)
-    terminal_authorization = merge_gate._terminal_authorization(receipt)
     verified_head = receipt.get("git_head") if isinstance(receipt, dict) else None
     accepted = (
         result.returncode == 0
         and release_allowed is True
-        and (
-            verification_scope == VerificationScope.RELEASE_BASELINE.value
-            or (
-                verification_scope == VerificationScope.NARROW_TERMINAL.value
-                and terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
-            )
-        )
+        and verification_scope == VerificationScope.RELEASE_BASELINE.value
         and verified_head == target_sha
     )
 
@@ -860,7 +848,6 @@ def cmd_record_full_verify(
                 "verification_started_at": verification_started_at,
                 "verification_scope": verification_scope,
                 "release_baseline_allowed": release_allowed,
-                "terminal_authorization": terminal_authorization,
                 "verified_head_sha": verified_head,
                 "target_sha": target_sha,
                 "merged_master_sha": target_sha,

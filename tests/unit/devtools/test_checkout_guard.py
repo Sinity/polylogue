@@ -9,7 +9,6 @@ point at a different checkout than the one a tool is actually invoked from
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -17,7 +16,6 @@ import pytest
 
 import devtools.click_dispatch as click_dispatch
 import devtools.run_tests as run_tests
-import devtools.testmon_state as testmon_state
 import devtools.verify as verify
 import polylogue
 from devtools.checkout_guard import (
@@ -166,85 +164,6 @@ def _fake_linked_checkout(tmp_path: Path) -> Path:
     return root
 
 
-def _write_in_progress_seed_attempt(root: Path, *, status: str = "running", **overrides: object) -> Path:
-    payload: dict[str, object] = {
-        "protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION,
-        "status": status,
-        "identity": {
-            "git_head": "head",
-            "worktree_fingerprint": "fingerprint",
-            "python": "3.14",
-            "skip_slow": True,
-            "lab": False,
-        },
-        "resume": False,
-        "expected_nodeids": [],
-        "expected_count": 0,
-        "started_at": "2026-08-05T12:00:00+00:00",
-        "run_id": "seed-testmon-20260805T120000Z",
-        "artifact_dir": ".cache/verify/runs/seed-testmon-20260805T120000Z",
-        "testmon_data_before": "missing",
-    }
-    if status == "reusable":
-        nodeid = "tests/test.py::test_one"
-        runtime_identity = testmon_state.testmon_runtime_identity(root)
-        assert runtime_identity is not None
-        dependency_environment, pytest_harness = runtime_identity
-        payload.update(
-            {
-                "identity": {
-                    "git_head": "head",
-                    "worktree_fingerprint": "fingerprint",
-                    "python": "3.14",
-                    "skip_slow": True,
-                    "lab": False,
-                    "dependency_environment": dependency_environment,
-                    "pytest_harness": pytest_harness,
-                },
-                "expected_nodeids": [nodeid],
-                "expected_count": 1,
-                "expected_digest": hashlib.sha256(nodeid.encode()).hexdigest(),
-                "selection": {"selected_count": 1, "selected_nodeids_omitted": 0},
-                "node_outcomes": [{"nodeid": nodeid, "outcome": "failed"}],
-                "exit_code": 1,
-                "testmon_data": "fingerprint",
-                "release_baseline_allowed": False,
-                "verification_scope": "affected",
-                "binding": {
-                    "mode": "exact",
-                    "checkout_root": str(root.resolve()),
-                    "source_checkout_root": None,
-                },
-            }
-        )
-    payload.update(overrides)
-    attempt = root / ".cache" / "testmon" / "seed-attempt.json"
-    attempt.parent.mkdir(parents=True, exist_ok=True)
-    attempt.write_text(json.dumps(payload))
-    if status == "reusable":
-        run_dir = root / ".cache" / "verify" / "runs" / str(payload["run_id"])
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "run.json").write_text(
-            json.dumps(
-                {
-                    "run_id": payload["run_id"],
-                    "checkout_root": str(root.resolve()),
-                    "artifact_dir": f".cache/verify/runs/{payload['run_id']}",
-                }
-            )
-        )
-        (root / ".cache" / "verify" / "current-run.json").write_text(
-            json.dumps(
-                {
-                    "run_id": payload["run_id"],
-                    "checkout_root": str(root.resolve()),
-                    "artifact_dir": f".cache/verify/runs/{payload['run_id']}",
-                }
-            )
-        )
-    return attempt
-
-
 def test_checkout_environment_fingerprint_accepts_clean_linked_worktree(tmp_path: Path) -> None:
     root = _fake_linked_checkout(tmp_path)
     fingerprint = checkout_environment_fingerprint(
@@ -258,114 +177,40 @@ def test_checkout_environment_fingerprint_accepts_clean_linked_worktree(tmp_path
     assert fingerprint.python_environment_root == root
 
 
-def test_checkout_environment_fingerprint_accepts_current_in_progress_seed_attempt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = _fake_linked_checkout(tmp_path)
-    attempt = _write_in_progress_seed_attempt(root)
-    (root / ".cache" / "testmon" / "testmondata").write_text("partial")
-    package_path = root / "polylogue" / "__init__.py"
-    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
-
-    fingerprint = assert_polylogue_matches_checkout(
-        root,
-        context="seed-testmon bootstrap",
-        python_executable=root / ".venv" / "bin" / "python",
-    )
-
-    assert fingerprint.clean
-    assert fingerprint.testmon_state_origin is None
-    assert attempt.is_file()
-
-
-def test_checkout_environment_fingerprint_accepts_finalized_selection_attempt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = _fake_linked_checkout(tmp_path)
-    attempt = _write_in_progress_seed_attempt(root, status="reusable")
-    (root / ".cache" / "testmon" / "testmondata").write_text("complete graph")
-    package_path = root / "polylogue" / "__init__.py"
-    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
-
-    fingerprint = assert_polylogue_matches_checkout(
-        root,
-        context="affected selection",
-        python_executable=root / ".venv" / "bin" / "python",
-    )
-
-    assert fingerprint.clean
-    assert fingerprint.testmon_state_origin is None
-    assert attempt.is_file()
-
-
-@pytest.mark.parametrize(
-    ("status", "overrides"),
-    [
-        ("running", {"identity": {}}),
-        ("running", {"expected_count": 1}),
-        ("running", {"artifact_dir": "/foreign/.cache/verify/runs/seed"}),
-        ("complete", {}),
-    ],
-)
-def test_checkout_environment_fingerprint_rejects_invalid_or_completed_seed_attempt(
+def test_checkout_guard_leaves_derived_native_testmon_state_for_verify_to_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    status: str,
-    overrides: dict[str, object],
 ) -> None:
     root = _fake_linked_checkout(tmp_path)
-    attempt = _write_in_progress_seed_attempt(root, status=status, **overrides)
-    (root / ".cache" / "testmon" / "testmondata").write_text("foreign or incomplete")
+    data = root / ".cache" / "testmon" / "testmondata"
+    data.parent.mkdir(parents=True)
+    data.write_bytes(b"interrupted or invalid derived SQLite state")
     package_path = root / "polylogue" / "__init__.py"
     monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
 
-    with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
-        assert_polylogue_matches_checkout(
-            root,
-            context="invalid testmon state",
-            python_executable=root / ".venv" / "bin" / "python",
-        )
-
-    message = str(excinfo.value)
-    assert str(attempt.parent) in message
-    assert "no verifiable checkout-root marker" in message
-
-
-def test_checkout_environment_fingerprint_requires_provenance_for_completed_seed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = _fake_linked_checkout(tmp_path)
-    seed_dir = root / ".cache" / "testmon"
-    seed_dir.mkdir(parents=True)
-    (seed_dir / "testmondata").write_text("complete")
-    (seed_dir / "seed.json").write_text(
-        json.dumps({"protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION, "status": "complete"})
+    fingerprint = assert_polylogue_matches_checkout(
+        root,
+        context="plain verify repair",
+        python_executable=root / ".venv" / "bin" / "python",
     )
-    package_path = root / "polylogue" / "__init__.py"
-    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
 
-    with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
-        assert_polylogue_matches_checkout(
-            root,
-            context="completed testmon state",
-            python_executable=root / ".venv" / "bin" / "python",
-        )
-
-    assert str(seed_dir / "seed.json") in str(excinfo.value)
+    assert fingerprint.clean
+    assert data.read_bytes().startswith(b"interrupted")
 
 
-def test_checkout_preflight_reports_seeded_artifacts_and_main_interpreter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_checkout_preflight_reports_runtime_provenance_but_not_testmon_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _fake_linked_checkout(tmp_path)
     main = tmp_path / "main-checkout"
-    main_venv = main / ".venv" / "bin"
-    main_venv.mkdir(parents=True)
-    main_python = main_venv / "python"
+    main_python = main / ".venv" / "bin" / "python"
+    main_python.parent.mkdir(parents=True)
     (root / ".venv").mkdir()
     (root / "node_modules").mkdir()
-    (root / ".cache" / "testmon").mkdir(parents=True)
-    (root / ".cache" / "testmon" / "seed.json").write_text(json.dumps({"status": "complete"}))
+    data = root / ".cache" / "testmon" / "testmondata"
+    data.parent.mkdir(parents=True)
+    data.write_bytes(b"repairable")
     (root / ".cache" / "verify").mkdir(parents=True)
     verify_marker = root / ".cache" / "verify" / "current-run.json"
     verify_marker.write_text(json.dumps({"checkout_root": str(main)}))
@@ -373,16 +218,14 @@ def test_checkout_preflight_reports_seeded_artifacts_and_main_interpreter(
     monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
 
     with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
-        assert_polylogue_matches_checkout(root, context="seeded lane", python_executable=main_python)
+        assert_polylogue_matches_checkout(root, context="lane", python_executable=main_python)
 
     message = str(excinfo.value)
     assert str(main_python) in message
     assert str(root / ".venv") in message
     assert str(root / "node_modules") in message
-    assert str(root / ".cache" / "testmon" / "seed.json") in message
     assert str(verify_marker) in message
-    assert "direnv allow" in message
-    assert "remediation" in message
+    assert str(data) not in message
 
 
 def test_verify_run_persists_environment_fingerprint(tmp_path: Path) -> None:

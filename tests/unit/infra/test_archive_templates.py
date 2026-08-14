@@ -9,8 +9,55 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+
+
+def test_clone_fallback_is_private_writable_and_symlink_safe(tmp_path: Path) -> None:
+    """The portable fallback preserves links and thaws only the private clone."""
+    template = tmp_path / "template"
+    template.mkdir()
+    source_file = template / "source.db"
+    with contextlib.closing(sqlite3.connect(source_file)) as conn, conn:
+        conn.execute("CREATE TABLE entries (value TEXT)")
+        conn.execute("INSERT INTO entries VALUES ('immutable-template')")
+    (template / "source-link.db").symlink_to(source_file.name)
+    finalize_archive_template(template)
+    source_bytes = source_file.read_bytes()
+
+    clone = tmp_path / "clone"
+    with patch("tests.infra.archive_templates.subprocess.run", side_effect=OSError("cp unavailable")):
+        clone_archive_template(template, clone)
+
+    assert clone.joinpath("source-link.db").is_symlink()
+    assert clone.joinpath("source.db").stat().st_mode & stat.S_IWUSR
+    clone.joinpath("source.db").write_bytes(b"private-mutation")
+    assert source_file.read_bytes() == source_bytes
+
+
+def test_clone_rebinds_durable_bootstrap_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reusing the source store or global identity would make this reopen unsafe."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    template = tmp_path / "template"
+    clone = tmp_path / "clone"
+    marker = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "configured")
+    with ArchiveStore(template):
+        pass
+    source_identity = template.joinpath(marker).read_bytes()
+
+    clone_archive_template(template, clone)
+
+    assert clone.joinpath(marker).read_bytes() != source_identity
+    with ArchiveStore(template):
+        pass
+    with ArchiveStore(clone):
+        pass
+    assert template.joinpath(marker).read_bytes() == source_identity
 
 
 def _leave_crash_recovered_wal(database: Path) -> None:

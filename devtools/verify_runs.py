@@ -100,6 +100,157 @@ def _trailing_history_record(descriptor: int, *, end: int) -> tuple[int, bytes]:
     return 0, b"".join(reversed(suffix))
 
 
+def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
+    existing = entry.get("pytest_aggregate")
+    if isinstance(existing, Mapping):
+        return dict(existing)
+
+    def optional_int(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def max_optional(current: int | None, value: object) -> int | None:
+        candidate = optional_int(value)
+        if candidate is None:
+            return current
+        return candidate if current is None else max(current, candidate)
+
+    pytest_steps = [
+        step
+        for step in entry.get("steps", ())
+        if isinstance(step, Mapping) and str(step.get("name", "")).startswith("pytest")
+    ]
+    outcomes: dict[str, int] = {}
+    lanes: list[dict[str, Any]] = []
+    selected_count = 0
+    terminal_count = 0
+    collection_wall_s = 0.0
+    cleanup_complete = True
+    containment_complete = True
+    peak_rss: int | None = None
+    peak_pss: int | None = None
+    peak_swap: int | None = None
+    peak_storage: int | None = None
+    read_bytes = 0
+    write_bytes = 0
+    for step in pytest_steps:
+        statistics = step.get("statistics")
+        stats = statistics if isinstance(statistics, Mapping) else {}
+        raw_outcomes = stats.get("outcomes")
+        if isinstance(raw_outcomes, Mapping):
+            for outcome, count in raw_outcomes.items():
+                if isinstance(count, int):
+                    outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + count
+        raw_node_count = stats.get("node_count")
+        if not isinstance(raw_node_count, int):
+            raw_node_count = step.get("count")
+        node_count = raw_node_count if isinstance(raw_node_count, int) else 0
+        raw_selected = step.get("selected_count")
+        selected = raw_selected if isinstance(raw_selected, int) else node_count
+        selected_count += selected
+        terminal_count += node_count
+        collection_duration = step.get("collection_duration_s")
+        if isinstance(collection_duration, int | float):
+            collection_wall_s += float(collection_duration)
+        cleanup = stats.get("cleanup")
+        step_cleanup = cleanup.get("complete") if isinstance(cleanup, Mapping) else None
+        cleanup_complete = cleanup_complete and step_cleanup is True
+        containment_complete = containment_complete and isinstance(step.get("containment_mode"), str)
+        resources = stats.get("resources")
+        resource_values = resources if isinstance(resources, Mapping) else {}
+        peak_rss = max_optional(peak_rss, resource_values.get("peak_tree_rss_kb"))
+        peak_pss = max_optional(peak_pss, resource_values.get("peak_tree_pss_kb"))
+        peak_swap = max_optional(peak_swap, resource_values.get("peak_tree_swap_pss_kb"))
+        storage = stats.get("storage")
+        storage_values = storage if isinstance(storage, Mapping) else {}
+        peak_storage = max_optional(peak_storage, storage_values.get("basetemp_allocated_bytes_max"))
+        read_bytes += optional_int(resource_values.get("tree_read_bytes_delta")) or 0
+        write_bytes += optional_int(resource_values.get("tree_write_bytes_delta")) or 0
+        lanes.append(
+            {
+                "lane": "focused" if entry.get("tier") == "focused-test" else "pytest",
+                "exit_code": step.get("exit"),
+                "duration_s": step.get("duration_s"),
+                "selected_count": selected,
+                "terminal_count": node_count,
+                "collection_duration_s": collection_duration,
+                "cleanup_complete": step_cleanup,
+                "containment_complete": isinstance(step.get("containment_mode"), str),
+                "containment_mode": step.get("containment_mode"),
+                "external_addopts_neutralized": False,
+                "external_plugins_neutralized": False,
+                "closed_world_collection": False,
+            }
+        )
+
+    no_pytest = not pytest_steps
+    corpus_digest: str | None = None
+    exit_code = entry.get("exit_code")
+    raw_budget = entry.get("invocation_budget_s")
+    invocation_budget = float(raw_budget) if isinstance(raw_budget, int | float) else None
+    raw_wall = entry.get("total_duration_s", entry.get("duration_s", 0.0))
+    wall_s = float(raw_wall) if isinstance(raw_wall, int | float) else 0.0
+    deadline_met = entry.get("diagnosis") != "verify_invocation_deadline_exceeded"
+    if invocation_budget is not None:
+        deadline_met = deadline_met and wall_s <= invocation_budget
+    return {
+        "schema_version": 1,
+        "environment": {
+            "name": None,
+            "digest": None,
+            "status": "not-applicable",
+            "reason": "run did not use the native pytest-testmon lifecycle",
+            "native_corpus_count": 0,
+            "native_corpus_digest": corpus_digest,
+        },
+        "corpus": {"count": terminal_count, "digest": corpus_digest},
+        "selection_mode": "focused" if entry.get("tier") == "focused-test" else "none",
+        "external_addopts_neutralized": False,
+        "external_plugins_neutralized": False,
+        "closed_world_collection": False,
+        "lanes": lanes,
+        "selected_union_count": selected_count,
+        "terminal_union_count": terminal_count,
+        "duplicate_outcome_count": 0,
+        "outcomes": outcomes,
+        "missing_terminal_count": 0,
+        "missing_terminal_sample": [],
+        "non_green_count": sum(count for outcome, count in outcomes.items() if outcome not in _GREEN_TERMINAL_OUTCOMES),
+        "non_green_sample": [],
+        "complete_corpus_covered": False,
+        "terminal_green": bool(pytest_steps) and exit_code == 0,
+        "collection_wall_s": round(collection_wall_s, 4),
+        "resources": {
+            "peak_tree_rss_kb": peak_rss,
+            "peak_tree_pss_kb": peak_pss,
+            "peak_tree_swap_pss_kb": peak_swap,
+            "peak_storage_bytes": peak_storage,
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+        },
+        "cleanup": {"complete": True if no_pytest else cleanup_complete},
+        "containment": {"complete": True if no_pytest else containment_complete},
+        "deadline": {"budget_s": invocation_budget, "met": deadline_met},
+        "wall_s": wall_s,
+    }
+
+
+def normalize_verify_history_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the single timestamped history schema shared by every run kind."""
+    normalized = dict(entry)
+    normalized["history_schema_version"] = 1
+    normalized["timestamp"] = next(
+        (
+            value
+            for key in ("timestamp", "finished_at", "started_at")
+            if isinstance((value := normalized.get(key)), str) and value
+        ),
+        datetime.now(UTC).isoformat(),
+    )
+    normalized.setdefault("total_duration_s", normalized.get("duration_s", 0.0))
+    normalized["pytest_aggregate"] = _history_pytest_aggregate(normalized)
+    return normalized
+
+
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
     """Append one complete invocation to the cross-worktree run history.
 
@@ -109,7 +260,7 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     durable index used to find and compare them.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(dict(entry), ensure_ascii=False) + "\n").encode()
+    payload = (json.dumps(normalize_verify_history_entry(entry), ensure_ascii=False) + "\n").encode()
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -287,6 +438,7 @@ class CheckoutMutationMonitor:
         self._git_current_ref_path: Path | None = None
         self._git_current_ref_was_loose: bool | None = None
         self._git_authority_paths: dict[Path, str] = {}
+        self._git_authority_signatures: dict[Path, str | None] = {}
         self._directory_topology_fingerprint: frozenset[str] | None = None
 
     def start(self) -> None:
@@ -426,6 +578,11 @@ class CheckoutMutationMonitor:
             self._git_authority_paths[self._git_index_path] = ".git/index"
         self._git_authority_paths.update(self._resolve_git_head_paths())
         for authority_path in self._git_authority_paths:
+            # The protected startup topology recheck discovers this set again.
+            # Retain each first baseline so it cannot adopt a write that the
+            # active watcher observed before processing its coalesced event.
+            self._git_authority_signatures.setdefault(authority_path, self._authority_signature(authority_path))
+        for authority_path in self._git_authority_paths:
             watched_parent = authority_path.parent
             while not watched_parent.exists() and watched_parent != watched_parent.parent:
                 watched_parent = watched_parent.parent
@@ -433,6 +590,14 @@ class CheckoutMutationMonitor:
                 directories.append(watched_parent)
         self._directory_topology_fingerprint = self._directory_topology(directories)
         return directories
+
+    @staticmethod
+    def _authority_signature(path: Path) -> str | None:
+        """Identify authority semantics while ignoring byte-identical rewrites."""
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
 
     def _directory_topology(self, directories: Sequence[Path]) -> frozenset[str]:
         """Fingerprint source directory membership without trusting pre-watch state."""
@@ -561,6 +726,21 @@ class CheckoutMutationMonitor:
     def _record_change(self, candidate: Path) -> None:
         if not candidate.is_absolute():
             candidate = self.root / candidate
+        nested_authorities = [
+            (authority_path, label)
+            for authority_path, label in self._git_authority_paths.items()
+            if candidate != authority_path
+            and authority_path.is_relative_to(candidate)
+            and not (label == ".git/packed-refs" and self._git_current_ref_was_loose is True)
+        ]
+        if nested_authorities:
+            for authority_path, label in nested_authorities:
+                if self._authority_signature(authority_path) != self._git_authority_signatures.get(authority_path):
+                    with self._state_lock:
+                        self._changed = True
+                        self._observed_path = label
+                    return
+            return
         for authority_path, label in self._git_authority_paths.items():
             if label == ".git/packed-refs" and self._git_current_ref_was_loose is True:
                 # packed-refs is shared by linked worktrees. When this
@@ -570,11 +750,6 @@ class CheckoutMutationMonitor:
                 # is removed or replaced. Preserve the startup state so a
                 # packed-to-loose transition cannot hide its own first event.
                 continue
-            if candidate != authority_path and authority_path.is_relative_to(candidate):
-                with self._state_lock:
-                    self._changed = True
-                    self._observed_path = label
-                return
             if candidate.parent != authority_path.parent:
                 continue
             if candidate.name == f"{authority_path.name}.lock":
@@ -583,6 +758,10 @@ class CheckoutMutationMonitor:
                 # its authority file.
                 return
             if candidate.name == authority_path.name:
+                # The watch event is itself evidence that Git replaced the
+                # authority file. The bytes may already have been restored by
+                # the time the coalesced event reaches this thread, so a
+                # signature comparison here would discard a real mutation.
                 with self._state_lock:
                     self._changed = True
                     self._observed_path = label
@@ -779,6 +958,50 @@ def _distribution(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def _counter_delta(resources: list[dict[str, Any]], key: str) -> int:
+    """Return the observed delta for one monotonically increasing resource counter."""
+    values = [int(row[key]) for row in resources if isinstance(row.get(key), int)]
+    return max(values) - min(values) if values else 0
+
+
+def _phase_outcome(phases: Mapping[str, object], name: str) -> str | None:
+    value = phases.get(name)
+    if isinstance(value, Mapping):
+        outcome = value.get("outcome")
+        return outcome if isinstance(outcome, str) else None
+    return value if isinstance(value, str) else None
+
+
+def _collapse_terminal_outcome(phases: Mapping[str, object]) -> str:
+    """Collapse setup, call, and teardown evidence to one terminal outcome."""
+    setup = _phase_outcome(phases, "setup")
+    call = _phase_outcome(phases, "call")
+    teardown = _phase_outcome(phases, "teardown")
+    if setup == "failed" or teardown == "failed":
+        return "error"
+    if call is not None:
+        return call
+    if setup in {"skipped", "xfailed", "xpassed"}:
+        return setup
+    if teardown in {"skipped", "xfailed", "xpassed"}:
+        return teardown
+    return "interrupted"
+
+
+def _merge_terminal_outcomes(
+    canonical: Mapping[str, str],
+    phase_reports: Mapping[str, Mapping[str, object]],
+    *,
+    nodeids: Sequence[str] = (),
+) -> dict[str, str]:
+    """Prefer canonical outcomes and fill omitted nodes from phase evidence."""
+    all_nodeids = set(nodeids) | set(canonical) | set(phase_reports)
+    return {
+        nodeid: canonical[nodeid] if nodeid in canonical else _collapse_terminal_outcome(phase_reports.get(nodeid, {}))
+        for nodeid in all_nodeids
+    }
+
+
 def aggregate_pytest_statistics(
     step_dir: Path,
     *,
@@ -870,27 +1093,8 @@ def aggregate_pytest_statistics(
             bucket = phase_outcomes[when]
             bucket[outcome] = bucket.get(outcome, 0) + 1
 
-    for nodeid in nodes:
-        node_reports = reports_by_node.get(nodeid, {})
-        setup = node_reports.get("setup", {}).get("outcome")
-        call = node_reports.get("call", {}).get("outcome")
-        teardown = node_reports.get("teardown", {}).get("outcome")
-        canonical_outcome = canonical_outcomes.get(nodeid)
-        if canonical_outcome is not None:
-            terminal = canonical_outcome
-        elif setup == "failed" or teardown == "failed":
-            terminal = "error"
-        elif isinstance(call, str):
-            terminal = call
-        elif setup in {"skipped", "xfailed", "xpassed"}:
-            terminal = str(setup)
-        elif teardown in {"skipped", "xfailed", "xpassed"}:
-            terminal = str(teardown)
-        else:
-            # A test may have emitted its start event just before an interrupt
-            # or forced containment cleanup. Keep that missing terminal phase
-            # visible so outcome totals still account for every started node.
-            terminal = "interrupted"
+    terminal_outcomes = _merge_terminal_outcomes(canonical_outcomes, reports_by_node, nodeids=tuple(nodes))
+    for terminal in terminal_outcomes.values():
         outcomes[terminal] = outcomes.get(terminal, 0) + 1
 
     resources: list[dict[str, Any]] = []
@@ -964,6 +1168,12 @@ def aggregate_pytest_statistics(
                 ),
                 default=None,
             ),
+            "peak_tree_swap_pss_kb": max(
+                (int(row["tree_swap_pss_kb"]) for row in resources if isinstance(row.get("tree_swap_pss_kb"), int)),
+                default=None,
+            ),
+            "tree_read_bytes_delta": _counter_delta(resources, "tree_read_bytes"),
+            "tree_write_bytes_delta": _counter_delta(resources, "tree_write_bytes"),
         },
         "cleanup": {
             "complete": True
@@ -976,9 +1186,252 @@ def aggregate_pytest_statistics(
     }
 
 
+_GREEN_TERMINAL_OUTCOMES = frozenset({"passed", "skipped", "xfailed", "xpassed"})
+
+
+def _safe_step_dir(root: Path, raw: object) -> Path | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    candidate = (root / relative).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _terminal_outcomes_by_node(step_dir: Path) -> dict[str, str]:
+    canonical = _read_json_object(step_dir / PYTEST_CANONICAL_REPORT_NAME)
+    raw_tests = canonical.get("tests") if canonical is not None else None
+    canonical_outcomes: dict[str, str] = {}
+    if isinstance(raw_tests, list):
+        canonical_outcomes = {
+            str(test["nodeid"]): str(test["outcome"])
+            for test in raw_tests
+            if isinstance(test, dict) and isinstance(test.get("nodeid"), str) and isinstance(test.get("outcome"), str)
+        }
+
+    reports: dict[str, dict[str, object]] = {}
+    events_path = step_dir / "events.jsonl"
+    if events_path.exists():
+        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                row = json.loads(line)
+                if not isinstance(row, dict) or row.get("event") != "test_report":
+                    continue
+                nodeid = row.get("nodeid")
+                when = row.get("when")
+                outcome = row.get("outcome")
+                if isinstance(nodeid, str) and when in {"setup", "call", "teardown"} and isinstance(outcome, str):
+                    reports.setdefault(nodeid, {})[str(when)] = outcome
+    return _merge_terminal_outcomes(canonical_outcomes, reports)
+
+
+def aggregate_native_testmon_run(
+    root: Path,
+    *,
+    steps: Sequence[Mapping[str, Any]],
+    environment_name: str,
+    corpus_nodeids: Sequence[str],
+    environment_status: str = "valid",
+    environment_reason: str | None = None,
+    selection_mode: str,
+    invocation_duration_s: float,
+    budget_s: float,
+) -> dict[str, Any]:
+    """Build one compact, durable aggregate for the two semantic pytest lanes."""
+    lanes: list[dict[str, Any]] = []
+    selected_union: set[str] = set()
+    outcome_by_node: dict[str, str] = {}
+    duplicate_outcomes: set[str] = set()
+    outcomes: dict[str, int] = {}
+    collection_wall_s = 0.0
+    peak_rss_kb: int | None = None
+    peak_pss_kb: int | None = None
+    peak_swap_pss_kb: int | None = None
+    peak_storage_bytes: int | None = None
+    read_bytes = 0
+    write_bytes = 0
+    cleanup_complete = True
+    containment_complete = True
+    selection_complete = True
+    external_addopts_neutralized = True
+    external_plugins_neutralized = True
+    closed_world_collection = True
+    for step in steps:
+        lane = step.get("semantic_lane")
+        if lane not in {"parallel", "serial"}:
+            continue
+        step_dir = _safe_step_dir(root, step.get("artifact_dir"))
+        selection = _read_json_object(step_dir / "selection.json") if step_dir is not None else None
+        containment_receipt = _read_json_object(step_dir / "containment.json") if step_dir is not None else None
+        selected = selection.get("selected_nodeids") if selection is not None else None
+        omitted = selection.get("selected_nodeids_omitted") if selection is not None else None
+        if not isinstance(selected, list) or not all(isinstance(nodeid, str) for nodeid in selected) or omitted != 0:
+            selection_complete = False
+            selected = []
+        selected_union.update(selected)
+        lane_outcomes = _terminal_outcomes_by_node(step_dir) if step_dir is not None else {}
+        for nodeid, outcome in lane_outcomes.items():
+            if nodeid in outcome_by_node:
+                duplicate_outcomes.add(nodeid)
+            outcome_by_node[nodeid] = outcome
+        statistics = step.get("statistics")
+        resources = statistics.get("resources") if isinstance(statistics, Mapping) else None
+        storage = statistics.get("storage") if isinstance(statistics, Mapping) else None
+        cleanup = statistics.get("cleanup") if isinstance(statistics, Mapping) else None
+
+        def _peak(current: int | None, value: object) -> int | None:
+            return max(current or 0, value) if isinstance(value, int) else current
+
+        if isinstance(resources, Mapping):
+            peak_rss_kb = _peak(peak_rss_kb, resources.get("peak_tree_rss_kb"))
+            peak_pss_kb = _peak(peak_pss_kb, resources.get("peak_tree_pss_kb"))
+            peak_swap_pss_kb = _peak(peak_swap_pss_kb, resources.get("peak_tree_swap_pss_kb"))
+            lane_read = resources.get("tree_read_bytes_delta")
+            lane_write = resources.get("tree_write_bytes_delta")
+            read_bytes += lane_read if isinstance(lane_read, int) else 0
+            write_bytes += lane_write if isinstance(lane_write, int) else 0
+        if isinstance(storage, Mapping):
+            peak_storage_bytes = _peak(peak_storage_bytes, storage.get("basetemp_allocated_bytes_max"))
+        lane_cleanup = cleanup.get("complete") if isinstance(cleanup, Mapping) else None
+        cleanup_complete = cleanup_complete and lane_cleanup is True
+        lane_addopts_neutralized = step.get("external_addopts_neutralized") is True
+        external_addopts_neutralized = external_addopts_neutralized and lane_addopts_neutralized
+        lane_plugins_neutralized = step.get("external_plugins_neutralized") is True
+        external_plugins_neutralized = external_plugins_neutralized and lane_plugins_neutralized
+        lane_closed_world_collection = step.get("closed_world_collection") is True
+        closed_world_collection = closed_world_collection and lane_closed_world_collection
+        lane_containment_complete = bool(
+            containment_receipt is not None
+            and containment_receipt.get("status") == "finished"
+            and containment_receipt.get("controller_group_alive") is False
+            and containment_receipt.get("termination_reason") is None
+            and containment_receipt.get("escalated_to_sigkill") is False
+            and not bool(step.get("termination_reason"))
+            and step.get("containment_escalated_to_sigkill") is not True
+        )
+        containment_complete = containment_complete and lane_containment_complete
+        collection_duration = step.get("collection_duration_s")
+        if isinstance(collection_duration, (int, float)):
+            collection_wall_s += float(collection_duration)
+        lanes.append(
+            {
+                "lane": lane,
+                "exit_code": step.get("exit"),
+                "duration_s": step.get("duration_s"),
+                "collection_duration_s": collection_duration,
+                "selected_count": step.get("selected_count"),
+                "terminal_count": len(lane_outcomes),
+                "cleanup_complete": lane_cleanup,
+                "containment_mode": step.get("containment_mode"),
+                "containment_complete": lane_containment_complete,
+                "external_addopts_neutralized": lane_addopts_neutralized,
+                "external_plugins_neutralized": lane_plugins_neutralized,
+                "closed_world_collection": lane_closed_world_collection,
+            }
+        )
+
+    for outcome in outcome_by_node.values():
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    native_corpus = tuple(sorted(set(corpus_nodeids)))
+    complete_mode = selection_mode in {"bootstrap", "full"}
+    corpus = native_corpus
+    corpus_set = set(corpus)
+    lane_names = [lane["lane"] for lane in lanes]
+    complete_corpus_covered = (
+        complete_mode
+        and selection_complete
+        and bool(corpus)
+        and external_addopts_neutralized
+        and external_plugins_neutralized
+        and closed_world_collection
+        and selected_union == corpus_set
+        and set(outcome_by_node) == corpus_set
+        and not duplicate_outcomes
+        and len(lane_names) == 2
+        and lane_names.count("parallel") == 1
+        and lane_names.count("serial") == 1
+    )
+    missing_terminal = tuple(sorted(corpus_set - set(outcome_by_node))) if complete_mode else ()
+    non_green = tuple(
+        sorted(nodeid for nodeid, outcome in outcome_by_node.items() if outcome not in _GREEN_TERMINAL_OUTCOMES)
+    )
+    terminal_green = complete_corpus_covered and not missing_terminal and not non_green
+    cleanup_complete = bool(lanes) and cleanup_complete
+    containment_complete = bool(lanes) and containment_complete
+    external_addopts_neutralized = bool(lanes) and external_addopts_neutralized
+    external_plugins_neutralized = bool(lanes) and external_plugins_neutralized
+    closed_world_collection = bool(lanes) and closed_world_collection
+    return {
+        "schema_version": 1,
+        "environment": {
+            "name": environment_name,
+            "digest": environment_name.removeprefix("polylogue-"),
+            "status": environment_status,
+            "reason": environment_reason,
+            "native_corpus_count": len(native_corpus),
+            "native_corpus_digest": hashlib.sha256("\n".join(native_corpus).encode()).hexdigest(),
+        },
+        "corpus": {
+            "count": len(corpus),
+            "digest": hashlib.sha256("\n".join(corpus).encode()).hexdigest(),
+        },
+        "selection_mode": selection_mode,
+        "external_addopts_neutralized": external_addopts_neutralized,
+        "external_plugins_neutralized": external_plugins_neutralized,
+        "closed_world_collection": closed_world_collection,
+        "lanes": lanes,
+        "outcomes": outcomes,
+        "selected_union_count": len(selected_union),
+        "terminal_union_count": len(outcome_by_node),
+        "missing_terminal_count": len(missing_terminal),
+        "missing_terminal_sample": list(missing_terminal[:20]),
+        "non_green_count": len(non_green),
+        "non_green_sample": list(non_green[:20]),
+        "duplicate_outcome_count": len(duplicate_outcomes),
+        "complete_corpus_covered": complete_corpus_covered,
+        "terminal_green": terminal_green,
+        "wall_s": round(invocation_duration_s, 4),
+        "collection_wall_s": round(collection_wall_s, 4),
+        "resources": {
+            "peak_tree_rss_kb": peak_rss_kb,
+            "peak_tree_pss_kb": peak_pss_kb,
+            "peak_tree_swap_pss_kb": peak_swap_pss_kb,
+            "peak_storage_bytes": peak_storage_bytes,
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+        },
+        "cleanup": {"complete": cleanup_complete},
+        "containment": {"complete": containment_complete},
+        "deadline": {
+            "budget_s": budget_s,
+            "met": invocation_duration_s <= budget_s,
+        },
+    }
+
+
 def git_dirty(cwd: Path | None = None) -> bool:
     try:
-        result = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5, cwd=cwd)
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+            env=_read_only_git_env(),
+        )
     except (OSError, subprocess.TimeoutExpired):
         return True
     return bool(result.stdout.strip())
@@ -998,6 +1451,7 @@ def git_head(cwd: Path | None = None) -> str | None:
             text=True,
             timeout=5,
             cwd=cwd,
+            env=_read_only_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -1085,6 +1539,22 @@ class VerifyRun:
         if not _current_owner_is_other_live_run(current_path):
             _write_json(current_path, self._payload)
 
+    def update_checkout_provenance(
+        self,
+        *,
+        polylogue_import_path: str | None = None,
+        environment_fingerprint: Mapping[str, Any] | None = None,
+        worktree_fingerprint: str | None = None,
+    ) -> None:
+        """Persist provenance as each preflight authority becomes available."""
+        if polylogue_import_path is not None:
+            self._payload["polylogue_import_path"] = polylogue_import_path
+        if environment_fingerprint is not None:
+            self._payload["environment_fingerprint"] = dict(environment_fingerprint)
+        if worktree_fingerprint is not None:
+            self._payload["worktree_fingerprint"] = worktree_fingerprint
+        self.write()
+
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         index = len(self._payload["steps"]) + 1
         step_id = f"{index:02d}-{_slug(label)}"
@@ -1130,7 +1600,7 @@ class VerifyRun:
                 if not str(step.get("name", "")).startswith("pytest"):
                     break
                 # An interrupted runner never returns through the normal
-                # post-subprocess merge. Fold shards here, before every
+                # post-subprocess merge. Fold worker evidence here, before every
                 # aggregation path, so completed worker evidence survives.
                 with contextlib.suppress(OSError):
                     merge_worker_events(step_dir / "events", step_dir / "events.jsonl")
@@ -1181,10 +1651,12 @@ class VerifyRun:
         diagnosis: str | None = None,
         verification_scope: str | None = None,
         release_baseline_allowed: bool | None = None,
-        terminal_authorization: str | None = None,
+        final_git_head: str | None = None,
         final_worktree_fingerprint: str | None = None,
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
+        pytest_aggregate: Mapping[str, Any] | None = None,
+        invocation_budget_s: float | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -1192,16 +1664,21 @@ class VerifyRun:
         self._payload["status"] = "success" if exit_code == 0 else "failed"
         if diagnosis:
             self._payload["diagnosis"] = diagnosis
+        self._payload["final_git_head"] = final_git_head
         if final_worktree_fingerprint is not None:
             self._payload["final_worktree_fingerprint"] = final_worktree_fingerprint
         if checkout_mutation_path is not None:
             self._payload["checkout_mutation_path"] = checkout_mutation_path
         if checkout_diagnosis is not None:
             self._payload["checkout_diagnosis"] = checkout_diagnosis
+        if invocation_budget_s is not None:
+            self._payload["invocation_budget_s"] = invocation_budget_s
+        if pytest_aggregate is not None:
+            self._payload["pytest_aggregate"] = dict(pytest_aggregate)
         if verification_scope is not None:
             self._payload["verification_scope"] = verification_scope
             self._payload["release_baseline_allowed"] = release_baseline_allowed
-            self._payload["terminal_authorization"] = terminal_authorization
+        self._payload.setdefault("pytest_aggregate", _history_pytest_aggregate(self._payload))
         self.write()
         return dict(self._payload)
 

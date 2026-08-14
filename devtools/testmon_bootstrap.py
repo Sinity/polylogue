@@ -1,527 +1,811 @@
-"""Bootstrap a fresh worktree's pytest-testmon cache from the main checkout.
+"""Prepare checkout-local pytest-testmon state for plain ``devtools verify``.
 
-The hazard this closes (polylogue-mq4vx): every fresh agent worktree lane
-re-seeds pytest-testmon from scratch. `devtools verify --seed-testmon` seeds
-the affected-selection dependency database with a full non-integration pytest
-run; that run costs real wall-clock (the main checkout's
-``.cache/testmon/testmondata`` is ~28MB, built from the whole non-integration
-suite). A linked worktree with no local seed either pays that cost again or
-hits the unseeded-refusal preflight in ``devtools/verify.py``
-(``_testmon_preflight``) and blocks entirely.
+Pytest-testmon already owns interrupted-run recovery, failing/new test
+selection, node deletion, and dependency replacement.  This module therefore
+does only the checkout boundary work that the plugin cannot do itself:
 
-But the seed database is copyable. ``pytest-testmon`` records ``file_fp``
-entries keyed by path **relative to the invoking repo root**, each with a
-per-file content checksum (``fsha``). A worktree is a distinct working tree
-sharing the same relative layout as the main checkout, so a testmondata file
-copied verbatim from main is immediately meaningful there: any file that
-differs between the worktree and the main checkout at copy time
-self-invalidates (its ``fsha`` won't match), and testmon correctly treats the
-tests that depend on it as affected on the very next run. No merge or rewrite
-is needed for the relative file fingerprints.
+* derive the native ``--testmon-env`` name from collection semantics;
+* validate that the local SQLite database contains that environment;
+* require changed executable modules to occur in its dependency graph;
+* remove only an invalid checkout-owned database and its SQLite sidecars;
+* optionally copy a matching main-checkout database into a linked worktree by
+  SQLite online backup plus atomic rename.
 
-The reusable stamp is typed. It records collection completeness, graph
-completeness, baseline color, and whether the graph is exact or rebound to a
-new checkout. A red graph is allowed for affected selection only. Bootstrap
-revalidates the SQLite graph after the online backup and recomputes its file
-fingerprint because SQLite backup can produce a byte-different equivalent
-database.
-
-This module owns exactly one decision and one action:
-
-- :func:`decide_testmon_bootstrap` -- pure decision, no subprocess beyond the
-  caller. It validates the main stamp or a complete red seed attempt.
-- :func:`bootstrap_testmon_seed_files` -- the copy action once bootstrapping
-  has been decided. A red attempt is copied as a rebound attempt receipt and
-  never synthesized into ``seed.json``.
-- :func:`maybe_bootstrap_testmon_seed` -- the orchestrator `devtools verify`
-  calls: detects whether ``repo_root`` is a linked worktree (via
-  ``git rev-parse --absolute-git-dir --git-common-dir``, the same mechanism
-  ``devtools/verify_worktree.py`` uses), finds the main checkout, and wires
-  the decision to the action.
-
-Concurrency: the main checkout may be mid-seed (a live ``--seed-testmon`` run
-appending to its own testmondata) at the exact moment a worktree bootstraps
-from it. ``testmondata`` is a real sqlite database, so a naive byte copy of an
-open, actively-written file can capture a torn, inconsistent snapshot. This
-copies it through :meth:`sqlite3.Connection.backup`, sqlite's own online-backup
-API -- built for copying a live database without an exclusive lock, immune to
-concurrent writers by design. ``seed.json`` is a small file written atomically
-by ``verify.py`` (write-temp-then-rename), so bootstrap writes its newly bound
-stamp atomically after the copied graph has been revalidated.
-
-This module NEVER writes to the main checkout's copy of either file --
-only reads from main, only writes to ``repo_root``.
+There are no seed markers, completion stamps, shard ledgers, or release grants.
+An absent main database is normal.  The next plain verify invocation builds
+the current environment by running the ordinary correctness corpus.
 """
 
 from __future__ import annotations
 
+import ast
+import contextlib
+import hashlib
+import importlib
+import importlib.metadata
 import json
 import os
-import shutil
+import platform
 import sqlite3
+import stat
 import subprocess
-import tempfile
-from collections.abc import Mapping
+import sys
+import time
+import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Literal
 
-from devtools.testmon_state import (
-    TestmonSeedStamp,
-    refresh_stamp,
-    stamp_from_attempt,
-    validate_stamp,
+TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
+TESTMON_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+NativeStateStatus = Literal["absent", "valid", "invalid"]
+NativeSelectionMode = Literal["bootstrap", "affected"]
+ASTClassification = Literal["declaration-only", "executable", "source-unreadable"]
+
+_ENVIRONMENT_INPUTS = (
+    "uv.lock",
+    "pyproject.toml",
+    "pytest.ini",
+    "tox.ini",
+    "setup.cfg",
+    # Keep the conventional repository-root hook as an absent-path sentinel:
+    # creating it changes collection even though it was not present when the
+    # previous environment was named.
+    "conftest.py",
+    "devtools/checkout_guard.py",
+    "devtools/testmon_bootstrap.py",
+    "devtools/verify.py",
+    "devtools/verify_runs.py",
+)
+_PYTEST_ENVIRONMENT_KEYS = (
+    "HYPOTHESIS_PROFILE",
+    "POLYLOGUE_CI",
 )
 
-TESTMON_DATA_RELPATH = ".cache/testmon/testmondata"
-TESTMON_SEED_STAMP_RELPATH = ".cache/testmon/seed.json"
-TESTMON_SEED_ATTEMPT_RELPATH = ".cache/testmon/seed-attempt.json"
+
+def _is_ignored_native_testmon_path(relative: str) -> bool:
+    return relative == "tests/benchmarks" or relative.startswith("tests/benchmarks/")
 
 
-@dataclass(frozen=True)
-class BootstrapDecision:
-    """Whether a worktree's testmon cache should be bootstrapped from main, and why."""
+@dataclass(frozen=True, slots=True)
+class NativeTestmonEnvironment:
+    name: str
+    corpus_count: int
+    corpus_digest: str
+    nodeids: tuple[str, ...]
+    fingerprinted_files: frozenset[str]
 
-    should_bootstrap: bool
+
+@dataclass(frozen=True, slots=True)
+class NativeTestmonState:
+    status: NativeStateStatus
     reason: str
-    main_testmon_data: Path | None = None
-    main_seed_stamp: Path | None = None
-    main_seed_attempt: Path | None = None
-    main_checkout_root: Path | None = None
-    protocol_version: int = 4
-    selection_only: bool = False
+    environment: NativeTestmonEnvironment | None = None
+    missing_executable_paths: tuple[str, ...] = ()
+
+    @property
+    def valid(self) -> bool:
+        return self.status == "valid" and self.environment is not None
 
 
-def _checkout_root_for_data(data_path: Path) -> Path:
-    """Resolve the checkout root for canonical and test-local cache layouts."""
-    resolved = data_path.resolve()
-    if resolved.parent.name == "testmon" and resolved.parent.parent.name == ".cache":
-        return resolved.parents[2]
-    return resolved.parent
+@dataclass(frozen=True, slots=True)
+class NativeTestmonPreparation:
+    environment_name: str
+    selection_mode: NativeSelectionMode
+    local_state: NativeTestmonState
+    copied_from: Path | None
+    removed_paths: tuple[Path, ...]
+    linked_worktree: bool
+    main_checkout: Path | None
 
 
-def _is_valid_complete_seed_stamp(
-    seed_stamp: Path,
-    testmon_data: Path,
+@dataclass(frozen=True, slots=True)
+class NativeTestmonChangeImpact:
+    """Changed inputs that native Python tracing can and cannot select."""
+
+    executable_paths: tuple[str, ...]
+    runtime_data_paths: tuple[str, ...]
+
+
+class NativeTestmonRepairError(RuntimeError):
+    """The exact derived testmon state could not be repaired safely."""
+
+
+class NativeTestmonDeadlineError(NativeTestmonRepairError):
+    """The verify invocation deadline expired during native-state preparation."""
+
+
+def _ensure_deadline(deadline_monotonic: float | None) -> None:
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        raise NativeTestmonDeadlineError("verify invocation deadline expired during native testmon preparation")
+
+
+def _remaining_timeout(deadline_monotonic: float | None, maximum: float) -> float:
+    _ensure_deadline(deadline_monotonic)
+    if deadline_monotonic is None:
+        return maximum
+    return max(0.001, min(maximum, deadline_monotonic - time.monotonic()))
+
+
+def _fingerprint_inputs(
+    root: Path,
+    relative_paths: Sequence[str],
     *,
-    protocol_version: int,
-    checkout_root: Path,
-) -> bool:
-    """Validate both the typed stamp and the real SQLite graph it describes."""
-    return (
-        validate_stamp(
-            seed_stamp,
-            testmon_data,
-            checkout_root=checkout_root,
-            protocol_version=protocol_version,
-        )
-        is not None
-    )
-
-
-def decide_testmon_bootstrap(
-    *,
-    is_linked_worktree: bool,
-    local_testmon_data: Path,
-    local_seed_stamp: Path,
-    main_testmon_data: Path,
-    main_seed_stamp: Path,
-    protocol_version: int,
-    main_seed_attempt: Path | None = None,
-    main_checkout_root: Path | None = None,
-    local_checkout_root: Path | None = None,
-    local_seed_attempt: Path | None = None,
-) -> BootstrapDecision:
-    """Decide whether to copy the main checkout's testmon seed into a worktree.
-
-    Pure with respect to process state (no subprocess, no git): every input is
-    an already-resolved path or flag, so this is directly unit-testable with
-    tmp dirs standing in for "local worktree" and "main checkout".
-    """
-    if not is_linked_worktree:
-        return BootstrapDecision(False, "repo_root is not a linked worktree; nothing to bootstrap")
-    local_root = (local_checkout_root or _checkout_root_for_data(local_testmon_data)).resolve()
-    if (
-        local_testmon_data.is_file()
-        and local_seed_stamp.is_file()
-        and _is_valid_complete_seed_stamp(
-            local_seed_stamp,
-            local_testmon_data,
-            protocol_version=protocol_version,
-            checkout_root=local_root,
-        )
-    ):
-        return BootstrapDecision(False, "local .cache/testmon already has a validated testmondata + seed stamp")
-    if local_testmon_data.is_file() and local_seed_attempt is not None and local_seed_attempt.is_file():
+    deadline_monotonic: float | None = None,
+) -> str:
+    digest = hashlib.sha256()
+    for relative in relative_paths:
+        _ensure_deadline(deadline_monotonic)
+        digest.update(relative.encode())
+        digest.update(b"\0")
         try:
-            local_attempt = json.loads(local_seed_attempt.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            local_attempt = None
+            with (root / relative).open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+                    _ensure_deadline(deadline_monotonic)
+        except OSError:
+            digest.update(b"missing")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _pytest_plugins_assignment(node: ast.stmt) -> ast.expr | None:
+    match node:
+        case ast.Assign(targets=targets, value=value) if any(
+            isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets
+        ):
+            return value
+        case ast.AnnAssign(target=ast.Name(id="pytest_plugins"), value=value):
+            return value
+        case _:
+            return None
+
+
+def _indirect_pytest_plugins_declaration(node: ast.stmt) -> bool:
+    for child in ast.walk(node):
         if (
-            isinstance(local_attempt, Mapping)
-            and stamp_from_attempt(
-                local_attempt,
-                local_testmon_data,
-                checkout_root=local_root,
-                protocol_version=protocol_version,
-                published_marker=False,
-            )
-            is not None
+            isinstance(child, ast.Subscript)
+            and isinstance(child.slice, ast.Constant)
+            and child.slice.value == "pytest_plugins"
         ):
-            return BootstrapDecision(False, "local .cache/testmon already has a checkout-bound selection attempt")
-    if not main_testmon_data.is_file():
-        return BootstrapDecision(
-            False,
-            "main checkout has no valid testmon graph because its testmondata file is missing",
-        )
-    root = main_checkout_root or _checkout_root_for_data(main_testmon_data)
-    root = root.resolve()
-    try:
-        main_testmon_data.resolve().relative_to(root)
-        main_seed_stamp.resolve().relative_to(root)
-        if main_seed_attempt is not None:
-            main_seed_attempt.resolve().relative_to(root)
-    except ValueError:
-        return BootstrapDecision(False, "main testmon paths are not bound to the declared checkout root")
-    if _is_valid_complete_seed_stamp(
-        main_seed_stamp,
-        main_testmon_data,
-        protocol_version=protocol_version,
-        checkout_root=root,
-    ):
-        return BootstrapDecision(
-            True,
-            f"main checkout has a validated testmon graph ({main_seed_stamp}); bootstrapping worktree cache",
-            main_testmon_data=main_testmon_data,
-            main_seed_stamp=main_seed_stamp,
-            main_checkout_root=root,
-            protocol_version=protocol_version,
-        )
-    if main_seed_attempt is not None and main_seed_attempt.is_file():
-        try:
-            attempt = json.loads(main_seed_attempt.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            attempt = None
-        if (
-            isinstance(attempt, dict)
-            and (
-                attempt_stamp := stamp_from_attempt(
-                    attempt,
-                    main_testmon_data,
-                    checkout_root=root,
-                    protocol_version=protocol_version,
-                    published_marker=False,
-                )
-            )
-            is not None
-        ):
-            return BootstrapDecision(
-                True,
-                "main checkout has a validated complete graph from a red seed attempt; bootstrapping worktree cache",
-                main_testmon_data=main_testmon_data,
-                main_seed_attempt=main_seed_attempt,
-                main_checkout_root=root,
-                protocol_version=protocol_version,
-                selection_only=not attempt_stamp.release_baseline_allowed,
-            )
-    if main_seed_stamp.is_file():
-        return BootstrapDecision(False, "main checkout seed stamp is stale, malformed, or graph-incomplete")
-    return BootstrapDecision(
-        False,
-        "main checkout has no validated reusable testmon state",
-    )
-
-
-def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(path)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _atomic_write_stamp(seed_stamp: Path, stamp: TestmonSeedStamp) -> None:
-    _atomic_write_json(seed_stamp, stamp.as_dict())
-
-
-def _rebind_run_receipt(
-    *, source: Path, destination: Path, checkout_root: Path, run_id: str, current_run_path: Path | None = None
-) -> bool:
-    """Copy the run receipt while rebinding its checkout-local provenance."""
-    try:
-        payload = json.loads((source / "run.json").read_text(encoding="utf-8"))
-        if not isinstance(payload, Mapping) or payload.get("run_id") != run_id:
-            return False
-        source_root = payload.get("checkout_root")
-        if not isinstance(source_root, str) or Path(source_root).resolve() != source.parents[3].resolve():
-            return False
-        payload_dict: dict[str, Any] = dict(payload)
-        payload_dict["checkout_root"] = str(checkout_root.resolve())
-        payload_dict["artifact_dir"] = str(Path(".cache") / "verify" / "runs" / run_id)
-        environment = payload_dict.get("environment_fingerprint")
-        if isinstance(environment, dict):
-            environment["checkout_root"] = str(checkout_root.resolve())
-            environment["verify_state_origin"] = str(checkout_root.resolve())
-        _atomic_write_json(destination / "run.json", payload_dict)
-        _atomic_write_json(
-            current_run_path or checkout_root / ".cache" / "verify" / "current-run.json",
-            payload_dict,
-        )
-        return True
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-        return False
-
-
-def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
-    """Copy a (possibly concurrently-written) sqlite db via the online backup API.
-
-    `sqlite3.Connection.backup` is designed to snapshot a live database without
-    requiring an exclusive lock on the source, so this tolerates the main
-    checkout mid-write. The destination is built at a temp path and only
-    `rename`d into place once the backup completes, so a reader never observes
-    a partially-copied file at `dst`.
-    """
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
-    tmp.unlink(missing_ok=True)
-    try:
-        src_conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True)
-        try:
-            dst_conn = sqlite3.connect(tmp)
-            try:
-                src_conn.backup(dst_conn)
-            finally:
-                dst_conn.close()
-        finally:
-            src_conn.close()
-        tmp.replace(dst)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _publish_staged_bootstrap_files(*, staging_dir: Path, files: list[tuple[Path, Path | None]]) -> None:
-    """Publish a validated bootstrap as one rollback-capable file set."""
-    backup_dir = staging_dir / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backups: list[tuple[Path, Path]] = []
-    published: list[Path] = []
-    try:
-        for index, (destination, staged) in enumerate(files):
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            backup = backup_dir / str(index)
-            if destination.exists():
-                os.replace(destination, backup)
-                backups.append((destination, backup))
-            if staged is not None:
-                os.replace(staged, destination)
-                published.append(destination)
-    except (OSError, ValueError):
-        for destination in reversed(published):
-            destination.unlink(missing_ok=True)
-        for destination, backup in reversed(backups):
-            if backup.exists():
-                os.replace(backup, destination)
-        raise
-    finally:
-        shutil.rmtree(backup_dir, ignore_errors=True)
-
-
-def _copy_runtime_identity_inputs(*, source_root: Path, destination_root: Path) -> None:
-    """Mirror the inputs used to validate a staged testmon receipt."""
-    for relative_path in (
-        "uv.lock",
-        "pyproject.toml",
-        "pytest.ini",
-        "tox.ini",
-        "setup.cfg",
-        "tests/conftest.py",
-    ):
-        source = source_root / relative_path
-        if not source.is_file():
-            continue
-        destination = destination_root / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
-
-
-def bootstrap_testmon_seed_files(
-    decision: BootstrapDecision,
-    *,
-    local_testmon_data: Path,
-    local_seed_stamp: Path,
-    local_seed_attempt: Path | None = None,
-    checkout_root: Path | None = None,
-    inherited_from: Path | None = None,
-) -> bool:
-    """Perform the copy `decision` describes and report whether it was stamped."""
-    if not decision.should_bootstrap:
-        return True
-    assert decision.main_testmon_data is not None
-    if decision.main_seed_stamp is None and decision.main_seed_attempt is None:
-        return False
-    if decision.main_seed_attempt is not None and local_seed_attempt is None:
-        return False
-    if checkout_root is None or inherited_from is None:
-        return False
-    stamp: TestmonSeedStamp | None = None
-    try:
-        source_root = (decision.main_checkout_root or inherited_from).resolve()
-        destination_root = checkout_root.resolve()
-        if source_root == destination_root:
-            return False
-        if inherited_from.resolve() != source_root:
-            return False
-        if decision.main_testmon_data.resolve() == local_testmon_data.resolve():
-            return False
-        decision.main_testmon_data.resolve().relative_to(source_root)
-        local_testmon_data.resolve().relative_to(destination_root)
-        local_seed_stamp.resolve().relative_to(destination_root)
-        if local_seed_stamp.resolve() == local_testmon_data.resolve():
-            return False
-        if local_seed_attempt is not None:
-            local_seed_attempt.resolve().relative_to(destination_root)
-            if local_seed_attempt.resolve() in {local_testmon_data.resolve(), local_seed_stamp.resolve()}:
-                return False
-        if decision.main_seed_stamp is not None:
-            decision.main_seed_stamp.resolve().relative_to(source_root)
-            if decision.main_seed_stamp.resolve() == decision.main_testmon_data.resolve():
-                return False
-        if decision.main_seed_attempt is not None:
-            decision.main_seed_attempt.resolve().relative_to(source_root)
-            if decision.main_seed_attempt.resolve() == decision.main_testmon_data.resolve():
-                return False
-        if decision.main_seed_stamp is not None:
-            stamp = validate_stamp(
-                decision.main_seed_stamp,
-                decision.main_testmon_data,
-                checkout_root=source_root,
-                protocol_version=decision.protocol_version,
-            )
-        else:
-            assert decision.main_seed_attempt is not None
-            source = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
-            if not isinstance(source, dict):
-                return False
-            stamp = stamp_from_attempt(
-                source,
-                decision.main_testmon_data,
-                checkout_root=source_root,
-                protocol_version=decision.protocol_version,
-                published_marker=False,
-            )
-            if stamp is None:
-                return False
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, sqlite3.Error):
-        return False
-    if stamp is None:
-        return False
-    staging_dir: Path | None = None
-    try:
-        local_testmon_data.parent.mkdir(parents=True, exist_ok=True)
-        staging_dir = Path(tempfile.mkdtemp(prefix=".bootstrap-", dir=str(local_testmon_data.parent)))
-        staged_data = staging_dir / "testmondata"
-        staged_stamp = staging_dir / "seed.json"
-        staged_attempt = staging_dir / "seed-attempt.json"
-        staged_artifact = staging_dir / "artifact"
-        staged_current_run = staging_dir / "current-run.json"
-
-        _atomic_copy_sqlite_db(decision.main_testmon_data, staged_data)
-        rebound = stamp.rebound(checkout_root=destination_root, inherited_from=source_root)
-        refreshed = refresh_stamp(rebound, staged_data)
-        if refreshed is None or refreshed.graph != rebound.graph:
-            return False
-        source_artifact = source_root / Path(stamp.artifact_dir)
-        destination_artifact = (destination_root / Path(refreshed.artifact_dir)).resolve()
-        destination_artifact.relative_to(destination_root)
-        if not _rebind_run_receipt(
-            source=source_artifact,
-            destination=staged_artifact,
-            checkout_root=destination_root,
-            run_id=refreshed.run_id,
-            current_run_path=staged_current_run,
-        ):
-            return False
-        staged_attempt_path: Path | None = None
-        publishes_selection_attempt = decision.main_seed_attempt is not None and decision.selection_only
-        if publishes_selection_attempt:
-            assert decision.main_seed_attempt is not None
-            assert local_seed_attempt is not None
-            source_attempt = json.loads(decision.main_seed_attempt.read_text(encoding="utf-8"))
-            if not isinstance(source_attempt, dict):
-                return False
-            rebound_attempt = dict(source_attempt)
-            rebound_attempt["testmon_data"] = refreshed.testmon_data
-            rebound_attempt["artifact_dir"] = f".cache/verify/runs/{refreshed.run_id}"
-            rebound_attempt["binding"] = refreshed.binding.as_dict()
-            rebound_attempt["release_baseline_allowed"] = False
-            rebound_attempt["verification_scope"] = "affected"
-            validation_root = staging_dir / "validation"
-            validation_receipt = json.loads(staged_current_run.read_text(encoding="utf-8"))
-            if not isinstance(validation_receipt, dict):
-                return False
-            validation_receipt["checkout_root"] = str(validation_root.resolve())
-            validation_receipt["artifact_dir"] = f".cache/verify/runs/{refreshed.run_id}"
-            _copy_runtime_identity_inputs(source_root=destination_root, destination_root=validation_root)
-            _atomic_write_json(
-                validation_root / ".cache" / "verify" / "runs" / refreshed.run_id / "run.json",
-                validation_receipt,
-            )
-            validation_attempt = dict(rebound_attempt)
-            raw_binding = validation_attempt.get("binding")
-            if not isinstance(raw_binding, Mapping):
-                return False
-            validation_binding = dict(raw_binding)
-            validation_binding["checkout_root"] = str(validation_root.resolve())
-            validation_attempt["binding"] = validation_binding
+            return True
+        if isinstance(child, ast.Call):
             if (
-                stamp_from_attempt(
-                    validation_attempt,
-                    staged_data,
-                    checkout_root=validation_root,
-                    protocol_version=decision.protocol_version,
-                )
-                is None
+                isinstance(child.func, ast.Name)
+                and child.func.id == "setattr"
+                and len(child.args) >= 2
+                and isinstance(child.args[1], ast.Constant)
+                and child.args[1].value == "pytest_plugins"
             ):
-                return False
-            _atomic_write_json(staged_attempt, rebound_attempt)
-            staged_attempt_path = staged_attempt
-        else:
-            _atomic_write_stamp(staged_stamp, refreshed)
-        publication_files: list[tuple[Path, Path | None]] = [
-            (local_testmon_data, staged_data),
-            (destination_artifact / "run.json", staged_artifact / "run.json"),
-            (destination_root / ".cache" / "verify" / "current-run.json", staged_current_run),
-            (local_seed_stamp, None if publishes_selection_attempt else staged_stamp),
-        ]
-        if local_seed_attempt is not None:
-            publication_files.append((local_seed_attempt, staged_attempt_path))
-        _publish_staged_bootstrap_files(staging_dir=staging_dir, files=publication_files)
+                return True
+            if any(keyword.arg == "pytest_plugins" for keyword in child.keywords):
+                return True
+    return False
+
+
+def _declared_pytest_plugin_names(
+    root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> set[str]:
+    """Read static local plugin declarations that pytest loads at collection."""
+    names: set[str] = set()
+    candidates: set[Path] = set()
+    candidates.add(root / "conftest.py")
+    for path in root.glob("tests/**/*.py"):
+        _ensure_deadline(deadline_monotonic)
+        if _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "pytest_plugins" not in source:
+            continue
+        candidates.add(path)
+    for path in root.glob("tests/**/conftest.py"):
+        _ensure_deadline(deadline_monotonic)
+        if _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
+            continue
+        candidates.add(path)
+    for path in sorted(candidates):
+        _ensure_deadline(deadline_monotonic)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        declaration_count = 0
+        for node in tree.body:
+            value = _pytest_plugins_assignment(node)
+            if value is None:
+                dynamic_reference = (
+                    any(isinstance(child, ast.Name) and child.id == "pytest_plugins" for child in ast.walk(node))
+                    or any(
+                        alias.name == "pytest_plugins" or alias.asname == "pytest_plugins"
+                        for child in ast.walk(node)
+                        if isinstance(child, ast.Import | ast.ImportFrom)
+                        for alias in child.names
+                    )
+                    or _indirect_pytest_plugins_declaration(node)
+                )
+                if dynamic_reference:
+                    raise NativeTestmonRepairError(
+                        f"repository pytest_plugins declaration must be one literal assignment: {path}"
+                    )
+                continue
+            declaration_count += 1
+            if declaration_count != 1:
+                raise NativeTestmonRepairError(
+                    f"repository pytest_plugins declaration must be one literal assignment: {path}"
+                )
+            try:
+                declared = ast.literal_eval(value)
+            except (ValueError, TypeError) as exc:
+                raise NativeTestmonRepairError(
+                    f"repository pytest_plugins declaration must be a literal string/list/tuple: {path}"
+                ) from exc
+            if isinstance(declared, str):
+                names.add(declared)
+            elif isinstance(declared, tuple | list) and all(isinstance(name, str) for name in declared):
+                names.update(declared)
+            else:
+                raise NativeTestmonRepairError(
+                    f"repository pytest_plugins declaration must contain only literal plugin names: {path}"
+                )
+    return names
+
+
+def _active_local_pytest_plugin_paths(
+    root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> set[str]:
+    """Resolve collection-active local pytest plugins regardless of filename."""
+    paths: set[str] = set()
+    plugin_names = _declared_pytest_plugin_names(root, deadline_monotonic=deadline_monotonic)
+    for raw_name in plugin_names:
+        _ensure_deadline(deadline_monotonic)
+        module_name = raw_name.strip()
+        if not module_name or any(part in {"", ".", ".."} for part in module_name.split(".")):
+            continue
+        module_path = Path(*module_name.split("."))
+        module_file = root / module_path.with_suffix(".py")
+        if module_file.is_file() and not _is_ignored_native_testmon_path(module_file.relative_to(root).as_posix()):
+            paths.add(module_file.relative_to(root).as_posix())
+        package = root / module_path
+        if (package / "__init__.py").is_file():
+            for path in package.rglob("*.py"):
+                _ensure_deadline(deadline_monotonic)
+                if path.is_file() and not _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
+                    paths.add(path.relative_to(root).as_posix())
+    return paths
+
+
+def _environment_input_paths(
+    root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, ...]:
+    """Discover collection and managed-pytest harness inputs."""
+    paths = set(_ENVIRONMENT_INPUTS)
+    patterns = (
+        "devtools/pytest*.py",
+        "tests/**/conftest.py",
+    )
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            _ensure_deadline(deadline_monotonic)
+            if path.is_file() and not _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
+                paths.add(path.relative_to(root).as_posix())
+    paths.update(_active_local_pytest_plugin_paths(root, deadline_monotonic=deadline_monotonic))
+    return tuple(sorted(paths))
+
+
+def _installed_distributions() -> tuple[tuple[str, str], ...]:
+    distributions: list[tuple[str, str]] = []
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata["Name"]
+        version = distribution.version
+        if not name or not version:
+            raise NativeTestmonRepairError("active Python distributions are not fully identifiable")
+        distributions.append((name.casefold(), version))
+    return tuple(sorted(distributions))
+
+
+def testmon_environment_digest(
+    repo_root: Path,
+    *,
+    pytest_profile: str = "default",
+    pytest_environment: Mapping[str, str | None] | None = None,
+    deadline_monotonic: float | None = None,
+) -> str:
+    """Return the native testmon environment name for collection semantics."""
+    root = repo_root.resolve()
+    _ensure_deadline(deadline_monotonic)
+    payload = {
+        "protocol": 1,
+        "python": {
+            "implementation": sys.implementation.name,
+            "cache_tag": sys.implementation.cache_tag,
+            "version": platform.python_version(),
+            "abi_flags": getattr(sys, "abiflags", ""),
+            "platform": platform.platform(),
+        },
+        "distributions": _installed_distributions(),
+        "inputs": _fingerprint_inputs(
+            root,
+            _environment_input_paths(root, deadline_monotonic=deadline_monotonic),
+            deadline_monotonic=deadline_monotonic,
+        ),
+        "pytest_environment": {
+            key: (os.environ.get(key) if pytest_environment is None else pytest_environment.get(key))
+            for key in _PYTEST_ENVIRONMENT_KEYS
+        },
+        "pytest_profile": pytest_profile,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"polylogue-{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _is_docstring(node: ast.stmt, *, first: bool) -> bool:
+    return (
+        first
+        and isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _is_type_checking_guard(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == "TYPE_CHECKING"
+        or (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "typing"
+            and node.attr == "TYPE_CHECKING"
+        )
+    )
+
+
+def _body_is_executable(body: list[ast.stmt]) -> bool:
+    for index, node in enumerate(body):
+        if _is_docstring(node, first=index == 0):
+            continue
+        if isinstance(node, ast.Pass):
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "typing"
+            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
+        ):
+            # Importing the sentinel only enables a declaration-only guard.
+            # Imports elsewhere execute at module import time and therefore
+            # remain executable graph inputs.
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and all(alias.name == "annotations" for alias in node.names)
+        ):
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "enum"
+            and all(alias.name in {"Enum", "IntEnum", "StrEnum"} for alias in node.names)
+        ):
+            continue
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and (isinstance(node.value.value, str) or node.value.value is Ellipsis)
+        ):
+            continue
+        if isinstance(node, ast.AnnAssign) and node.value is None:
+            continue
+        if isinstance(node, ast.If) and _is_type_checking_guard(node.test):
+            # The guarded body is deliberately invisible at runtime. An else
+            # branch does execute and therefore retains ordinary classification.
+            if _body_is_executable(node.orelse):
+                return True
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.decorator_list or node.args.defaults or any(value is not None for value in node.args.kw_defaults):
+                return True
+            if _body_is_executable(node.body):
+                return True
+            continue
+        if isinstance(node, ast.ClassDef):
+            if _is_pure_enum_declaration(node):
+                continue
+            if node.decorator_list or node.bases or node.keywords or _body_is_executable(node.body):
+                return True
+            continue
+        if isinstance(node, ast.Assign):
+            return True
+        if isinstance(node, ast.AnnAssign):
+            if node.value is not None:
+                return True
+            continue
         return True
-    except (OSError, sqlite3.Error, TypeError, ValueError):
+    return False
+
+
+def _is_pure_enum_declaration(node: ast.ClassDef) -> bool:
+    """Recognize enum value declarations that tracing cannot observe usefully."""
+    bases = {base.id for base in node.bases if isinstance(base, ast.Name)}
+    if not bases.intersection({"Enum", "IntEnum", "StrEnum"}):
         return False
-    finally:
-        if staging_dir is not None:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+    for member in node.body:
+        if (
+            isinstance(member, ast.Expr)
+            and isinstance(member.value, ast.Constant)
+            and isinstance(member.value.value, str)
+        ):
+            continue
+        if isinstance(member, (ast.Assign, ast.AnnAssign, ast.Pass)):
+            continue
+        return False
+    return True
 
 
-def _git_worktree_info(repo_root: Path) -> tuple[bool, Path] | None:
-    """Return `(is_linked_worktree, main_checkout_path)`, or None if undeterminable.
+def classify_source_ast(source_path: Path) -> ASTClassification:
+    """Classify whether a module contains executable runtime behavior."""
+    try:
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    except OSError:
+        return "source-unreadable"
+    except (SyntaxError, UnicodeDecodeError):
+        return "executable"
+    return "executable" if _body_is_executable(tree.body) else "declaration-only"
 
-    Same `git rev-parse --absolute-git-dir --git-common-dir` mechanism
-    `devtools/verify_worktree.py:inspect_worktree` uses: a linked worktree's
-    git-dir (`.git/worktrees/<name>`) differs from the shared
-    git-common-dir; a main checkout's git-dir *is* the common-dir.
+
+def _safe_relative_path(raw: str) -> str | None:
+    normalized = PurePosixPath(raw.replace("\\", "/"))
+    if normalized.is_absolute() or not normalized.parts or ".." in normalized.parts:
+        return None
+    return str(normalized)
+
+
+def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str, ...]:
+    """Return changed Python paths whose runtime behavior needs graph edges.
+
+    A deleted module cannot be parsed, but it still invalidates any graph edge
+    that pointed at it. Keep that path in the required set so inspection fails
+    closed and the verifier rebuilds the complete native corpus.
     """
+    root = repo_root.resolve()
+    executable: list[str] = []
+    for raw in sorted(set(paths)):
+        relative = _safe_relative_path(raw)
+        if relative is None or not relative.endswith(".py"):
+            continue
+        source = root / relative
+        if source.exists() and source.is_file() and classify_source_ast(source) == "declaration-only":
+            continue
+        executable.append(relative)
+    return tuple(executable)
+
+
+def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> NativeTestmonChangeImpact:
+    """Classify changed product inputs against native testmon's trace boundary.
+
+    Python tracing does not observe non-Python runtime data. Non-Python files
+    under the shipped ``polylogue`` package or the test runtime tree are
+    therefore outside the native graph and cannot safely use affected
+    selection. The caller must run the complete native corpus for those
+    changes. This convention covers additions, deletions, and all data formats
+    without a filename registry.
+    """
+    normalized = tuple(relative for raw in sorted(set(paths)) if (relative := _safe_relative_path(raw)) is not None)
+    native_paths = tuple(relative for relative in normalized if not _is_ignored_native_testmon_path(relative))
+    runtime_data = tuple(
+        relative
+        for relative in native_paths
+        if (not relative.endswith(".py") and relative.startswith(("polylogue/", "tests/")))
+        or (
+            relative.endswith(".py")
+            and relative.startswith(("devtools/", "polylogue/", "tests/"))
+            and classify_source_ast(repo_root / relative) == "declaration-only"
+        )
+        or relative.startswith("packaging/")
+    )
+    return NativeTestmonChangeImpact(
+        executable_paths=executable_python_paths(
+            repo_root,
+            (relative for relative in native_paths if relative not in runtime_data),
+        ),
+        runtime_data_paths=runtime_data,
+    )
+
+
+def _readonly_uri(path: Path) -> str:
+    return f"{path.absolute().as_uri()}?mode=ro"
+
+
+def _testmon_schema_version() -> int:
+    module = importlib.import_module("testmon.db")
+    value = getattr(module, "DATA_VERSION", None)
+    if not isinstance(value, int):
+        raise NativeTestmonRepairError("pytest-testmon does not expose an integer database version")
+    return value
+
+
+def _digest_nodeids(nodeids: Sequence[str]) -> str:
+    return hashlib.sha256("\n".join(nodeids).encode()).hexdigest()
+
+
+def inspect_native_testmon_environment(
+    data_path: Path,
+    *,
+    environment_name: str,
+    required_executable_paths: Sequence[str] = (),
+    deadline_monotonic: float | None = None,
+) -> NativeTestmonState:
+    """Validate one native environment without interpreting plugin internals."""
+    _ensure_deadline(deadline_monotonic)
+    sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
+    if not data_path.exists():
+        if any(path.exists() or path.is_symlink() for path in sidecars):
+            return NativeTestmonState("invalid", "SQLite sidecars exist without the owned database")
+        return NativeTestmonState("absent", "native testmon database is absent")
+    try:
+        state = data_path.lstat()
+    except OSError as exc:
+        return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
+    if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+        return NativeTestmonState("invalid", "native testmon database is not a single-link regular file")
+    for sidecar in sidecars:
+        try:
+            sidecar_state = sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return NativeTestmonState("invalid", f"cannot inspect native testmon sidecar {sidecar}: {exc}")
+        if not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
+            return NativeTestmonState("invalid", f"native testmon sidecar is not a single-link regular file: {sidecar}")
+    try:
+        with (
+            contextlib.closing(
+                sqlite3.connect(
+                    _readonly_uri(data_path),
+                    uri=True,
+                    timeout=_remaining_timeout(deadline_monotonic, 10),
+                )
+            ) as connection,
+            connection,
+        ):
+            if deadline_monotonic is not None:
+                connection.set_progress_handler(lambda: int(time.monotonic() >= deadline_monotonic), 1_000)
+            quick_check = connection.execute("PRAGMA quick_check").fetchone()
+            _ensure_deadline(deadline_monotonic)
+            if quick_check is None or quick_check[0] != "ok":
+                return NativeTestmonState("invalid", "SQLite quick_check failed")
+            version_row = connection.execute("PRAGMA user_version").fetchone()
+            if version_row is None or version_row[0] != _testmon_schema_version():
+                return NativeTestmonState("invalid", "pytest-testmon database schema version changed")
+            environment_rows = connection.execute(
+                "SELECT id FROM environment WHERE environment_name = ? ORDER BY id DESC",
+                (environment_name,),
+            ).fetchall()
+            _ensure_deadline(deadline_monotonic)
+            if len(environment_rows) != 1:
+                reason = "native environment is absent" if not environment_rows else "native environment is ambiguous"
+                return NativeTestmonState("invalid", reason)
+            environment_id = int(environment_rows[0][0])
+            nodeids = tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT test_name FROM test_execution WHERE environment_id = ? ORDER BY test_name",
+                    (environment_id,),
+                ).fetchall()
+                if isinstance(row[0], str) and row[0]
+            )
+            _ensure_deadline(deadline_monotonic)
+            if not nodeids or len(nodeids) != len(set(nodeids)):
+                return NativeTestmonState("invalid", "native environment has no unique collected corpus")
+            uncovered = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM test_execution AS execution
+                LEFT JOIN test_execution_file_fp AS edge ON edge.test_execution_id = execution.id
+                WHERE execution.environment_id = ? AND edge.test_execution_id IS NULL
+                """,
+                (environment_id,),
+            ).fetchone()
+            _ensure_deadline(deadline_monotonic)
+            if uncovered is None or int(uncovered[0]) != 0:
+                return NativeTestmonState("invalid", "native environment has tests without dependency placeholders")
+            raw_files = connection.execute(
+                """
+                SELECT DISTINCT fingerprint.filename
+                FROM test_execution AS execution
+                JOIN test_execution_file_fp AS edge ON edge.test_execution_id = execution.id
+                JOIN file_fp AS fingerprint ON fingerprint.id = edge.fingerprint_id
+                WHERE execution.environment_id = ?
+                """,
+                (environment_id,),
+            ).fetchall()
+            _ensure_deadline(deadline_monotonic)
+    except NativeTestmonDeadlineError:
+        raise
+    except (NativeTestmonRepairError, OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        _ensure_deadline(deadline_monotonic)
+        return NativeTestmonState("invalid", f"native testmon database is unreadable: {exc}")
+    fingerprinted = frozenset(
+        relative
+        for row in raw_files
+        if row and isinstance(row[0], str)
+        if (relative := _safe_relative_path(row[0])) is not None
+    )
+    required = tuple(sorted(set(required_executable_paths)))
+    missing = tuple(path for path in required if path not in fingerprinted)
+    environment = NativeTestmonEnvironment(
+        name=environment_name,
+        corpus_count=len(nodeids),
+        corpus_digest=_digest_nodeids(nodeids),
+        nodeids=nodeids,
+        fingerprinted_files=fingerprinted,
+    )
+    if missing:
+        return NativeTestmonState(
+            "invalid",
+            "changed executable modules are absent from the native dependency graph",
+            environment,
+            missing,
+        )
+    return NativeTestmonState("valid", "native environment is current", environment)
+
+
+def _owned_paths(repo_root: Path) -> tuple[Path, ...]:
+    root = repo_root.resolve()
+    _validate_owned_state_parents(root)
+    data = root / TESTMON_DATA_RELPATH
+    return (data, *(Path(f"{data}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES))
+
+
+def _validate_owned_state_parents(repo_root: Path) -> None:
+    """Reject state paths that escape the checkout through a symlink parent."""
+    parent = repo_root.resolve()
+    for part in TESTMON_DATA_RELPATH.parent.parts:
+        parent /= part
+        try:
+            mode = parent.lstat().st_mode
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect owned testmon parent {parent}: {exc}") from exc
+        if stat.S_ISLNK(mode):
+            raise NativeTestmonRepairError(f"refusing symlinked owned testmon parent {parent}")
+        if not stat.S_ISDIR(mode):
+            raise NativeTestmonRepairError(f"owned testmon parent is not a directory: {parent}")
+
+
+def validate_native_testmon_state_ownership(repo_root: Path) -> None:
+    """Reject parent or file replacement before managed SQLite access."""
+    for path in _owned_paths(repo_root):
+        try:
+            state = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect owned testmon path {path}: {exc}") from exc
+        if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+            raise NativeTestmonRepairError(f"owned testmon path is not a single-link regular file: {path}")
+
+
+def remove_invalid_native_testmon_state(repo_root: Path) -> tuple[Path, ...]:
+    """Remove only the exact checkout-owned SQLite file and known sidecars."""
+    removed: list[Path] = []
+    for path in _owned_paths(repo_root):
+        try:
+            state = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect owned testmon path {path}: {exc}") from exc
+        if stat.S_ISDIR(state.st_mode):
+            raise NativeTestmonRepairError(f"refusing to remove directory at owned SQLite path {path}")
+        if stat.S_ISREG(state.st_mode) and state.st_nlink != 1:
+            raise NativeTestmonRepairError(f"refusing to remove hard-linked owned SQLite path {path}")
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot remove invalid owned testmon path {path}: {exc}") from exc
+        removed.append(path)
+    return tuple(removed)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_copy_sqlite_database(
+    source: Path,
+    destination: Path,
+    *,
+    environment_name: str,
+    required_executable_paths: Sequence[str],
+    deadline_monotonic: float | None,
+) -> None:
+    _ensure_deadline(deadline_monotonic)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp")
+    try:
+        with (
+            contextlib.closing(
+                sqlite3.connect(
+                    _readonly_uri(source),
+                    uri=True,
+                    timeout=_remaining_timeout(deadline_monotonic, 60),
+                )
+            ) as source_connection,
+            contextlib.closing(
+                sqlite3.connect(temporary, timeout=_remaining_timeout(deadline_monotonic, 60))
+            ) as destination_connection,
+            source_connection,
+            destination_connection,
+        ):
+            source_connection.backup(
+                destination_connection,
+                pages=256,
+                progress=lambda _status, _remaining, _total: _ensure_deadline(deadline_monotonic),
+                sleep=0.05,
+            )
+        _ensure_deadline(deadline_monotonic)
+        copied = inspect_native_testmon_environment(
+            temporary,
+            environment_name=environment_name,
+            required_executable_paths=required_executable_paths,
+            deadline_monotonic=deadline_monotonic,
+        )
+        if not copied.valid:
+            raise NativeTestmonRepairError(f"copied main-checkout database failed validation: {copied.reason}")
+        descriptor = os.open(temporary, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, destination)
+        _fsync_directory(destination.parent)
+        _ensure_deadline(deadline_monotonic)
+    except NativeTestmonDeadlineError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise NativeTestmonRepairError(f"SQLite online backup failed: {exc}") from exc
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+        for suffix in TESTMON_SIDECAR_SUFFIXES:
+            with contextlib.suppress(FileNotFoundError):
+                Path(f"{temporary}{suffix}").unlink()
+
+
+def linked_worktree_info(
+    repo_root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> tuple[bool, Path] | None:
+    """Return linked-worktree status and the main checkout path."""
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_root), "rev-parse", "--absolute-git-dir", "--git-common-dir"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_remaining_timeout(deadline_monotonic, 10),
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        _ensure_deadline(deadline_monotonic)
+        return None
+    except OSError:
         return None
     if result.returncode != 0:
         return None
@@ -531,83 +815,109 @@ def _git_worktree_info(repo_root: Path) -> tuple[bool, Path] | None:
     git_dir = Path(lines[0]).resolve()
     raw_common = Path(lines[1])
     common_dir = raw_common.resolve() if raw_common.is_absolute() else (repo_root / raw_common).resolve()
-    is_linked = git_dir != common_dir
-    main_checkout = common_dir.parent
-    return is_linked, main_checkout
+    return git_dir != common_dir, common_dir.parent
 
 
-def maybe_bootstrap_testmon_seed(
+def prepare_native_testmon_environment(
     repo_root: Path,
     *,
-    testmon_data_relpath: str = TESTMON_DATA_RELPATH,
-    seed_stamp_relpath: str = TESTMON_SEED_STAMP_RELPATH,
-    seed_attempt_relpath: str = TESTMON_SEED_ATTEMPT_RELPATH,
-    protocol_version: int,
-) -> str | None:
-    """Bootstrap `repo_root`'s testmon seed from its main checkout if warranted.
+    required_executable_paths: Sequence[str] = (),
+    pytest_profile: str = "default",
+    pytest_environment: Mapping[str, str | None] | None = None,
+    deadline_monotonic: float | None = None,
+) -> NativeTestmonPreparation:
+    """Repair derived local state and optionally reuse a matching main graph."""
+    root = repo_root.resolve()
+    _validate_owned_state_parents(root)
+    environment_name = testmon_environment_digest(
+        root,
+        pytest_profile=pytest_profile,
+        pytest_environment=pytest_environment,
+        deadline_monotonic=deadline_monotonic,
+    )
+    local_data = root / TESTMON_DATA_RELPATH
+    local_data.parent.mkdir(parents=True, exist_ok=True)
+    _validate_owned_state_parents(root)
+    local = inspect_native_testmon_environment(
+        local_data,
+        environment_name=environment_name,
+        required_executable_paths=required_executable_paths,
+        deadline_monotonic=deadline_monotonic,
+    )
+    missing_checkout_paths = tuple(
+        path for path in sorted(set(required_executable_paths)) if not (root / path).is_file()
+    )
+    if local.valid and missing_checkout_paths:
+        local = NativeTestmonState(
+            "invalid",
+            "changed executable modules are absent from the current checkout",
+            local.environment,
+            missing_checkout_paths,
+        )
+    info = linked_worktree_info(root, deadline_monotonic=deadline_monotonic)
+    linked = bool(info and info[0])
+    main_checkout = info[1] if linked and info is not None else None
+    if local.valid:
+        return NativeTestmonPreparation(environment_name, "affected", local, None, (), linked, main_checkout)
 
-    Returns a one-line message to log on success, or ``None`` when no
-    bootstrap happened (not a linked worktree, already seeded locally, or the
-    main checkout has nothing valid to offer). Called from
-    `devtools/verify.py` before `_testmon_preflight`, so a freshly-bootstrapped
-    worktree passes that preflight instead of refusing.
-    """
-    info = _git_worktree_info(repo_root)
-    if info is None:
-        return None
-    is_linked_worktree, main_checkout = info
-    if main_checkout == repo_root.resolve():
-        return None
-    local_testmon_data = repo_root / testmon_data_relpath
-    local_seed_stamp = repo_root / seed_stamp_relpath
-    local_seed_attempt = repo_root / seed_attempt_relpath
-    main_testmon_data = main_checkout / testmon_data_relpath
-    main_seed_stamp = main_checkout / seed_stamp_relpath
-    main_seed_attempt = main_checkout / seed_attempt_relpath
-    decision = decide_testmon_bootstrap(
-        is_linked_worktree=is_linked_worktree,
-        local_testmon_data=local_testmon_data,
-        local_seed_stamp=local_seed_stamp,
-        main_testmon_data=main_testmon_data,
-        main_seed_stamp=main_seed_stamp,
-        protocol_version=protocol_version,
-        main_seed_attempt=main_seed_attempt,
-        main_checkout_root=main_checkout,
-        local_checkout_root=repo_root,
-        local_seed_attempt=local_seed_attempt,
-    )
-    if not decision.should_bootstrap:
-        return None
-    stamped = bootstrap_testmon_seed_files(
-        decision,
-        local_testmon_data=local_testmon_data,
-        local_seed_stamp=local_seed_stamp,
-        local_seed_attempt=local_seed_attempt,
-        checkout_root=repo_root,
-        inherited_from=main_checkout,
-    )
-    if not stamped:
-        return (
-            f"verify: refused pytest-testmon bootstrap into {local_testmon_data.parent}; "
-            "no local state was published because provenance validation failed"
+    removed = remove_invalid_native_testmon_state(root)
+    _ensure_deadline(deadline_monotonic)
+    copied_from: Path | None = None
+    if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
+        _validate_owned_state_parents(main_checkout)
+        main_data = main_checkout / TESTMON_DATA_RELPATH
+        main = inspect_native_testmon_environment(
+            main_data,
+            environment_name=environment_name,
+            required_executable_paths=required_executable_paths,
+            deadline_monotonic=deadline_monotonic,
         )
-    if decision.main_seed_attempt is not None and decision.selection_only:
-        return (
-            f"verify: bootstrapped pytest-testmon graph from main checkout {main_checkout} "
-            f"into {local_testmon_data.parent} as a selection-only attempt receipt (no seed.json)"
-        )
-    return (
-        f"verify: bootstrapped pytest-testmon seed from main checkout {main_checkout} "
-        f"into {local_testmon_data.parent} (worktree had no local seed)"
-    )
+        if main.valid:
+            _atomic_copy_sqlite_database(
+                main_data,
+                local_data,
+                environment_name=environment_name,
+                required_executable_paths=required_executable_paths,
+                deadline_monotonic=deadline_monotonic,
+            )
+            copied_from = main_data
+            local = inspect_native_testmon_environment(
+                local_data,
+                environment_name=environment_name,
+                required_executable_paths=required_executable_paths,
+                deadline_monotonic=deadline_monotonic,
+            )
+            if not local.valid:
+                raise NativeTestmonRepairError(f"published native testmon copy is invalid: {local.reason}")
+            return NativeTestmonPreparation(
+                environment_name,
+                "affected",
+                local,
+                copied_from,
+                removed,
+                linked,
+                main_checkout,
+            )
+
+    return NativeTestmonPreparation(environment_name, "bootstrap", local, copied_from, removed, linked, main_checkout)
 
 
 __all__ = [
+    "ASTClassification",
+    "NativeTestmonEnvironment",
+    "NativeTestmonDeadlineError",
+    "NativeTestmonChangeImpact",
+    "NativeTestmonPreparation",
+    "NativeTestmonRepairError",
+    "NativeTestmonState",
     "TESTMON_DATA_RELPATH",
-    "TESTMON_SEED_STAMP_RELPATH",
-    "TESTMON_SEED_ATTEMPT_RELPATH",
-    "BootstrapDecision",
-    "decide_testmon_bootstrap",
-    "bootstrap_testmon_seed_files",
-    "maybe_bootstrap_testmon_seed",
+    "classify_source_ast",
+    "classify_native_testmon_changes",
+    "executable_python_paths",
+    "inspect_native_testmon_environment",
+    "linked_worktree_info",
+    "prepare_native_testmon_environment",
+    "remove_invalid_native_testmon_state",
+    "testmon_environment_digest",
+    "validate_native_testmon_state_ownership",
 ]

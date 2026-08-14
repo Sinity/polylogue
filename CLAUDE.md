@@ -336,12 +336,13 @@ testmon-affected set.
 
 - `mypy --strict` (via `devtools verify`) is the primary net for type/identifier
   refactors — trust it. Config in `pyproject.toml`, no exclude list.
-- Seed testmon on a fresh checkout / after harness or dependency changes:
-  `devtools verify --seed-testmon --skip-slow`. A linked worktree auto-bootstraps
-  its testmon cache from the main checkout's valid seed instead (`devtools/testmon_bootstrap.py`),
-  so this is only needed when the main checkout itself has no seed yet.
-- Reserve `devtools verify --all` (full non-integration run) for
-  harness/dependency changes or a final pre-PR diagnostic.
+- Plain `devtools verify` owns the native pytest-testmon lifecycle. It repairs
+  invalid local state, optionally copies a matching main-checkout database,
+  and automatically runs the complete correctness corpus when no valid native
+  environment exists. Never ask an operator or agent to seed or repair it.
+- Reserve `devtools verify --all` (complete unit/property/fuzz/integration
+  correctness corpus; performance benchmarks excluded) for harness/dependency
+  changes or a final pre-PR diagnostic.
 - `devtools verify --quick` = format + lint + mypy + `render all --check`
   (no tests); it runs on `git push` via the pre-push hook. It is a fast gate,
   not a substitute for the default baseline before a PR.
@@ -522,7 +523,7 @@ isolated XDG paths + archive root.
   without a managed run identity or an explicit basetemp root is forced to
   `/realm/tmp/polylogue-pytest` (NVMe). Managed `devtools test` and
   `devtools verify` runs may use bounded `/dev/shm` tmpfs only after the
-  runtime policy admits the requested demand; full-suite and seed-testmon
+  runtime policy admits the requested demand; full/bootstrap native
   runs default to NVMe because their aggregate fixture tree can exceed the
   supervised tmpfs ceiling.
   `POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB` overrides required headroom; an
@@ -565,7 +566,7 @@ Core loop:
   changing docs, CLI help, or schema. **Gotcha:** `render all --check` can print
   per-surface `sync OK` yet still exit 1 — grep the output for `out of sync`,
   don't trust the tail line.
-- `devtools verify [--quick|--all|--lab|--seed-testmon]` — see
+- `devtools verify [--quick|--all|--lab]` — see
   [Verification](#verification--testmon-inner-loop-never-blanket-run).
 - `devtools test <sel>` — focused pytest through the managed harness.
 - `devtools lab …` — executable schema/provider/pipeline/lane checks.

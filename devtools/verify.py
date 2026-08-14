@@ -7,10 +7,9 @@ Tiers:
   --commit   Pre-commit tier: ruff format + check + mypy (~3s warm).
   --quick    Pre-push tier: all non-pytest gates (~15s warm).
   (default)  Baseline with pytest-testmon affected tests.
-  --seed-testmon
-             Full non-integration pytest run that seeds/updates .cache/testmon/testmondata.
   --all/--full
-             Explicit full non-integration pytest diagnostic.
+             Complete pytest correctness corpus in the current native
+             testmon environment (performance benchmarks excluded).
   --lab      Default testmon baseline plus lab smoke and SLO checks.
 
 Output formats:
@@ -22,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -31,11 +31,13 @@ import selectors
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -58,27 +60,18 @@ from devtools.pytest_supervisor import (
     update_receipt,
     write_termination_request,
 )
-from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
-from devtools.testmon_state import (
-    SUCCESSFUL_NODE_OUTCOMES,
-    TERMINAL_NODE_OUTCOMES,
-    BindingMode,
-    GraphStatus,
-    SeedAttemptOutcome,
-    SeedShardStatus,
-    TerminalAuthorization,
-    TestmonBinding,
-    TestmonSeedStamp,
-    VerificationScope,
-    inspect_testmon_database,
-    refresh_stamp,
-    seed_shard_ledger_is_terminal,
-    seed_shard_plan,
-    stamp_from_attempt,
-    testmon_runtime_identity,
-    validate_seed_shard_ledger,
-    validate_stamp,
+from devtools.testmon_bootstrap import (
+    NativeTestmonDeadlineError,
+    NativeTestmonPreparation,
+    NativeTestmonRepairError,
+    NativeTestmonState,
+    classify_native_testmon_changes,
+    inspect_native_testmon_environment,
+    prepare_native_testmon_environment,
+    remove_invalid_native_testmon_state,
+    validate_native_testmon_state_ownership,
 )
+from devtools.verification_contracts import VerificationScope
 from devtools.verify_runs import (
     CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
@@ -89,11 +82,13 @@ from devtools.verify_runs import (
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
     CheckoutMutationMonitor,
+    CheckoutMutationObservation,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_worker_count,
+    aggregate_native_testmon_run,
     append_verify_history,
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
@@ -127,6 +122,185 @@ from polylogue.scenarios.workload import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+_PYTEST_CLEAR_CONFIGURED_ADDOPTS = "--override-ini=addopts="
+_PYTEST_MANAGED_PLUGIN_NAMES = (
+    "anyio",
+    "asyncio",
+    "hypothesispytest",
+    "benchmark",
+    "pytest_cov",
+    "pytest_jsonreport",
+    "randomly",
+    "syrupy",
+    "timeout",
+    "xdist",
+    "pytest-testmon",
+)
+_PYTEST_MANAGED_PLUGIN_ARGS = tuple(argument for name in _PYTEST_MANAGED_PLUGIN_NAMES for argument in ("-p", name))
+_PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
+    _PYTEST_CLEAR_CONFIGURED_ADDOPTS,
+    "--override-ini=python_files=test_*.py *_test.py fuzz_*.py",
+    "--override-ini=python_classes=Test",
+    "--override-ini=python_functions=test",
+    "--override-ini=norecursedirs=",
+    "tests",
+)
+NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
+
+
+def _normalize_managed_pytest_environment(
+    env: dict[str, str],
+    *,
+    disable_plugin_autoload: bool = True,
+) -> None:
+    """Remove ambient pytest options and extensions from a managed child."""
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_PLUGINS", None)
+    if disable_plugin_autoload:
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    else:
+        env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+
+
+def _python_optimization_level() -> int:
+    """Return the active interpreter optimization level."""
+    return int(sys.flags.optimize)
+
+
+@dataclass(slots=True)
+class _OwnedNativeTestmonState:
+    descriptor: int
+    data_path: Path
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonState:
+    """Bind managed SQLite access to one no-follow checkout directory."""
+    validate_native_testmon_state_ownership(repo_root)
+    raw_data = TESTMON_DATA if TESTMON_DATA.is_absolute() else repo_root.resolve() / TESTMON_DATA
+    parent = raw_data.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    validate_native_testmon_state_ownership(repo_root)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(parent, flags)
+        opened = os.fstat(descriptor)
+        current = parent.lstat()
+    except OSError as exc:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        raise NativeTestmonRepairError(f"cannot bind owned testmon directory {parent}: {exc}") from exc
+    assert descriptor is not None
+    if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        os.close(descriptor)
+        raise NativeTestmonRepairError(f"owned testmon directory changed while binding: {parent}")
+    bound = Path(f"/proc/{os.getpid()}/fd/{descriptor}") / raw_data.name
+    return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
+
+
+@contextlib.contextmanager
+def _native_testmon_lifecycle_lock(
+    repo_root: Path,
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+) -> Iterator[None]:
+    """Serialize one checkout's native testmon preparation, lanes, and inspection."""
+    cache = repo_root.resolve() / ".cache"
+    try:
+        mode = cache.lstat().st_mode
+    except FileNotFoundError:
+        cache.mkdir(exist_ok=True)
+        mode = cache.lstat().st_mode
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot inspect native testmon lock parent {cache}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise NativeTestmonRepairError(f"native testmon lock parent is not an owned directory: {cache}")
+    lock_path = cache / "native-testmon-lifecycle.lock"
+    directory_descriptor: int | None = None
+    lock_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            cache,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_directory = os.fstat(directory_descriptor)
+        current_directory = cache.lstat()
+        if not stat.S_ISDIR(opened_directory.st_mode) or (opened_directory.st_dev, opened_directory.st_ino) != (
+            current_directory.st_dev,
+            current_directory.st_ino,
+        ):
+            raise NativeTestmonRepairError(f"native testmon lock parent changed while binding: {cache}")
+        lock_descriptor = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        opened_lock = os.fstat(lock_descriptor)
+        current_lock = os.stat(lock_path.name, dir_fd=directory_descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened_lock.st_mode)
+            or not stat.S_ISREG(current_lock.st_mode)
+            or opened_lock.st_nlink != 1
+            or current_lock.st_nlink != 1
+            or (opened_lock.st_dev, opened_lock.st_ino) != (current_lock.st_dev, current_lock.st_ino)
+        ):
+            raise NativeTestmonRepairError(
+                f"native testmon lifecycle lock is not an owned single-link regular file: {lock_path}"
+            )
+    except OSError as exc:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_descriptor)
+            lock_descriptor = None
+        if directory_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_descriptor)
+            directory_descriptor = None
+        raise NativeTestmonRepairError(f"cannot bind native testmon lifecycle lock {lock_path}: {exc}") from exc
+    try:
+        assert lock_descriptor is not None
+        with os.fdopen(lock_descriptor, "r+", encoding="utf-8") as handle:
+            lock_descriptor = None
+            deadline = time.monotonic() + max(0.0, timeout_s)
+            announced_wait = False
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise PytestResourceError(
+                            f"timed out waiting for native testmon lifecycle lock after {timeout_s:.1f}s"
+                        ) from exc
+                    if not announced_wait:
+                        handle.seek(0)
+                        holder = handle.read().strip() or "another verify invocation"
+                        sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
+                        sys.stderr.flush()
+                        announced_wait = True
+                    time.sleep(min(0.05, remaining))
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"pid={os.getpid()}")
+            handle.flush()
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                handle.truncate()
+    finally:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_descriptor)
+        if directory_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_descriptor)
 
 
 def _anchor_verification_paths() -> None:
@@ -150,6 +324,8 @@ def _mypy_cmd() -> list[str]:
             capture_output=True,
             text=True,
             timeout=5,
+            cwd=ROOT,
+            env=_subprocess_env(),
         )
         if result.returncode == 0:
             return ["dmypy", "run", "--", "--no-error-summary"]
@@ -231,15 +407,6 @@ def _format_completion_notification(
 
 HISTORY_PATH = VERIFY_HISTORY_PATH
 TESTMON_DATA = Path(".cache/testmon/testmondata")
-TESTMON_SEED_STAMP = Path(".cache/testmon/seed.json")
-TESTMON_SEED_ATTEMPT = Path(".cache/testmon/seed-attempt.json")
-TESTMON_AFFECTED_STAMP = Path(".cache/testmon/affected.json")
-TESTMON_SEED_PROTOCOL_VERSION = 7
-# Keep resumable checkpoints coarse enough that controller startup and
-# per-shard testmon initialization do not dominate the seed.  The seed still
-# records every node outcome, so a failed shard remains retryable at node
-# resolution; this size yields six shards for the current correctness corpus.
-TESTMON_SEED_SHARD_SIZE = 4096
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_JUNIT_REPORT_DIR = Path(".cache/test-reports")
@@ -258,6 +425,7 @@ PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
+VERIFY_INVOCATION_BUDGET_S = 3600.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
@@ -449,13 +617,14 @@ def _pytest_workload_receipt(
     tmpfs_budget_mb: float | None,
     basetemp_cleanup: Path | None,
     concurrency: int,
+    timeout_s: float,
 ) -> dict[str, Any]:
     """Adapt managed-pytest accounting to the shared workload receipt."""
     input_digest = hashlib.sha256(
         json.dumps(cmd, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     budgets: list[WorkloadBudget] = []
-    if (timeout_s := _pytest_timeout_s()) > 0:
+    if timeout_s > 0:
         budgets.append(
             WorkloadBudget(
                 BudgetMeasure.WALL_MS,
@@ -1027,9 +1196,10 @@ def _run_pytest_with_heartbeat(
     t0: float,
     run: VerifyRun | None = None,
     artifacts: PytestStepArtifacts | None = None,
+    timeout_override_s: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     heartbeat_s = _pytest_heartbeat_interval()
-    timeout_s = _pytest_timeout_s()
+    timeout_s = _pytest_timeout_s() if timeout_override_s is None else max(0.0, timeout_override_s)
     stall_timeout_s = _pytest_stall_timeout_s()
     term_grace_s = _pytest_term_grace_s()
     resource_interval_s = _pytest_resource_interval_s()
@@ -1608,27 +1778,85 @@ def _run_pytest_with_heartbeat(
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
+def _recover_worker_collection_facts(*, events_dir: Path, selection_path: Path) -> bool:
+    """Recover xdist collection evidence if interruption skips sessionfinish."""
+    merged = merge_worker_collection_payloads(events_dir)
+    if merged is None:
+        return False
+    selection = {
+        **merged,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "worker_id": "runner",
+        "pid": os.getpid(),
+        "recovered_after_interruption": True,
+    }
+    try:
+        _atomic_write_json(selection_path, selection)
+    except OSError:
+        return False
+    return True
+
+
 def _run(
     label: str,
     cmd: list[str],
     *,
     cwd: str | None = None,
     run: VerifyRun | None = None,
+    timeout_s: float | None = None,
+) -> tuple[int, float, dict[str, Any]]:
+    if not label.startswith("pytest native"):
+        return _run_step(label, cmd, cwd=cwd, run=run, timeout_s=timeout_s)
+    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state if _ACTIVE_VERIFY_RUN is not None else None
+    temporary_state = state is None
+    if state is None:
+        state = _open_owned_native_testmon_state(ROOT)
+    try:
+        return _run_step(
+            label,
+            cmd,
+            cwd=cwd,
+            run=run,
+            timeout_s=timeout_s,
+            native_testmon_data=state.data_path,
+        )
+    finally:
+        if temporary_state:
+            state.close()
+
+
+def _run_step(
+    label: str,
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    run: VerifyRun | None = None,
+    timeout_s: float | None = None,
+    native_testmon_data: Path | None = None,
 ) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
+    managed_native_lane = label.startswith("pytest native")
+    closed_world_command = _native_pytest_command_is_closed_world(label, cmd)
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
     has_managed_pytest_child = label == "bench slo"
+    owns_pytest_environment = managed_native_lane or has_managed_pytest_child
     if is_pytest and run is not None:
         isolated_report = run.run_dir / f"pytest-report-{uuid.uuid4().hex}.json"
         cmd = [f"--json-report-file={isolated_report}" if arg.startswith("--json-report-file=") else arg for arg in cmd]
     if is_pytest:
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
-    env = _subprocess_env()
+    env = _subprocess_env(native_testmon_data=native_testmon_data)
+    external_addopts_neutralized = False
+    external_plugins_neutralized = False
+    if owns_pytest_environment:
+        _normalize_managed_pytest_environment(env, disable_plugin_autoload=managed_native_lane)
+    if managed_native_lane and _pytest_uses_full_suite_basetemp(label):
+        env["HYPOTHESIS_PROFILE"] = "default"
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
@@ -1660,7 +1888,6 @@ def _run(
                 "diagnosis": "pytest_resource_preflight_failed",
                 "error": str(exc),
                 "termination_reason": "pytest resource preflight refused basetemp admission",
-                "verification_scope": "narrow-terminal",
                 "release_baseline_allowed": False,
             }
             if run is not None and artifacts is not None:
@@ -1676,20 +1903,36 @@ def _run(
         pytest_tmpfs = env.get("POLYLOGUE_PYTEST_TMPFS") == "1"
         budget_kb = pytest_tmpfs_budget_kb(env)
         pytest_tmpfs_budget_mb = budget_kb / 1024 if budget_kb is not None else None
-        if label.startswith("pytest seed-testmon"):
-            # A complete corpus is currently ~16K nodes. Preserve the whole
-            # selection in the attempt receipt so interrupted seeds can prove
-            # eventual coverage instead of relying on a 500-node sample.
+        if label.startswith("pytest native"):
+            # The invocation aggregate compares the exact two-lane collection
+            # with the native environment corpus before granting release
+            # authority. Keep the complete node set in these bounded artifacts.
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        if owns_pytest_environment:
+            _normalize_managed_pytest_environment(env, disable_plugin_autoload=managed_native_lane)
+        if managed_native_lane:
+            external_addopts_neutralized = _PYTEST_CLEAR_CONFIGURED_ADDOPTS in cmd
+            external_plugins_neutralized = (
+                "PYTEST_PLUGINS" not in env and env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+            )
+    closed_world_collection = closed_world_command and external_addopts_neutralized and external_plugins_neutralized
     interrupted = False
     pytest_containment_quiescent = True
     containment_error: str | None = None
     if is_pytest:
         try:
             try:
-                result = _run_pytest_with_heartbeat(cmd, cwd=cwd, env=env, t0=t0, run=run, artifacts=artifacts)
+                result = _run_pytest_with_heartbeat(
+                    cmd,
+                    cwd=cwd,
+                    env=env,
+                    t0=t0,
+                    run=run,
+                    artifacts=artifacts,
+                    timeout_override_s=timeout_s,
+                )
             except PytestContainmentError as exc:
                 pytest_containment_quiescent = False
                 containment_error = str(exc)
@@ -1706,7 +1949,16 @@ def _run(
                 )
     else:
         try:
-            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env, timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            captured_stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else ""
+            captured_stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else ""
+            result = subprocess.CompletedProcess(
+                args=cmd,
+                returncode=124,
+                stdout=captured_stdout,
+                stderr=captured_stderr + "\nverify: invocation deadline exhausted\n",
+            )
         except KeyboardInterrupt:
             interrupted = True
             result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
@@ -1720,8 +1972,11 @@ def _run(
             metadata["diagnosis"] = "pytest_containment_unproven"
             metadata["termination_reason"] = f"pytest containment did not quiesce: {containment_error}"
         metadata.update(_pytest_command_metadata(cmd))
+        metadata["external_addopts_neutralized"] = external_addopts_neutralized
+        metadata["external_plugins_neutralized"] = external_plugins_neutralized
+        metadata["closed_world_collection"] = closed_world_collection
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
-        metadata["timeout_s"] = _pytest_timeout_s()
+        metadata["timeout_s"] = _pytest_timeout_s() if timeout_s is None else timeout_s
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
         metadata["term_grace_s"] = _pytest_term_grace_s()
         metadata["resource_interval_s"] = _pytest_resource_interval_s()
@@ -1810,6 +2065,19 @@ def _run(
             slowest_reports = summary.get("slowest_reports")
             if isinstance(slowest_reports, list):
                 metadata["slowest_report_count"] = len(slowest_reports)
+        if (
+            label.startswith("pytest native")
+            and result.returncode == 5
+            and metadata.get("selected_count") == 0
+            and metadata.get("report_status") == "present"
+            and isinstance(summary, Mapping)
+            and summary.get("exitstatus") == 5
+        ):
+            # Either semantic partition may legitimately be empty. Collection
+            # still synchronized the complete native corpus, so an empty lane
+            # is successful evidence rather than a pytest usage failure.
+            result.returncode = 0
+            metadata["empty_semantic_lane"] = True
         containment_path = artifacts.containment_path if artifacts is not None else PYTEST_CONTAINMENT_PATH
         containment = _read_json_artifact(containment_path)
         if containment is not None:
@@ -1944,6 +2212,7 @@ def _run(
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
             concurrency=max(1, pytest_concurrency),
+            timeout_s=_pytest_timeout_s() if timeout_s is None else timeout_s,
         )
         metadata["workload_receipt"] = workload_receipt
         if artifacts is not None:
@@ -2021,18 +2290,22 @@ def _pytest_command_basetemp(
     return (Path(cwd) if cwd is not None else Path.cwd()) / path
 
 
-def _subprocess_env() -> dict[str, str]:
+def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str]:
     env = normalize_pytest_basetemp_env(os.environ)
     # Tests and verification helpers may inspect Git, but observational reads
     # must not refresh the index and invalidate the exact-head mutation watch.
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
-    inherited_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
+    # Managed verification owns Python startup. A checkout path on PYTHONPATH
+    # lets sitecustomize alter pytest controls before the managed command runs.
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONOPTIMIZE", None)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONUSERBASE", None)
+    env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
-    TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
-    env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
+    env["TESTMON_DATAFILE"] = str(native_testmon_data or TESTMON_DATA)
     env["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(ROOT / PYTEST_EVENTS_DIR)
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
@@ -2041,37 +2314,104 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _stop_after_failed_step(label: str) -> bool:
-    return label.startswith("pytest") or label in {"lab smoke", "bench slo"}
+    return label in {"lab smoke", "bench slo"}
 
 
-def _seed_shard_failure_requires_stop(step: Mapping[str, Any], *, shard_complete: bool) -> bool:
-    """Stop shard admission after harness failure while retaining red-test evidence.
-
-    A normal pytest exit 1 with a structured ``pytest_failed`` diagnosis is
-    useful seed evidence: later shards can still populate the resumable
-    dependency graph. Timeouts, resource refusals, worker/internal errors,
-    usage errors, and unclassified failures mean the harness is no longer
-    healthy enough to admit another expensive shard.
-    """
-    exit_code = step.get("exit")
-    if exit_code == 0:
-        return False
-    return not (exit_code == 1 and step.get("diagnosis") == "pytest_failed" and shard_complete)
+def _native_lane_failure_requires_stop(step: Mapping[str, Any]) -> bool:
+    """Continue the serial lane only after an ordinary test failure."""
+    return not (step.get("exit") == 1 and step.get("diagnosis") == "pytest_failed")
 
 
 # ── step builder ────────────────────────────────────────────────────
+
+
+def _native_pytest_steps(
+    *,
+    testmon_mode: str,
+    testmon_environment: str,
+    parallel_worker_args: Sequence[str],
+) -> list[tuple[str, list[str]]]:
+    pytest_cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "--ignore=tests/benchmarks",
+        "--durations=10",
+        f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
+        "--json-report",
+        "--json-report-omit=collectors,log,streams,warnings",
+        f"--json-report-file={PYTEST_REPORT_PATH}",
+        "-p",
+        "devtools.pytest_progress_plugin",
+    ]
+    pytest_cmd.extend(_PYTEST_MANAGED_PLUGIN_ARGS)
+    pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
+    native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
+    if testmon_mode == "affected":
+        native_args.append("--testmon-forceselect")
+    else:
+        native_args.append("--testmon-noselect")
+
+    parallel_cmd = [
+        *pytest_cmd,
+        "-m",
+        "not load_sensitive",
+        *native_args,
+        *parallel_worker_args,
+    ]
+
+    def _serial_report_arg(arg: str) -> str:
+        if arg.startswith("--junitxml="):
+            return f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest-serial.xml"
+        if arg.startswith("--json-report-file="):
+            return f"--json-report-file={PYTEST_REPORT_DIR / 'last-pytest-serial.json'}"
+        return arg
+
+    serial_cmd = [_serial_report_arg(arg) for arg in pytest_cmd]
+    serial_cmd.extend(
+        [
+            "-m",
+            "load_sensitive",
+            *native_args,
+            "-p",
+            "no:randomly",
+            "-n",
+            "0",
+        ]
+    )
+    return [
+        (f"pytest native parallel ({testmon_mode})", parallel_cmd),
+        (f"pytest native serial ({testmon_mode})", serial_cmd),
+    ]
+
+
+def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
+    """Accept only a command produced by the managed native-lane builder."""
+    match = re.fullmatch(r"pytest native (parallel|serial) \((affected|bootstrap|full)\)", label)
+    if match is None:
+        return False
+    environment_args = [arg for arg in cmd if arg.startswith("--testmon-env=")]
+    worker_request = pytest_command_worker_request(cmd)
+    if len(environment_args) != 1 or worker_request is None or not worker_request.isdigit():
+        return False
+    expected_steps = _native_pytest_steps(
+        testmon_mode=match.group(2),
+        testmon_environment=environment_args[0].removeprefix("--testmon-env="),
+        parallel_worker_args=("--dist=loadgroup", "-n", worker_request),
+    )
+    expected = dict(expected_steps).get(label)
+    return expected is not None and list(cmd) == expected
 
 
 def build_verify_steps(
     *,
     quick: bool,
     lab: bool,
-    skip_slow: bool,
     commit: bool = False,
-    seed_testmon: bool = False,
-    resume_testmon_seed: bool = False,
-    full_pytest: bool = False,
-    broad_testmon: bool = False,
+    testmon_mode: str = "affected",
+    testmon_environment: str = "",
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -2117,80 +2457,19 @@ def build_verify_steps(
         _report_dir = PYTEST_JUNIT_REPORT_DIR
         _report_dir.mkdir(parents=True, exist_ok=True)
         PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        # Scale-tier policy (issue #1183): default verify includes
-        # ``scale_small`` but excludes ``scale_medium`` / ``scale_large``.
-        # ``--lab`` lets the medium tier in; the large tier is reserved
-        # for nightly CI's direct pytest-benchmark execution.
-        scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
-        pytest_cmd = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--tb=short",
-            "--ignore=tests/integration",
-            # Benchmark files are an explicit campaign surface.  A number of
-            # them are correctness-shaped and lack the benchmark marker, so a
-            # marker expression alone cannot keep performance probes out of
-            # the correctness/testmon corpus.
-            "--ignore=tests/benchmarks",
-            "--durations=10",
-            f"--junitxml={_report_dir}/verify-latest.xml",
-            "--json-report",
-            "--json-report-omit=collectors,log,streams,warnings",
-            f"--json-report-file={PYTEST_REPORT_PATH}",
-            "-p",
-            "devtools.pytest_progress_plugin",
-        ]
-        # Benchmark cases are an explicit campaign surface, not part of the
-        # correctness/testmon seed.  Keeping them out here is important: a
-        # benchmark marker is not necessarily paired with ``slow`` or a scale
-        # marker, and a serial shard would otherwise spend minutes executing a
-        # performance probe before it can checkpoint any correctness nodes.
-        base_marker = f"not benchmark and {scale_marker_expr}"
-        if skip_slow:
-            base_marker = f"not slow and {base_marker}"
-        if seed_testmon:
-            # Collection produces the exact corpus contract before any testmon
-            # write. Shards below are generated from this ledger and run one
-            # at a time, so pytest-testmon has exactly one SQLite writer.
-            pytest_cmd.extend(["-m", base_marker, "--collect-only", "-n", "0"])
-            label = "pytest seed-testmon collect (resume)" if resume_testmon_seed else "pytest seed-testmon collect"
-            steps.append((label, pytest_cmd))
-        elif full_pytest:
-            # #1775: the full diagnostic runs as two lanes. The bulk lane keeps
-            # xdist parallelism but deselects wall-clock-bound tests; the
-            # isolated lane reruns those (``load_sensitive``/``tui`` — timing
-            # budgets, loopback-socket timeouts, TUI render timing) single-
-            # process with a stable order, so worker contention can no longer
-            # flake them. Both lanes are correctness blockers; the split only
-            # removes the scheduling jitter that made ``--all`` an unreliable
-            # completion gate.
-            bulk_cmd = [
-                *pytest_cmd,
-                "-m",
-                f"({base_marker}) and not load_sensitive and not tui",
-                *_pytest_worker_args(),
-            ]
-            steps.append((BROAD_PYTEST_STEP_LABELS["full_parallel"], bulk_cmd))
-
-            def _isolated_report_arg(arg: str) -> str:
-                # Keep the bulk lane's canonical report artifacts intact for
-                # _compare_against_last; the isolated lane writes its own files.
-                if arg.startswith("--junitxml="):
-                    return f"--junitxml={_report_dir}/verify-latest-isolated.xml"
-                if arg.startswith("--json-report-file="):
-                    return f"--json-report-file={PYTEST_REPORT_DIR / 'last-pytest-isolated.json'}"
-                return arg
-
-            isolated_cmd = [_isolated_report_arg(arg) for arg in pytest_cmd]
-            isolated_cmd.extend(["-m", f"({base_marker}) and (load_sensitive or tui)", "-p", "no:randomly", "-n", "0"])
-            steps.append((BROAD_PYTEST_STEP_LABELS["load_sensitive"], isolated_cmd))
-        else:
-            pytest_cmd.extend(["-m", base_marker, "--testmon", *_pytest_worker_args()])
-            pytest_cmd.append("--testmon-forceselect")
-            label = BROAD_PYTEST_STEP_LABELS["testmon_broad"] if broad_testmon else "pytest testmon"
-            steps.append((label, pytest_cmd))
+        if testmon_mode not in {"affected", "bootstrap", "full"}:
+            raise ValueError(f"unknown native testmon mode: {testmon_mode}")
+        if not testmon_environment:
+            raise ValueError("native testmon environment is required for pytest verification")
+        # Every native command owns its collection, option, and plugin surface;
+        # the benchmark root remains the one explicit non-correctness corpus.
+        steps.extend(
+            _native_pytest_steps(
+                testmon_mode=testmon_mode,
+                testmon_environment=testmon_environment,
+                parallel_worker_args=_pytest_worker_args(),
+            )
+        )
 
     if lab:
         steps.append(("lab smoke", _devtools_cmd("lab smoke", "run", "archive-smoke", "--tier", "0")))
@@ -2292,17 +2571,11 @@ def _stamp_head() -> None:
     (stamp_dir / "last-verify-head").write_text(head + "\n")
 
 
-def _file_fingerprint(path: Path) -> str:
-    if not path.exists() or not path.is_file():
-        return "missing"
-    h = hashlib.sha256()
-    try:
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-    except OSError:
-        return "unreadable"
-    return h.hexdigest()
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
@@ -2313,34 +2586,18 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["--dist=loadgroup", "-n", str(workers)]
 
 
-BROAD_PYTEST_STEP_LABELS = {
-    "seed": "pytest seed-testmon",
-    "seed_resume": "pytest seed-testmon (resume)",
-    "full_parallel": "pytest full (parallel)",
-    "load_sensitive": "pytest load-sensitive (isolated)",
-    "testmon_broad": "pytest testmon (broad)",
-}
-
-
 def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | None = None) -> int:
-    """Return a fail-closed reservation for the final pytest command.
-
-    ``-n auto`` can launch one worker per logical CPU.  Reserve that maximum
-    instead of guessing one worker; an unrecognised xdist value is treated the
-    same way so malformed or future values cannot weaken admission.
-    """
+    """Return a fail-closed reservation for the final pytest command."""
     request = pytest_command_worker_request(cmd)
     if request is None:
         return 0
     if request == "auto":
         auto_workers = (env if env is not None else os.environ).get("PYTEST_XDIST_AUTO_NUM_WORKERS", "").strip()
         if auto_workers:
-            try:
+            with contextlib.suppress(ValueError):
                 configured = int(auto_workers)
-            except ValueError:
-                configured = 0
-            if configured > 0:
-                return configured
+                if configured > 0:
+                    return configured
     try:
         return max(0, int(request))
     except ValueError:
@@ -2348,14 +2605,8 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
 
 
 def _pytest_uses_full_suite_basetemp(label: str) -> bool:
-    """Whether this pytest step can materialize the measured full-suite tree."""
-    return label in BROAD_PYTEST_STEP_LABELS.values() or label.startswith("pytest seed-testmon shard ")
-
-
-_BROAD_TESTMON_CHANGED_PATHS = {
-    "pyproject.toml",
-    "tests/conftest.py",
-}
+    """Whether this semantic lane may materialize the complete corpus tree."""
+    return label.startswith("pytest native") and ("(bootstrap)" in label or "(full)" in label)
 
 
 def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
@@ -2383,1376 +2634,522 @@ def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
     return changed
 
 
-def _default_testmon_is_broad_change(base_commit: str, head_commit: str) -> bool:
-    """Return true when affected-test selection should be treated as broad."""
-    return bool(_changed_paths(base_commit, head_commit) & _BROAD_TESTMON_CHANGED_PATHS)
-
-
-def _changed_executable_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:
-    """Return changed paths whose behavior should select at least one test."""
+def _changed_test_relevant_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:
     roots = ("polylogue/", "devtools/", "tests/", "packaging/")
-    exact = {"pyproject.toml", "uv.lock"}
+    exact = {"pyproject.toml", "uv.lock", "pytest.ini", "tox.ini", "setup.cfg"}
     return tuple(
         sorted(path for path in _changed_paths(base_commit, head_commit) if path in exact or path.startswith(roots))
     )
 
 
-def _testmon_coverage_identity(executable_paths: Sequence[str]) -> dict[str, Any]:
-    """Identify the exact worktree contents covered by an affected/full run."""
-    return {
-        "worktree_fingerprint": worktree_fingerprint(),
-        "executable_paths": list(executable_paths),
-    }
+@dataclass(slots=True)
+class _ActiveVerifyRun:
+    run: VerifyRun
+    started_at: float
+    verification_scope: VerificationScope
+    head: str | None
+    mutation_monitor: CheckoutMutationMonitor | None = None
+    initial_worktree_fingerprint: str | None = None
+    owned_native_testmon_state: _OwnedNativeTestmonState | None = None
 
 
-def _matching_testmon_coverage(executable_paths: Sequence[str]) -> str | None:
-    """Return the receipt kind proving that zero new selection is legitimate."""
-    identity = _testmon_coverage_identity(executable_paths)
-    affected = _read_json_artifact(TESTMON_AFFECTED_STAMP)
-    selected_count = affected.get("selected_count") if isinstance(affected, dict) else None
-    if (
-        isinstance(affected, dict)
-        and affected.get("protocol_version") == 1
-        and affected.get("status") == "complete"
-        and isinstance(affected.get("timestamp"), str)
-        and bool(affected.get("timestamp"))
-        and isinstance(affected.get("run_id"), str)
-        and bool(affected.get("run_id"))
-        and isinstance(selected_count, int)
-        and not isinstance(selected_count, bool)
-        and selected_count > 0
-        and affected.get("identity") == identity
-    ):
-        return "successful_affected_run"
-    return None
+_ACTIVE_VERIFY_RUN: _ActiveVerifyRun | None = None
 
 
-def _record_testmon_affected_coverage(*, executable_paths: Sequence[str], selected_count: int, run_id: str) -> None:
-    """Persist proof that testmon exercised dependencies for these contents."""
-    _atomic_write_json(
-        TESTMON_AFFECTED_STAMP,
-        {
-            "protocol_version": 1,
-            "status": "complete",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "run_id": run_id,
-            "selected_count": selected_count,
-            "identity": _testmon_coverage_identity(executable_paths),
-        },
-    )
+def _start_active_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> None:
+    start_checkout_mutation_monitor(monitor)
+    if _ACTIVE_VERIFY_RUN is not None:
+        _ACTIVE_VERIFY_RUN.mutation_monitor = monitor
 
 
-def _testmon_preflight(*, seed_testmon: bool, full_pytest: bool, quick: bool, commit: bool) -> str | None:
-    if quick or commit or seed_testmon or full_pytest:
-        return None
-    seed_message = (
-        "verify: pytest-testmon is not seeded; run `devtools verify --seed-testmon` "
-        "to create .cache/testmon/testmondata and .cache/testmon/seed.json "
-        "before using the default affected-test path.\n"
-    )
-    if not TESTMON_DATA.exists():
-        return seed_message
-    if not TESTMON_SEED_STAMP.exists():
-        attempt = _read_testmon_seed_attempt()
-        if (
-            attempt is not None
-            and stamp_from_attempt(
-                attempt,
-                TESTMON_DATA,
-                checkout_root=ROOT,
-                protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-                published_marker=False,
-            )
-            is not None
-        ):
-            sys.stderr.write(
-                "verify: using a validated complete pytest-testmon graph from a red seed attempt; "
-                "the release baseline remains red.\n"
-            )
-            return None
-        return seed_message
-    stamp = validate_stamp(
-        TESTMON_SEED_STAMP,
-        TESTMON_DATA,
-        checkout_root=ROOT,
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-    )
-    if stamp is None:
-        return (
-            "verify: pytest-testmon seed state is unreadable, stale, malformed, or not graph-complete; run "
-            "`devtools verify --seed-testmon` to rebuild the dependency baseline.\n"
-        )
-    return None
-
-
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    temporary.replace(path)
-
-
-def _testmon_seed_identity(
-    *,
-    git_head: str | None,
-    git_tree: str | None = None,
-    skip_slow: bool,
-    lab: bool,
-    terminal_authorization: str | None = None,
-) -> dict[str, Any]:
-    runtime_identity = testmon_runtime_identity(ROOT)
-    if runtime_identity is None:
-        raise RuntimeError("could not identify the active dependency environment and pytest harness")
-    dependency_environment, pytest_harness = runtime_identity
-    return {
-        "git_head": git_head,
-        "git_tree": git_tree,
-        "worktree_fingerprint": worktree_fingerprint(),
-        "python": sys.version,
-        "skip_slow": skip_slow,
-        "lab": lab,
-        "terminal_authorization": terminal_authorization,
-        "dependency_environment": dependency_environment,
-        "pytest_harness": pytest_harness,
-    }
-
-
-def _read_testmon_seed_attempt() -> dict[str, Any] | None:
-    payload = _read_json_artifact(TESTMON_SEED_ATTEMPT)
-    return payload if isinstance(payload, dict) else None
-
-
-def _recover_worker_collection_facts(*, events_dir: Path, selection_path: Path) -> bool:
-    """Publish xdist worker collection facts when its controller never finishes.
-
-    The progress plugin normally merges these facts during controller
-    ``pytest_sessionfinish``. Interrupted containment bypasses that hook, so
-    the runner recovers the same canonical worker fact before it terminalizes
-    the durable step record.
-    """
-    merged = merge_worker_collection_payloads(events_dir)
-    if merged is None:
-        return False
-    selection = dict(merged)
-    selection.update(
-        {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "worker_id": "runner",
-            "pid": os.getpid(),
-            "recovered_after_interruption": True,
-        }
-    )
+def _finish_active_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> CheckoutMutationObservation:
     try:
-        selection_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = selection_path.with_name(f"{selection_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(selection, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        temporary.replace(selection_path)
-    except OSError:
-        return False
-    return True
+        return finish_checkout_mutation_monitor(monitor)
+    finally:
+        if _ACTIVE_VERIFY_RUN is not None and _ACTIVE_VERIFY_RUN.mutation_monitor is monitor:
+            _ACTIVE_VERIFY_RUN.mutation_monitor = None
 
 
-def _flatten_seed_outcomes(attempt: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    """Flatten outcomes from every interrupted attempt, newest result winning."""
-    if attempt is None:
-        return []
-    flattened: dict[str, dict[str, Any]] = {}
-    for field in ("prior_node_outcomes", "node_outcomes"):
-        raw = attempt.get(field)
-        if not isinstance(raw, list):
-            continue
-        for item in raw:
-            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str) and item["nodeid"]:
-                flattened[item["nodeid"]] = dict(item)
-    return [flattened[nodeid] for nodeid in sorted(flattened)]
-
-
-def _testmon_release_baseline_permission() -> bool | None:
-    """Return release permission for current testmon state, or ``None`` when not applicable."""
-    if TESTMON_SEED_STAMP.exists():
-        stamp = validate_stamp(
-            TESTMON_SEED_STAMP,
-            TESTMON_DATA,
-            checkout_root=ROOT,
-            protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-        )
-        return stamp.release_baseline_allowed if stamp is not None else False
-    attempt = _read_testmon_seed_attempt()
-    if attempt is None:
-        return False
-    stamp = stamp_from_attempt(
-        attempt,
-        TESTMON_DATA,
-        checkout_root=ROOT,
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-        published_marker=False,
-    )
-    return stamp.release_baseline_allowed if stamp is not None else False
-
-
-def _safe_testmon_artifact_dir(raw: object, *, require_run_root: bool = False) -> Path | None:
-    if not isinstance(raw, str) or not raw:
-        return None
-    path = Path(raw)
-    checkout_root = Path.cwd().resolve()
-    if require_run_root and path.is_absolute():
-        return None
-    resolved = (path if path.is_absolute() else checkout_root / path).resolve()
-    try:
-        resolved.relative_to(checkout_root)
-        if require_run_root:
-            resolved.relative_to((checkout_root / ".cache" / "verify" / "runs").resolve())
-    except ValueError:
-        return None
-    return resolved
-
-
-def _testmon_seed_expected_nodeids(attempt: Mapping[str, Any]) -> list[str]:
-    """Recover the seed ledger, including after an abrupt outer-run exit."""
-    expected = attempt.get("expected_nodeids")
-    if isinstance(expected, list) and expected:
-        if (
-            any(not isinstance(nodeid, str) or not nodeid for nodeid in expected)
-            or len(set(expected)) != len(expected)
-            or not isinstance(attempt.get("expected_count"), int)
-            or isinstance(attempt.get("expected_count"), bool)
-            or attempt.get("expected_count") != len(expected)
-            or not isinstance(attempt.get("expected_digest"), str)
-            or attempt.get("expected_digest") != hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest()
-        ):
-            return []
-        return list(expected)
-
-    artifact_dir = _safe_testmon_artifact_dir(attempt.get("artifact_dir"), require_run_root=True)
-    if artifact_dir is None:
-        return []
-    for selection_path in sorted(artifact_dir.glob("steps/*/selection.json")):
-        selection = _read_json_artifact(selection_path)
-        if not isinstance(selection, dict):
-            continue
-        omitted = selection.get("selected_nodeids_omitted")
-        selected_count = selection.get("selected_count")
-        if (
-            not isinstance(omitted, int)
-            or isinstance(omitted, bool)
-            or omitted != 0
-            or not isinstance(selected_count, int)
-            or isinstance(selected_count, bool)
-        ):
-            continue
-        selected = selection.get("selected_nodeids")
-        if (
-            isinstance(selected, list)
-            and selected
-            and all(isinstance(nodeid, str) and nodeid for nodeid in selected)
-            and len(set(selected)) == len(selected)
-            and selected_count == len(selected)
-        ):
-            return list(selected)
-    return []
-
-
-def _testmon_seed_resume_contract(identity: Mapping[str, Any]) -> dict[str, Any]:
-    """Return inputs that change which corpus a seed promises to cover."""
-    return {
-        key: identity.get(key)
-        for key in (
-            "git_tree",
-            "worktree_fingerprint",
-            "python",
-            "skip_slow",
-            "lab",
-            "terminal_authorization",
-            "dependency_environment",
-            "pytest_harness",
-        )
-    }
-
-
-def _testmon_seed_can_resume(identity: Mapping[str, Any]) -> bool:
-    attempt = _read_testmon_seed_attempt()
-    if attempt is None or not TESTMON_DATA.exists():
-        return False
-    prior_identity = attempt.get("identity")
-    contract = _testmon_seed_resume_contract(identity)
-    return (
-        attempt.get("protocol_version") == TESTMON_SEED_PROTOCOL_VERSION
-        and attempt.get("status") in {"running", "incomplete"}
-        and isinstance(prior_identity, dict)
-        and isinstance(contract["git_tree"], str)
-        and bool(contract["git_tree"])
-        and _testmon_seed_resume_contract(prior_identity) == contract
-        and bool(_testmon_seed_expected_nodeids(attempt))
-    )
-
-
-def _prepare_testmon_seed_attempt(
-    *,
-    identity: Mapping[str, Any],
-    run: VerifyRun,
-    resume: bool,
-) -> dict[str, Any]:
-    prior = _read_testmon_seed_attempt() if resume else None
-    expected = sorted(_testmon_seed_expected_nodeids(prior)) if prior is not None else []
-    prior_outcomes = _flatten_seed_outcomes(prior)
-    payload = {
-        "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
-        "status": "running",
-        "identity": dict(identity),
-        "resume": resume,
-        "expected_nodeids": expected,
-        "expected_count": len(expected),
-        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
-        "prior_node_outcomes": prior_outcomes,
-        "shards": list(prior.get("shards", [])) if prior is not None and isinstance(prior.get("shards"), list) else [],
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "run_id": run.run_id,
-        "artifact_dir": str(run.relative_run_dir),
-        "testmon_data_before": _file_fingerprint(TESTMON_DATA),
-        "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
-    }
-    TESTMON_SEED_STAMP.unlink(missing_ok=True)
-    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    return payload
-
-
-def _seed_selection_nodeids(selection: Mapping[str, Any]) -> list[str] | None:
-    """Accept only a complete, untruncated collection ledger."""
-    nodeids = selection.get("selected_nodeids")
-    selected_count = selection.get("selected_count")
-    omitted = selection.get("selected_nodeids_omitted")
-    if (
-        not isinstance(nodeids, list)
-        or not nodeids
-        or any(not isinstance(nodeid, str) or not nodeid for nodeid in nodeids)
-        or len(set(nodeids)) != len(nodeids)
-        or not isinstance(selected_count, int)
-        or isinstance(selected_count, bool)
-        or selected_count != len(nodeids)
-        or not isinstance(omitted, int)
-        or isinstance(omitted, bool)
-        or omitted != 0
-    ):
-        return None
-    return sorted(nodeids)
-
-
-def _prepare_testmon_seed_shards(
-    prepared: Mapping[str, Any],
-    *,
-    selection: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    """Persist the full planned corpus before the first testmon DB mutation."""
-    expected = sorted(_testmon_seed_expected_nodeids(prepared)) if prepared.get("resume") else []
-    if not expected:
-        expected = _seed_selection_nodeids(selection or {}) or []
-    prior_shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
-    shards = (
-        prior_shards
-        if prior_shards is not None
-        else (
-            seed_shard_plan(
-                expected,
-                shard_size=TESTMON_SEED_SHARD_SIZE,
-                serial_nodeids=[
-                    nodeid
-                    for nodeid, markers in (selection or {}).get("selected_node_markers", {}).items()
-                    if "load_sensitive" in markers or "tui" in markers
-                ],
-            )
-            if expected
-            else []
-        )
-    )
-    payload = {
-        **dict(prepared),
-        "expected_nodeids": expected,
-        "expected_count": len(expected),
-        "expected_digest": hashlib.sha256("\n".join(expected).encode()).hexdigest() if expected else None,
-        "selection": dict(selection or {}),
-        "shard_size": TESTMON_SEED_SHARD_SIZE,
-        "shards": shards,
-    }
-    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    return payload
-
-
-def _seed_shard_command(
-    collection_command: Sequence[str],
-    shard: Mapping[str, Any],
-    *,
-    nodeids_file: Path,
-) -> list[str]:
-    """Build a bounded-argv, dynamically balanced pytest-testmon invocation.
-
-    A full shard's node IDs can exceed the host's ``execve`` argument budget
-    once ``systemd-run`` and the managed environment are included.  Pytest's
-    response-file syntax keeps the authoritative node list in the run
-    artifact while making the child command size independent of shard size.
-    """
-    nodeids = shard.get("nodeids")
-    if not isinstance(nodeids, list) or not nodeids:
-        raise ValueError("testmon seed shard is missing nodeids")
-    nodeids_file.parent.mkdir(parents=True, exist_ok=True)
-    nodeids_file.write_text("\n".join(nodeids) + "\n", encoding="utf-8")
-    command: list[str] = []
-    skip_next = False
-    for argument in collection_command:
-        if skip_next:
-            skip_next = False
-            continue
-        if argument == "--collect-only":
-            continue
-        if argument in {"-n", "--numprocesses"}:
-            skip_next = True
-            continue
-        if argument.startswith("--numprocesses=") or (argument.startswith("-n") and len(argument) > 2):
-            continue
-        command.append(argument)
-    # Collection is deliberately serial, but execution is not. pytest-testmon
-    # has an xdist-aware controller database; retaining the managed worker pool
-    # here avoids turning a 20k-node seed into hours of serial fixture setup.
-    if shard.get("execution_mode") == "serial":
-        command.extend(["-n", "0", "--testmon", "--testmon-noselect", f"@{nodeids_file}"])
-    else:
-        command.extend(
-            [
-                *_pytest_worker_args(maximum=10),
-                "--testmon",
-                "--testmon-noselect",
-                f"@{nodeids_file}",
-            ]
-        )
-    return command
-
-
-def _canonical_seed_nodeid(nodeid: str, expected_nodeids: Sequence[str]) -> str:
-    """Map xdist's ``nodeid@group`` reports back to the collected node ID."""
-    if nodeid in expected_nodeids:
-        return nodeid
-    candidates = [expected for expected in expected_nodeids if nodeid.startswith(expected + "@")]
-    return max(candidates, key=len, default=nodeid)
-
-
-def _seed_shard_outcomes(shards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Flatten the shard ledger in canonical node order for legacy readers."""
-    outcomes: dict[str, dict[str, Any]] = {}
-    for shard in shards:
-        raw_outcomes = shard.get("node_outcomes")
-        if not isinstance(raw_outcomes, list):
-            continue
-        for item in raw_outcomes:
-            if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str):
-                outcomes[str(item["nodeid"])] = dict(item)
-    return [outcomes[nodeid] for nodeid in sorted(outcomes)]
-
-
-def _checkpoint_testmon_seed_shard(
-    *,
-    prepared: Mapping[str, Any],
-    shard_index: int,
-    step: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Record one shard's result atomically before another shard may start."""
-    expected = sorted(_testmon_seed_expected_nodeids(prepared))
-    shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
-    if shards is None or shard_index < 1 or shard_index > len(shards):
-        raise ValueError("testmon seed shard ledger is malformed")
-    shard = dict(shards[shard_index - 1])
-    nodeids = shard["nodeids"]
-    artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
-    selection = _read_json_artifact(artifact_dir / "selection.json") if artifact_dir is not None else None
-    selected_raw = _seed_selection_nodeids(selection) if isinstance(selection, Mapping) else None
-    selected = (
-        sorted(_canonical_seed_nodeid(nodeid, nodeids) for nodeid in selected_raw) if selected_raw is not None else None
-    )
-    database = _testmon_database_state(nodeids)
-    prior = {
-        str(item["nodeid"]): item
-        for item in shard.get("node_outcomes", [])
-        if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
-    }
-    outcomes = _seed_node_outcomes_from_events(
-        artifact_dir / "events.jsonl" if artifact_dir is not None else Path(".missing-testmon-events"),
-        expected_nodeids=nodeids,
-        database=database,
-        pytest_step=step,
-        prior_node_outcomes=prior,
-        use_database_fallback=False,
-    )
-    terminal = all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in outcomes)
-    selection_matches = selected == nodeids
-    shard.update(
-        {
-            "status": SeedShardStatus.COMPLETE.value
-            if selection_matches and terminal
-            else SeedShardStatus.INCOMPLETE.value,
-            "started_at": shard.get("started_at") or datetime.now(timezone.utc).isoformat(),
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "exit_code": step.get("exit"),
-            "artifact_dir": step.get("artifact_dir"),
-            "selection": dict(selection) if isinstance(selection, Mapping) else None,
-            "database": database,
-            "node_outcomes": outcomes,
-            "pytest_step": dict(step),
-        }
-    )
-    shards[shard_index - 1] = shard
-    payload = {
-        **dict(prepared),
-        "status": "running",
-        "shards": shards,
-        "node_outcomes": _seed_shard_outcomes(shards),
-        "testmon_data": _file_fingerprint(TESTMON_DATA),
-    }
-    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    return payload
-
-
-def _testmon_seed_terminal_authorized(prepared: Mapping[str, Any]) -> bool:
-    identity = prepared.get("identity")
-    return (
-        isinstance(identity, Mapping)
-        and identity.get("skip_slow") is True
-        and identity.get("terminal_authorization") == TerminalAuthorization.NARROW_TERMINAL.value
-    )
-
-
-def _testmon_database_state(expected_nodeids: Sequence[str]) -> dict[str, Any]:
-    graph = inspect_testmon_database(TESTMON_DATA, expected_nodeids)
-    expected = set(expected_nodeids)
-    failed = list(graph.failed_nodeids)
-    return {
-        "recorded_count": graph.recorded_count,
-        "failed_count": len(failed),
-        "dependency_edge_count": graph.dependency_edge_count,
-        "missing_nodeids": list(graph.missing_nodeids),
-        "failed_nodeids": failed,
-        "node_outcomes": {
-            nodeid: ("failed" if nodeid in failed else "passed" if nodeid not in graph.missing_nodeids else "missing")
-            for nodeid in sorted(expected)
-        },
-        "error": graph.error,
-        "graph_status": graph.status.value,
-        "orphan_execution_edges": graph.orphan_execution_edges,
-        "orphan_fingerprint_edges": graph.orphan_fingerprint_edges,
-    }
-
-
-def _seed_node_outcomes_from_events(
-    path: Path,
-    *,
-    expected_nodeids: Sequence[str],
-    database: Mapping[str, Any],
-    pytest_step: Mapping[str, Any] | None,
-    use_database_fallback: bool = True,
-    prior_node_outcomes: Mapping[str, Mapping[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Classify every promised seed node into one explicit terminal state."""
-    reports: dict[str, list[dict[str, Any]]] = {}
-    started: set[str] = set()
-    finished: set[str] = set()
-    try:
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                with contextlib.suppress(json.JSONDecodeError):
-                    event = json.loads(line)
-                    nodeid = event.get("nodeid")
-                    if not isinstance(nodeid, str) or not nodeid:
-                        continue
-                    nodeid = _canonical_seed_nodeid(nodeid, expected_nodeids)
-                    if event.get("event") == "test_started":
-                        started.add(nodeid)
-                    elif event.get("event") == "test_finished":
-                        finished.add(nodeid)
-                    elif event.get("event") == "test_report":
-                        reports.setdefault(nodeid, []).append(event)
-    except OSError:
-        pass
-
-    database_outcomes = database.get("node_outcomes")
-    recorded = database_outcomes if isinstance(database_outcomes, dict) else {}
-    diagnosis = str((pytest_step or {}).get("diagnosis") or "").lower()
-    results: list[dict[str, Any]] = []
-    for nodeid in expected_nodeids:
-        node_reports = reports.get(nodeid, [])
-        failed_reports = [report for report in node_reports if report.get("outcome") == "failed"]
-        call_reports = [report for report in node_reports if report.get("when") == "call"]
-        longrepr = "\n".join(str(report.get("longrepr") or "") for report in failed_reports).lower()
-        outcome: str
-        reason: str
-        if "timeout" in longrepr:
-            outcome, reason = "timeout", "pytest-timeout report"
-        elif any(report.get("when") in {"setup", "teardown"} for report in failed_reports):
-            outcome, reason = "error", "fixture setup/teardown failed"
-        elif any(report.get("outcome") == "xfailed" for report in node_reports):
-            outcome, reason = "xfailed", "pytest expected failure"
-        elif any(report.get("outcome") == "xpassed" for report in node_reports):
-            outcome, reason = "xpassed", "pytest unexpected pass"
-        elif any(report.get("outcome") == "failed" for report in call_reports):
-            outcome, reason = "failed", "test call failed"
-        elif any(report.get("outcome") == "passed" for report in call_reports):
-            outcome, reason = "passed", "test call passed"
-        elif any(report.get("outcome") == "skipped" for report in call_reports):
-            outcome, reason = "skipped", "test call skipped"
-        elif any(report.get("outcome") == "skipped" for report in node_reports):
-            outcome, reason = "skipped", "test setup or teardown skipped"
-        elif nodeid in finished and any(
-            report.get("when") == "teardown" and report.get("outcome") == "passed" for report in node_reports
-        ):
-            # Teardown describes fixture cleanup, not the test body.  It may
-            # corroborate a terminal testmon row, but it cannot replace a
-            # missing call report: a failed call can still end with a passing
-            # teardown, and an unrecorded call must remain resumable.
-            if recorded.get(nodeid) == "passed":
-                outcome, reason = "passed", "passing teardown corroborated by testmon success"
-            elif recorded.get(nodeid) == "failed":
-                outcome, reason = "failed", "passing teardown contradicted by testmon failure"
-            else:
-                outcome, reason = "missing", "passing teardown without call report or testmon result"
-        elif nodeid in started and nodeid not in finished and "timeout" in diagnosis:
-            outcome, reason = "timeout", "supervisor timed out while node was active"
-        elif nodeid in started and nodeid not in finished and "worker" in diagnosis:
-            outcome, reason = "worker_crash", "worker exited while node was active"
-        elif (
-            nodeid in started
-            and nodeid not in finished
-            and any(marker in diagnosis for marker in ("interrupt", "signal", "terminated"))
-        ):
-            outcome, reason = "interrupted", "run ended while node was active"
-        elif use_database_fallback and recorded.get(nodeid) == "passed":
-            outcome, reason = "passed", "testmon database recorded success"
-        elif use_database_fallback and recorded.get(nodeid) == "failed":
-            outcome, reason = "failed", "testmon database recorded failure"
-        elif prior_node_outcomes is not None and nodeid in prior_node_outcomes:
-            prior = prior_node_outcomes[nodeid]
-            prior_outcome = prior.get("outcome")
-            if prior_outcome in TERMINAL_NODE_OUTCOMES:
-                outcome, reason = str(prior_outcome), "terminal outcome carried from the prior seed attempt"
-            else:
-                outcome, reason = "missing", "prior seed attempt has no terminal outcome"
-        else:
-            outcome, reason = "missing", "no terminal report or testmon execution row"
-        results.append(
-            {
-                "nodeid": nodeid,
-                "outcome": outcome,
-                "reason": reason,
-                "started": nodeid in started,
-                "finished": nodeid in finished,
-                "phases": [
-                    {
-                        "when": report.get("when"),
-                        "outcome": report.get("outcome"),
-                        "duration_s": report.get("duration_s"),
-                    }
-                    for report in node_reports
-                ],
-            }
-        )
-    return results
-
-
-def _seed_attempt_outcome(
-    *,
-    release_eligible: bool,
-    terminal_graph: bool,
-    exit_code: int,
-    pytest_step: Mapping[str, Any] | None,
-) -> SeedAttemptOutcome:
-    """Classify the terminal seed result without hiding a bounded resource stop."""
-    if release_eligible:
-        return SeedAttemptOutcome.GREEN_RELEASE_BASELINE
-    if terminal_graph:
-        return SeedAttemptOutcome.RED_BASELINE if exit_code != 0 else SeedAttemptOutcome.SELECTION_ONLY
-    diagnosis = str((pytest_step or {}).get("diagnosis") or "").casefold()
-    termination_reason = str((pytest_step or {}).get("termination_reason") or "").casefold()
-    if diagnosis in {"pytest_timeout", "pytest_stall_timeout", "pytest_resource_preflight_failed"} or any(
-        marker in termination_reason
-        for marker in ("runtime exceeded", "tmpfs budget exceeded", "resource budget", "resource limit")
-    ):
-        return SeedAttemptOutcome.RESOURCE_TIMEOUT
-    return SeedAttemptOutcome.INCOMPLETE
-
-
-def _finalize_testmon_seed_attempt(
-    *,
-    prepared: Mapping[str, Any],
-    step_results: Sequence[Mapping[str, Any]],
-    exit_code: int,
-) -> dict[str, Any]:
-    pytest_step = next(
-        (step for step in step_results if str(step.get("name", "")).startswith("pytest seed-testmon")), None
-    )
-    selection: dict[str, Any] = {}
-    events_path: Path | None = None
-    if pytest_step is not None:
-        artifact_dir = _safe_testmon_artifact_dir(pytest_step.get("artifact_dir"))
-        if artifact_dir is not None:
-            selection_payload = _read_json_artifact(artifact_dir / "selection.json")
-            if isinstance(selection_payload, dict):
-                selection = selection_payload
-            events_path = artifact_dir / "events.jsonl"
-
-    raw_omitted = selection.get("selected_nodeids_omitted")
-    raw_selected_count = selection.get("selected_count")
-    selected_nodeids = selection.get("selected_nodeids")
-    selection_valid = (
-        isinstance(raw_omitted, int)
-        and not isinstance(raw_omitted, bool)
-        and raw_omitted >= 0
-        and isinstance(raw_selected_count, int)
-        and not isinstance(raw_selected_count, bool)
-        and isinstance(selected_nodeids, list)
-        and all(isinstance(nodeid, str) and nodeid for nodeid in selected_nodeids)
-        and len(set(selected_nodeids)) == len(selected_nodeids)
-        and raw_selected_count == len(selected_nodeids)
-    )
-    prepared_expected = prepared.get("expected_nodeids")
-    expected_raw = prepared_expected if isinstance(prepared_expected, list) and prepared_expected else selected_nodeids
-    expected = list(expected_raw) if isinstance(expected_raw, list) else []
-    shards = validate_seed_shard_ledger(prepared.get("shards"), expected_nodeids=expected)
-    sharded = shards is not None
-    if sharded:
-        assert shards is not None
-        selection_valid = seed_shard_ledger_is_terminal(shards)
-        omitted = 0
-        database = _testmon_database_state(expected)
-        outcome_by_node = {item["nodeid"]: item for item in _seed_shard_outcomes(shards)}
-        node_outcomes = [
-            outcome_by_node.get(nodeid, {"nodeid": nodeid, "outcome": "missing", "reason": "shard not completed"})
-            for nodeid in expected
-        ]
-        shard_steps: list[Mapping[str, Any]] = []
-        for shard in shards:
-            raw_step = shard.get("pytest_step")
-            if isinstance(raw_step, Mapping):
-                shard_steps.append(raw_step)
-        if shard_steps:
-            pytest_step = dict(shard_steps[-1])
-            timed_out = next(
-                (
-                    step
-                    for step in shard_steps
-                    if str(step.get("diagnosis")) in {"pytest_timeout", "pytest_stall_timeout"}
-                ),
-                None,
-            )
-            if timed_out is not None:
-                pytest_step = dict(timed_out)
-        selection = {
-            "selected_count": len(expected),
-            "selected_nodeids_omitted": 0,
-            "shard_count": len(shards),
-            "completed_shard_count": sum(shard.get("status") == SeedShardStatus.COMPLETE.value for shard in shards),
-        }
-    else:
-        omitted = raw_omitted if selection_valid and isinstance(raw_omitted, int) else 1
-        database = _testmon_database_state(expected)
-        node_outcomes = _seed_node_outcomes_from_events(
-            events_path or Path(".missing-testmon-events"),
-            expected_nodeids=expected,
-            database=database,
-            pytest_step=pytest_step,
-            use_database_fallback=False,
-            prior_node_outcomes={
-                str(item["nodeid"]): item
-                for item in prepared.get("prior_node_outcomes", [])
-                if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
-            },
-        )
-    unsuccessful_nodeids = [
-        str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES
-    ]
-    green_complete = (
-        exit_code == 0
-        and bool(expected)
-        and selection_valid
-        and omitted == 0
-        and database["error"] is None
-        and database["graph_status"] == "complete"
-        and not database["missing_nodeids"]
-        and not database["failed_nodeids"]
-        and database["orphan_execution_edges"] == 0
-        and database["orphan_fingerprint_edges"] == 0
-        and not unsuccessful_nodeids
-    )
-    identity = prepared.get("identity")
-    narrow_terminal = isinstance(identity, Mapping) and identity.get("skip_slow") is True
-    terminal_authorized = _testmon_seed_terminal_authorized(prepared)
-    release_eligible = green_complete and (not narrow_terminal or terminal_authorized)
-    terminal_graph = (
-        database["error"] is None
-        and database["graph_status"] == GraphStatus.COMPLETE.value
-        and not database["missing_nodeids"]
-        and database["orphan_execution_edges"] == 0
-        and database["orphan_fingerprint_edges"] == 0
-        and all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
-    )
-    outcome = _seed_attempt_outcome(
-        release_eligible=release_eligible,
-        terminal_graph=terminal_graph,
-        exit_code=exit_code,
-        pytest_step=pytest_step,
-    )
-    shard_ledger = (
-        shards if sharded else seed_shard_plan(expected, shard_size=max(1, len(expected))) if expected else []
-    )
-    if not sharded and shard_ledger:
-        shard_ledger[0].update(
-            {
-                "status": (
-                    SeedShardStatus.COMPLETE.value
-                    if all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
-                    else SeedShardStatus.INCOMPLETE.value
-                ),
-                "node_outcomes": node_outcomes,
-            }
-        )
-    seed_scope = (
-        VerificationScope.NARROW_TERMINAL.value if narrow_terminal else VerificationScope.RELEASE_BASELINE.value
-    )
-    attempt_candidate = {
-        **dict(prepared),
-        "status": "complete" if release_eligible else "reusable" if terminal_graph else "incomplete",
-        "outcome": outcome.value,
-        "exit_code": exit_code,
-        "expected_nodeids": expected,
-        "expected_count": len(expected),
-        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
-        "selection": {
-            **selection,
-            # A resumed run inherits the complete collection ledger from its
-            # original selection. The current pytest step may select only a
-            # subset while it repairs missing graph edges.
-            "selected_count": len(expected)
-            if prepared.get("resume") and selection_valid
-            else selection.get("selected_count"),
-            "selected_nodeids_omitted": 0 if prepared.get("resume") and selection_valid else omitted,
-        },
-        "shards": shard_ledger,
-        "node_outcomes": node_outcomes,
-        "identity": prepared.get("identity"),
-        "run_id": prepared.get("run_id"),
-        "artifact_dir": prepared.get("artifact_dir"),
-        "testmon_data": _file_fingerprint(TESTMON_DATA),
-        "verification_scope": seed_scope,
-        "terminal_authorization": (TerminalAuthorization.NARROW_TERMINAL.value if terminal_authorized else None),
-        "release_baseline_allowed": release_eligible,
-    }
-    reusable_stamp = stamp_from_attempt(
-        attempt_candidate,
-        TESTMON_DATA,
-        checkout_root=Path.cwd(),
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-    )
-    reusable = reusable_stamp is not None
-    release_permission = bool(
-        reusable
-        and reusable_stamp is not None
-        and reusable_stamp.release_baseline_allowed
-        and (not narrow_terminal or terminal_authorized)
-    )
-    attempt_status = "complete" if green_complete and release_permission else "reusable" if reusable else "incomplete"
-    payload = {
-        **dict(prepared),
-        "status": attempt_status,
-        "outcome": outcome.value,
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "exit_code": exit_code,
-        "expected_nodeids": expected,
-        "expected_count": len(expected),
-        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest() if expected else None,
-        "selection": {
-            key: (
-                len(expected)
-                if key == "selected_count" and prepared.get("resume") and selection_valid
-                else 0
-                if key == "selected_nodeids_omitted" and prepared.get("resume") and selection_valid
-                else selection.get(key)
-            )
-            for key in (
-                "selected_count",
-                "deselected_count",
-                "selected_nodeids_omitted",
-                "deselected_nodeids_omitted",
-                "collection_duration_s",
-            )
-        },
-        "shards": shard_ledger,
-        "database": database,
-        "node_outcomes": node_outcomes,
-        "node_outcome_counts": dict(
-            sorted(
-                {
-                    outcome: sum(1 for item in node_outcomes if item.get("outcome") == outcome)
-                    for outcome in {str(item.get("outcome")) for item in node_outcomes}
-                }.items()
-            )
-        ),
-        "unsuccessful_nodeids": unsuccessful_nodeids,
-        "testmon_data": _file_fingerprint(TESTMON_DATA),
-        "pytest_step": dict(pytest_step) if pytest_step is not None else None,
-        "binding": TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict(),
-        "verification_scope": seed_scope,
-        "terminal_authorization": (TerminalAuthorization.NARROW_TERMINAL.value if terminal_authorized else None),
-    }
-    payload["release_baseline_allowed"] = release_permission
-    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
-    if release_permission and reusable_stamp is not None:
-        _atomic_write_json(TESTMON_SEED_STAMP, reusable_stamp.as_dict())
-    else:
-        TESTMON_SEED_STAMP.unlink(missing_ok=True)
-    return payload
-
-
-def _refresh_testmon_selection_attempt(
-    *,
-    step: Mapping[str, Any],
-    run: VerifyRun,
-    exit_code: int,
-) -> None:
-    """Refresh a reusable red graph after every completed affected run."""
-    attempt = _read_testmon_seed_attempt()
-    if attempt is None or attempt.get("release_baseline_allowed") is True:
+def _close_active_native_testmon_state() -> None:
+    if _ACTIVE_VERIFY_RUN is None or _ACTIVE_VERIFY_RUN.owned_native_testmon_state is None:
         return
-    expected = _testmon_seed_expected_nodeids(attempt)
-    if not expected:
-        return
-    database = _testmon_database_state(expected)
-    artifact_dir = _safe_testmon_artifact_dir(step.get("artifact_dir"))
-    events_path = artifact_dir / "events.jsonl" if artifact_dir is not None else Path(".missing-testmon-events")
-    prior = {
-        str(item["nodeid"]): item
-        for item in attempt.get("node_outcomes", [])
-        if isinstance(item, Mapping) and isinstance(item.get("nodeid"), str)
-    }
-    node_outcomes = _seed_node_outcomes_from_events(
-        events_path,
-        expected_nodeids=expected,
-        database=database,
-        pytest_step=step,
-        use_database_fallback=False,
-        prior_node_outcomes=prior,
-    )
-    graph_complete = (
-        database.get("graph_status") == GraphStatus.COMPLETE.value
-        and not database.get("missing_nodeids")
-        and database.get("error") is None
-        and database.get("orphan_execution_edges") == 0
-        and database.get("orphan_fingerprint_edges") == 0
-    )
-    terminal = all(item.get("outcome") in TERMINAL_NODE_OUTCOMES for item in node_outcomes)
-    prior_selection = attempt.get("selection")
-    payload = {
-        **attempt,
-        "status": "reusable" if graph_complete and terminal else "incomplete",
-        "outcome": (
-            SeedAttemptOutcome.RED_BASELINE.value
-            if graph_complete and terminal
-            else SeedAttemptOutcome.INCOMPLETE.value
-        ),
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "exit_code": exit_code,
-        "expected_nodeids": expected,
-        "expected_count": len(expected),
-        "expected_digest": hashlib.sha256("\n".join(sorted(expected)).encode()).hexdigest(),
-        "selection": {
-            **(dict(prior_selection) if isinstance(prior_selection, Mapping) else {}),
-            "selected_count": len(expected),
-            "selected_nodeids_omitted": 0,
-        },
-        "database": database,
-        "node_outcomes": node_outcomes,
-        "node_outcome_counts": dict(
-            sorted(
-                {
-                    outcome: sum(1 for item in node_outcomes if item.get("outcome") == outcome)
-                    for outcome in {str(item.get("outcome")) for item in node_outcomes}
-                }.items()
-            )
-        ),
-        "unsuccessful_nodeids": [
-            str(item["nodeid"]) for item in node_outcomes if item.get("outcome") not in SUCCESSFUL_NODE_OUTCOMES
-        ],
-        "testmon_data": _file_fingerprint(TESTMON_DATA),
-        "run_id": run.run_id,
-        "artifact_dir": str(run.relative_run_dir),
-        "pytest_step": dict(step),
-        "release_baseline_allowed": False,
-        "verification_scope": VerificationScope.AFFECTED.value,
-    }
-    raw_binding = attempt.get("binding")
-    if not isinstance(raw_binding, Mapping):
-        payload["binding"] = TestmonBinding(BindingMode.EXACT, str(ROOT.resolve())).as_dict()
-    _atomic_write_json(TESTMON_SEED_ATTEMPT, payload)
+    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state
+    _ACTIVE_VERIFY_RUN.owned_native_testmon_state = None
+    state.close()
 
 
-def _discard_testmon_dependency_authority() -> None:
-    """Remove a dependency graph learned while checkout authority was unstable."""
-    for path in (
-        TESTMON_SEED_STAMP,
-        TESTMON_SEED_ATTEMPT,
-        TESTMON_DATA,
-        Path(f"{TESTMON_DATA}-wal"),
-        Path(f"{TESTMON_DATA}-shm"),
-        Path(f"{TESTMON_DATA}-journal"),
-    ):
-        path.unlink(missing_ok=True)
-
-
-# ── main ────────────────────────────────────────────────────────────
-
-
-_ACTIVE_VERIFY_RUN: tuple[VerifyRun, float, VerificationScope] | None = None
-
-
-def _planned_verification_scope(args: argparse.Namespace, *, full_pytest: bool) -> VerificationScope:
-    """Return the immutable scope requested before the runner starts."""
+def _planned_verification_scope(
+    args: argparse.Namespace,
+    *,
+    testmon_mode: str | None,
+) -> VerificationScope:
     if args.quick or args.commit:
         return VerificationScope.NON_TEST
-    if full_pytest or args.seed_testmon:
-        return VerificationScope.NARROW_TERMINAL if args.skip_slow else VerificationScope.RELEASE_BASELINE
+    if testmon_mode in {"bootstrap", "full"}:
+        return VerificationScope.RELEASE_BASELINE
     return VerificationScope.AFFECTED
 
 
-def _changed_paths_from_testmon_authority(base_commit: str | None, head_commit: str | None) -> tuple[str, ...]:
-    """Require immutable refs before deriving affected executable paths."""
-    if base_commit is None or head_commit is None:
-        raise PytestResourceError("testmon changed-path authority is unavailable")
-    return _changed_executable_paths(base_commit, head_commit)
+def _pytest_profile() -> str:
+    return "correctness=complete"
+
+
+def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str | None]:
+    environment = {
+        # Hypothesis uses its default profile when the variable is absent.
+        # Record that effective value in the testmon environment identity so a
+        # bootstrap graph is reusable by the following affected invocation.
+        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE") or "default",
+        "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
+    }
+    if force_release_profile:
+        environment["HYPOTHESIS_PROFILE"] = "default"
+    return environment
+
+
+def _remaining_invocation_budget(started_at: float) -> float:
+    return max(0.0, VERIFY_INVOCATION_BUDGET_S - (time.monotonic() - started_at))
+
+
+def _native_environment_after_run(
+    preparation: NativeTestmonPreparation,
+    *,
+    required_executable_paths: Sequence[str],
+) -> NativeTestmonState:
+    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state if _ACTIVE_VERIFY_RUN is not None else None
+    temporary_state = state is None
+    if state is None:
+        state = _open_owned_native_testmon_state(ROOT)
+    try:
+        return inspect_native_testmon_environment(
+            state.data_path,
+            environment_name=preparation.environment_name,
+            required_executable_paths=required_executable_paths,
+        )
+    finally:
+        if temporary_state:
+            state.close()
+
+
+def _release_baseline_allowed(
+    *,
+    selection_mode: str | None,
+    verification_scope: VerificationScope,
+    exit_code: int,
+    checkout_stable: bool,
+    aggregate: Mapping[str, Any] | None,
+) -> bool:
+    if selection_mode not in {"bootstrap", "full"} or exit_code != 0 or not checkout_stable or aggregate is None:
+        return False
+    if verification_scope != VerificationScope.RELEASE_BASELINE:
+        return False
+    cleanup = aggregate.get("cleanup")
+    containment = aggregate.get("containment")
+    deadline = aggregate.get("deadline")
+    return bool(
+        aggregate.get("complete_corpus_covered") is True
+        and aggregate.get("terminal_green") is True
+        and aggregate.get("external_addopts_neutralized") is True
+        and aggregate.get("external_plugins_neutralized") is True
+        and aggregate.get("closed_world_collection") is True
+        and isinstance(cleanup, Mapping)
+        and cleanup.get("complete") is True
+        and isinstance(containment, Mapping)
+        and containment.get("complete") is True
+        and isinstance(deadline, Mapping)
+        and deadline.get("met") is True
+    )
+
+
+def _finalize_preflight_failure(
+    run: VerifyRun,
+    *,
+    started_at: float,
+    tier: str,
+    head: str | None,
+    verification_scope: VerificationScope,
+    diagnosis: str,
+    exit_code: int,
+    message: str,
+    use_json: bool,
+    mutation_monitor: CheckoutMutationMonitor | None = None,
+    initial_worktree_fingerprint: str | None = None,
+) -> int:
+    """Persist one normalized failed invocation before pytest can start."""
+    final_head = _git_head()
+    try:
+        final_worktree_fingerprint = worktree_fingerprint(ROOT) if mutation_monitor is not None else "unavailable"
+    except Exception:
+        final_worktree_fingerprint = "unavailable"
+    mutation_observation = (
+        _finish_active_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
+    )
+    checkout_diagnosis: str | None = None
+    if mutation_monitor is None:
+        checkout_diagnosis = "preflight_failed_before_checkout_monitor"
+    elif (
+        head is None
+        or final_head is None
+        or initial_worktree_fingerprint in {None, "unavailable"}
+        or final_worktree_fingerprint == "unavailable"
+        or mutation_observation is None
+        or mutation_observation.unavailable
+    ):
+        checkout_diagnosis = "checkout_fingerprint_unavailable"
+    elif (
+        final_head != head or mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint
+    ):
+        checkout_diagnosis = "checkout_changed_during_verification"
+
+    duration_s = round(time.monotonic() - started_at, 2)
+    artifacts = run.start_step(label="verify preflight", cmd=[])
+    step = run.finish_step(
+        step_id=artifacts.step_id,
+        result={
+            "duration_s": duration_s,
+            "exit": exit_code,
+            "diagnosis": diagnosis,
+            "error": message,
+            "checkout_diagnosis": checkout_diagnosis,
+        },
+    )
+    payload = run.finish(
+        exit_code=exit_code,
+        duration_s=duration_s,
+        diagnosis=diagnosis,
+        verification_scope=verification_scope.value,
+        release_baseline_allowed=False,
+        final_git_head=final_head,
+        final_worktree_fingerprint=final_worktree_fingerprint,
+        checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
+        checkout_diagnosis=checkout_diagnosis,
+        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
+    )
+    history_entry = {
+        **payload,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_head": head,
+        "final_git_head": final_head,
+        "tier": tier,
+        "checkout_root": str(ROOT.resolve()),
+        "worktree_fingerprint": initial_worktree_fingerprint,
+        "final_worktree_fingerprint": final_worktree_fingerprint,
+        "steps": [step] if step is not None else [],
+        "total_duration_s": duration_s,
+        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
+        "exit_code": exit_code,
+        "verification_scope": verification_scope.value,
+        "release_baseline_allowed": False,
+        "diagnosis": diagnosis,
+    }
+    _save_history(history_entry)
+    if use_json:
+        _print_json(history_entry)
+    sys.stderr.write(f"verify: {message}\n")
+    _notify(
+        _format_completion_notification(
+            exit_code=exit_code,
+            total_duration=duration_s,
+            step_results=history_entry["steps"],
+        )
+    )
+    return exit_code
 
 
 def _main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
+    started_at = time.monotonic()
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument(
-        "--seed-testmon",
+        "--all",
         action="store_true",
-        help="Run full non-integration pytest with --testmon-noselect to seed/update .cache/testmon/testmondata.",
+        help="Run the complete pytest correctness corpus (excluding performance benchmarks).",
     )
-    parser.add_argument(
-        "--all", action="store_true", help="Force the full non-integration pytest diagnostic instead of testmon."
-    )
-    parser.add_argument(
-        "--full", action="store_true", help="Alias for --all: run full non-integration pytest diagnostic."
-    )
+    parser.add_argument("--full", action="store_true", help="Alias for --all.")
     parser.add_argument("--commit", action="store_true", help="Pre-commit tier: format + lint + mypy only.")
-    parser.add_argument(
-        "--skip-slow", action="store_true", help="Exclude @pytest.mark.slow tests from the pytest step."
-    )
-    parser.add_argument(
-        "--terminal-authorization",
-        choices=[TerminalAuthorization.NARROW_TERMINAL.value],
-        help="Typed authorization for a narrow terminal verification that skips slow tests.",
-    )
     parser.add_argument(
         "--lab",
         action="store_true",
-        help=(
-            "Run the default pytest-testmon baseline plus verification-lab "
-            "scenario and verify-slos checks; does not imply --all."
-        ),
+        help="Run the native pytest-testmon lifecycle plus verification-lab checks.",
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     _anchor_verification_paths()
-    bootstrap_message = maybe_bootstrap_testmon_seed(
-        ROOT,
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-    )
-    if bootstrap_message is not None:
-        sys.stderr.write(bootstrap_message + "\n")
-    try:
-        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
-    except CheckoutImportMismatchError as exc:
-        sys.stderr.write(f"verify: {exc}\n")
-        return 125
-    polylogue_import_path = fingerprint.polylogue_import_path
-    environment_fingerprint = fingerprint.as_dict()
-    sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
-
     if args.history:
+        try:
+            assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+        except CheckoutImportMismatchError as exc:
+            sys.stderr.write(f"verify: {exc}\n")
+            return 125
         _print_history()
         return 0
 
-    # Auto-detect JSON when stdout is not a TTY (agent/pipe context).
+    full_requested = bool(args.all or args.full)
     use_json = args.json if args.json is not None else not sys.stdout.isatty()
-
-    tier = "full"
-    if args.commit:
-        tier = "commit"
-    elif args.quick:
-        tier = "quick"
-    elif args.seed_testmon:
-        tier = "seed-testmon"
-    elif args.all or args.full:
-        tier = "full"
-    elif args.lab:
-        tier = "lab"
-    else:
-        tier = "testmon"
-
-    head = _git_head()
-    full_pytest = bool(args.all or args.full)
-    affected_testmon = not (args.quick or args.commit or args.seed_testmon or full_pytest)
-    planned_verification_scope = _planned_verification_scope(args, full_pytest=full_pytest)
-    testmon_base_commit = _git_commit("origin/master") if affected_testmon else None
-    testmon_head_commit = head if affected_testmon else None
-    if affected_testmon and (testmon_base_commit is None or testmon_head_commit is None):
-        sys.stderr.write("verify: cannot resolve immutable Git refs for affected-test authority.\n")
-        return 125
-    if args.terminal_authorization is not None and not ((full_pytest or args.seed_testmon) and args.skip_slow):
-        parser.error("--terminal-authorization requires --all, --full, or --seed-testmon with --skip-slow")
-    preflight_error = _testmon_preflight(
-        seed_testmon=bool(args.seed_testmon),
-        full_pytest=full_pytest,
-        quick=bool(args.quick),
-        commit=bool(args.commit),
+    tier = (
+        "commit"
+        if args.commit
+        else "quick"
+        if args.quick
+        else "full"
+        if full_requested
+        else "lab"
+        if args.lab
+        else "testmon"
     )
-    if preflight_error is not None:
-        sys.stderr.write(preflight_error)
-        return 2
-
-    t0 = time.monotonic()
-    mutation_monitor = CheckoutMutationMonitor(ROOT)
-    start_checkout_mutation_monitor(mutation_monitor)
-    checkout_fingerprint = worktree_fingerprint(ROOT)
+    head = _git_head()
+    pytest_enabled = not (args.quick or args.commit)
+    managed_pytest_enabled = pytest_enabled or args.lab
+    planned_scope = _planned_verification_scope(
+        args,
+        testmon_mode="full" if full_requested else None,
+    )
     verify_run = VerifyRun(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
+    )
+    _ACTIVE_VERIFY_RUN = _ActiveVerifyRun(
+        run=verify_run,
+        started_at=started_at,
+        verification_scope=planned_scope,
+        head=head,
+    )
+
+    optimization_level = _python_optimization_level()
+    if managed_pytest_enabled and optimization_level > 0:
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
+            diagnosis="optimized_python_interpreter",
+            exit_code=125,
+            message=(
+                "Python optimization disables verification assertions; "
+                f"refusing managed pytest at optimization level {optimization_level}"
+            ),
+            use_json=bool(use_json),
+        )
+
+    try:
+        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+    except CheckoutImportMismatchError as exc:
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
+            diagnosis="checkout_import_mismatch",
+            exit_code=125,
+            message=str(exc),
+            use_json=bool(use_json),
+        )
+    polylogue_import_path = fingerprint.polylogue_import_path
+    environment_fingerprint = fingerprint.as_dict()
+    verify_run.update_checkout_provenance(
         polylogue_import_path=str(polylogue_import_path),
         environment_fingerprint=environment_fingerprint,
-        worktree_fingerprint=checkout_fingerprint,
     )
-    _ACTIVE_VERIFY_RUN = (verify_run, t0, planned_verification_scope)
-    seed_identity: dict[str, Any] | None = None
-    resume_testmon_seed = False
-    prepared_seed_attempt: dict[str, Any] | None = None
-    if args.seed_testmon:
-        try:
-            seed_identity = _testmon_seed_identity(
-                git_head=head,
-                git_tree=_git_committed_tree(),
-                skip_slow=bool(args.skip_slow),
-                lab=bool(args.lab),
-                terminal_authorization=args.terminal_authorization,
-            )
-        except RuntimeError as exc:
-            finish_checkout_mutation_monitor(mutation_monitor)
-            sys.stderr.write(f"verify: {exc}\n")
-            early_payload = verify_run.finish(
-                exit_code=125,
-                duration_s=time.monotonic() - t0,
-                diagnosis="testmon_environment_identity_unavailable",
-            )
-            _save_history(early_payload)
-            return 125
-        resume_testmon_seed = _testmon_seed_can_resume(seed_identity)
-        prepared_seed_attempt = _prepare_testmon_seed_attempt(
-            identity=seed_identity,
-            run=verify_run,
-            resume=resume_testmon_seed,
+    sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
+
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    _start_active_checkout_mutation_monitor(mutation_monitor)
+    checkout_fingerprint = worktree_fingerprint(ROOT)
+    _finish_active_checkout_mutation_monitor(mutation_monitor)
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    _start_active_checkout_mutation_monitor(mutation_monitor)
+    assert _ACTIVE_VERIFY_RUN is not None
+    _ACTIVE_VERIFY_RUN.initial_worktree_fingerprint = checkout_fingerprint
+    verify_run.update_checkout_provenance(worktree_fingerprint=checkout_fingerprint)
+
+    base_commit = _git_commit("origin/master") if pytest_enabled else None
+    if pytest_enabled and (base_commit is None or head is None):
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
+            diagnosis="native_git_authority_unavailable",
+            exit_code=125,
+            message="cannot resolve immutable Git refs for native affected-test authority.",
+            use_json=bool(use_json),
+            mutation_monitor=mutation_monitor,
+            initial_worktree_fingerprint=checkout_fingerprint,
         )
-        if resume_testmon_seed:
-            sys.stderr.write("verify: resuming the matching incomplete pytest-testmon seed\n")
+
+    relevant_paths: tuple[str, ...] = ()
+    required_executable_paths: tuple[str, ...] = ()
+    preparation_required_executable_paths: tuple[str, ...] = ()
+    runtime_data_paths: tuple[str, ...] = ()
+    preparation: NativeTestmonPreparation | None = None
+    testmon_mode: str | None = None
+    native_pytest_environment = _native_pytest_environment(force_release_profile=full_requested)
+    preparation_mutation_observation: CheckoutMutationObservation | None = None
+    if pytest_enabled:
+        assert base_commit is not None
+        assert head is not None
+        try:
+            relevant_paths = _changed_test_relevant_paths(base_commit, head)
+            change_impact = classify_native_testmon_changes(ROOT, relevant_paths)
+            preparation_required_executable_paths = change_impact.executable_paths
+            required_executable_paths = tuple(
+                path for path in preparation_required_executable_paths if (ROOT / path).is_file()
+            )
+            runtime_data_paths = change_impact.runtime_data_paths
+            preparation = prepare_native_testmon_environment(
+                ROOT,
+                required_executable_paths=preparation_required_executable_paths,
+                pytest_profile=_pytest_profile(),
+                pytest_environment=native_pytest_environment,
+                deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
+            )
+            if (
+                preparation.selection_mode == "bootstrap"
+                and native_pytest_environment["HYPOTHESIS_PROFILE"] != "default"
+            ):
+                native_pytest_environment = _native_pytest_environment(force_release_profile=True)
+                preparation = prepare_native_testmon_environment(
+                    ROOT,
+                    required_executable_paths=preparation_required_executable_paths,
+                    pytest_profile=_pytest_profile(),
+                    pytest_environment=native_pytest_environment,
+                    deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
+                )
+            assert _ACTIVE_VERIFY_RUN is not None
+            _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
+        except NativeTestmonDeadlineError as exc:
+            return _finalize_preflight_failure(
+                verify_run,
+                started_at=started_at,
+                tier=tier,
+                head=head,
+                verification_scope=planned_scope,
+                diagnosis="verify_invocation_deadline_exceeded",
+                exit_code=124,
+                message=str(exc),
+                use_json=bool(use_json),
+                mutation_monitor=mutation_monitor,
+                initial_worktree_fingerprint=checkout_fingerprint,
+            )
+        except (NativeTestmonRepairError, PytestResourceError) as exc:
+            return _finalize_preflight_failure(
+                verify_run,
+                started_at=started_at,
+                tier=tier,
+                head=head,
+                verification_scope=planned_scope,
+                diagnosis="native_testmon_preparation_failed",
+                exit_code=125,
+                message=f"native pytest-testmon preparation failed: {exc}",
+                use_json=bool(use_json),
+                mutation_monitor=mutation_monitor,
+                initial_worktree_fingerprint=checkout_fingerprint,
+            )
+        testmon_mode = "full" if full_requested or runtime_data_paths else preparation.selection_mode
+        if preparation.removed_paths:
+            sys.stderr.write(
+                "verify: repaired invalid native pytest-testmon state by removing only "
+                + ", ".join(str(path) for path in preparation.removed_paths)
+                + "\n"
+            )
+        if preparation.copied_from is not None:
+            sys.stderr.write(f"verify: copied matching native pytest-testmon DB from {preparation.copied_from}\n")
+        elif preparation.selection_mode == "bootstrap":
+            sys.stderr.write("verify: native pytest-testmon environment is empty; plain verify will build it\n")
+        if runtime_data_paths and not full_requested:
+            sys.stderr.write(
+                "verify: changed package runtime data is outside Python tracing; running the complete corpus: "
+                + ", ".join(runtime_data_paths)
+                + "\n"
+            )
+
+    planned_scope = _planned_verification_scope(args, testmon_mode=testmon_mode)
+    assert _ACTIVE_VERIFY_RUN is not None
+    _ACTIVE_VERIFY_RUN.verification_scope = planned_scope
 
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
-
-    # Resource preflight before heavy steps.
-    if not args.quick and not args.commit:
+    if pytest_enabled:
         _warn_low_memory()
 
-    exit_code = 0
     try:
         steps = build_verify_steps(
             quick=bool(args.quick),
             commit=bool(args.commit),
             lab=bool(args.lab),
-            skip_slow=bool(args.skip_slow),
-            seed_testmon=bool(args.seed_testmon),
-            resume_testmon_seed=resume_testmon_seed,
-            full_pytest=full_pytest,
-            broad_testmon=(
-                _default_testmon_is_broad_change(testmon_base_commit, testmon_head_commit)
-                if testmon_base_commit is not None and testmon_head_commit is not None
-                else False
-            ),
+            testmon_mode=testmon_mode or "affected",
+            testmon_environment=preparation.environment_name if preparation is not None else "",
         )
-    except PytestResourceError as exc:
-        finish_checkout_mutation_monitor(mutation_monitor)
-        sys.stderr.write(f"verify: {exc}\n")
-        early_payload = verify_run.finish(
-            exit_code=125,
-            duration_s=time.monotonic() - t0,
+    except (PytestResourceError, ValueError) as exc:
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
             diagnosis="pytest_resource_preflight_failed",
+            exit_code=125,
+            message=str(exc),
+            use_json=bool(use_json),
+            mutation_monitor=mutation_monitor,
+            initial_worktree_fingerprint=checkout_fingerprint,
         )
-        _save_history(early_payload)
-        return 125
 
+    # Git probes and native testmon preparation can refresh the index as part
+    # of their own read path. Retain that interval's observation: a tracked
+    # file can be edited and restored while the graph is prepared, which makes
+    # any resulting selection unsuitable as exact-head authority.
+    preparation_mutation_observation = _finish_active_checkout_mutation_monitor(mutation_monitor)
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    _start_active_checkout_mutation_monitor(mutation_monitor)
     step_results: list[dict[str, Any]] = []
-    pending_testmon_stamp: TestmonSeedStamp | None = None
-    pending_affected_coverage: tuple[tuple[str, ...], int] | None = None
-    pending_selection_refresh: tuple[dict[str, Any], int] | None = None
-    testmon_graph_touched = False
-    changed_path_authority_failed = False
+    exit_code = 0
+    native_graph_touched = False
     for label, cmd in steps:
+        remaining = _remaining_invocation_budget(started_at)
+        if remaining <= 0:
+            deadline_step = {
+                "name": label,
+                "duration_s": 0.0,
+                "exit": 124,
+                "diagnosis": "verify_invocation_deadline_exceeded",
+                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
+            }
+            step_results.append(deadline_step)
+            exit_code = 124
+            break
         if label.startswith("pytest"):
-            _warn_low_memory()  # check again right before the heavy step
-        rc, elapsed, metadata = _run(label, cmd, run=verify_run)
-        if label in {"pytest testmon", "pytest testmon (broad)"} or label.startswith("pytest seed-testmon"):
-            testmon_graph_touched = True
-        if rc == 0 and label in {"pytest testmon", "pytest testmon (broad)"}:
-            raw_stamp = _read_json_artifact(TESTMON_SEED_STAMP)
-            try:
-                current_stamp = (
-                    TestmonSeedStamp.from_mapping(raw_stamp, protocol_version=TESTMON_SEED_PROTOCOL_VERSION)
-                    if isinstance(raw_stamp, Mapping)
-                    else None
-                )
-            except ValueError:
-                current_stamp = None
-            if current_stamp is not None:
-                refreshed_stamp = refresh_stamp(current_stamp, TESTMON_DATA)
-                if refreshed_stamp is not None:
-                    pending_testmon_stamp = refreshed_stamp
-            try:
-                executable_paths = _changed_paths_from_testmon_authority(testmon_base_commit, testmon_head_commit)
-            except PytestResourceError as exc:
-                changed_path_authority_failed = True
-                executable_paths = ()
-                rc = 125
-                metadata["diagnosis"] = "testmon_changed_path_authority_unavailable"
-                metadata["error"] = str(exc)
-                pending_testmon_stamp = None
-                sys.stderr.write(
-                    "verify: changed-path authority became unavailable after pytest; "
-                    "discarding the affected dependency graph.\n"
-                )
-            selected_count = metadata.get("selected_count")
-            if selected_count == 0 and executable_paths:
-                coverage = _matching_testmon_coverage(executable_paths)
-                if coverage is None:
-                    rc = 5
-                    metadata["diagnosis"] = "zero_testmon_selection_for_executable_change"
-                    metadata["zero_selection_changed_paths"] = list(executable_paths)
-                    sys.stderr.write(
-                        "verify: pytest-testmon selected zero tests for executable changes and no "
-                        "matching successful coverage receipt exists; refresh the seed or repair "
-                        "dependency capture: " + ", ".join(executable_paths) + "\n"
-                    )
-                else:
-                    metadata["zero_selection_coverage"] = coverage
-            elif isinstance(selected_count, int) and selected_count > 0:
-                pending_affected_coverage = (tuple(executable_paths), selected_count)
+            _warn_low_memory()
+        rc, elapsed, metadata = _run(label, cmd, run=verify_run, timeout_s=remaining)
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
+        if label.startswith("pytest native parallel"):
+            step_result["semantic_lane"] = "parallel"
+            native_graph_touched = True
+        elif label.startswith("pytest native serial"):
+            step_result["semantic_lane"] = "serial"
+            native_graph_touched = True
         step_results.append(step_result)
-        if args.seed_testmon and label.startswith("pytest seed-testmon collect"):
-            if rc != 0:
-                exit_code = rc
-                break
-            artifact_dir = _safe_testmon_artifact_dir(metadata.get("artifact_dir"))
-            selection = _read_json_artifact(artifact_dir / "selection.json") if artifact_dir is not None else None
-            assert prepared_seed_attempt is not None
-            prepared_seed_attempt = _prepare_testmon_seed_shards(
-                prepared_seed_attempt,
-                selection=selection if isinstance(selection, Mapping) else None,
-            )
-            expected = _testmon_seed_expected_nodeids(prepared_seed_attempt)
-            shards = validate_seed_shard_ledger(prepared_seed_attempt.get("shards"), expected_nodeids=expected)
-            if shards is None:
-                exit_code = 5
-                step_result["exit"] = 5
-                step_result["diagnosis"] = "testmon_seed_collection_incomplete"
-                sys.stderr.write("verify: pytest-testmon collection did not produce a complete shard plan.\n")
-                break
-            for shard in shards:
-                if shard.get("status") == SeedShardStatus.COMPLETE.value:
-                    continue
-                shard_index = int(shard["index"])
-                shard_label = f"pytest seed-testmon shard {shard_index}/{len(shards)}"
-                shard_args_path = verify_run.run_dir / "seed-shards" / f"{shard_index:04d}.args"
-                try:
-                    shard_cmd = _seed_shard_command(cmd, shard, nodeids_file=shard_args_path)
-                except (OSError, PytestResourceError) as exc:
-                    resource_failure_result = {
-                        "name": shard_label,
-                        "duration_s": 0.0,
-                        "exit": 125,
-                        "diagnosis": (
-                            "pytest_resource_refusal"
-                            if isinstance(exc, PytestResourceError)
-                            else "testmon_seed_args_file_write_failed"
-                        ),
-                        "error": str(exc),
-                        "shard_index": shard_index,
-                        "shard_count": len(shards),
-                        "shard_nodeid_count": len(shard["nodeids"]),
-                    }
-                    step_results.append(resource_failure_result)
-                    prepared_seed_attempt = _checkpoint_testmon_seed_shard(
-                        prepared=prepared_seed_attempt,
-                        shard_index=shard_index,
-                        step=resource_failure_result,
-                    )
-                    exit_code = 125
-                    break
-                _warn_low_memory()
-                shard_rc, shard_elapsed, shard_metadata = _run(shard_label, shard_cmd, run=verify_run)
-                shard_result: dict[str, Any] = {
-                    "name": shard_label,
-                    "duration_s": round(shard_elapsed, 2),
-                    "exit": shard_rc,
-                    "shard_index": shard_index,
-                    "shard_count": len(shards),
-                    "shard_nodeid_count": len(shard["nodeids"]),
-                }
-                shard_result.update(shard_metadata)
-                step_results.append(shard_result)
-                prepared_seed_attempt = _checkpoint_testmon_seed_shard(
-                    prepared=prepared_seed_attempt,
-                    shard_index=shard_index,
-                    step=shard_result,
-                )
-                checkpointed_shards = prepared_seed_attempt.get("shards")
-                if (
-                    not isinstance(checkpointed_shards, list)
-                    or shard_index > len(checkpointed_shards)
-                    or not isinstance(checkpointed_shards[shard_index - 1], Mapping)
-                ):
-                    raise RuntimeError("testmon seed shard checkpoint is malformed")
-                shard_complete = checkpointed_shards[shard_index - 1].get("status") == SeedShardStatus.COMPLETE.value
-                if shard_rc != 0:
-                    stop_seed = _seed_shard_failure_requires_stop(
-                        shard_result,
-                        shard_complete=shard_complete,
-                    )
-                    if exit_code == 0 or stop_seed:
-                        # A later infrastructure failure is the terminal
-                        # condition even when an earlier shard recorded
-                        # ordinary red-test evidence.
-                        exit_code = shard_rc
-                    if stop_seed:
-                        break
+        if rc == 0:
             continue
-        if label in {"pytest testmon", "pytest testmon (broad)"} and not args.seed_testmon and not full_pytest:
-            pending_selection_refresh = (step_result, rc)
-        if rc != 0:
+        if exit_code == 0 or rc in {2, 3, 4, 124, 125, 130}:
             exit_code = rc
-            if rc == 130 or _stop_after_failed_step(label):
-                break
+        if label.startswith("pytest native parallel") and not _native_lane_failure_requires_stop(step_result):
+            continue
+        if label.startswith("pytest") or rc == 130 or _stop_after_failed_step(label):
+            break
 
+    assert mutation_monitor is not None
     final_head = _git_head()
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+    mutation_observation = _finish_active_checkout_mutation_monitor(mutation_monitor)
     checkout_stable = True
     checkout_fingerprint_unavailable = (
         head is None
@@ -3763,96 +3160,163 @@ def _main(argv: list[str] | None = None) -> int:
             final_checkout_fingerprint,
         }
     )
-    if changed_path_authority_failed or checkout_fingerprint_unavailable or mutation_observation.unavailable:
+    if (
+        checkout_fingerprint_unavailable
+        or mutation_observation.unavailable
+        or preparation_mutation_observation.unavailable
+    ):
         checkout_stable = False
         diagnosis = (
-            "testmon_changed_path_authority_unavailable"
-            if changed_path_authority_failed
-            else (
-                "checkout_fingerprint_unavailable"
-                if checkout_fingerprint_unavailable
-                else "checkout_mutation_monitor_unavailable"
-            )
+            "checkout_fingerprint_unavailable"
+            if checkout_fingerprint_unavailable
+            else "checkout_mutation_monitor_unavailable"
         )
-        step_results.append(
-            {
-                "name": "checkout stability",
-                "duration_s": 0.0,
-                "exit": 125,
-                "diagnosis": diagnosis,
-                "initial_git_head": head,
-                "final_git_head": final_head,
-                "initial_worktree_fingerprint": checkout_fingerprint,
-                "final_worktree_fingerprint": final_checkout_fingerprint,
-            }
-        )
-        if exit_code == 0:
-            exit_code = 125
-        sys.stderr.write(f"verify: {diagnosis.replace('_', ' ')}; evidence is not exact-head.\n")
-    elif final_head != head or mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
+    elif (
+        final_head != head
+        or preparation_mutation_observation.changed
+        or mutation_observation.changed
+        or final_checkout_fingerprint != checkout_fingerprint
+    ):
         checkout_stable = False
+        diagnosis = "checkout_changed_during_verification"
+    else:
+        diagnosis = None
+    if diagnosis is not None:
+        stability_step = {
+            "name": "checkout stability",
+            "duration_s": 0.0,
+            "exit": 125,
+            "diagnosis": diagnosis,
+            "initial_git_head": head,
+            "final_git_head": final_head,
+            "initial_worktree_fingerprint": checkout_fingerprint,
+            "final_worktree_fingerprint": final_checkout_fingerprint,
+            "transient_checkout_mutation": (preparation_mutation_observation.changed or mutation_observation.changed),
+            "checkout_mutation_path": (
+                preparation_mutation_observation.observed_path or mutation_observation.observed_path
+            ),
+        }
+        step_results.append(stability_step)
+        exit_code = 125
+        sys.stderr.write("verify: checkout contents were not stable for exact-head evidence.\n")
+        if native_graph_touched:
+            try:
+                removed = remove_invalid_native_testmon_state(ROOT)
+            except NativeTestmonRepairError as exc:
+                stability_step["testmon_cleanup_error"] = str(exc)
+            else:
+                stability_step["testmon_cleanup_paths"] = [str(path) for path in removed]
+
+    native_state = None
+    if preparation is not None:
+        native_state = _native_environment_after_run(
+            preparation,
+            required_executable_paths=required_executable_paths,
+        )
+        if not native_state.valid:
+            graph_step = {
+                "name": "pytest native graph validation",
+                "duration_s": 0.0,
+                "exit": 5,
+                "diagnosis": "native_testmon_graph_invalid",
+                "reason": native_state.reason,
+                "missing_executable_paths": list(native_state.missing_executable_paths),
+            }
+            step_results.append(graph_step)
+            if exit_code == 0:
+                exit_code = 5
+            if native_state.missing_executable_paths:
+                sys.stderr.write(
+                    "verify: changed executable modules have no runtime dependency edge: "
+                    + ", ".join(native_state.missing_executable_paths)
+                    + "\n"
+                )
+    _close_active_native_testmon_state()
+
+    total_duration = round(time.monotonic() - started_at, 2)
+    deadline_recorded = any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in step_results)
+    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
         step_results.append(
             {
-                "name": "checkout stability",
+                "name": "verify invocation deadline",
                 "duration_s": 0.0,
-                "exit": 125,
-                "diagnosis": "checkout_changed_during_verification",
-                "initial_git_head": head,
-                "final_git_head": final_head,
-                "initial_worktree_fingerprint": checkout_fingerprint,
-                "final_worktree_fingerprint": final_checkout_fingerprint,
-                "transient_checkout_mutation": mutation_observation.changed,
-                "checkout_mutation_path": mutation_observation.observed_path,
+                "exit": 124,
+                "diagnosis": "verify_invocation_deadline_exceeded",
+                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
             }
         )
-        if exit_code == 0:
-            exit_code = 125
-        sys.stderr.write("verify: checkout contents changed during verification; evidence is not exact-head.\n")
+        exit_code = 124
+        deadline_recorded = True
+    pytest_aggregate: dict[str, Any] | None = None
+    native_environment = native_state.environment if native_state is not None else None
+    if preparation is not None:
+        pytest_aggregate = aggregate_native_testmon_run(
+            ROOT,
+            steps=step_results,
+            environment_name=preparation.environment_name,
+            corpus_nodeids=native_environment.nodeids if native_environment is not None else (),
+            environment_status=native_state.status if native_state is not None else "unavailable",
+            environment_reason=native_state.reason if native_state is not None else "post-run inspection unavailable",
+            selection_mode=testmon_mode or "affected",
+            invocation_duration_s=total_duration,
+            budget_s=VERIFY_INVOCATION_BUDGET_S,
+        )
 
-    seed_receipt: dict[str, Any] | None = None
-    if checkout_stable:
-        if pending_testmon_stamp is not None:
-            _atomic_write_json(TESTMON_SEED_STAMP, pending_testmon_stamp.as_dict())
-        if pending_affected_coverage is not None:
-            executable_paths, selected_count = pending_affected_coverage
-            _record_testmon_affected_coverage(
-                executable_paths=executable_paths,
-                selected_count=selected_count,
-                run_id=verify_run.run_id,
-            )
-        if pending_selection_refresh is not None:
-            step_result, selection_exit_code = pending_selection_refresh
-            _refresh_testmon_selection_attempt(
-                step=step_result,
-                run=verify_run,
-                exit_code=selection_exit_code,
-            )
-        if prepared_seed_attempt is not None:
-            seed_receipt = _finalize_testmon_seed_attempt(
-                prepared=prepared_seed_attempt,
-                step_results=step_results,
-                exit_code=exit_code,
-            )
-            if exit_code == 0 and seed_receipt["status"] != "complete":
-                exit_code = 5
-                sys.stderr.write(
-                    "verify: pytest passed but the testmon dependency baseline is incomplete; "
-                    f"inspect {TESTMON_SEED_ATTEMPT}.\n"
-                )
-    elif testmon_graph_touched:
-        _discard_testmon_dependency_authority()
-        if prepared_seed_attempt is not None:
-            seed_receipt = {
-                "status": "discarded",
-                "outcome": SeedAttemptOutcome.INCOMPLETE.value,
-                "resume": False,
-                "expected_count": len(_testmon_seed_expected_nodeids(prepared_seed_attempt)),
-                "release_baseline_allowed": False,
+    # Aggregation and final graph inspection are part of the same invocation
+    # deadline as collection and execution. Recompute once after aggregation
+    # so a run cannot gain release authority by crossing the budget during
+    # finalization rather than during a pytest lane.
+    finalized_duration = round(time.monotonic() - started_at, 2)
+    if finalized_duration > total_duration:
+        total_duration = finalized_duration
+    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
+        step_results.append(
+            {
+                "name": "verify invocation deadline",
+                "duration_s": 0.0,
+                "exit": 124,
+                "diagnosis": "verify_invocation_deadline_exceeded",
+                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
             }
+        )
+        exit_code = 124
+        deadline_recorded = True
+    if pytest_aggregate is not None:
+        pytest_aggregate["wall_s"] = total_duration
+        pytest_aggregate["deadline"] = {
+            "budget_s": VERIFY_INVOCATION_BUDGET_S,
+            "met": total_duration <= VERIFY_INVOCATION_BUDGET_S,
+        }
 
-    total_duration = round(time.monotonic() - t0, 2)
+    release_baseline_allowed = _release_baseline_allowed(
+        selection_mode=testmon_mode,
+        verification_scope=planned_scope,
+        exit_code=exit_code,
+        checkout_stable=checkout_stable,
+        aggregate=pytest_aggregate,
+    )
+    verification_scope = planned_scope
+    if testmon_mode == "affected":
+        release_baseline_allowed = False
 
-    # Build history entry.
+    checkout_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in reversed(step_results)
+            if step.get("name") == "checkout stability" and isinstance(step.get("diagnosis"), str)
+        ),
+        None,
+    )
+    pytest_diagnosis = next(
+        (
+            str(step["diagnosis"])
+            for step in reversed(step_results)
+            if str(step.get("name", "")).startswith("pytest") and step.get("exit") != 0
+        ),
+        None,
+    )
+    run_diagnosis = checkout_diagnosis or pytest_diagnosis
+
     history_entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_head": head,
@@ -3865,109 +3329,58 @@ def _main(argv: list[str] | None = None) -> int:
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
+        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
         "exit_code": exit_code,
+        "verification_scope": verification_scope.value,
+        "release_baseline_allowed": release_baseline_allowed,
     }
-    checkout_stability_diagnosis = next(
-        (
-            str(step["diagnosis"])
-            for step in reversed(step_results)
-            if step.get("name") == "checkout stability" and "diagnosis" in step
-        ),
-        None,
-    )
-    fallback_pytest_diagnosis = next(
-        (
-            str(step["diagnosis"])
-            for step in reversed(step_results)
-            if str(step.get("name", "")).startswith("pytest") and "diagnosis" in step
-        ),
-        None,
-    )
-    pytest_diagnosis = next(
-        (
-            str(step["diagnosis"])
-            for step in reversed(step_results)
-            if str(step.get("name", "")).startswith("pytest") and step.get("exit") == exit_code and "diagnosis" in step
-        ),
-        fallback_pytest_diagnosis,
-    )
-    run_diagnosis = checkout_stability_diagnosis or pytest_diagnosis
+    if preparation is not None:
+        history_entry["testmon_environment"] = {
+            "name": preparation.environment_name,
+            "selection_mode": testmon_mode,
+            "copied_from": str(preparation.copied_from) if preparation.copied_from is not None else None,
+            "required_executable_paths": list(required_executable_paths),
+            "bootstrap_trigger_paths": list(preparation_required_executable_paths),
+            "runtime_data_paths": list(runtime_data_paths),
+        }
+    if pytest_aggregate is not None:
+        history_entry["pytest_aggregate"] = pytest_aggregate
     if run_diagnosis is not None:
         history_entry["diagnosis"] = run_diagnosis
-    if seed_receipt is not None:
-        history_entry["testmon_seed"] = {
-            "status": seed_receipt["status"],
-            "outcome": seed_receipt["outcome"],
-            "resume": seed_receipt["resume"],
-            "expected_count": seed_receipt["expected_count"],
-            "attempt_path": str(TESTMON_SEED_ATTEMPT),
-            "stamp_path": str(TESTMON_SEED_STAMP) if seed_receipt["release_baseline_allowed"] else None,
-            "release_baseline_allowed": seed_receipt["release_baseline_allowed"],
-        }
 
-    verification_scope = planned_verification_scope
-    if args.quick or args.commit:
-        # Non-test verification is intentionally not release authority, but it
-        # is still a typed verification receipt.  ``None`` made merge-gate
-        # treat an explicit quick receipt as malformed instead of as a valid
-        # non-release gate.
-        release_baseline_allowed: bool | None = False
-    elif full_pytest or args.seed_testmon:
-        narrow_terminal = bool(args.skip_slow)
-        authorized_narrow_terminal = args.terminal_authorization == TerminalAuthorization.NARROW_TERMINAL.value
-        if full_pytest:
-            release_baseline_allowed = exit_code == 0 and (not narrow_terminal or authorized_narrow_terminal)
-        else:
-            release_baseline_allowed = _testmon_release_baseline_permission() and (
-                not narrow_terminal or authorized_narrow_terminal
-            )
-    else:
-        release_baseline_allowed = _testmon_release_baseline_permission()
-    history_entry["verification_scope"] = verification_scope.value
-    history_entry["release_baseline_allowed"] = release_baseline_allowed
-    history_entry["terminal_authorization"] = args.terminal_authorization
-    if release_baseline_allowed is False and tier in {"testmon", "lab", "seed-testmon"}:
-        sys.stderr.write(
-            "verify: affected-test selection is usable, but the current testmon state does not grant "
-            "release-baseline permission.\n"
-        )
-
-    if use_json:
-        _print_json(history_entry)
-    else:
-        if exit_code == 0:
-            # Compare against last run, flag regressions.
-            flags = _compare_against_last(step_results)
-            sys.stderr.write(f"\nverify: all checks passed ({total_duration:.1f}s total)")
-            if flags:
-                sys.stderr.write(" — " + "; ".join(flags) if len(flags) == 1 else "")
-                sys.stderr.write("\n")
-                for flag in flags:
-                    sys.stderr.write(flag + "\n")
-            else:
-                sys.stderr.write("\n")
-        else:
-            sys.stderr.write(f"\nverify: FAILED ({total_duration:.1f}s) — fix before pushing\n")
-
-    # Persist history and stamp.
-    _save_history(history_entry)
-    verify_run.finish(
+    finalized_payload = verify_run.finish(
         exit_code=exit_code,
         duration_s=total_duration,
         diagnosis=run_diagnosis,
         verification_scope=verification_scope.value,
         release_baseline_allowed=release_baseline_allowed,
-        terminal_authorization=args.terminal_authorization,
+        final_git_head=final_head,
         final_worktree_fingerprint=final_checkout_fingerprint,
-        checkout_mutation_path=mutation_observation.observed_path,
+        checkout_mutation_path=(preparation_mutation_observation.observed_path or mutation_observation.observed_path),
+        checkout_diagnosis=checkout_diagnosis,
+        pytest_aggregate=pytest_aggregate,
+        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
+    history_entry["pytest_aggregate"] = finalized_payload["pytest_aggregate"]
+    if use_json:
+        _print_json(history_entry)
+    elif exit_code == 0:
+        flags = _compare_against_last(step_results)
+        sys.stderr.write(f"\nverify: all checks passed ({total_duration:.1f}s total)")
+        if flags:
+            sys.stderr.write("\n")
+            for flag in flags:
+                sys.stderr.write(flag + "\n")
+        else:
+            sys.stderr.write("\n")
+    else:
+        sys.stderr.write(f"\nverify: FAILED ({total_duration:.1f}s); fix before pushing\n")
+
+    _save_history(history_entry)
+
     if exit_code == 0:
         _stamp_head()
-
-    # Notify only on failure. Passing runs stay silent — the terminal
-    # already shows the green summary and a desktop popup per run is
-    # spammy when verify is invoked on every push.
-    if exit_code != 0:
+    else:
         _notify(
             _format_completion_notification(
                 exit_code=exit_code,
@@ -3975,36 +3388,68 @@ def _main(argv: list[str] | None = None) -> int:
                 step_results=step_results,
             )
         )
-
     return exit_code
 
 
 def _finalize_verify_runner_exception(
-    run: VerifyRun,
-    exc: Exception,
+    active: _ActiveVerifyRun,
+    exc: BaseException,
     *,
-    run_started: float,
-    verification_scope: VerificationScope,
     use_json: bool,
 ) -> int:
     """Leave typed, durable failed evidence when verification orchestration raises."""
-    diagnosis = "verify_runner_exception"
-    run.finish_interrupted_steps(
-        exit_code=125,
-        diagnosis=diagnosis,
-        termination_reason="runner_exception",
-    )
+    interrupted = isinstance(exc, KeyboardInterrupt)
+    diagnosis = "verify_interrupted" if interrupted else "verify_runner_exception"
+    exit_code = 130 if interrupted else 125
+    run = active.run
+    try:
+        final_head = _git_head()
+    except Exception:
+        final_head = None
     try:
         final_worktree_fingerprint = worktree_fingerprint(ROOT)
     except Exception:
         final_worktree_fingerprint = "unavailable"
-    payload = run.finish(
-        exit_code=125,
-        duration_s=time.monotonic() - run_started,
+    mutation_observation = None
+    if active.mutation_monitor is not None:
+        try:
+            mutation_observation = _finish_active_checkout_mutation_monitor(active.mutation_monitor)
+        except Exception:
+            mutation_observation = None
+    _close_active_native_testmon_state()
+    run.finish_interrupted_steps(
+        exit_code=exit_code,
         diagnosis=diagnosis,
-        verification_scope=verification_scope.value,
+        termination_reason="operator_interrupt" if interrupted else "runner_exception",
+    )
+    if (
+        active.head is None
+        or final_head is None
+        or active.initial_worktree_fingerprint in {None, "unavailable"}
+        or final_worktree_fingerprint == "unavailable"
+        or mutation_observation is None
+        or mutation_observation.unavailable
+    ):
+        checkout_diagnosis = "checkout_fingerprint_unavailable"
+    elif (
+        final_head != active.head
+        or mutation_observation.changed
+        or final_worktree_fingerprint != active.initial_worktree_fingerprint
+    ):
+        checkout_diagnosis = "checkout_changed_during_verification"
+    else:
+        checkout_diagnosis = None
+    payload = run.finish(
+        exit_code=exit_code,
+        duration_s=time.monotonic() - active.started_at,
+        diagnosis=diagnosis,
+        verification_scope=active.verification_scope.value,
         release_baseline_allowed=False,
+        final_git_head=final_head,
         final_worktree_fingerprint=final_worktree_fingerprint,
+        checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
+        checkout_diagnosis=checkout_diagnosis,
+        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)
@@ -4012,26 +3457,39 @@ def _finalize_verify_runner_exception(
     if use_json:
         _print_json(payload)
     sys.stderr.write(f"verify: unexpected runner exception: {exc}\n")
-    return 125
+    return exit_code
 
 
 @finalize_checkout_mutation_monitors
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     _ACTIVE_VERIFY_RUN = None
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
+    lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
     try:
-        return _main(argv)
-    except Exception as exc:
-        if _ACTIVE_VERIFY_RUN is None:
-            raise
-        raw_argv = sys.argv[1:] if argv is None else argv
-        run, run_started, verification_scope = _ACTIVE_VERIFY_RUN
-        return _finalize_verify_runner_exception(
-            run,
-            exc,
-            run_started=run_started,
-            verification_scope=verification_scope,
-            use_json="--json" in raw_argv,
-        )
-    finally:
-        _ACTIVE_VERIFY_RUN = None
+        with lock:
+            try:
+                return _main(argv)
+            except KeyboardInterrupt as exc:
+                if _ACTIVE_VERIFY_RUN is None:
+                    raise
+                return _finalize_verify_runner_exception(
+                    _ACTIVE_VERIFY_RUN,
+                    exc,
+                    use_json="--json" in raw_argv,
+                )
+            except Exception as exc:
+                if _ACTIVE_VERIFY_RUN is None:
+                    raise
+                return _finalize_verify_runner_exception(
+                    _ACTIVE_VERIFY_RUN,
+                    exc,
+                    use_json="--json" in raw_argv,
+                )
+            finally:
+                _close_active_native_testmon_state()
+                _ACTIVE_VERIFY_RUN = None
+    except PytestResourceError as exc:
+        sys.stderr.write(f"verify: {exc}\n")
+        return 125
