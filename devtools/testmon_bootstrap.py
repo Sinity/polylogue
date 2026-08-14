@@ -387,6 +387,18 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
             # remain executable graph inputs.
             continue
         if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and all(alias.name == "annotations" for alias in node.names)
+        ):
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "enum"
+            and all(alias.name in {"Enum", "IntEnum", "StrEnum"} for alias in node.names)
+        ):
+            continue
+        if (
             isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Constant)
             and (isinstance(node.value.value, str) or node.value.value is Ellipsis)
@@ -407,6 +419,8 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
                 return True
             continue
         if isinstance(node, ast.ClassDef):
+            if _is_pure_enum_declaration(node):
+                continue
             if node.decorator_list or node.bases or node.keywords or _body_is_executable(node.body):
                 return True
             continue
@@ -418,6 +432,24 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
             continue
         return True
     return False
+
+
+def _is_pure_enum_declaration(node: ast.ClassDef) -> bool:
+    """Recognize enum value declarations that tracing cannot observe usefully."""
+    bases = {base.id for base in node.bases if isinstance(base, ast.Name)}
+    if not bases.intersection({"Enum", "IntEnum", "StrEnum"}):
+        return False
+    for member in node.body:
+        if (
+            isinstance(member, ast.Expr)
+            and isinstance(member.value, ast.Constant)
+            and isinstance(member.value.value, str)
+        ):
+            continue
+        if isinstance(member, (ast.Assign, ast.AnnAssign, ast.Pass)):
+            continue
+        return False
+    return True
 
 
 def classify_source_ast(source_path: Path) -> ASTClassification:
@@ -474,6 +506,11 @@ def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> Na
         relative
         for relative in native_paths
         if (not relative.endswith(".py") and relative.startswith(("polylogue/", "tests/")))
+        or (
+            relative.endswith(".py")
+            and relative.startswith(("devtools/", "polylogue/", "tests/"))
+            and classify_source_ast(repo_root / relative) == "declaration-only"
+        )
         or relative.startswith("packaging/")
     )
     return NativeTestmonChangeImpact(

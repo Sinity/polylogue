@@ -62,6 +62,24 @@ def test_ast_classification_treats_ordinary_imports_as_executable(tmp_path: Path
     assert classify_source_ast(module) == "executable"
 
 
+def test_pure_enum_contracts_are_non_traceable_runtime_inputs(tmp_path: Path) -> None:
+    module = tmp_path / "devtools" / "verification_contracts.py"
+    module.parent.mkdir()
+    module.write_text(
+        "from enum import StrEnum\n\n"
+        "class VerificationScope(StrEnum):\n"
+        "    AFFECTED = 'affected'\n"
+        "    RELEASE_BASELINE = 'release-baseline'\n",
+        encoding="utf-8",
+    )
+
+    assert classify_source_ast(module) == "declaration-only"
+    impact = classify_native_testmon_changes(tmp_path, ("devtools/verification_contracts.py",))
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == ("devtools/verification_contracts.py",)
+
+
 def test_executable_paths_require_current_runtime_modules_and_deleted_modules(tmp_path: Path) -> None:
     module = tmp_path / "polylogue" / "runtime.py"
     module.parent.mkdir()
