@@ -16,6 +16,7 @@ from polylogue.cli.click_app import cli
 from polylogue.daemon.backup import backup_archive
 from polylogue.operations.archive_root_relocation import (
     ArchiveRootRelocationError,
+    RelocationActiveIndexPointer,
     RelocationTierEvidence,
     _check_backup_against_live,
     apply_archive_root_relocation,
@@ -1052,8 +1053,8 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
         with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
             assert_no_prepared_historical_source_continuity_recovery(new_root)
 
-        def crash_after_refresh(*args: object, **kwargs: object) -> None:
-            real_write_refresh(*args, **kwargs)
+        def crash_after_refresh(path: Path, payload: dict[str, object]) -> None:
+            real_write_refresh(path, payload)
             raise RuntimeError("crash after refresh receipt")
 
         monkeypatch.setattr(recovery, "_write_refresh_receipt", crash_after_refresh)
@@ -1277,8 +1278,8 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     assert plan.active_index_pointer.new_target == str(new_root / old_active_target.relative_to(old_root))
     real_publish = relocation._publish_active_index_pointer
 
-    def crash_after_pointer_publication(*args: object, **kwargs: object) -> None:
-        real_publish(*args, **kwargs)
+    def crash_after_pointer_publication(root: Path, pointer: RelocationActiveIndexPointer | None) -> None:
+        real_publish(root, pointer)
         raise RuntimeError("crash after active pointer publication")
 
     monkeypatch.setattr(relocation, "_publish_active_index_pointer", crash_after_pointer_publication)
