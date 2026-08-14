@@ -1200,16 +1200,20 @@ def test_neutralized_environment_and_declared_plugin_identity_are_owned(
     ] == [0, 0]
 
 
-def test_production_verify_fails_closed_on_dynamic_pytest_plugins(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "from plugin_config import plugin_names\n\npytest_plugins = plugin_names\n",
+        'from plugin_config import plugin_names\n\nglobals()["pytest_plugins"] = plugin_names\n',
+    ],
+)
+def test_production_verify_fails_closed_on_dynamic_pytest_plugins(tmp_path: Path, declaration: str) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
     (repo / "plugin_config.py").write_text('plugin_names = ("local_plugin",)\n', encoding="utf-8")
     (repo / "local_plugin.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (repo / "tests" / "conftest.py").write_text(
-        "from plugin_config import plugin_names\n\npytest_plugins = plugin_names\n",
-        encoding="utf-8",
-    )
+    (repo / "tests" / "conftest.py").write_text(declaration, encoding="utf-8")
     (repo / "tests" / "test_body.py").write_text("def test_body():\n    assert True\n", encoding="utf-8")
     _commit_all(repo, "fixture")
     origin = tmp_path / "origin.git"
@@ -1223,7 +1227,42 @@ def test_production_verify_fails_closed_on_dynamic_pytest_plugins(tmp_path: Path
     assert completed.returncode == 125
     assert payload["diagnosis"] == "native_testmon_preparation_failed"
     assert payload["release_baseline_allowed"] is False
-    assert "pytest_plugins declaration must be a literal" in completed.stderr
+    assert "pytest_plugins declaration must" in completed.stderr
+
+
+def test_managed_native_launch_keeps_state_inode_bound_during_parent_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tests" / "test_body.py").write_text("def test_body():\n    assert True\n", encoding="utf-8")
+    _commit_all(repo, "fixture")
+    prepare_native_testmon_environment(repo)
+    external_cache = tmp_path / "external-cache"
+    external_cache.mkdir()
+    monkeypatch.setattr(verify, "ROOT", repo)
+    monkeypatch.setattr(verify, "TESTMON_DATA", repo / TESTMON_DATA_RELPATH)
+
+    def replace_parent(
+        _label: str,
+        _cmd: list[str],
+        **kwargs: object,
+    ) -> tuple[int, float, dict[str, object]]:
+        bound_data = kwargs["native_testmon_data"]
+        assert isinstance(bound_data, Path)
+        (repo / ".cache").rename(repo / ".cache-owned")
+        (repo / ".cache").symlink_to(external_cache, target_is_directory=True)
+        bound_data.write_text("bound database", encoding="utf-8")
+        return 0, 0.01, {}
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(verify, "_run_step", replace_parent)
+        assert verify._run("pytest native parallel (affected)", ["pytest"])[0] == 0
+
+    assert (repo / ".cache-owned" / "testmon" / "testmondata").read_text(encoding="utf-8") == "bound database"
+    assert list(external_cache.iterdir()) == []
 
 
 def test_managed_native_routes_reject_replaced_cache_parent(

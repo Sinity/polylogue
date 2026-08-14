@@ -246,6 +246,13 @@ def test_dynamic_pytest_plugin_declaration_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(NativeTestmonRepairError, match="must be one literal assignment"):
         _testmon_environment_digest(tmp_path)
 
+    conftest.write_text(
+        'globals()["pytest_plugins"] = ("tests.infra.fixture_plugin",)\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(NativeTestmonRepairError, match="must be one literal assignment"):
+        _testmon_environment_digest(tmp_path)
+
 
 def test_environment_digest_ignores_neutralized_pytest_plugins(
     tmp_path: Path,

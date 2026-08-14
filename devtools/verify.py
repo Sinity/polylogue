@@ -154,6 +154,41 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
 
+@dataclass(slots=True)
+class _OwnedNativeTestmonState:
+    descriptor: int
+    data_path: Path
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonState:
+    """Bind managed SQLite access to one no-follow checkout directory."""
+    validate_native_testmon_state_ownership(repo_root)
+    raw_data = TESTMON_DATA if TESTMON_DATA.is_absolute() else repo_root.resolve() / TESTMON_DATA
+    parent = raw_data.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    validate_native_testmon_state_ownership(repo_root)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(parent, flags)
+        opened = os.fstat(descriptor)
+        current = parent.lstat()
+    except OSError as exc:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        raise NativeTestmonRepairError(f"cannot bind owned testmon directory {parent}: {exc}") from exc
+    assert descriptor is not None
+    if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        os.close(descriptor)
+        raise NativeTestmonRepairError(f"owned testmon directory changed while binding: {parent}")
+    bound = Path(f"/proc/{os.getpid()}/fd/{descriptor}") / raw_data.name
+    return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
+
+
 @contextlib.contextmanager
 def _native_testmon_lifecycle_lock(repo_root: Path) -> Iterator[None]:
     """Serialize one checkout's native testmon preparation, lanes, and inspection."""
@@ -1688,6 +1723,35 @@ def _run(
     run: VerifyRun | None = None,
     timeout_s: float | None = None,
 ) -> tuple[int, float, dict[str, Any]]:
+    if not label.startswith("pytest native"):
+        return _run_step(label, cmd, cwd=cwd, run=run, timeout_s=timeout_s)
+    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state if _ACTIVE_VERIFY_RUN is not None else None
+    temporary_state = state is None
+    if state is None:
+        state = _open_owned_native_testmon_state(ROOT)
+    try:
+        return _run_step(
+            label,
+            cmd,
+            cwd=cwd,
+            run=run,
+            timeout_s=timeout_s,
+            native_testmon_data=state.data_path,
+        )
+    finally:
+        if temporary_state:
+            state.close()
+
+
+def _run_step(
+    label: str,
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    run: VerifyRun | None = None,
+    timeout_s: float | None = None,
+    native_testmon_data: Path | None = None,
+) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
@@ -1702,10 +1766,8 @@ def _run(
         cmd = [f"--json-report-file={isolated_report}" if arg.startswith("--json-report-file=") else arg for arg in cmd]
     if is_pytest:
         _clear_pytest_report(cmd)
-    if managed_native_lane:
-        validate_native_testmon_state_ownership(ROOT)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
-    env = _subprocess_env()
+    env = _subprocess_env(native_testmon_data=native_testmon_data)
     external_addopts_neutralized = False
     external_plugins_neutralized = False
     if managed_native_lane:
@@ -2142,7 +2204,7 @@ def _pytest_command_basetemp(
     return (Path(cwd) if cwd is not None else Path.cwd()) / path
 
 
-def _subprocess_env() -> dict[str, str]:
+def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str]:
     env = normalize_pytest_basetemp_env(os.environ)
     # Tests and verification helpers may inspect Git, but observational reads
     # must not refresh the index and invalidate the exact-head mutation watch.
@@ -2152,7 +2214,7 @@ def _subprocess_env() -> dict[str, str]:
     inherited_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
-    env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
+    env["TESTMON_DATAFILE"] = str(native_testmon_data or TESTMON_DATA)
     env["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(ROOT / PYTEST_EVENTS_DIR)
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
     env["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(ROOT / PYTEST_SELECTION_PATH)
@@ -2497,6 +2559,7 @@ class _ActiveVerifyRun:
     head: str | None
     mutation_monitor: CheckoutMutationMonitor | None = None
     initial_worktree_fingerprint: str | None = None
+    owned_native_testmon_state: _OwnedNativeTestmonState | None = None
 
 
 _ACTIVE_VERIFY_RUN: _ActiveVerifyRun | None = None
@@ -2514,6 +2577,14 @@ def _finish_active_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -
     finally:
         if _ACTIVE_VERIFY_RUN is not None and _ACTIVE_VERIFY_RUN.mutation_monitor is monitor:
             _ACTIVE_VERIFY_RUN.mutation_monitor = None
+
+
+def _close_active_native_testmon_state() -> None:
+    if _ACTIVE_VERIFY_RUN is None or _ACTIVE_VERIFY_RUN.owned_native_testmon_state is None:
+        return
+    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state
+    _ACTIVE_VERIFY_RUN.owned_native_testmon_state = None
+    state.close()
 
 
 def _planned_verification_scope(
@@ -2541,12 +2612,19 @@ def _native_environment_after_run(
     *,
     required_executable_paths: Sequence[str],
 ) -> NativeTestmonState:
-    validate_native_testmon_state_ownership(ROOT)
-    return inspect_native_testmon_environment(
-        TESTMON_DATA,
-        environment_name=preparation.environment_name,
-        required_executable_paths=required_executable_paths,
-    )
+    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state if _ACTIVE_VERIFY_RUN is not None else None
+    temporary_state = state is None
+    if state is None:
+        state = _open_owned_native_testmon_state(ROOT)
+    try:
+        return inspect_native_testmon_environment(
+            state.data_path,
+            environment_name=preparation.environment_name,
+            required_executable_paths=required_executable_paths,
+        )
+    finally:
+        if temporary_state:
+            state.close()
 
 
 def _release_baseline_allowed(
@@ -2807,6 +2885,8 @@ def _main(argv: list[str] | None = None) -> int:
                 pytest_profile=_pytest_profile(),
                 deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
             )
+            assert _ACTIVE_VERIFY_RUN is not None
+            _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
         except NativeTestmonDeadlineError as exc:
             return _finalize_preflight_failure(
                 verify_run,
@@ -3002,6 +3082,7 @@ def _main(argv: list[str] | None = None) -> int:
                     + ", ".join(native_state.missing_executable_paths)
                     + "\n"
                 )
+    _close_active_native_testmon_state()
 
     total_duration = round(time.monotonic() - started_at, 2)
     deadline_recorded = any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in step_results)
@@ -3186,6 +3267,7 @@ def _finalize_verify_runner_exception(
             mutation_observation = _finish_active_checkout_mutation_monitor(active.mutation_monitor)
         except Exception:
             mutation_observation = None
+    _close_active_native_testmon_state()
     run.finish_interrupted_steps(
         exit_code=exit_code,
         diagnosis=diagnosis,
@@ -3256,4 +3338,5 @@ def main(argv: list[str] | None = None) -> int:
                 use_json="--json" in raw_argv,
             )
         finally:
+            _close_active_native_testmon_state()
             _ACTIVE_VERIFY_RUN = None

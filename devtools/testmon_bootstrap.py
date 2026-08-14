@@ -159,6 +159,28 @@ def _pytest_plugins_assignment(node: ast.stmt) -> ast.expr | None:
             return None
 
 
+def _indirect_pytest_plugins_declaration(node: ast.stmt) -> bool:
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Subscript)
+            and isinstance(child.slice, ast.Constant)
+            and child.slice.value == "pytest_plugins"
+        ):
+            return True
+        if isinstance(child, ast.Call):
+            if (
+                isinstance(child.func, ast.Name)
+                and child.func.id == "setattr"
+                and len(child.args) >= 2
+                and isinstance(child.args[1], ast.Constant)
+                and child.args[1].value == "pytest_plugins"
+            ):
+                return True
+            if any(keyword.arg == "pytest_plugins" for keyword in child.keywords):
+                return True
+    return False
+
+
 def _declared_pytest_plugin_names(root: Path) -> set[str]:
     """Read static local plugin declarations that pytest loads at collection."""
     names: set[str] = set()
@@ -181,13 +203,15 @@ def _declared_pytest_plugin_names(root: Path) -> set[str]:
         for node in tree.body:
             value = _pytest_plugins_assignment(node)
             if value is None:
-                dynamic_reference = any(
-                    isinstance(child, ast.Name) and child.id == "pytest_plugins" for child in ast.walk(node)
-                ) or any(
-                    alias.name == "pytest_plugins" or alias.asname == "pytest_plugins"
-                    for child in ast.walk(node)
-                    if isinstance(child, ast.Import | ast.ImportFrom)
-                    for alias in child.names
+                dynamic_reference = (
+                    any(isinstance(child, ast.Name) and child.id == "pytest_plugins" for child in ast.walk(node))
+                    or any(
+                        alias.name == "pytest_plugins" or alias.asname == "pytest_plugins"
+                        for child in ast.walk(node)
+                        if isinstance(child, ast.Import | ast.ImportFrom)
+                        for alias in child.names
+                    )
+                    or _indirect_pytest_plugins_declaration(node)
                 )
                 if dynamic_reference:
                     raise NativeTestmonRepairError(
@@ -427,7 +451,7 @@ def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> Na
 
 
 def _readonly_uri(path: Path) -> str:
-    return f"{path.resolve().as_uri()}?mode=ro"
+    return f"{path.absolute().as_uri()}?mode=ro"
 
 
 def _testmon_schema_version() -> int:
