@@ -39,13 +39,24 @@ contains recent writes creates an incomplete backup.
 
 ## Offline archive-root relocation
 
-An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon, move the complete root without copying its database files, and retain the verified `full_evidence` backup made at the old root. Then point `POLYLOGUE_ARCHIVE_ROOT` at the destination and create the bound plan:
+An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon and move the complete root without copying its database files. Set `POLYLOGUE_ARCHIVE_ROOT` to the moved root before creating relocation backup evidence.
+
+If the current released source train lacks continuity authority for historical source changes, first run the `source-continuity-recovery` plan and apply sequence documented in [Maintenance Operations](maintenance.md#recovering-the-one-historical-liveness-receipt-shape). Its authenticated pre/post backup evidence belongs to the retired path and is used only for that bridge. After the bridge commits, or immediately after the move when no bridge is required, create and verify a fresh complete backup at the moved root:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
+  polylogue ops backup \
+  --output-dir /safe/operator/location/relocation-backup \
+  --profile full_evidence --verify
+```
+
+Use the `manifest.json` printed by that command to create the bound relocation plan. `--old-root` names the retired pre-move root only for the identity transition and active-index pointer mapping:
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
   polylogue ops maintenance archive-root-relocation plan \
   --old-root /old/archive/root \
-  --backup-manifest /path/to/verified-full-evidence/manifest.json \
+  --backup-manifest /safe/operator/location/relocation-backup/PACKAGE/manifest.json \
   --output /safe/operator/location/relocation-plan.json --output-format json
 ```
 
@@ -58,7 +69,7 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
   --authorize PLAN_SHA256 --output-format json
 ```
 
-The route reads every SQLite file immutably and refuses copied files, WAL sidecars, missing HMAC authority for the old path, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, or any non-released source train. A live source train whose historical content differs from the current source must first carry receipt-backed source-continuity authority. For the one pre-#3868 liveness receipt shape, create that authority with `source-continuity-recovery` using authenticated pre/post backups and a fresh zero-orphan census; it is a separate offline transition, not an exception inside relocation. After it commits, make and verify a fresh `full_evidence` backup at the moved root before relocation. Relocation records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver, and the plan binds the resolved generation rather than a shadow index path. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises only released source train manifests and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. A prepared receipt blocks daemon startup and prints the exact resume command. Live application and post-move observation remain operator evidence, outside this code path.
+The route reads every SQLite file immutably and refuses copied files, WAL sidecars, moved-root backup receipts that do not authenticate the current tier paths, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, or any non-released source train. A live source train whose historical content differs from the current source must first carry receipt-backed source-continuity authority. For the one pre-#3868 liveness receipt shape, create that authority with `source-continuity-recovery` using authenticated pre/post backups and a fresh zero-orphan census. That bridge is a separate offline transition, not an exception inside relocation. Relocation records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver, and the plan binds the resolved generation rather than a shadow index path. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises released source train manifests when identity or continuity proof requires it and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. A prepared receipt blocks daemon startup and prints the exact resume command. Live application and post-move observation remain operator evidence outside this code path.
 
 For a deployed archive, run these commands only from the Nix package built from the post-merge commit selected for deployment. Record that merge SHA and the resulting Nix store path in the operator receipt, verify the daemon executable resolves to that exact package, and keep `POLYLOGUE_ARCHIVE_ROOT` set to the configured deployed root. Do not resume a stopped daemon with an older deployed package or a branch checkout: its durable-train vocabulary may predate the relocation transition.
 
