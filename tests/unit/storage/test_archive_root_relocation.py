@@ -22,6 +22,7 @@ from polylogue.cli.click_app import cli
 from polylogue.daemon.backup import backup_archive
 from polylogue.operations.archive_root_relocation import (
     ArchiveRootRelocationError,
+    ArchiveRootRelocationPlan,
     RelocationActiveIndexPointer,
     RelocationIndexGeneration,
     RelocationTierEvidence,
@@ -808,6 +809,32 @@ def _activate_movable_index_generation(root: Path) -> Path:
     generation = store.create(owner_id="relocation-test", source_snapshot="snapshot")
     store.promote(generation)
     return Path(generation.index_path).resolve(strict=True)
+
+
+def _prepare_moved_root_relocation_with_generation(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, ArchiveRootRelocationPlan]:
+    """Prepare the public moved-root relocation sequence with a retained generation."""
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    _activate_movable_index_generation(old_root)
+    _attach_retained_source_continuity(old_root, manifest)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    assert plan.index_generations
+    return new_root, plan
 
 
 def _legacy_liveness_receipt(
@@ -1914,6 +1941,80 @@ def test_relocation_generation_publication_rejects_a_post_validation_directory_s
     assert validation_calls == 2
     assert (outside / "generation.json").read_bytes() == outside_metadata_before
     assert {path.name: os.readlink(path) for path in outside.iterdir() if path.is_symlink()} == outside_links_before
+
+
+def test_relocation_apply_rejects_byte_identical_generation_metadata_substitution(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Public apply authenticates the planned generation metadata object.
+
+    Anti-vacuity: a same-directory atomic replacement preserves the exact
+    metadata bytes and parent directory while changing only the leaf inode.
+    The production apply route must reject it before retaining a plan, writing
+    a receipt, publishing generation state, or rebinding a durable train.
+    """
+    new_root, plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    generation = plan.index_generations[0]
+    metadata_path = Path(generation.metadata_path)
+    encoded = metadata_path.read_bytes()
+    planned_identity = (metadata_path.lstat().st_dev, metadata_path.lstat().st_ino)
+    assert (generation.metadata_before_device, generation.metadata_before_inode) == planned_identity
+    substitute = metadata_path.parent / ".generation.json.substitute"
+    substitute.write_bytes(encoded)
+    os.replace(substitute, metadata_path)
+    substituted_identity = (metadata_path.lstat().st_dev, metadata_path.lstat().st_ino)
+    assert substituted_identity != planned_identity
+    pointer_path = new_root / ".index-active-pointer"
+    pointer_before = pointer_path.read_bytes()
+    manifests_before = {item.path: Path(item.path).read_bytes() for item in plan.durable_trains}
+
+    with pytest.raises(ArchiveRootRelocationError, match="generation metadata identity changed"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+    assert metadata_path.read_bytes() == encoded
+    assert (metadata_path.lstat().st_dev, metadata_path.lstat().st_ino) == substituted_identity
+    assert pointer_path.read_bytes() == pointer_before
+    assert {path: Path(path).read_bytes() for path in manifests_before} == manifests_before
+    assert not (new_root / ".maintenance-state" / "archive-root-relocation-plans" / f"{plan.plan_sha256}.json").exists()
+    assert not (new_root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json").exists()
+
+
+def test_relocation_apply_rejects_equivalent_generation_tier_symlink_substitution(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Public apply authenticates each planned generation tier-link object.
+
+    Anti-vacuity: a fresh symlink with the same absolute target preserves the
+    planned directory, tier inventory, and link value while changing only the
+    leaf inode. The production apply route must reject it before any relocation
+    state is published.
+    """
+    new_root, plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    generation = plan.index_generations[0]
+    link = next(item for item in generation.tier_symlinks if item.old_target != item.new_target)
+    link_path = Path(link.path)
+    planned_identity = (link_path.lstat().st_dev, link_path.lstat().st_ino)
+    assert (link.before_device, link.before_inode) == planned_identity
+    substitute = link_path.parent / f".{link_path.name}.substitute"
+    os.symlink(link.old_target, substitute)
+    os.replace(substitute, link_path)
+    substituted_identity = (link_path.lstat().st_dev, link_path.lstat().st_ino)
+    assert substituted_identity != planned_identity
+    pointer_path = new_root / ".index-active-pointer"
+    pointer_before = pointer_path.read_bytes()
+    metadata_before = Path(generation.metadata_path).read_bytes()
+    manifests_before = {item.path: Path(item.path).read_bytes() for item in plan.durable_trains}
+
+    with pytest.raises(ArchiveRootRelocationError, match="generation tier link identity changed"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+    assert os.readlink(link_path) == link.old_target
+    assert (link_path.lstat().st_dev, link_path.lstat().st_ino) == substituted_identity
+    assert Path(generation.metadata_path).read_bytes() == metadata_before
+    assert pointer_path.read_bytes() == pointer_before
+    assert {path: Path(path).read_bytes() for path in manifests_before} == manifests_before
+    assert not (new_root / ".maintenance-state" / "archive-root-relocation-plans" / f"{plan.plan_sha256}.json").exists()
+    assert not (new_root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json").exists()
 
 
 def test_relocation_remaps_generations_beside_a_nested_active_index(

@@ -124,6 +124,8 @@ class RelocationIndexGenerationSymlink(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     path: str
+    before_device: int
+    before_inode: int
     old_target: str
     new_target: str
 
@@ -137,6 +139,8 @@ class RelocationIndexGeneration(BaseModel):
     metadata_path: str
     directory_device: int
     directory_inode: int
+    metadata_before_device: int
+    metadata_before_inode: int
     before_sha256: str
     after_sha256: str
     before_archive_root: str
@@ -460,80 +464,91 @@ def _index_generation_evidence(
     rows: list[RelocationIndexGeneration] = []
     for generation_root in sorted(generations_root.glob("gen-*")):
         _real_directory(generation_root, label="index generation")
-        generation_metadata = generation_root.stat()
-        metadata_path = generation_root / "generation.json"
-        _real_file(metadata_path, label="index generation metadata")
+        directory_fd = -1
         try:
-            encoded = metadata_path.read_bytes()
-            raw = json.loads(encoded)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ArchiveRootRelocationError("cannot read index generation metadata") from exc
-        if not isinstance(raw, dict):
-            raise ArchiveRootRelocationError("index generation metadata is not an object")
-        payload = cast(dict[str, object], raw)
-        generation_id = payload.get("generation_id")
-        if generation_id != generation_root.name:
-            raise ArchiveRootRelocationError("index generation metadata does not bind its directory")
-        before_archive_root, after_archive_root = _mapped_generation_path(
-            payload.get("archive_root"), old_root=old_root, new_root=new_root, label="archive root"
-        )
-        if Path(after_archive_root) != new_root:
-            raise ArchiveRootRelocationError("index generation metadata archive root is not the destination root")
-        before_index_path, after_index_path = _mapped_generation_path(
-            payload.get("index_path"), old_root=old_root, new_root=new_root, label="index path"
-        )
-        if Path(after_index_path) != generation_root / "index.db":
-            raise ArchiveRootRelocationError("index generation metadata index path does not bind its generation")
-        after_payload = {
-            **payload,
-            "archive_root": after_archive_root,
-            "index_path": after_index_path,
-        }
-        links: list[RelocationIndexGenerationSymlink] = []
-        for filename in _INDEX_GENERATION_TIER_LINKS:
-            link = generation_root / filename
-            if not link.exists() and not link.is_symlink():
-                continue
-            try:
-                metadata = link.lstat()
-                if not stat.S_ISLNK(metadata.st_mode):
-                    raise ArchiveRootRelocationError("index generation tier member is not a symbolic link")
-                old_target = os.readlink(link)
-            except OSError as exc:
-                raise ArchiveRootRelocationError("cannot read index generation tier link") from exc
-            raw_target = Path(old_target)
-            if not raw_target.is_absolute():
-                raise ArchiveRootRelocationError("index generation tier link target is not absolute")
-            _before, new_target = _mapped_generation_path(
-                old_target,
-                old_root=old_root,
-                new_root=new_root,
-                label=f"{filename} link target",
+            directory_fd = os.open(
+                generation_root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
-            if Path(new_target) != new_root / filename:
-                raise ArchiveRootRelocationError("index generation tier link does not bind its archive tier")
-            links.append(
-                RelocationIndexGenerationSymlink(
-                    path=str(link),
-                    old_target=old_target,
-                    new_target=new_target,
+            generation_metadata = os.fstat(directory_fd)
+            encoded, metadata = _read_pinned_generation_metadata(directory_fd)
+            try:
+                raw = json.loads(encoded)
+            except json.JSONDecodeError as exc:
+                raise ArchiveRootRelocationError("cannot read index generation metadata") from exc
+            if not isinstance(raw, dict):
+                raise ArchiveRootRelocationError("index generation metadata is not an object")
+            payload = cast(dict[str, object], raw)
+            generation_id = payload.get("generation_id")
+            if generation_id != generation_root.name:
+                raise ArchiveRootRelocationError("index generation metadata does not bind its directory")
+            before_archive_root, after_archive_root = _mapped_generation_path(
+                payload.get("archive_root"), old_root=old_root, new_root=new_root, label="archive root"
+            )
+            if Path(after_archive_root) != new_root:
+                raise ArchiveRootRelocationError("index generation metadata archive root is not the destination root")
+            before_index_path, after_index_path = _mapped_generation_path(
+                payload.get("index_path"), old_root=old_root, new_root=new_root, label="index path"
+            )
+            if Path(after_index_path) != generation_root / "index.db":
+                raise ArchiveRootRelocationError("index generation metadata index path does not bind its generation")
+            after_payload = {
+                **payload,
+                "archive_root": after_archive_root,
+                "index_path": after_index_path,
+            }
+            links: list[RelocationIndexGenerationSymlink] = []
+            entries = set(os.listdir(directory_fd))
+            for filename in _INDEX_GENERATION_TIER_LINKS:
+                if filename not in entries:
+                    continue
+                link = generation_root / filename
+                old_target, link_metadata = _read_pinned_generation_symlink(directory_fd, filename)
+                raw_target = Path(old_target)
+                if not raw_target.is_absolute():
+                    raise ArchiveRootRelocationError("index generation tier link target is not absolute")
+                _before, new_target = _mapped_generation_path(
+                    old_target,
+                    old_root=old_root,
+                    new_root=new_root,
+                    label=f"{filename} link target",
+                )
+                if Path(new_target) != new_root / filename:
+                    raise ArchiveRootRelocationError("index generation tier link does not bind its archive tier")
+                links.append(
+                    RelocationIndexGenerationSymlink(
+                        path=str(link),
+                        before_device=link_metadata.st_dev,
+                        before_inode=link_metadata.st_ino,
+                        old_target=old_target,
+                        new_target=new_target,
+                    )
+                )
+            metadata_path = generation_root / "generation.json"
+            rows.append(
+                RelocationIndexGeneration(
+                    generation_id=generation_id,
+                    metadata_path=str(metadata_path),
+                    directory_device=generation_metadata.st_dev,
+                    directory_inode=generation_metadata.st_ino,
+                    metadata_before_device=metadata.st_dev,
+                    metadata_before_inode=metadata.st_ino,
+                    before_sha256=hashlib.sha256(encoded).hexdigest(),
+                    after_sha256=hashlib.sha256(_index_generation_metadata_bytes(after_payload)).hexdigest(),
+                    before_archive_root=before_archive_root,
+                    after_archive_root=after_archive_root,
+                    before_index_path=before_index_path,
+                    after_index_path=after_index_path,
+                    tier_symlinks=tuple(links),
                 )
             )
-        rows.append(
-            RelocationIndexGeneration(
-                generation_id=generation_id,
-                metadata_path=str(metadata_path),
-                directory_device=generation_metadata.st_dev,
-                directory_inode=generation_metadata.st_ino,
-                before_sha256=hashlib.sha256(encoded).hexdigest(),
-                after_sha256=hashlib.sha256(_index_generation_metadata_bytes(after_payload)).hexdigest(),
-                before_archive_root=before_archive_root,
-                after_archive_root=after_archive_root,
-                before_index_path=before_index_path,
-                after_index_path=after_index_path,
-                tier_symlinks=tuple(links),
-            )
-        )
+        except ArchiveRootRelocationError:
+            raise
+        except OSError as exc:
+            raise ArchiveRootRelocationError("cannot pin index generation evidence") from exc
+        finally:
+            if directory_fd >= 0:
+                os.close(directory_fd)
     return tuple(rows)
 
 
@@ -576,37 +591,24 @@ def _validate_index_generation_state(
         raise ArchiveRootRelocationError("archive-root relocation index generation inventory changed")
     for item in items:
         metadata_path = Path(item.metadata_path)
-        _real_directory(metadata_path.parent, label="index generation")
-        _real_file(metadata_path, label="index generation metadata")
-        encoded = metadata_path.read_bytes()
-        digest = hashlib.sha256(encoded).hexdigest()
-        if digest == item.before_sha256:
-            _index_generation_payload_for_state(item, after=False, encoded=encoded)
-        elif digest == item.after_sha256:
-            _index_generation_payload_for_state(item, after=True, encoded=encoded)
-        else:
-            raise ArchiveRootRelocationError("archive-root relocation index generation metadata changed")
-        expected_link_paths = {link.path for link in item.tier_symlinks}
-        current_link_paths = {
-            str(metadata_path.parent / filename)
-            for filename in _INDEX_GENERATION_TIER_LINKS
-            if (metadata_path.parent / filename).exists() or (metadata_path.parent / filename).is_symlink()
-        }
-        if current_link_paths != expected_link_paths:
-            raise ArchiveRootRelocationError("archive-root relocation index generation tier inventory changed")
-        for link in item.tier_symlinks:
-            path = Path(link.path)
-            try:
-                metadata = path.lstat()
-                if not stat.S_ISLNK(metadata.st_mode):
-                    raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
-                target = os.readlink(path)
-            except OSError as exc:
-                raise ArchiveRootRelocationError(
-                    "archive-root relocation index generation tier link is unreadable"
-                ) from exc
-            if target not in {link.old_target, link.new_target}:
-                raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
+        directory_fd = _open_pinned_generation_directory(root, item)
+        try:
+            _pinned_generation_metadata_state(directory_fd, item)
+            generation_root = metadata_path.parent
+            for link in item.tier_symlinks:
+                path = Path(link.path)
+                if path.parent != generation_root or path.name not in _INDEX_GENERATION_TIER_LINKS:
+                    raise ArchiveRootRelocationError(
+                        "archive-root relocation index generation tier link path binding changed"
+                    )
+            expected_link_names = {Path(link.path).name for link in item.tier_symlinks}
+            current_link_names = set(_INDEX_GENERATION_TIER_LINKS).intersection(os.listdir(directory_fd))
+            if current_link_names != expected_link_names:
+                raise ArchiveRootRelocationError("archive-root relocation index generation tier inventory changed")
+            for link in item.tier_symlinks:
+                _pinned_generation_symlink_state(directory_fd, link)
+        finally:
+            os.close(directory_fd)
 
 
 def _open_pinned_generation_directory(root: Path, item: RelocationIndexGeneration) -> int:
@@ -651,7 +653,7 @@ def _open_pinned_generation_directory(root: Path, item: RelocationIndexGeneratio
         raise ArchiveRootRelocationError("cannot pin archive-root relocation index generation directory") from exc
 
 
-def _read_pinned_generation_metadata(directory_fd: int) -> bytes:
+def _read_pinned_generation_metadata(directory_fd: int) -> tuple[bytes, os.stat_result]:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -665,7 +667,7 @@ def _read_pinned_generation_metadata(directory_fd: int) -> bytes:
                 "archive-root relocation index generation metadata is not a real single-linked file"
             )
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            return stream.read()
+            return stream.read(), metadata
     except ArchiveRootRelocationError:
         raise
     except OSError as exc:
@@ -675,6 +677,60 @@ def _read_pinned_generation_metadata(directory_fd: int) -> bytes:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _read_pinned_generation_symlink(directory_fd: int, filename: str) -> tuple[str, os.stat_result]:
+    """Read one generation link relative to its pinned directory without following it."""
+    try:
+        before = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
+        target = os.readlink(filename, dir_fd=directory_fd)
+        after = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+    except ArchiveRootRelocationError:
+        raise
+    except OSError as exc:
+        raise ArchiveRootRelocationError("archive-root relocation index generation tier link is unreadable") from exc
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed while reading")
+    return target, after
+
+
+def _pinned_generation_metadata_state(
+    directory_fd: int,
+    item: RelocationIndexGeneration,
+) -> tuple[bytes, bool]:
+    """Return metadata bytes and whether they are the exact post-publication state."""
+    encoded, metadata = _read_pinned_generation_metadata(directory_fd)
+    digest = hashlib.sha256(encoded).hexdigest()
+    if digest == item.before_sha256:
+        if (metadata.st_dev, metadata.st_ino) != (
+            item.metadata_before_device,
+            item.metadata_before_inode,
+        ):
+            raise ArchiveRootRelocationError("archive-root relocation index generation metadata identity changed")
+        _index_generation_payload_for_state(item, after=False, encoded=encoded)
+        return encoded, False
+    if digest == item.after_sha256:
+        _index_generation_payload_for_state(item, after=True, encoded=encoded)
+        return encoded, True
+    raise ArchiveRootRelocationError("archive-root relocation index generation metadata changed")
+
+
+def _pinned_generation_symlink_state(
+    directory_fd: int,
+    link: RelocationIndexGenerationSymlink,
+) -> bool:
+    """Return whether a pinned tier link is in its exact post-publication state."""
+    filename = Path(link.path).name
+    target, metadata = _read_pinned_generation_symlink(directory_fd, filename)
+    if target == link.old_target:
+        if (metadata.st_dev, metadata.st_ino) != (link.before_device, link.before_inode):
+            raise ArchiveRootRelocationError("archive-root relocation index generation tier link identity changed")
+        return False
+    if target == link.new_target:
+        return True
+    raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
 
 
 def _replace_pinned_generation_metadata(directory_fd: int, payload: bytes) -> None:
@@ -723,9 +779,8 @@ def _publish_index_generation_state(
     for item in items:
         directory_fd = _open_pinned_generation_directory(root, item)
         try:
-            encoded = _read_pinned_generation_metadata(directory_fd)
-            digest = hashlib.sha256(encoded).hexdigest()
-            if digest == item.before_sha256 and item.before_sha256 != item.after_sha256:
+            encoded, metadata_is_after = _pinned_generation_metadata_state(directory_fd, item)
+            if not metadata_is_after and item.before_sha256 != item.after_sha256:
                 payload = _index_generation_payload_for_state(item, after=False, encoded=encoded)
                 after_payload = {
                     **payload,
@@ -736,8 +791,6 @@ def _publish_index_generation_state(
                 if hashlib.sha256(after_encoded).hexdigest() != item.after_sha256:
                     raise ArchiveRootRelocationError("archive-root relocation index generation after binding changed")
                 _replace_pinned_generation_metadata(directory_fd, after_encoded)
-            elif digest != item.after_sha256:
-                raise ArchiveRootRelocationError("archive-root relocation index generation metadata changed")
             generation_root = Path(item.metadata_path).parent
             for link in item.tier_symlinks:
                 path = Path(link.path)
@@ -745,18 +798,13 @@ def _publish_index_generation_state(
                     raise ArchiveRootRelocationError(
                         "archive-root relocation index generation tier link path binding changed"
                     )
+                link_is_after = _pinned_generation_symlink_state(directory_fd, link)
+                if link_is_after:
+                    continue
                 if link.old_target == link.new_target:
                     continue
                 temporary = f".{path.name}.relocation-{uuid.uuid4().hex}.tmp"
                 try:
-                    metadata = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
-                    if not stat.S_ISLNK(metadata.st_mode):
-                        raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
-                    current = os.readlink(path.name, dir_fd=directory_fd)
-                    if current == link.new_target:
-                        continue
-                    if current != link.old_target:
-                        raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
                     os.symlink(link.new_target, temporary, dir_fd=directory_fd)
                     os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
                     os.fsync(directory_fd)
