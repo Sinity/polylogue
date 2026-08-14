@@ -113,7 +113,7 @@ def _require_not_none(value: _T | None, detail: str) -> _T:
 
 
 def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "archive.db")
+    return Config(archive_root=root, render_root=root / "render", sources=[])
 
 
 def _conversation(session_id: str, *, text: str, update_time: int) -> dict[str, object]:
