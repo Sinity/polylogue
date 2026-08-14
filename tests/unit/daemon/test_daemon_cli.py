@@ -2496,6 +2496,65 @@ def test_run_live_watcher_refuses_before_entry_while_rebuild_lease_is_held(
         asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
 
 
+def test_live_watcher_cancellation_during_drain_retains_rebuild_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class BlockingCoordinator:
+        def __init__(self) -> None:
+            self.shutdown_started = asyncio.Event()
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            self.shutdown_started.set()
+            await asyncio.Event().wait()
+            return False
+
+    coordinator = BlockingCoordinator()
+
+    async def exercise() -> None:
+        with (
+            patch.object(daemon_cli, "Polylogue", FakePolylogue),
+            patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+            patch.object(daemon_cli, "daemon_write_coordinator", return_value=coordinator),
+        ):
+            task = asyncio.create_task(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
+            await coordinator.shutdown_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(exercise())
+
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_root_path):
+            pass
+
+
 def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

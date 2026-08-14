@@ -2113,6 +2113,25 @@ def _retain_rebuild_exclusion_for_undrained_writer(
         rebuild_exclusion.retain_until_process_exit()
 
 
+async def _shutdown_writer_coordinator_with_rebuild_exclusion(
+    coordinator: DaemonWriteCoordinator,
+    rebuild_exclusion: ArchiveWriterRebuildExclusion,
+    *,
+    timeout: float,
+) -> bool:
+    """Drain writers or retain rebuild exclusion when drain cannot be proven."""
+    try:
+        writer_drained = await coordinator.shutdown(timeout=timeout)
+    except BaseException:
+        rebuild_exclusion.retain_until_process_exit()
+        raise
+    _retain_rebuild_exclusion_for_undrained_writer(
+        rebuild_exclusion,
+        writer_drained=writer_drained,
+    )
+    return writer_drained
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
@@ -2142,10 +2161,10 @@ async def run_live_watcher(
         finally:
             if watcher is not None:
                 watcher.stop()
-            writer_drained = await coordinator.shutdown(timeout=5.0)
-            _retain_rebuild_exclusion_for_undrained_writer(
+            await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                coordinator,
                 rebuild_exclusion,
-                writer_drained=writer_drained,
+                timeout=5.0,
             )
 
 
@@ -2433,10 +2452,10 @@ async def _run_daemon_services_under_active_writer_lease(
         if lifecycle is not None:
             with contextlib.suppress(Exception):
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
-        writer_drained = await write_coordinator.shutdown(timeout=5.0)
-        _retain_rebuild_exclusion_for_undrained_writer(
+        writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
+            write_coordinator,
             rebuild_exclusion,
-            writer_drained=writer_drained,
+            timeout=5.0,
         )
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         if writer_drained:
@@ -2472,10 +2491,10 @@ async def _run_daemon_services_under_active_writer_lease(
         if lifecycle is not None:
             with contextlib.suppress(Exception):
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
-        writer_drained = await write_coordinator.shutdown(timeout=5.0)
-        _retain_rebuild_exclusion_for_undrained_writer(
+        writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
+            write_coordinator,
             rebuild_exclusion,
-            writer_drained=writer_drained,
+            timeout=5.0,
         )
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         if writer_drained:
@@ -2837,10 +2856,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 except Exception:
                     logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
 
-            writer_drained = await write_coordinator.shutdown(timeout=5.0)
-            _retain_rebuild_exclusion_for_undrained_writer(
+            writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                write_coordinator,
                 rebuild_exclusion,
-                writer_drained=writer_drained,
+                timeout=5.0,
             )
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
