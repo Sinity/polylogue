@@ -398,7 +398,12 @@ workflow, not optional conveniences — use them at the point named, every time:
   empty Bead lists.
   CircleCI uses `pr-scope check-ci`, resolves PR metadata through public GitHub
   REST when `CIRCLE_PULL_REQUEST` is absent, and executes the validator from
-  the PR base revision so a PR cannot weaken its own scope gate.
+  the PR base revision so candidate code cannot weaken validation once that job
+  runs. This is advisory defense-in-depth, not a protected merge authority:
+  this user-owned repository has no required-workflow ruleset, and PR-controlled
+  CI configuration can omit the job. The local merge wrapper is likewise an
+  operational convention, not a security boundary. Do not describe either
+  path as unspoofable or repository-enforced.
 - **Immediately after spawning a worktree-isolated lane, not after it reports
   back**: `devtools workspace verify-worktree <path> --expect-branch
   <branch>` — confirms the worktree is real and isolated before the lane has

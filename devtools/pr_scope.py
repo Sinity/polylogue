@@ -223,15 +223,15 @@ def _bead_ids(value: object, *, label: str, allow_empty: bool, reasons: list[str
     return value
 
 
-def _bead_records_at(base_sha: str) -> dict[str, dict[str, Any]]:
-    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
-        raise ValueError("base revision must be a hexadecimal Git object name")
+def _bead_records_at(revision: str) -> dict[str, dict[str, Any]]:
+    if not _GIT_OBJECT_PATTERN.fullmatch(revision):
+        raise ValueError("Beads revision must be a hexadecimal Git object name")
     result = subprocess.run(
-        ["git", "show", f"{base_sha}:.beads/issues.jsonl"], capture_output=True, text=True, check=False
+        ["git", "show", f"{revision}:.beads/issues.jsonl"], capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
-        raise ValueError(f"cannot read .beads/issues.jsonl at base revision {base_sha[:8]}")
-    return _parse_bead_records(result.stdout.splitlines(), line_label="base line")
+        raise ValueError(f"cannot read .beads/issues.jsonl at revision {revision[:8]}")
+    return _parse_bead_records(result.stdout.splitlines(), line_label=f"revision {revision[:8]} line")
 
 
 def _ensure_local_commit(revision: str) -> None:
@@ -269,9 +269,9 @@ def _ensure_local_commit(revision: str) -> None:
         raise ValueError(f"fetched base revision {revision[:8]} is not a local commit")
 
 
-def _merge_base(base_sha: str) -> str:
+def _merge_base(base_sha: str, head_sha: str) -> str:
     """Resolve the PR merge base, recovering complete history in shallow CI clones."""
-    result = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
+    result = subprocess.run(["git", "merge-base", base_sha, head_sha], capture_output=True, text=True, check=False)
     if result.returncode == 0 and _GIT_OBJECT_PATTERN.fullmatch(result.stdout.strip()):
         return result.stdout.strip()
 
@@ -290,20 +290,21 @@ def _merge_base(base_sha: str) -> str:
             detail = fetched.stderr.strip()
             suffix = f": {detail}" if detail else ""
             raise ValueError(f"cannot deepen shallow history from origin{suffix}")
-        result = subprocess.run(["git", "merge-base", base_sha, "HEAD"], capture_output=True, text=True, check=False)
+        result = subprocess.run(["git", "merge-base", base_sha, head_sha], capture_output=True, text=True, check=False)
         if result.returncode == 0 and _GIT_OBJECT_PATTERN.fullmatch(result.stdout.strip()):
             return result.stdout.strip()
 
     raise ValueError(f"cannot resolve PR merge base from base revision {base_sha[:8]}")
 
 
-def changed_bead_ids(*, base_sha: str, beads_path: Path = _BEADS_PATH) -> list[str]:
-    """Return the complete Bead-record mutation set from the PR merge base."""
-    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
-        raise ValueError("base revision must be a hexadecimal Git object name")
+def changed_bead_ids(*, base_sha: str, head_sha: str) -> list[str]:
+    """Return the complete Bead-record mutation set for explicit PR revisions."""
+    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha) or not _GIT_OBJECT_PATTERN.fullmatch(head_sha):
+        raise ValueError("base and head revisions must be hexadecimal Git object names")
     _ensure_local_commit(base_sha)
-    before = _bead_records_at(_merge_base(base_sha))
-    after = load_bead_records(beads_path)
+    _ensure_local_commit(head_sha)
+    before = _bead_records_at(_merge_base(base_sha, head_sha))
+    after = _bead_records_at(head_sha)
     return sorted(bead_id for bead_id in set(before) | set(after) if before.get(bead_id) != after.get(bead_id))
 
 
@@ -432,9 +433,37 @@ def validate_carrier(
     if not isinstance(scope_digest, str) or scope_digest != expected_scope_digest:
         reasons.append("carrier scope_digest does not match its canonical content")
 
-    records: dict[str, dict[str, Any]] = {}
+    candidate_records: dict[str, dict[str, Any]] = {}
     try:
-        records = load_bead_records(beads_path)
+        candidate_records = _bead_records_at(head_sha) if base_sha is not None else load_bead_records(beads_path)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        reasons.append(f"cannot resolve candidate Bead records: {exc}")
+
+    actual_mutations: list[str] = []
+    if base_sha is not None:
+        try:
+            actual_mutations = changed_bead_ids(base_sha=base_sha, head_sha=head_sha)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            reasons.append(f"cannot resolve Bead mutation scope: {exc}")
+        else:
+            if is_v1 and actual_mutations:
+                reasons.append("legacy v1 carrier cannot omit Bead mutations; render a v2 carrier")
+            elif not is_v1 and actual_mutations != sorted(mutated_ids):
+                reasons.append("mutated_beads does not match the complete Bead mutation set")
+
+    records = candidate_records
+    if base_sha is not None:
+        try:
+            records = _bead_records_at(base_sha)
+            for bead_id in actual_mutations:
+                if bead_id in candidate_records:
+                    records[bead_id] = candidate_records[bead_id]
+                else:
+                    records.pop(bead_id, None)
+        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            reasons.append(f"cannot resolve prospective Bead state: {exc}")
+
+    try:
         missing_assigned = [bead_id for bead_id in assigned_ids if bead_id not in records]
         if missing_assigned:
             reasons.append(f"assigned Bead record(s) missing: {', '.join(missing_assigned)}")
@@ -452,43 +481,11 @@ def validate_carrier(
         reasons.append(f"cannot resolve declared Bead records: {exc}")
     if is_v1 and expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
         reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
-    actual_mutations: list[str] = []
-    if base_sha is not None:
-        try:
-            actual_mutations = changed_bead_ids(base_sha=base_sha, beads_path=beads_path)
-        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
-            reasons.append(f"cannot resolve Bead mutation scope: {exc}")
-        else:
-            if is_v1 and actual_mutations:
-                reasons.append("legacy v1 carrier cannot omit Bead mutations; render a v2 carrier")
-            elif not is_v1 and actual_mutations != sorted(mutated_ids):
-                reasons.append("mutated_beads does not match the complete Bead mutation set")
-
-    disposition_records = records
     dispositions = carrier.get("dispositions")
-    disposition_entries = dispositions if isinstance(dispositions, list) else []
-    successor_ids = {
-        successor
-        for entry in disposition_entries
-        if isinstance(entry, dict)
-        for successor in entry.get("successors", [])
-        if isinstance(entry.get("successors"), list) and isinstance(successor, str)
-    }
-    if base_sha is not None and successor_ids:
-        try:
-            disposition_records = _bead_records_at(base_sha)
-            for bead_id in actual_mutations:
-                if bead_id in records:
-                    disposition_records[bead_id] = records[bead_id]
-                else:
-                    disposition_records.pop(bead_id, None)
-        except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
-            reasons.append(f"cannot resolve prospective Bead state: {exc}")
-
     _validate_dispositions(
         dispositions,
         assigned_ids=assigned_ids,
-        records=disposition_records,
+        records=records,
         reasons=reasons,
     )
     return ScopeVerdict(
@@ -512,7 +509,13 @@ def validate_pr_body(
     carrier, reasons = extract_carrier(body)
     if carrier is None:
         return ScopeVerdict(ok=False, reasons=reasons)
-    return validate_carrier(carrier, head_sha=head_sha, is_draft=is_draft, beads_path=beads_path, base_sha=base_sha)
+    return validate_carrier(
+        carrier,
+        head_sha=head_sha,
+        is_draft=is_draft,
+        beads_path=beads_path,
+        base_sha=base_sha,
+    )
 
 
 def render_carrier(carrier: dict[str, Any]) -> str:
@@ -879,7 +882,7 @@ def check_ci_metadata(
 
     base_source = fetch_base_validator_source(repository=repository, base_sha=metadata.base_sha)
     if base_source is not None:
-        print(f"pr-scope CI authority: base revision {metadata.base_sha[:8]}")
+        print(f"pr-scope CI base validator: revision {metadata.base_sha[:8]}")
         return _run_validator_source(base_source, metadata=metadata, beads_path=beads_path)
 
     print(
@@ -916,7 +919,7 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
     check.add_argument("--json", action="store_true", dest="as_json")
 
-    check_ci = sub.add_parser("check-ci", help="validate with the PR base revision's authoritative checker")
+    check_ci = sub.add_parser("check-ci", help="run advisory CI validation with the PR base revision's checker")
     check_ci.add_argument("--pr", type=int, help="GitHub PR number (default: resolve from --expected-head-sha)")
     check_ci.add_argument("--repo", required=True, help="GitHub OWNER/REPO from CI metadata")
     check_ci.add_argument("--expected-head-sha", default=os.environ.get("CIRCLE_SHA1"))
