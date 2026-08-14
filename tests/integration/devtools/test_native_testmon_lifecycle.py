@@ -1137,7 +1137,7 @@ def test_removed_environment_or_dependency_edge_invalidates_native_state(tmp_pat
     assert missing.missing_executable_paths == ("app.py",)
 
 
-def test_environment_and_plugin_identity_changes_start_real_fresh_bootstraps(
+def test_neutralized_environment_and_declared_plugin_identity_are_owned(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1155,30 +1155,27 @@ def test_environment_and_plugin_identity_changes_start_real_fresh_bootstraps(
         for result in _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=initial.environment_name)
     ] == [0, 0]
 
-    monkeypatch.setenv("PYTEST_ADDOPTS", "-ra")
-    environment_changed = prepare_native_testmon_environment(repo)
-    assert environment_changed.selection_mode == "bootstrap"
-    assert environment_changed.environment_name != initial.environment_name
-    assert [
-        result.completed.returncode
-        for result in _run_plain_verify_corpus(
-            repo, mode="bootstrap", environment_name=environment_changed.environment_name
-        )
-    ] == [0, 0]
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only")
+    monkeypatch.setenv("PYTEST_PLUGINS", "ambient_plugin")
+    environment_unchanged = prepare_native_testmon_environment(repo)
+    assert environment_unchanged.selection_mode == "affected"
+    assert environment_unchanged.environment_name == initial.environment_name
+    monkeypatch.delenv("PYTEST_ADDOPTS")
+    monkeypatch.delenv("PYTEST_PLUGINS")
 
     plugin = repo / "local_plugin.py"
     plugin.write_text(
         "import pytest\n\n@pytest.fixture\ndef native_identity():\n    return 'v1'\n",
         encoding="utf-8",
     )
+    (repo / "tests" / "conftest.py").write_text('pytest_plugins = ("local_plugin",)\n', encoding="utf-8")
     test_file.write_text(
         "def test_initial():\n    assert True\n\ndef test_plugin(native_identity):\n    assert native_identity == 'v1'\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("PYTEST_ADDOPTS", "-p local_plugin")
     plugin_changed = prepare_native_testmon_environment(repo)
     assert plugin_changed.selection_mode == "bootstrap"
-    assert plugin_changed.environment_name != environment_changed.environment_name
+    assert plugin_changed.environment_name != environment_unchanged.environment_name
     plugin_results = _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=plugin_changed.environment_name)
     assert [result.completed.returncode for result in plugin_results] == [0, 0]
     assert "tests/test_identity.py::test_plugin" in _selected(*plugin_results)
