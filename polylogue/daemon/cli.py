@@ -1294,22 +1294,8 @@ def _drain_raw_materialization_once(
         render_root=render_root(),
         sources=[],
     )
-    if recover:
-        raw_authority.recover_interrupted_frontier(config)
-    # polylogue-d7im: a stale-plan blocker requires no operator judgment (it
-    # is a pure TOCTOU race between a census and its apply, already
-    # recomputed unattended in the crash-recovery path above) but, left
-    # unresolved, unresolved_raw_replay_blockers makes repair_materialization
-    # below fail closed for the WHOLE archive, not just the affected raw.
-    # Clear these automatically before every pass instead of waiting for a
-    # manual raw-authority-blocker-resolve invocation.
-    auto_resolved = raw_authority.auto_resolve_stale_plan_blockers(config)
-    if auto_resolved:
-        logger.info(
-            "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
-            auto_resolved,
-        )
     generation_pin_refused = False
+    frontier_repaired = 0
     with contextlib.ExitStack() as lease_stack:
         try:
             index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
@@ -1320,6 +1306,19 @@ def _drain_raw_materialization_once(
             result = refused_result
             generation_pin_refused = True
         else:
+            if recover:
+                raw_authority.recover_interrupted_frontier(config)
+            # polylogue-d7im: a stale-plan blocker requires no operator
+            # judgment.  Recovery, stale-plan resolution, repair, FTS closure,
+            # and frontier apply all consume the selected index generation,
+            # so the one promotion-excluding lease must cover the complete
+            # sequence rather than only the middle repair call.
+            auto_resolved = raw_authority.auto_resolve_stale_plan_blockers(config)
+            if auto_resolved:
+                logger.info(
+                    "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
+                    auto_resolved,
+                )
             try:
                 result = raw_authority.repair_materialization(
                     config,
@@ -1331,6 +1330,7 @@ def _drain_raw_materialization_once(
                 )
             finally:
                 _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
+            frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if generation_pin_refused:
         _emit_raw_materialization_pass(result)
         if not result.success:
@@ -1339,7 +1339,6 @@ def _drain_raw_materialization_once(
     _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
-    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     return _raw_materialization_counts(result, executed_plans=frontier_repaired)
 
 

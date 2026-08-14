@@ -1134,12 +1134,29 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         lambda *_args, **_kwargs: FakeRestoreResult(),
     )
-    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", lambda _config: ())
-    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", lambda _config: 0)
+
+    def recover_frontier(_config: Config) -> tuple[()]:
+        assert held == 1
+        lease_events.append("recover")
+        return ()
+
+    def resolve_stale(_config: Config) -> int:
+        assert held == 1
+        lease_events.append("stale")
+        return 0
+
+    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", recover_frontier)
+    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
     monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
     monkeypatch.setattr("polylogue.product.raw_authority.materialization_generation_lease", fake_generation_lease)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
-    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, **_kwargs: 0)
+
+    def converge_frontier(_config: Config, **_kwargs: object) -> int:
+        assert held == 1
+        lease_events.append("frontier")
+        return 0
+
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", converge_frontier)
 
     def close_fts(index_db: Path, *, ops_db_path: Path) -> None:
         assert held == 1
@@ -1157,7 +1174,10 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
         assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1
 
     assert closed == [(active_index, archive / "ops.db")]
-    assert lease_events == ["acquire", "fts", "close"]
+    expected_events = (
+        ["acquire", "fts", "close"] if whale else ["acquire", "recover", "stale", "fts", "frontier", "close"]
+    )
+    assert lease_events == expected_events
     assert held == 0
 
 
@@ -1192,8 +1212,14 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         lambda *_args, **_kwargs: FakeRestoreResult(),
     )
-    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", lambda _config: ())
-    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", lambda _config: 0)
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.recover_interrupted_frontier",
+        lambda _config: pytest.fail("frontier recovery requires an acquired generation pin"),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.auto_resolve_stale_plan_blockers",
+        lambda _config: pytest.fail("stale-plan recovery requires an acquired generation pin"),
+    )
     monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", reject_repair)
     monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)

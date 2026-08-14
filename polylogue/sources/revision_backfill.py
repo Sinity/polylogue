@@ -544,6 +544,13 @@ def _detect_unknown_retained_provider(
                 stream_name,
                 record_stream=True,
             )
+            # Provider authority comes from the bounded structural prefix;
+            # draining the rest of an oversized physical record is needed
+            # only when that prefix was inconclusive.  In particular, do not
+            # replace positive evidence with UNKNOWN merely because the
+            # record itself extends beyond the total scan envelope.
+            if provider is not Provider.UNKNOWN:
+                return provider, last_evidence
             while raw_line and not raw_line.endswith(b"\n"):
                 raw_line = read_bounded_line()
             if not raw_line:

@@ -196,7 +196,7 @@ def test_unknown_retained_stream_replay_scans_past_oversized_first_record_withou
 def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The only provider-defining record may itself exceed the scan bound."""
+    """Positive prefix evidence survives a record larger than the total scan cap."""
     initialize_active_archive_root(tmp_path)
     payload = (
         json.dumps(
@@ -204,7 +204,7 @@ def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
                 "sessionId": "oversized-only-provider-record",
                 "uuid": "message-1",
                 "type": "user",
-                "message": {"role": "user", "content": [{"type": "text", "text": "x" * 9_000}]},
+                "message": {"role": "user", "content": [{"type": "text", "text": "x" * 80_000}]},
             }
         ).encode()
         + b"\n"
