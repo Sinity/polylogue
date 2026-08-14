@@ -3154,6 +3154,40 @@ def test_native_testmon_lifecycle_lock_refuses_symlink_without_touching_target(t
     assert target.read_text(encoding="utf-8") == "preserve this file\n"
 
 
+def test_native_testmon_lifecycle_lock_refuses_hardlink_without_touching_target(tmp_path: Path) -> None:
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    target = tmp_path / "outside-checkout-target"
+    target.write_text("preserve this file\n", encoding="utf-8")
+    os.link(target, cache / "native-testmon-lifecycle.lock")
+
+    with pytest.raises(NativeTestmonRepairError, match="single-link regular file"):
+        with verify._native_testmon_lifecycle_lock(tmp_path):
+            pytest.fail("hard-linked lifecycle lock must not be acquired")
+
+    assert target.read_text(encoding="utf-8") == "preserve this file\n"
+
+
+@pytest.mark.uses_real_clock("proves lifecycle-lock waiters receive a bounded resource refusal")
+def test_native_testmon_lifecycle_lock_times_out_while_holder_remains_active(tmp_path: Path) -> None:
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(tmp_path):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_lock)
+        assert holder_entered.wait(timeout=2)
+        with pytest.raises(PytestResourceError, match="timed out waiting for native testmon lifecycle lock"):
+            with verify._native_testmon_lifecycle_lock(tmp_path, timeout_s=0.01):
+                pytest.fail("timed-out contender must not acquire the lock")
+        release_holder.set()
+        holder.result(timeout=2)
+
+
 def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
     stale_statistics = tmp_path / verify_runs.CURRENT_STATISTICS_PATH
     stale_statistics.parent.mkdir(parents=True)
@@ -3367,7 +3401,7 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_ROOT"] == str(ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
-    assert env["PYTHONPATH"] == str(ROOT)
+    assert "PYTHONPATH" not in env
     assert "PYTHONOPTIMIZE" not in env
     assert "PYTHONHOME" not in env
     assert "PYTHONUSERBASE" not in env
@@ -3385,7 +3419,7 @@ def test_mypy_probe_uses_managed_python_startup_environment(monkeypatch: pytest.
 
     assert run.call_args.kwargs["cwd"] == ROOT
     env = run.call_args.kwargs["env"]
-    assert env["PYTHONPATH"] == str(ROOT)
+    assert "PYTHONPATH" not in env
     assert "PYTHONOPTIMIZE" not in env
 
 

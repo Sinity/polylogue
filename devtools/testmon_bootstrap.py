@@ -65,6 +65,10 @@ _PYTEST_ENVIRONMENT_KEYS = (
 )
 
 
+def _is_ignored_native_testmon_path(relative: str) -> bool:
+    return relative == "tests/benchmarks" or relative.startswith("tests/benchmarks/")
+
+
 @dataclass(frozen=True, slots=True)
 class NativeTestmonEnvironment:
     name: str
@@ -192,6 +196,8 @@ def _declared_pytest_plugin_names(
     candidates.add(root / "conftest.py")
     for path in root.glob("tests/**/*.py"):
         _ensure_deadline(deadline_monotonic)
+        if _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
+            continue
         try:
             source = path.read_text(encoding="utf-8")
         except OSError:
@@ -201,6 +207,8 @@ def _declared_pytest_plugin_names(
         candidates.add(path)
     for path in root.glob("tests/**/conftest.py"):
         _ensure_deadline(deadline_monotonic)
+        if _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
+            continue
         candidates.add(path)
     for path in sorted(candidates):
         _ensure_deadline(deadline_monotonic)
@@ -264,13 +272,13 @@ def _active_local_pytest_plugin_paths(
             continue
         module_path = Path(*module_name.split("."))
         module_file = root / module_path.with_suffix(".py")
-        if module_file.is_file():
+        if module_file.is_file() and not _is_ignored_native_testmon_path(module_file.relative_to(root).as_posix()):
             paths.add(module_file.relative_to(root).as_posix())
         package = root / module_path
         if (package / "__init__.py").is_file():
             for path in package.rglob("*.py"):
                 _ensure_deadline(deadline_monotonic)
-                if path.is_file():
+                if path.is_file() and not _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
                     paths.add(path.relative_to(root).as_posix())
     return paths
 
@@ -289,7 +297,7 @@ def _environment_input_paths(
     for pattern in patterns:
         for path in root.glob(pattern):
             _ensure_deadline(deadline_monotonic)
-            if path.is_file():
+            if path.is_file() and not _is_ignored_native_testmon_path(path.relative_to(root).as_posix()):
                 paths.add(path.relative_to(root).as_posix())
     paths.update(_active_local_pytest_plugin_paths(root, deadline_monotonic=deadline_monotonic))
     return tuple(sorted(paths))
@@ -461,11 +469,7 @@ def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> Na
     without a filename registry.
     """
     normalized = tuple(relative for raw in sorted(set(paths)) if (relative := _safe_relative_path(raw)) is not None)
-    native_paths = tuple(
-        relative
-        for relative in normalized
-        if relative != "tests/benchmarks" and not relative.startswith("tests/benchmarks/")
-    )
+    native_paths = tuple(relative for relative in normalized if not _is_ignored_native_testmon_path(relative))
     runtime_data = tuple(
         relative
         for relative in native_paths
@@ -473,7 +477,10 @@ def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> Na
         or relative.startswith("packaging/")
     )
     return NativeTestmonChangeImpact(
-        executable_paths=executable_python_paths(repo_root, native_paths),
+        executable_paths=executable_python_paths(
+            repo_root,
+            (relative for relative in native_paths if relative not in runtime_data),
+        ),
         runtime_data_paths=runtime_data,
     )
 
@@ -509,20 +516,20 @@ def inspect_native_testmon_environment(
             return NativeTestmonState("invalid", "SQLite sidecars exist without the owned database")
         return NativeTestmonState("absent", "native testmon database is absent")
     try:
-        mode = data_path.lstat().st_mode
+        state = data_path.lstat()
     except OSError as exc:
         return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
-    if not stat.S_ISREG(mode):
-        return NativeTestmonState("invalid", "native testmon database is not a regular file")
+    if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+        return NativeTestmonState("invalid", "native testmon database is not a single-link regular file")
     for sidecar in sidecars:
         try:
-            sidecar_mode = sidecar.lstat().st_mode
+            sidecar_state = sidecar.lstat()
         except FileNotFoundError:
             continue
         except OSError as exc:
             return NativeTestmonState("invalid", f"cannot inspect native testmon sidecar {sidecar}: {exc}")
-        if not stat.S_ISREG(sidecar_mode):
-            return NativeTestmonState("invalid", f"native testmon sidecar is not a regular file: {sidecar}")
+        if not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
+            return NativeTestmonState("invalid", f"native testmon sidecar is not a single-link regular file: {sidecar}")
     try:
         with (
             contextlib.closing(
@@ -644,13 +651,13 @@ def validate_native_testmon_state_ownership(repo_root: Path) -> None:
     """Reject parent or file replacement before managed SQLite access."""
     for path in _owned_paths(repo_root):
         try:
-            mode = path.lstat().st_mode
+            state = path.lstat()
         except FileNotFoundError:
             continue
         except OSError as exc:
             raise NativeTestmonRepairError(f"cannot inspect owned testmon path {path}: {exc}") from exc
-        if not stat.S_ISREG(mode):
-            raise NativeTestmonRepairError(f"owned testmon path is not a regular file: {path}")
+        if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+            raise NativeTestmonRepairError(f"owned testmon path is not a single-link regular file: {path}")
 
 
 def remove_invalid_native_testmon_state(repo_root: Path) -> tuple[Path, ...]:
@@ -658,13 +665,15 @@ def remove_invalid_native_testmon_state(repo_root: Path) -> tuple[Path, ...]:
     removed: list[Path] = []
     for path in _owned_paths(repo_root):
         try:
-            mode = path.lstat().st_mode
+            state = path.lstat()
         except FileNotFoundError:
             continue
         except OSError as exc:
             raise NativeTestmonRepairError(f"cannot inspect owned testmon path {path}: {exc}") from exc
-        if stat.S_ISDIR(mode):
+        if stat.S_ISDIR(state.st_mode):
             raise NativeTestmonRepairError(f"refusing to remove directory at owned SQLite path {path}")
+        if stat.S_ISREG(state.st_mode) and state.st_nlink != 1:
+            raise NativeTestmonRepairError(f"refusing to remove hard-linked owned SQLite path {path}")
         try:
             path.unlink()
         except OSError as exc:

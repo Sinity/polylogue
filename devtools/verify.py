@@ -145,6 +145,7 @@ _PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
     "--override-ini=norecursedirs=",
     "tests",
 )
+NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
 
 
 def _normalize_managed_pytest_environment(
@@ -202,7 +203,11 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
 
 
 @contextlib.contextmanager
-def _native_testmon_lifecycle_lock(repo_root: Path) -> Iterator[None]:
+def _native_testmon_lifecycle_lock(
+    repo_root: Path,
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+) -> Iterator[None]:
     """Serialize one checkout's native testmon preparation, lanes, and inspection."""
     cache = repo_root.resolve() / ".cache"
     try:
@@ -240,9 +245,13 @@ def _native_testmon_lifecycle_lock(repo_root: Path) -> Iterator[None]:
         if (
             not stat.S_ISREG(opened_lock.st_mode)
             or not stat.S_ISREG(current_lock.st_mode)
+            or opened_lock.st_nlink != 1
+            or current_lock.st_nlink != 1
             or (opened_lock.st_dev, opened_lock.st_ino) != (current_lock.st_dev, current_lock.st_ino)
         ):
-            raise NativeTestmonRepairError(f"native testmon lifecycle lock is not an owned regular file: {lock_path}")
+            raise NativeTestmonRepairError(
+                f"native testmon lifecycle lock is not an owned single-link regular file: {lock_path}"
+            )
     except OSError as exc:
         if lock_descriptor is not None:
             with contextlib.suppress(OSError):
@@ -257,14 +266,25 @@ def _native_testmon_lifecycle_lock(repo_root: Path) -> Iterator[None]:
         assert lock_descriptor is not None
         with os.fdopen(lock_descriptor, "r+", encoding="utf-8") as handle:
             lock_descriptor = None
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                handle.seek(0)
-                holder = handle.read().strip() or "another verify invocation"
-                sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
-                sys.stderr.flush()
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + max(0.0, timeout_s)
+            announced_wait = False
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise PytestResourceError(
+                            f"timed out waiting for native testmon lifecycle lock after {timeout_s:.1f}s"
+                        ) from exc
+                    if not announced_wait:
+                        handle.seek(0)
+                        holder = handle.read().strip() or "another verify invocation"
+                        sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
+                        sys.stderr.flush()
+                        announced_wait = True
+                    time.sleep(min(0.05, remaining))
             handle.seek(0)
             handle.truncate()
             handle.write(f"pid={os.getpid()}")
@@ -2277,9 +2297,9 @@ def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
-    # Managed verification owns Python startup. Inherited paths can load a
-    # sitecustomize module before pytest gets a chance to neutralize addopts.
-    env["PYTHONPATH"] = str(ROOT)
+    # Managed verification owns Python startup. A checkout path on PYTHONPATH
+    # lets sitecustomize alter pytest controls before the managed command runs.
+    env.pop("PYTHONPATH", None)
     env.pop("PYTHONOPTIMIZE", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONUSERBASE", None)
@@ -3447,25 +3467,29 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
     lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
-    with lock:
-        try:
-            return _main(argv)
-        except KeyboardInterrupt as exc:
-            if _ACTIVE_VERIFY_RUN is None:
-                raise
-            return _finalize_verify_runner_exception(
-                _ACTIVE_VERIFY_RUN,
-                exc,
-                use_json="--json" in raw_argv,
-            )
-        except Exception as exc:
-            if _ACTIVE_VERIFY_RUN is None:
-                raise
-            return _finalize_verify_runner_exception(
-                _ACTIVE_VERIFY_RUN,
-                exc,
-                use_json="--json" in raw_argv,
-            )
-        finally:
-            _close_active_native_testmon_state()
-            _ACTIVE_VERIFY_RUN = None
+    try:
+        with lock:
+            try:
+                return _main(argv)
+            except KeyboardInterrupt as exc:
+                if _ACTIVE_VERIFY_RUN is None:
+                    raise
+                return _finalize_verify_runner_exception(
+                    _ACTIVE_VERIFY_RUN,
+                    exc,
+                    use_json="--json" in raw_argv,
+                )
+            except Exception as exc:
+                if _ACTIVE_VERIFY_RUN is None:
+                    raise
+                return _finalize_verify_runner_exception(
+                    _ACTIVE_VERIFY_RUN,
+                    exc,
+                    use_json="--json" in raw_argv,
+                )
+            finally:
+                _close_active_native_testmon_state()
+                _ACTIVE_VERIFY_RUN = None
+    except PytestResourceError as exc:
+        sys.stderr.write(f"verify: {exc}\n")
+        return 125

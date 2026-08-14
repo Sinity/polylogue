@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from devtools.testmon_bootstrap import (
     inspect_native_testmon_environment,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
+    validate_native_testmon_state_ownership,
 )
 from devtools.testmon_bootstrap import (
     testmon_environment_digest as _testmon_environment_digest,
@@ -128,6 +130,9 @@ def test_benchmarks_are_not_required_graph_paths_and_packaging_is_untraceable(tm
     benchmark = tmp_path / "tests" / "benchmarks" / "test_scale.py"
     benchmark.parent.mkdir(parents=True)
     benchmark.write_text("def test_scale(): pass\n", encoding="utf-8")
+    packaging_python = tmp_path / "packaging" / "hatch_build.py"
+    packaging_python.parent.mkdir()
+    packaging_python.write_text("def build_hook(): pass\n", encoding="utf-8")
 
     impact = classify_native_testmon_changes(
         tmp_path,
@@ -135,12 +140,13 @@ def test_benchmarks_are_not_required_graph_paths_and_packaging_is_untraceable(tm
             "tests/benchmarks/test_scale.py",
             "tests/benchmarks/deleted.py",
             "packaging/polylogue.nix",
+            "packaging/hatch_build.py",
             "docs/release.md",
         ),
     )
 
     assert impact.executable_paths == ()
-    assert impact.runtime_data_paths == ("packaging/polylogue.nix",)
+    assert impact.runtime_data_paths == ("packaging/hatch_build.py", "packaging/polylogue.nix")
 
 
 def test_testmon_schema_matches_the_tested_dependency_contract(tmp_path: Path) -> None:
@@ -202,6 +208,17 @@ def test_environment_digest_changes_when_root_conftest_is_added(tmp_path: Path) 
     )
 
     assert _testmon_environment_digest(tmp_path) != initial
+
+
+def test_environment_digest_ignores_benchmark_conftest_and_its_plugin_declaration(tmp_path: Path) -> None:
+    benchmark_conftest = tmp_path / "tests" / "benchmarks" / "conftest.py"
+    benchmark_conftest.parent.mkdir(parents=True)
+    benchmark_conftest.write_text("pytest_plugins = dynamic_plugin_names\n", encoding="utf-8")
+
+    initial = _testmon_environment_digest(tmp_path)
+    benchmark_conftest.write_text("pytest_plugins = other_dynamic_plugin_names\n", encoding="utf-8")
+
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
 def test_inactive_runtime_helper_does_not_force_fresh_environment(tmp_path: Path) -> None:
@@ -388,7 +405,7 @@ def test_native_inspection_rejects_symlinked_database_before_sqlite_open(tmp_pat
     state = inspect_native_testmon_environment(data, environment_name="owned-environment")
 
     assert state.status == "invalid"
-    assert state.reason == "native testmon database is not a regular file"
+    assert state.reason == "native testmon database is not a single-link regular file"
     assert outside.read_text(encoding="utf-8") == "external state"
 
 
@@ -403,5 +420,40 @@ def test_native_inspection_rejects_symlinked_sidecar_before_sqlite_open(tmp_path
     state = inspect_native_testmon_environment(data, environment_name="owned-environment")
 
     assert state.status == "invalid"
-    assert state.reason == f"native testmon sidecar is not a regular file: {sidecar}"
+    assert state.reason == f"native testmon sidecar is not a single-link regular file: {sidecar}"
     assert outside.read_text(encoding="utf-8") == "external sidecar"
+
+
+@pytest.mark.parametrize("suffix", ("", "-wal"))
+def test_native_testmon_ownership_rejects_hardlinked_database_and_sidecars(tmp_path: Path, suffix: str) -> None:
+    state_dir = tmp_path / ".cache" / "testmon"
+    state_dir.mkdir(parents=True)
+    outside = tmp_path / f"outside{suffix}"
+    outside.write_text("external state", encoding="utf-8")
+    owned = state_dir / f"testmondata{suffix}"
+    os.link(outside, owned)
+
+    with pytest.raises(NativeTestmonRepairError, match="single-link regular file"):
+        validate_native_testmon_state_ownership(tmp_path)
+
+    assert outside.read_text(encoding="utf-8") == "external state"
+
+
+@pytest.mark.parametrize("suffix", ("", "-wal"))
+def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Path, suffix: str) -> None:
+    data = tmp_path / "testmondata"
+    if suffix:
+        data.write_text("not opened", encoding="utf-8")
+    outside = tmp_path / f"outside{suffix}"
+    outside.write_text("external state", encoding="utf-8")
+    owned = Path(f"{data}{suffix}")
+    os.link(outside, owned)
+
+    state = inspect_native_testmon_environment(data, environment_name="owned-environment")
+
+    assert state.status == "invalid"
+    subject = "database" if not suffix else "sidecar"
+    assert state.reason == f"native testmon {subject} is not a single-link regular file" + (
+        "" if not suffix else f": {owned}"
+    )
+    assert outside.read_text(encoding="utf-8") == "external state"

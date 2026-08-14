@@ -84,8 +84,9 @@ def _commit_all(root: Path, message: str) -> str:
 def _pytest_environment(repo: Path) -> dict[str, str]:
     (repo / TESTMON_DATA_RELPATH).parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env.pop("PYTEST_ADDOPTS", None)
-    env.pop("PYTEST_PLUGINS", None)
+    for key in tuple(env):
+        if key.startswith("PYTEST_"):
+            env.pop(key)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env["TESTMON_DATAFILE"] = str(repo / TESTMON_DATA_RELPATH)
     env["PYTHONPATH"] = os.pathsep.join((str(repo), str(PROJECT_ROOT), env.get("PYTHONPATH", "")))
@@ -291,7 +292,13 @@ raise SystemExit(verify.main(sys.argv[2:]))
         pytest.fail(
             f"production verify rejected the fixture checkout\npayload:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
-    persisted = json.loads(receipt.read_text(encoding="utf-8"))
+    try:
+        persisted = json.loads(receipt.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"production verify wrote invalid receipt JSON ({exc})\n"
+            f"returncode={completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
     assert persisted["invocation_id"] == invocation_id
     assert persisted["pytest_aggregate"] == payload["pytest_aggregate"]
     for authority_field in ("diagnosis", "exit_code", "release_baseline_allowed"):
@@ -643,20 +650,12 @@ def test_production_verify_all_drops_pythonpath_startup_injection(tmp_path: Path
     _git(repo, "remote", "add", "origin", str(origin))
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
-    startup_path = tmp_path / "ambient-pythonpath"
-    startup_path.mkdir()
-    (startup_path / "sitecustomize.py").write_text(
-        'import os\nos.environ["PYTEST_ADDOPTS"] = "-k passes"\n',
+    (repo / "sitecustomize.py").write_text(
+        'import os\nos.environ["PYTEST_ADDOPTS"] = "-k passes"\nos.environ["HYPOTHESIS_PROFILE"] = "narrow"\n',
         encoding="utf-8",
     )
 
-    completed, payload = _run_production_verify(
-        repo,
-        "--all",
-        environment_overrides={
-            "PYTHONPATH": os.pathsep.join((str(PROJECT_ROOT), str(startup_path))),
-        },
-    )
+    completed, payload = _run_production_verify(repo, "--all")
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -666,6 +665,21 @@ def test_production_verify_all_drops_pythonpath_startup_injection(tmp_path: Path
     assert aggregate["outcomes"] == {"failed": 1, "passed": 2}
     assert aggregate["terminal_green"] is False
     assert "PYTHONPATH startup injection did not narrow execution" in completed.stderr
+
+
+def test_plain_native_lane_environment_removes_ambient_pytest_variables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--collect-only")
+    monkeypatch.setenv("PYTEST_PLUGINS", "ambient_plugin")
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "0")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "ambient test identity")
+
+    environment = _pytest_environment(tmp_path)
+
+    assert {key for key in environment if key.startswith("PYTEST_")} == {"PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
+    assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 
 
 @pytest.mark.parametrize(
@@ -1426,6 +1440,28 @@ def test_production_verify_reports_stdout_when_json_payload_is_invalid(
 
     assert "production verify emitted no JSON payload" in str(failure.value)
     assert "stdout:\nnot JSON" in str(failure.value)
+    assert "stderr:\nverifier diagnostics" in str(failure.value)
+
+
+def test_production_verify_reports_stdout_when_receipt_json_is_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invalid_receipt_result(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        receipt = Path(environment["POLYLOGUE_VERIFICATION_RECEIPT_PATH"])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text("not JSON", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, "{}", "verifier diagnostics")
+
+    monkeypatch.setattr(subprocess, "run", invalid_receipt_result)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        _run_production_verify(tmp_path)
+
+    assert "production verify wrote invalid receipt JSON" in str(failure.value)
+    assert "stdout:\n{}" in str(failure.value)
     assert "stderr:\nverifier diagnostics" in str(failure.value)
 
 
