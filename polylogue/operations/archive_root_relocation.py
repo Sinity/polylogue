@@ -405,7 +405,12 @@ def _publish_active_index_pointer(root: Path, pointer: RelocationActiveIndexPoin
             dir_fd=directory_fd,
         )
         payload = (pointer.new_target + "\n").encode("utf-8")
-        os.write(descriptor, payload)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("active index pointer write made no progress")
+            offset += written
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1

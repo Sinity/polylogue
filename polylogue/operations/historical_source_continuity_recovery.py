@@ -940,6 +940,19 @@ def _revalidate(
     )
     if count != plan.legacy_candidate_count or digest != plan.legacy_candidate_digest:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery legacy receipt changed")
+    historical_evidence_sha256 = _verify_historical_operation_evidence(
+        mutation_receipt=Path(plan.mutation_receipt_path),
+        candidates=count,
+        candidate_digest=digest,
+        pre_manifest=Path(plan.pre_backup_manifest_path),
+        pre_receipt=pre_receipt,
+        pre_source=Path(plan.pre_backup_manifest_path).parent / "source.db",
+        post_manifest=Path(plan.post_backup_manifest_path),
+        post_receipt=post_receipt,
+        post_source=Path(plan.post_backup_manifest_path).parent / "source.db",
+    )
+    if historical_evidence_sha256 != plan.historical_evidence_sha256:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery evidence binding changed")
     current = _current_evidence(root)
     if not _evidence_matches_plan(current, plan.source_after) or current.content_sha256 != post.content_sha256:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery current source changed")

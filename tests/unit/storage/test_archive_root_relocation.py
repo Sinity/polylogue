@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
@@ -1052,6 +1054,24 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
             )
         with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
             assert_no_prepared_historical_source_continuity_recovery(new_root)
+        from polylogue.daemon import cli as daemon_cli
+
+        blocked_components = Mock()
+        monkeypatch.setattr("polylogue.paths.archive_root", lambda: new_root)
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", blocked_components)
+        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                )
+            )
+        blocked_components.assert_not_called()
 
         def crash_after_refresh(path: Path, payload: dict[str, object]) -> None:
             real_write_refresh(path, payload)
@@ -1111,6 +1131,21 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
         assert train_after.revision == train_before.revision + 1
         assert train_after.source_continuity_evidence is not None
         assert_no_prepared_historical_source_continuity_recovery(new_root)
+        admitted_components = Mock(side_effect=RuntimeError("daemon admission reached"))
+        monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", admitted_components)
+        with pytest.raises(RuntimeError, match="daemon admission reached"):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                )
+            )
+        admitted_components.assert_called_once()
         rerun = CliRunner().invoke(
             cli,
             [
@@ -1131,6 +1166,65 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
         )
         assert rerun.exit_code == 0, rerun.output
         assert _maintenance_json_output(rerun.output)["state"] == "committed"
+
+
+def test_historical_continuity_recovery_apply_rechecks_the_pinned_evidence_binding(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sealed plan cannot outlive the exact historical-evidence descriptor it authenticated."""
+    new_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(new_root)}
+    plan_path = tmp_path / "continuity-plan.json"
+    with _test_historical_operation_evidence_resource(evidence):
+        planned = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(plan_path),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert planned.exit_code == 0, planned.output
+        plan_sha256 = str(_maintenance_json_output(planned.output)["plan_sha256"])
+        evidence.write_bytes(evidence.read_bytes() + b"\n")
+        applied = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+    assert applied.exit_code != 0
+    assert "evidence binding changed" in applied.output
 
 
 def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_crash(
@@ -1277,14 +1371,28 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     assert plan.active_index_pointer.old_target == str(old_active_target)
     assert plan.active_index_pointer.new_target == str(new_root / old_active_target.relative_to(old_root))
     real_publish = relocation._publish_active_index_pointer
+    real_write = os.write
+    short_pointer_write = False
+
+    def write_pointer_in_two_calls(descriptor: int, payload: bytes) -> int:
+        nonlocal short_pointer_write
+        expected = (plan.active_index_pointer.new_target + "\n").encode("utf-8")
+        if not short_pointer_write and payload == expected:
+            short_pointer_write = True
+            partial = len(payload) - 1
+            assert real_write(descriptor, payload[:partial]) == partial
+            return partial
+        return real_write(descriptor, payload)
 
     def crash_after_pointer_publication(root: Path, pointer: RelocationActiveIndexPointer | None) -> None:
         real_publish(root, pointer)
         raise RuntimeError("crash after active pointer publication")
 
+    monkeypatch.setattr(relocation.os, "write", write_pointer_in_two_calls)
     monkeypatch.setattr(relocation, "_publish_active_index_pointer", crash_after_pointer_publication)
     with pytest.raises(RuntimeError, match="crash after active pointer publication"):
         apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert short_pointer_write
     assert (new_root / ".index-active-pointer").read_text(
         encoding="utf-8"
     ).strip() == plan.active_index_pointer.new_target
