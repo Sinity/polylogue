@@ -435,8 +435,12 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
         assert "--testmon-forceselect" not in step["statistics"]["command"]
         assert "--override-ini=addopts=" in step["statistics"]["command"]
         assert step["external_addopts_neutralized"] is True
+        assert step["external_plugins_neutralized"] is True
+        assert step["closed_world_collection"] is True
     aggregate = payload["pytest_aggregate"]
     assert aggregate["external_addopts_neutralized"] is True
+    assert aggregate["external_plugins_neutralized"] is True
+    assert aggregate["closed_world_collection"] is True
     assert aggregate["selection_mode"] == "full"
     assert aggregate["environment"]["native_corpus_count"] == 2
     assert aggregate["corpus"]["count"] == 2
@@ -518,14 +522,91 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     assert payload["release_baseline_allowed"] is False
     aggregate = payload["pytest_aggregate"]
     assert aggregate["external_addopts_neutralized"] is True
+    assert aggregate["external_plugins_neutralized"] is True
     assert aggregate["selected_union_count"] == 2
     assert aggregate["terminal_union_count"] == 2
     assert aggregate["outcomes"] == {"failed": 2}
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
     assert [step["external_addopts_neutralized"] for step in lanes] == [True, True]
+    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True]
     assert all("--override-ini=addopts=" in step["statistics"]["command"] for step in lanes)
     assert "parallel body executed" in completed.stderr
     assert "serial body executed" in completed.stderr
+
+
+def test_production_verify_all_owns_complete_test_root_over_configured_testpaths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    narrowed = repo / "tests" / "narrowed"
+    narrowed.mkdir()
+    (narrowed / "test_owned.py").write_text(
+        "import pytest\n\n"
+        "def test_parallel_owned():\n"
+        "    assert True\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_owned():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    outside = repo / "tests" / "outside"
+    outside.mkdir()
+    (outside / "test_omitted_failure.py").write_text(
+        "class TestOmitted:\n"
+        "    def test_must_not_be_omitted(self):\n"
+        "        assert False, 'outside configured discovery executed'\n",
+        encoding="utf-8",
+    )
+    (repo / "ambient_narrow.py").write_text(
+        "def pytest_ignore_collect(collection_path, config):\n    return 'outside' in collection_path.parts\n",
+        encoding="utf-8",
+    )
+    config = repo / "pyproject.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'cache_dir = ".cache/pytest"',
+            'cache_dir = ".cache/pytest"\n'
+            'testpaths = ["tests/narrowed"]\n'
+            'python_files = ["test_owned.py"]\n'
+            'python_classes = ["Owned"]\n'
+            'python_functions = ["test_*_owned"]\n'
+            'norecursedirs = ["outside"]',
+        ),
+        encoding="utf-8",
+    )
+    _commit_all(repo, "narrow discovery fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+    monkeypatch.setenv("PYTEST_PLUGINS", "ambient_narrow")
+    monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+
+    completed, payload = _run_production_verify(repo, "--all")
+
+    assert completed.returncode == 1
+    assert payload["release_baseline_allowed"] is False
+    aggregate = payload["pytest_aggregate"]
+    assert aggregate["external_plugins_neutralized"] is True
+    assert aggregate["closed_world_collection"] is True
+    assert aggregate["corpus"]["count"] == 3
+    assert aggregate["selected_union_count"] == 3
+    assert aggregate["terminal_union_count"] == 3
+    assert aggregate["outcomes"] == {"failed": 1, "passed": 2}
+    assert aggregate["complete_corpus_covered"] is True
+    assert aggregate["terminal_green"] is False
+    lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
+    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True]
+    assert [step["closed_world_collection"] for step in lanes] == [True, True]
+    assert all(step["statistics"]["command"].count("tests") == 1 for step in lanes)
+    assert "outside configured discovery executed" in completed.stderr
 
 
 def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: Path) -> None:

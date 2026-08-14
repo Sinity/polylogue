@@ -118,6 +118,35 @@ from polylogue.scenarios.workload import (
 
 ROOT = Path(__file__).resolve().parents[1]
 _PYTEST_CLEAR_CONFIGURED_ADDOPTS = "--override-ini=addopts="
+_PYTEST_RELEASE_PLUGIN_NAMES = (
+    "anyio",
+    "asyncio",
+    "hypothesispytest",
+    "benchmark",
+    "pytest_cov",
+    "pytest_jsonreport",
+    "randomly",
+    "syrupy",
+    "timeout",
+    "xdist",
+    "pytest-testmon",
+)
+_PYTEST_RELEASE_PLUGIN_ARGS = tuple(argument for name in _PYTEST_RELEASE_PLUGIN_NAMES for argument in ("-p", name))
+_PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
+    _PYTEST_CLEAR_CONFIGURED_ADDOPTS,
+    "--override-ini=python_files=test_*.py *_test.py fuzz_*.py",
+    "--override-ini=python_classes=Test",
+    "--override-ini=python_functions=test",
+    "--override-ini=norecursedirs=",
+    "tests",
+)
+
+
+def _normalize_release_pytest_environment(env: dict[str, str]) -> None:
+    """Remove ambient pytest extensions from an authoritative child."""
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_PLUGINS", None)
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
 
 def _anchor_verification_paths() -> None:
@@ -1624,6 +1653,8 @@ def _run(
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
+    release_lane = _pytest_uses_full_suite_basetemp(label)
+    closed_world_command = _release_pytest_command_is_closed_world(label, cmd)
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
     has_managed_pytest_child = label == "bench slo"
@@ -1634,9 +1665,10 @@ def _run(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
-    release_addopts_neutralized = _pytest_uses_full_suite_basetemp(label)
-    if release_addopts_neutralized:
-        env.pop("PYTEST_ADDOPTS", None)
+    release_addopts_neutralized = release_lane
+    external_plugins_neutralized = release_lane
+    if release_lane:
+        _normalize_release_pytest_environment(env)
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
@@ -1690,9 +1722,13 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
-        if release_addopts_neutralized:
-            env.pop("PYTEST_ADDOPTS", None)
+        if release_lane:
+            _normalize_release_pytest_environment(env)
             release_addopts_neutralized = _PYTEST_CLEAR_CONFIGURED_ADDOPTS in cmd
+            external_plugins_neutralized = (
+                "PYTEST_PLUGINS" not in env and env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
+            )
+    closed_world_collection = closed_world_command and release_addopts_neutralized and external_plugins_neutralized
     interrupted = False
     pytest_containment_quiescent = True
     containment_error: str | None = None
@@ -1748,6 +1784,8 @@ def _run(
             metadata["termination_reason"] = f"pytest containment did not quiesce: {containment_error}"
         metadata.update(_pytest_command_metadata(cmd))
         metadata["external_addopts_neutralized"] = release_addopts_neutralized
+        metadata["external_plugins_neutralized"] = external_plugins_neutralized
+        metadata["closed_world_collection"] = closed_world_collection
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s() if timeout_s is None else timeout_s
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
@@ -2094,6 +2132,87 @@ def _native_lane_failure_requires_stop(step: Mapping[str, Any]) -> bool:
 # ── step builder ────────────────────────────────────────────────────
 
 
+def _native_pytest_steps(
+    *,
+    testmon_mode: str,
+    testmon_environment: str,
+    parallel_worker_args: Sequence[str],
+) -> list[tuple[str, list[str]]]:
+    pytest_cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "--ignore=tests/benchmarks",
+        "--durations=10",
+        f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
+        "--json-report",
+        "--json-report-omit=collectors,log,streams,warnings",
+        f"--json-report-file={PYTEST_REPORT_PATH}",
+        "-p",
+        "devtools.pytest_progress_plugin",
+    ]
+    if testmon_mode in {"bootstrap", "full"}:
+        pytest_cmd.extend(_PYTEST_RELEASE_PLUGIN_ARGS)
+        pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
+    native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
+    if testmon_mode == "affected":
+        native_args.append("--testmon-forceselect")
+    else:
+        native_args.append("--testmon-noselect")
+
+    parallel_cmd = [
+        *pytest_cmd,
+        "-m",
+        "not load_sensitive",
+        *native_args,
+        *parallel_worker_args,
+    ]
+
+    def _serial_report_arg(arg: str) -> str:
+        if arg.startswith("--junitxml="):
+            return f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest-serial.xml"
+        if arg.startswith("--json-report-file="):
+            return f"--json-report-file={PYTEST_REPORT_DIR / 'last-pytest-serial.json'}"
+        return arg
+
+    serial_cmd = [_serial_report_arg(arg) for arg in pytest_cmd]
+    serial_cmd.extend(
+        [
+            "-m",
+            "load_sensitive",
+            *native_args,
+            "-p",
+            "no:randomly",
+            "-n",
+            "0",
+        ]
+    )
+    return [
+        (f"pytest native parallel ({testmon_mode})", parallel_cmd),
+        (f"pytest native serial ({testmon_mode})", serial_cmd),
+    ]
+
+
+def _release_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
+    """Accept only a command produced by the owned release-lane builder."""
+    match = re.fullmatch(r"pytest native (parallel|serial) \((bootstrap|full)\)", label)
+    if match is None:
+        return False
+    environment_args = [arg for arg in cmd if arg.startswith("--testmon-env=")]
+    worker_request = pytest_command_worker_request(cmd)
+    if len(environment_args) != 1 or worker_request is None or not worker_request.isdigit():
+        return False
+    expected_steps = _native_pytest_steps(
+        testmon_mode=match.group(2),
+        testmon_environment=environment_args[0].removeprefix("--testmon-env="),
+        parallel_worker_args=("--dist=loadgroup", "-n", worker_request),
+    )
+    expected = dict(expected_steps).get(label)
+    return expected is not None and list(cmd) == expected
+
+
 def build_verify_steps(
     *,
     quick: bool,
@@ -2146,66 +2265,19 @@ def build_verify_steps(
         _report_dir = PYTEST_JUNIT_REPORT_DIR
         _report_dir.mkdir(parents=True, exist_ok=True)
         PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        pytest_cmd = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--tb=short",
-            # Benchmark files are an explicit campaign surface.  A number of
-            # them are correctness-shaped and lack the benchmark marker, so a
-            # marker expression alone cannot keep performance probes out of
-            # the correctness/testmon corpus.
-            "--ignore=tests/benchmarks",
-            "--durations=10",
-            f"--junitxml={_report_dir}/verify-latest.xml",
-            "--json-report",
-            "--json-report-omit=collectors,log,streams,warnings",
-            f"--json-report-file={PYTEST_REPORT_PATH}",
-            "-p",
-            "devtools.pytest_progress_plugin",
-        ]
         if testmon_mode not in {"affected", "bootstrap", "full"}:
             raise ValueError(f"unknown native testmon mode: {testmon_mode}")
         if not testmon_environment:
             raise ValueError("native testmon environment is required for pytest verification")
-        if testmon_mode in {"bootstrap", "full"}:
-            pytest_cmd.append(_PYTEST_CLEAR_CONFIGURED_ADDOPTS)
-        native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
-        if testmon_mode == "affected":
-            native_args.append("--testmon-forceselect")
-        else:
-            native_args.append("--testmon-noselect")
-
-        parallel_cmd = [
-            *pytest_cmd,
-            "-m",
-            "not load_sensitive",
-            *native_args,
-            *_pytest_worker_args(),
-        ]
-        steps.append((f"pytest native parallel ({testmon_mode})", parallel_cmd))
-
-        def _serial_report_arg(arg: str) -> str:
-            if arg.startswith("--junitxml="):
-                return f"--junitxml={_report_dir}/verify-latest-serial.xml"
-            if arg.startswith("--json-report-file="):
-                return f"--json-report-file={PYTEST_REPORT_DIR / 'last-pytest-serial.json'}"
-            return arg
-
-        serial_cmd = [_serial_report_arg(arg) for arg in pytest_cmd]
-        serial_cmd.extend(
-            [
-                "-m",
-                "load_sensitive",
-                *native_args,
-                "-p",
-                "no:randomly",
-                "-n",
-                "0",
-            ]
+        # The release command owns its complete collection and plugin surface;
+        # the benchmark root remains the one explicit non-correctness corpus.
+        steps.extend(
+            _native_pytest_steps(
+                testmon_mode=testmon_mode,
+                testmon_environment=testmon_environment,
+                parallel_worker_args=_pytest_worker_args(),
+            )
         )
-        steps.append((f"pytest native serial ({testmon_mode})", serial_cmd))
 
     if lab:
         steps.append(("lab smoke", _devtools_cmd("lab smoke", "run", "archive-smoke", "--tier", "0")))
@@ -2432,6 +2504,8 @@ def _release_baseline_allowed(
         aggregate.get("complete_corpus_covered") is True
         and aggregate.get("terminal_green") is True
         and aggregate.get("external_addopts_neutralized") is True
+        and aggregate.get("external_plugins_neutralized") is True
+        and aggregate.get("closed_world_collection") is True
         and isinstance(cleanup, Mapping)
         and cleanup.get("complete") is True
         and isinstance(containment, Mapping)

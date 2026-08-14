@@ -141,6 +141,38 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
         assert "--json-report" in command
         assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
         assert (verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS in command) is (mode in {"bootstrap", "full"})
+        assert all(arg in command for arg in verify._PYTEST_CLOSED_WORLD_COLLECTION_ARGS) is (
+            mode in {"bootstrap", "full"}
+        )
+        assert all(arg in command for arg in verify._PYTEST_RELEASE_PLUGIN_ARGS) is (mode in {"bootstrap", "full"})
+        if mode in {"bootstrap", "full"}:
+            assert command.count("tests") == 1
+            assert "--override-ini=python_files=test_*.py *_test.py fuzz_*.py" in command
+            assert "--override-ini=python_classes=Test" in command
+            assert "--override-ini=python_functions=test" in command
+            assert "--override-ini=norecursedirs=" in command
+
+
+def test_release_lane_command_contract_rejects_unowned_selectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 2)
+    steps = build_verify_steps(
+        quick=False,
+        lab=False,
+        testmon_mode="full",
+        testmon_environment="env-digest",
+    )
+    label, command = next(step for step in steps if "parallel" in step[0])
+
+    assert verify._release_pytest_command_is_closed_world(label, command)
+    for narrowed in (
+        [*command, "--ignore=tests/unit"],
+        [*command, "tests/unit"],
+        [*command, "--deselect=tests/test_failure.py::test_failure"],
+        [*command, "--override-ini=python_files=test_owned.py"],
+    ):
+        assert not verify._release_pytest_command_is_closed_world(label, narrowed)
 
 
 def test_native_corpus_excludes_only_benchmark_directory() -> None:
@@ -468,6 +500,8 @@ def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp
                 "artifact_dir": "parallel",
                 "exit": 0,
                 "external_addopts_neutralized": True,
+                "external_plugins_neutralized": True,
+                "closed_world_collection": True,
                 "statistics": {"cleanup": {"complete": True}},
             },
             {
@@ -487,6 +521,12 @@ def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp
     assert result["external_addopts_neutralized"] is False
     assert result["lanes"][0]["external_addopts_neutralized"] is True
     assert result["lanes"][1]["external_addopts_neutralized"] is False
+    assert result["external_plugins_neutralized"] is False
+    assert result["lanes"][0]["external_plugins_neutralized"] is True
+    assert result["lanes"][1]["external_plugins_neutralized"] is False
+    assert result["closed_world_collection"] is False
+    assert result["lanes"][0]["closed_world_collection"] is True
+    assert result["lanes"][1]["closed_world_collection"] is False
     assert result["selected_union_count"] == 2
     assert result["terminal_union_count"] == 2
     assert result["non_green_count"] == 0
@@ -3017,6 +3057,18 @@ def test_release_lane_removes_environment_addopts_before_pytest(
     captured_env: dict[str, str] = {}
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
     monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only")
+    monkeypatch.setenv("PYTEST_PLUGINS", "ambient_narrow")
+    monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+    command = next(
+        command
+        for label, command in build_verify_steps(
+            quick=False,
+            lab=False,
+            testmon_mode="full",
+            testmon_environment="env-digest",
+        )
+        if "parallel" in label
+    )
 
     def run_pytest(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured_command.extend(command)
@@ -3031,13 +3083,17 @@ def test_release_lane_removes_environment_addopts_before_pytest(
     ):
         rc, _elapsed, metadata = _run(
             "pytest native parallel (full)",
-            ["pytest", verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS],
+            command,
         )
 
     assert rc == 0
     assert verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS in captured_command
     assert "PYTEST_ADDOPTS" not in captured_env
+    assert "PYTEST_PLUGINS" not in captured_env
+    assert captured_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert metadata["external_addopts_neutralized"] is True
+    assert metadata["external_plugins_neutralized"] is True
+    assert metadata["closed_world_collection"] is True
 
 
 def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
@@ -4114,6 +4170,8 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         "complete_corpus_covered": True,
         "terminal_green": True,
         "external_addopts_neutralized": True,
+        "external_plugins_neutralized": True,
+        "closed_world_collection": True,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
         "deadline": {"met": True},
@@ -4137,6 +4195,8 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         {**aggregate, "complete_corpus_covered": False},
         {**aggregate, "terminal_green": False},
         {**aggregate, "external_addopts_neutralized": False},
+        {**aggregate, "external_plugins_neutralized": False},
+        {**aggregate, "closed_world_collection": False},
         {**aggregate, "cleanup": {"complete": False}},
         {**aggregate, "containment": {"complete": False}},
         {**aggregate, "deadline": {"met": False}},

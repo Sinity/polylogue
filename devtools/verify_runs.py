@@ -177,6 +177,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "containment_complete": isinstance(step.get("containment_mode"), str),
                 "containment_mode": step.get("containment_mode"),
                 "external_addopts_neutralized": False,
+                "external_plugins_neutralized": False,
+                "closed_world_collection": False,
             }
         )
 
@@ -203,6 +205,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         "corpus": {"count": terminal_count, "digest": corpus_digest},
         "selection_mode": "focused" if entry.get("tier") == "focused-test" else "none",
         "external_addopts_neutralized": False,
+        "external_plugins_neutralized": False,
+        "closed_world_collection": False,
         "lanes": lanes,
         "selected_union_count": selected_count,
         "terminal_union_count": terminal_count,
@@ -1258,6 +1262,8 @@ def aggregate_native_testmon_run(
     containment_complete = True
     selection_complete = True
     external_addopts_neutralized = True
+    external_plugins_neutralized = True
+    closed_world_collection = True
     for step in steps:
         lane = step.get("semantic_lane")
         if lane not in {"parallel", "serial"}:
@@ -1298,6 +1304,10 @@ def aggregate_native_testmon_run(
         cleanup_complete = cleanup_complete and lane_cleanup is True
         lane_addopts_neutralized = step.get("external_addopts_neutralized") is True
         external_addopts_neutralized = external_addopts_neutralized and lane_addopts_neutralized
+        lane_plugins_neutralized = step.get("external_plugins_neutralized") is True
+        external_plugins_neutralized = external_plugins_neutralized and lane_plugins_neutralized
+        lane_closed_world_collection = step.get("closed_world_collection") is True
+        closed_world_collection = closed_world_collection and lane_closed_world_collection
         lane_containment_complete = bool(
             containment_receipt is not None
             and containment_receipt.get("status") == "finished"
@@ -1323,6 +1333,8 @@ def aggregate_native_testmon_run(
                 "containment_mode": step.get("containment_mode"),
                 "containment_complete": lane_containment_complete,
                 "external_addopts_neutralized": lane_addopts_neutralized,
+                "external_plugins_neutralized": lane_plugins_neutralized,
+                "closed_world_collection": lane_closed_world_collection,
             }
         )
 
@@ -1338,6 +1350,8 @@ def aggregate_native_testmon_run(
         and selection_complete
         and bool(corpus)
         and external_addopts_neutralized
+        and external_plugins_neutralized
+        and closed_world_collection
         and selected_union == corpus_set
         and set(outcome_by_node) == corpus_set
         and not duplicate_outcomes
@@ -1353,6 +1367,8 @@ def aggregate_native_testmon_run(
     cleanup_complete = bool(lanes) and cleanup_complete
     containment_complete = bool(lanes) and containment_complete
     external_addopts_neutralized = bool(lanes) and external_addopts_neutralized
+    external_plugins_neutralized = bool(lanes) and external_plugins_neutralized
+    closed_world_collection = bool(lanes) and closed_world_collection
     return {
         "schema_version": 1,
         "environment": {
@@ -1369,6 +1385,8 @@ def aggregate_native_testmon_run(
         },
         "selection_mode": selection_mode,
         "external_addopts_neutralized": external_addopts_neutralized,
+        "external_plugins_neutralized": external_plugins_neutralized,
+        "closed_world_collection": closed_world_collection,
         "lanes": lanes,
         "outcomes": outcomes,
         "selected_union_count": len(selected_union),
