@@ -2863,6 +2863,15 @@ async def _run_daemon_services_under_active_writer_lease(
             )
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
+            # Any exception or repeated cancellation before coordinator
+            # shutdown leaves writer drain unproven.  The outer product
+            # context must not interpret that control-flow escape as a safe
+            # release: keep rebuild exclusion until process exit unless the
+            # coordinator returned an affirmative drain result.
+            _retain_rebuild_exclusion_for_undrained_writer(
+                rebuild_exclusion,
+                writer_drained=writer_drained,
+            )
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()

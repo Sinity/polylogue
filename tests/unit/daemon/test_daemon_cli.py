@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -3757,6 +3758,83 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
         )
 
     assert stopped == [True]
+
+
+def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup errors before coordinator shutdown must never reopen rebuilds."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product import raw_authority
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    async def noop() -> None:
+        return None
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            return None
+
+    captured: list[raw_authority.ArchiveWriterRebuildExclusion] = []
+    archive_roots: list[Path] = []
+    real_exclusion = raw_authority.archive_writer_rebuild_exclusion
+
+    @contextlib.contextmanager
+    def capture_exclusion(archive_root: Path) -> Iterator[raw_authority.ArchiveWriterRebuildExclusion]:
+        archive_roots.append(archive_root)
+        with real_exclusion(archive_root) as exclusion:
+            captured.append(exclusion)
+            yield exclusion
+
+    def fail_shutdown_marker() -> None:
+        raise RuntimeError("shutdown marker failed")
+
+    monkeypatch.setattr(raw_authority, "archive_writer_rebuild_exclusion", capture_exclusion)
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "_reconcile_blob_publications", noop),
+        patch.object(
+            daemon_cli,
+            "_mark_interrupted_live_ingest_attempts_on_shutdown",
+            fail_shutdown_marker,
+        ),
+        pytest.raises(RuntimeError, match="shutdown marker failed"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert len(captured) == 1
+    assert len(archive_roots) == 1
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_roots[0]):
+            pass
+
+    captured[0].release()
+    with RebuildLease(archive_roots[0]):
+        pass
 
 
 def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.MonkeyPatch) -> None:
