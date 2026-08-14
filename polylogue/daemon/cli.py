@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.parse_prefetch import DaemonParseStage
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.product.raw_authority import ArchiveWriterRebuildExclusion, RawMaterializationCounts
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
@@ -2103,26 +2103,50 @@ async def _emit_daemon_lifecycle_event(
         logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
 
 
+def _retain_rebuild_exclusion_for_undrained_writer(
+    rebuild_exclusion: ArchiveWriterRebuildExclusion,
+    *,
+    writer_drained: bool,
+) -> None:
+    """Transfer rebuild exclusion to process lifetime after a drain timeout."""
+    if not writer_drained:
+        rebuild_exclusion.retain_until_process_exit()
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
 ) -> None:
     from polylogue.daemon.events import emit_catch_up_cycle
+    from polylogue.paths import archive_root
+    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
 
-    async with Polylogue() as polylogue:
-        watcher = LiveWatcher(
-            polylogue,
-            sources,
-            debounce_s=debounce_s,
-            event_emitter=_emit_live_batch_event,
-            catch_up_event_emitter=emit_catch_up_cycle,
-            write_coordinator=daemon_write_coordinator(),
-        )
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
+        coordinator = daemon_write_coordinator()
+        watcher: LiveWatcher | None = None
         try:
-            await watcher.run()
-        except KeyboardInterrupt:
-            watcher.stop()
+            async with Polylogue() as polylogue:
+                watcher = LiveWatcher(
+                    polylogue,
+                    sources,
+                    debounce_s=debounce_s,
+                    event_emitter=_emit_live_batch_event,
+                    catch_up_event_emitter=emit_catch_up_cycle,
+                    write_coordinator=coordinator,
+                )
+                with contextlib.suppress(KeyboardInterrupt):
+                    await watcher.run()
+        finally:
+            if watcher is not None:
+                watcher.stop()
+            writer_drained = await coordinator.shutdown(timeout=5.0)
+            _retain_rebuild_exclusion_for_undrained_writer(
+                rebuild_exclusion,
+                writer_drained=writer_drained,
+            )
 
 
 async def run_daemon_services(
@@ -2159,8 +2183,9 @@ async def run_daemon_services(
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with archive_writer_rebuild_exclusion(archive_root_path):
+    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
         await _run_daemon_services_under_active_writer_lease(
+            rebuild_exclusion=rebuild_exclusion,
             sources=sources,
             debounce_s=debounce_s,
             enable_watch=enable_watch,
@@ -2183,6 +2208,7 @@ async def run_daemon_services(
 
 async def _run_daemon_services_under_active_writer_lease(
     *,
+    rebuild_exclusion: ArchiveWriterRebuildExclusion,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
     enable_watch: bool,
@@ -2408,6 +2434,10 @@ async def _run_daemon_services_under_active_writer_lease(
             with contextlib.suppress(Exception):
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
         writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _retain_rebuild_exclusion_for_undrained_writer(
+            rebuild_exclusion,
+            writer_drained=writer_drained,
+        )
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         if writer_drained:
             archive_owner.release()
@@ -2443,6 +2473,10 @@ async def _run_daemon_services_under_active_writer_lease(
             with contextlib.suppress(Exception):
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
         writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _retain_rebuild_exclusion_for_undrained_writer(
+            rebuild_exclusion,
+            writer_drained=writer_drained,
+        )
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         if writer_drained:
             archive_owner.release()
@@ -2804,6 +2838,10 @@ async def _run_daemon_services_under_active_writer_lease(
                     logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
 
             writer_drained = await write_coordinator.shutdown(timeout=5.0)
+            _retain_rebuild_exclusion_for_undrained_writer(
+                rebuild_exclusion,
+                writer_drained=writer_drained,
+            )
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
             if server is not None:

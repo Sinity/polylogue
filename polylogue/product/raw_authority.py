@@ -135,17 +135,45 @@ def materialization_generation_lease(config: Config) -> Iterator[Path]:
         lease.close()
 
 
-@contextlib.contextmanager
-def archive_writer_rebuild_exclusion(archive_root: Path) -> Iterator[None]:
-    """Exclude an offline rebuild for the complete lifetime of an archive writer."""
-    from polylogue.storage.index_generation import ActiveWriterLease
+class ArchiveWriterRebuildExclusion:
+    """Product authority preventing an offline rebuild from overlapping a writer."""
 
-    lease = ActiveWriterLease(archive_root)
-    lease.acquire()
+    def __init__(self, archive_root: Path) -> None:
+        from polylogue.storage.index_generation import ActiveWriterLease
+
+        self._lease = ActiveWriterLease(archive_root)
+        self._retained_until_process_exit = False
+        self._lease.acquire()
+
+    def retain_until_process_exit(self) -> None:
+        """Keep exclusion when a writer cannot be proven drained.
+
+        The raw file descriptor deliberately remains open and is reclaimed by
+        the OS at process exit. Releasing it after a bounded shutdown timeout
+        would let an offline rebuild overlap the admitted writer that caused
+        that timeout.
+        """
+        self._retained_until_process_exit = True
+
+    def release(self) -> None:
+        """Release exclusion after every admitted writer is proven drained."""
+        self._lease.close()
+        self._retained_until_process_exit = False
+
+    def release_if_safe(self) -> None:
+        """Release unless shutdown transferred authority to process lifetime."""
+        if not self._retained_until_process_exit:
+            self.release()
+
+
+@contextlib.contextmanager
+def archive_writer_rebuild_exclusion(archive_root: Path) -> Iterator[ArchiveWriterRebuildExclusion]:
+    """Acquire process-lifetime-capable rebuild exclusion for an archive writer."""
+    exclusion = ArchiveWriterRebuildExclusion(archive_root)
     try:
-        yield
+        yield exclusion
     finally:
-        lease.close()
+        exclusion.release_if_safe()
 
 
 def materialization_lease_refusal_result(error: BaseException) -> RepairResult | None:
@@ -258,6 +286,7 @@ def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> J
 
 
 __all__ = [
+    "ArchiveWriterRebuildExclusion",
     "RawMaterializationCounts",
     "apply_frontier",
     "archive_writer_rebuild_exclusion",

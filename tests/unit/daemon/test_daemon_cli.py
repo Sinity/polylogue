@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import inspect
 import os
 import sqlite3
@@ -2421,7 +2422,10 @@ def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: 
     )
 
 
-def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
+def test_run_live_watcher_stops_on_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     from polylogue.daemon import cli as daemon_cli
 
     class FakePolylogue:
@@ -2432,6 +2436,12 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
             return None
 
     stopped: list[bool] = []
+    shutdown_timeouts: list[float] = []
+
+    class Coordinator:
+        async def shutdown(self, *, timeout: float) -> bool:
+            shutdown_timeouts.append(timeout)
+            return True
 
     class FakeWatcher:
         stopped = False
@@ -2447,14 +2457,43 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
             stopped.append(self.stopped)
 
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
 
     with (
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "daemon_write_coordinator", return_value=Coordinator()),
     ):
         asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
 
     assert stopped == [True]
+    assert shutdown_timeouts == [5.0]
+
+
+def test_run_live_watcher_refuses_before_entry_while_rebuild_lease_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
+
+    class ForbiddenPolylogue:
+        def __init__(self) -> None:
+            raise AssertionError("standalone watcher entered archive before rebuild refusal")
+
+    monkeypatch.setattr(daemon_cli, "Polylogue", ForbiddenPolylogue)
+    with (
+        RebuildLease(archive_root_path),
+        pytest.raises(
+            RebuildLeaseUnavailableError,
+            match="offline index rebuild owns archive",
+        ),
+    ):
+        asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
 
 
 def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
@@ -3578,24 +3617,37 @@ def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
 
-    with (
-        RebuildLease(archive_root_path),
-        pytest.raises(
+    def archive_digest() -> str:
+        digest = hashlib.sha256()
+        for path in sorted(archive_root_path.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(archive_root_path).as_posix().encode()
+            payload = path.read_bytes()
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(payload).to_bytes(8, "big"))
+            digest.update(payload)
+        return digest.hexdigest()
+
+    with RebuildLease(archive_root_path):
+        before = archive_digest()
+        with pytest.raises(
             RebuildLeaseUnavailableError,
             match="offline index rebuild owns archive",
-        ),
-    ):
-        asyncio.run(
-            daemon_cli.run_daemon_services(
-                sources=(),
-                debounce_s=1.0,
-                enable_watch=False,
-                enable_browser_capture=False,
-                browser_capture_host="127.0.0.1",
-                browser_capture_port=8765,
-                browser_capture_spool_path=None,
+        ):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                )
             )
-        )
+        assert archive_digest() == before
 
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
@@ -3918,6 +3970,28 @@ def test_pidfile_remains_locked_until_admitted_writers_are_drained(
     assert daemon_cli._release_pidfile_after_writer_drain(retained_fd, writer_drained=True) is None
     successor_fd = daemon_cli._acquire_pidfile(pidfile)
     os.close(successor_fd)
+
+
+def test_rebuild_exclusion_survives_an_undrained_writer_timeout(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    with archive_writer_rebuild_exclusion(archive_root_path) as exclusion:
+        daemon_cli._retain_rebuild_exclusion_for_undrained_writer(
+            exclusion,
+            writer_drained=False,
+        )
+
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_root_path):
+            pass
+
+    exclusion.release()
+    with RebuildLease(archive_root_path):
+        pass
 
 
 def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path: Path) -> None:
