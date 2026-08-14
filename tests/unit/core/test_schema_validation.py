@@ -748,6 +748,53 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
     assert stats.decode_errors == 0
 
 
+def test_verify_raw_corpus_filters_and_parses_by_detected_provider(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An UNKNOWN acquisition classified as Codex remains in the Codex corpus."""
+
+    class _AlwaysValidValidator:
+        provider = "codex"
+
+        def validation_samples(self, payload: object, max_samples: int = 16) -> list[object]:
+            del max_samples
+            return [payload]
+
+        def validate(self, _sample: object) -> ValidationResult:
+            return ValidationResult(is_valid=True)
+
+    selected_providers: list[str] = []
+
+    def validator_for_payload(provider: str, *_args: object, **_kwargs: object) -> _AlwaysValidValidator:
+        selected_providers.append(provider)
+        return _AlwaysValidValidator()
+
+    monkeypatch.setattr("polylogue.schemas.validation.corpus.SchemaValidator.for_payload", validator_for_payload)
+    raw_id = _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-unknown-codex",
+        source_name="unknown",
+        source_path="/tmp/learned-codex.jsonl",
+        raw_content=(
+            b'{"type":"session_meta","payload":{"id":"learned-codex"}}\n'
+            b'{"type":"response_item","payload":{"type":"message","role":"user",'
+            b'"content":[{"type":"input_text","text":"retained"}]}}\n'
+        ),
+    )
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET detected_provider = 'codex' WHERE raw_id = ?", (raw_id,))
+
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["codex"], max_samples=16),
+    )
+
+    assert report.total_records == 1
+    assert report.providers["codex"].valid_records == 1
+    assert selected_providers == ["codex"]
+
+
 def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Path) -> None:
     _insert_raw_record(
         db_path=db_path,
@@ -868,6 +915,37 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
     assert row["validation_mode"] == "strict"
     assert row["validated_at_ms"] is not None
     assert isinstance(row["parse_error"], str) and "Malformed JSONL lines" in row["parse_error"]
+
+
+def test_verify_raw_corpus_quarantine_advances_past_an_existing_parse_transition(db_path: Path) -> None:
+    """A wall clock behind the parse transition must not reverse raw-state authority."""
+    raw_id = _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-codex-quarantine-order",
+        source_name="codex",
+        source_path="/tmp/quarantine-order.jsonl",
+        raw_content=(
+            b'{"type":"session_meta"}\nnot json at all\n{"type":"response_item","payload":{"type":"message"}}'
+        ),
+    )
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET parsed_at_ms = 9999999999999 WHERE raw_id = ?", (raw_id,))
+        conn.commit()
+
+    from polylogue.schemas.validation.corpus import apply_quarantine_updates
+
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        apply_quarantine_updates(
+            conn,
+            updates=[(raw_id, "malformed retained JSONL", "codex", "codex")],
+        )
+
+    with sqlite3.connect(db_path.parent / "source.db") as conn:
+        parsed_at_ms, validated_at_ms, validation_status = conn.execute(
+            "SELECT parsed_at_ms, validated_at_ms, validation_status FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert validation_status == "failed"
+    assert validated_at_ms > parsed_at_ms
 
 
 def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_path: Path) -> None:

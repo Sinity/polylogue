@@ -280,6 +280,40 @@ def record_capture_mode_observation(
     )
 
 
+def record_raw_container_coordinate(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    *,
+    coordinate_format: Literal["zip-v2"],
+    entry_ordinal: int,
+    split_index: int,
+    manage_transaction: bool = True,
+) -> None:
+    """Persist one content-independent container coordinate for a raw row."""
+    if entry_ordinal < 0 or split_index < 0:
+        raise ValueError("container entry ordinal and split index must be non-negative")
+    with conn if manage_transaction else nullcontext():
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO raw_container_coordinates (
+                raw_id, coordinate_format, entry_ordinal, split_index
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (raw_id, coordinate_format, entry_ordinal, split_index),
+        )
+        stored = conn.execute(
+            """
+            SELECT coordinate_format, entry_ordinal, split_index
+            FROM raw_container_coordinates
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+        expected = (coordinate_format, entry_ordinal, split_index)
+        if stored is None or tuple(stored) != expected:
+            raise ValueError(f"raw container coordinate changed for {raw_id}")
+
+
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:
     """Read every acquisition mode ever observed for ``raw_id``, explicitly ambiguous or not.
 
@@ -1273,9 +1307,9 @@ def upsert_raw_artifact(
     """
     failure_kind = _is_raw_failure_artifact_kind(artifact.artifact_kind)
     coordinate_predicate = (
-        "raw_id = ? AND origin = ? AND source_path = ? AND source_index = ?"
+        "a.raw_id = ? AND a.origin = ? AND a.source_path = ? AND a.source_index = ?"
         if failure_kind
-        else "origin = ? AND source_path = ? AND source_index = ? AND artifact_kind NOT IN ("
+        else "a.origin = ? AND a.source_path = ? AND a.source_index = ? AND a.artifact_kind NOT IN ("
         + ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
         + ")"
     )
@@ -1292,13 +1326,60 @@ def upsert_raw_artifact(
     with conn if manage_transaction else nullcontext():
         existing = conn.execute(
             f"""
-            SELECT artifact_id
-            FROM raw_artifacts
+            SELECT a.artifact_id, a.raw_id
+            FROM raw_artifacts AS a
             WHERE {coordinate_predicate}
             """,
             coordinate_params,
         ).fetchone()
         if existing is not None:
+            # One coordinate has one authority carrier. A delayed census of
+            # stale retained bytes must not replace a carrier observed later.
+            if str(existing[1]) != raw_id:
+                incoming_receipt = conn.execute(
+                    """
+                    SELECT acquired_at_ms, rowid FROM blob_refs
+                    WHERE ref_id = ? AND ref_type = 'raw_payload'
+                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    """,
+                    (raw_id,),
+                ).fetchone()
+                existing_receipt = conn.execute(
+                    """
+                    SELECT acquired_at_ms, rowid FROM blob_refs
+                    WHERE ref_id = ? AND ref_type = 'raw_payload'
+                    ORDER BY acquired_at_ms DESC, rowid DESC LIMIT 1
+                    """,
+                    (str(existing[1]),),
+                ).fetchone()
+                if (incoming_receipt is None) != (existing_receipt is None):
+                    raise RuntimeError(
+                        "cannot compare artifact observation order across incompatible raw-payload receipt coverage"
+                    )
+                if incoming_receipt is None:
+                    incoming_observation = conn.execute(
+                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
+                        (raw_id,),
+                    ).fetchone()
+                    existing_observation = conn.execute(
+                        "SELECT acquired_at_ms, rowid FROM raw_sessions WHERE raw_id = ?",
+                        (str(existing[1]),),
+                    ).fetchone()
+                else:
+                    incoming_observation = incoming_receipt
+                    existing_observation = existing_receipt
+                if incoming_observation is None:
+                    raise KeyError(raw_id)
+                if existing_observation is None:
+                    raise KeyError(str(existing[1]))
+                existing_order = (int(existing_observation[0]), int(existing_observation[1]))
+                incoming_order = (int(incoming_observation[0]), int(incoming_observation[1]))
+                if existing_order >= incoming_order:
+                    conn.execute(
+                        "UPDATE raw_artifacts SET first_observed_at_ms = MIN(first_observed_at_ms, ?) WHERE artifact_id = ?",
+                        (artifact.first_observed_at_ms, str(existing[0])),
+                    )
+                    return
             artifact = replace(artifact, artifact_id=str(existing[0]))
         _insert_artifact(conn, raw_id, artifact)
 
@@ -1416,6 +1497,7 @@ __all__ = [
     "read_raw_artifact",
     "read_archive_raw_session_envelope",
     "record_capture_mode_observation",
+    "record_raw_container_coordinate",
     "record_excised_blob_hash",
     "pending_raw_logical_source_key",
     "upsert_raw_artifact",

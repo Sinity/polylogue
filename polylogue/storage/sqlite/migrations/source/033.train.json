@@ -1,0 +1,97 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v33",
+  "tier": "source",
+  "current_version": 32,
+  "target_version": 33,
+  "slot": 33,
+  "owner_ref": "github:pull/3952#discussion_r3775839929",
+  "migration": {
+    "tier": "source",
+    "target_version": 33,
+    "slot": 33,
+    "path": "033_detected_raw_provider.sql",
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/033_detected_raw_provider.sql",
+    "sql_sha256": "8823c3de62eed0e93c7254222e24577442e146d6a76f8f1c810316b521ae6a81",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:detected-raw-provider",
+      "owner_ref": "github:pull/3952#discussion_r3775839929",
+      "schema_objects": ["column:raw_sessions.detected_provider"],
+      "runtime_consumers": [
+        {
+          "consumer_id": "raw-state-update",
+          "production_ref": "polylogue.storage.sqlite.raw_state_update:compile_raw_state_update",
+          "behavior_proof_ref": "proof:source-v33:preserve-acquisition-origin",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "revision-provider-resolution",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.revision_governance:raw_revision_descriptor",
+          "behavior_proof_ref": "proof:source-v33:reuse-detected-provider",
+          "roles": ["read"]
+        },
+        {
+          "consumer_id": "raw-record-hydration",
+          "production_ref": "polylogue.storage.sqlite.queries.mappers_archive:_row_to_raw_session",
+          "behavior_proof_ref": "proof:source-v33:split-acquisition-and-parser-identity",
+          "roles": ["read"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:source-v33:preserve-acquisition-origin",
+        "proof:source-v33:reuse-detected-provider",
+        "proof:source-v33:split-acquisition-and-parser-identity"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    },
+    {
+      "rider_id": "rider:raw-container-coordinate",
+      "owner_ref": "github:pull/3952#discussion_r3779604611",
+      "schema_objects": ["table:raw_container_coordinates"],
+      "runtime_consumers": [
+        {
+          "consumer_id": "live-zip-coordinate-write",
+          "production_ref": "polylogue.sources.live.batch:_record_zip_container_coordinate",
+          "behavior_proof_ref": "proof:source-v33:persist-zip-coordinate",
+          "roles": ["write"]
+        },
+        {
+          "consumer_id": "raw-blob-source-replacement",
+          "production_ref": "polylogue.storage.blob_integrity:replace_raw_backed_blob_reference_debt_from_source",
+          "behavior_proof_ref": "proof:source-v33:reuse-zip-coordinate-after-replacement",
+          "roles": ["read", "write"]
+        }
+      ],
+      "behavior_proof_refs": [
+        "proof:source-v33:persist-zip-coordinate",
+        "proof:source-v33:reuse-zip-coordinate-after-replacement"
+      ],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:source-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "7d5d512f5932e6d0a49bdaea48d7a54052116c180d0f24c4dfcbc84244f3381a"
+}

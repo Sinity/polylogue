@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage import raw_retention as raw_retention_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_retention import (
@@ -30,11 +31,27 @@ from polylogue.storage.raw_retention import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_cursor
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    upsert_raw_artifact,
+    write_source_raw_session,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
     return store.write_from_bytes(payload)
+
+
+def test_unavailable_frontier_preserves_empty_healthy_source_reason() -> None:
+    """A healthy source check must not inherit an unrelated pointer failure."""
+    projection = raw_retention_mod.unknown_raw_frontier_integrity_projection(
+        "active index pointer unavailable",
+        missing_source_raw_status="healthy",
+        missing_source_raw_reason="",
+    )
+
+    assert projection.missing_source_raw_reason == ""
 
 
 def _ensure_archive_source_schema(conn: sqlite3.Connection) -> None:
@@ -417,6 +434,85 @@ def test_real_revision_receipt_authorizes_only_current_byte_head_supersession(tm
     )
 
 
+def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: Path) -> None:
+    """Terminal authority scans only the caller's source-path scope."""
+
+    source_db = tmp_path / "source.db"
+    source_path = tmp_path / "terminal.json"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-terminal', 'unknown-export', 'terminal', ?, 0, ?, 1, 3)
+            """,
+            (str(source_path), bytes.fromhex("03" * 32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('artifact-terminal', 'raw-terminal', 'unknown-export', ?, 0,
+                      'workflow_journal', 'unknown', 'terminal', 0, 0, 0, 3, 3)
+            """,
+            (str(source_path),),
+        )
+        conn.commit()
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        terminal_paths = raw_retention_mod._terminal_artifact_paths(conn, {str(source_path)})
+
+    raw_reads = [" ".join(statement.split()).upper() for statement in statements if "RAW_SESSIONS" in statement.upper()]
+    assert raw_reads
+    # Every raw_sessions scan in this cursor-scoped route must carry the
+    # source-path scope.  Assert the SQL shape, not one historical rendering.
+    assert all("SOURCE_PATH IN (" in statement for statement in raw_reads)
+    assert terminal_paths == {str(source_path)}
+
+
+def test_terminal_retention_batches_make_progress_when_failure_kinds_fill_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_db = tmp_path / "source.db"
+    source_paths = {tmp_path / "first.json", tmp_path / "second.json"}
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        for index, source_path in enumerate(sorted(source_paths)):
+            raw_id = f"raw-{index}"
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, 'unknown-export', ?, ?, 0, ?, 1, ?)
+                """,
+                (raw_id, raw_id, str(source_path), bytes([index + 1]) * 32, index + 1),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                    support_status, classification_reason, parse_as_session, schema_eligible,
+                    malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'unknown-export', ?, 0,
+                          'workflow_journal', 'unknown', 'terminal', 0, 0, 0, ?, ?)
+                """,
+                (f"artifact-{index}", raw_id, str(source_path), index + 1, index + 1),
+            )
+        monkeypatch.setattr(raw_retention_mod, "RAW_FAILURE_EVIDENCE_KINDS", frozenset(f"raw-{i}" for i in range(250)))
+        monkeypatch.setattr(
+            raw_retention_mod,
+            "_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS",
+            frozenset(f"terminal-{i}" for i in range(250)),
+        )
+
+        assert raw_retention_mod._terminal_artifact_paths(conn, {str(path) for path in source_paths}) == {
+            str(path) for path in source_paths
+        }
+
+
 def test_semantic_head_receipt_authorizes_no_raw_deletion(tmp_path: Path) -> None:
     old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -554,6 +650,430 @@ def test_active_raw_protection_rejects_empty_index_over_retained_source(tmp_path
 
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+
+
+def test_current_terminal_artifact_authorizes_historical_raws_but_not_later_session_raw(tmp_path: Path) -> None:
+    """Terminal artifact authority follows the current coordinate receipt, not every old raw.
+
+    ``raw_artifacts`` intentionally keeps one current carrier per ordinary
+    source coordinate while ``raw_sessions`` keeps every acquisition. A
+    current workflow/fact artifact may therefore retain historical raw rows
+    without a duplicate artifact receipt. Conversely, a later unclassified
+    raw must remove that exemption rather than allowing the old terminal
+    receipt to mask a cursor-authority gap.
+    """
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "journal.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-journal-old",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="unknown",
+            source_revision="old",
+            generation=0,
+            blob_size=10,
+            authority="quarantined",
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-journal-current",
+            source_path=source_path,
+            acquired_at_ms=2,
+            kind="unknown",
+            source_revision="current",
+            generation=0,
+            blob_size=20,
+            authority="quarantined",
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index,
+                artifact_kind, support_status, classification_reason,
+                parse_as_session, schema_eligible, malformed_jsonl_lines,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, 'claude-code-session', ?, 0, 'workflow_journal',
+                      'unknown', 'typed terminal artifact', 0, 0, 0, 1, 2)
+            """,
+            ("artifact-journal", "raw-journal-current", str(source_path)),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=20)
+
+    with sqlite3.connect(source_db) as conn:
+        authority = active_raw_retention_authority(conn, index_db_path=index_db)
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({"raw-journal-old", "raw-journal-current"}),
+        eligible_raw_ids=frozenset(),
+    )
+    assert snapshot.cursor_ahead_status == "healthy"
+    assert snapshot.cursor_authority_gap_count == 0
+
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-conversational-later",
+            source_path=source_path,
+            acquired_at_ms=3,
+            kind="full",
+            source_revision="later",
+            generation=0,
+            blob_size=30,
+            authority="asserted",
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=30)
+
+    with sqlite3.connect(source_db) as conn:
+        with pytest.raises(RawRetentionSafetyError, match="index has no raw authority"):
+            active_raw_retention_authority(conn, index_db_path=index_db)
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_terminal_coordinate_uses_latest_repeated_raw_observation(tmp_path: Path) -> None:
+    """A→B→A ranks A's reacquisition receipt, not its first raw-row time."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    source_path = tmp_path / "repeated.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        raw_a = write_source_raw_session(
+            conn,
+            origin="claude-code-session",
+            source_path=str(source_path),
+            source_index=0,
+            payload=b"session A",
+            acquired_at_ms=1,
+        )
+        raw_b = write_source_raw_session(
+            conn,
+            origin="claude-code-session",
+            source_path=str(source_path),
+            source_index=0,
+            payload=b"terminal B",
+            acquired_at_ms=2,
+        )
+        upsert_raw_artifact(
+            conn,
+            raw_b,
+            ArchiveSourceArtifact(
+                artifact_id="artifact-repeated-coordinate",
+                origin="claude-code-session",
+                source_path=str(source_path),
+                source_index=0,
+                artifact_kind="workflow_journal",
+                classification_reason="terminal B",
+                parse_as_session=False,
+                first_observed_at_ms=2,
+                last_observed_at_ms=2,
+            ),
+        )
+        assert (
+            write_source_raw_session(
+                conn,
+                origin="claude-code-session",
+                source_path=str(source_path),
+                source_index=0,
+                payload=b"session A",
+                acquired_at_ms=3,
+            )
+            == raw_a
+        )
+        assert conn.execute("SELECT acquired_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_a,)).fetchone() == (1,)
+        assert conn.execute(
+            "SELECT acquired_at_ms FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?", (raw_a,)
+        ).fetchone() == (3,)
+
+        assert raw_retention_mod._terminal_artifact_paths(conn, {str(source_path)}) == set()
+        with pytest.raises(RawRetentionSafetyError, match="index has no raw authority"):
+            active_raw_retention_authority(conn, index_db_path=index_db)
+
+
+def test_terminal_cursor_exemption_requires_every_source_coordinate(tmp_path: Path) -> None:
+    """A terminal sibling cannot hide an unheaded conversational coordinate."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "bundle.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ("raw-terminal", "claude-code-session", "terminal", str(source_path), 0, bytes(32), 1, 1),
+                ("raw-session", "claude-code-session", "session", str(source_path), 1, bytes([1]) * 32, 1, 2),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, 'workflow_journal', 'unknown', 'terminal coordinate', 0, 0, 0, 1, 1)
+            """,
+            ("artifact-terminal", "raw-terminal", "claude-code-session", str(source_path), 0),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=2)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_resolution_carrier_cannot_authorize_cursor_without_accepted_head(tmp_path: Path) -> None:
+    """A superseded deferred-CAS receipt is resolution evidence, not terminal authority."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "replaced-attempt.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("raw-resolution", "claude-code-session", "resolution", str(source_path), 0, bytes(32), 1, 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 'unknown', 'deferred attempt replaced', 0, 0, 0, 1, 1)
+            """,
+            (
+                "artifact-resolution",
+                "raw-resolution",
+                "claude-code-session",
+                str(source_path),
+                0,
+                "terminal_superseded_deferred_cas_frontier",
+            ),
+        )
+        conn.commit()
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=1)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_successful_reparse_revokes_stale_terminal_failure_cursor_authority(tmp_path: Path) -> None:
+    """A successful production parse state makes an old terminal carrier historical."""
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "reparsed-export.json"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, parse_error,
+                validated_at_ms, validation_status, validation_error,
+                validation_drift_count, validation_mode
+            ) VALUES (?, ?, ?, ?, 0, ?, 1, 1, ?, 1, 'failed', ?, 3, 'strict')
+            """,
+            (
+                "raw-terminal-reparsed",
+                "codex-session",
+                "reparsed",
+                str(source_path),
+                bytes(32),
+                "ValueError: unsupported export shape",
+                "schema validation failed",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index,
+                artifact_kind, support_status, classification_reason,
+                parse_as_session, schema_eligible, malformed_jsonl_lines,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0, 0, 0, 1, 1)
+            """,
+            (
+                "artifact-terminal-reparsed",
+                "raw-terminal-reparsed",
+                "codex-session",
+                str(source_path),
+                "terminal_unsupported_shape",
+                "unsupported_parseable",
+                "terminal parse failure",
+            ),
+        )
+        conn.commit()
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=source_path, byte_offset=1)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        before = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            ops_db_path=tmp_path / "ops.db",
+        )
+    assert before.cursor_ahead_status == "healthy"
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_succeeded("raw-terminal-reparsed", provider=Provider.CODEX)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        state = conn.execute(
+            """
+            SELECT parsed_at_ms, parse_error, validated_at_ms, validation_status,
+                   validation_error, validation_drift_count, validation_mode
+            FROM raw_sessions
+            WHERE raw_id = ?
+            """,
+            ("raw-terminal-reparsed",),
+        ).fetchone()
+        stale_artifact = conn.execute(
+            "SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?",
+            ("raw-terminal-reparsed",),
+        ).fetchone()
+        after = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            ops_db_path=tmp_path / "ops.db",
+        )
+
+    assert state is not None
+    parsed_at_ms, parse_error, validated_at_ms, validation_status, validation_error, drift_count, mode = state
+    assert parsed_at_ms is not None
+    assert (parse_error, validated_at_ms, validation_status, validation_error, drift_count, mode) == (
+        None,
+        1,
+        "failed",
+        "schema validation failed",
+        3,
+        "strict",
+    )
+    assert stale_artifact == ("terminal_unsupported_shape",)
+    assert after.cursor_ahead_status == "unknown"
+    assert after.cursor_authority_gap_count == 1
+    assert after.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_successful_reparse_revokes_stale_ordinary_artifact_cursor_authority(tmp_path: Path) -> None:
+    """An ordinary sidecar classification cannot stay terminal after a later parse."""
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "reparsed-sidecar.json"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, 0, ?, 1, 1, 20)
+            """,
+            (
+                "raw-ordinary-reparsed",
+                "codex-session",
+                "ordinary-reparsed",
+                str(source_path),
+                bytes(32),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, source_index,
+                artifact_kind, support_status, classification_reason,
+                parse_as_session, schema_eligible, malformed_jsonl_lines,
+                first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, 0, 'session_metadata', 'supported_parseable', ?, 0, 0, 0, 10, 10)
+            """,
+            (
+                "artifact-ordinary-reparsed",
+                "raw-ordinary-reparsed",
+                "codex-session",
+                str(source_path),
+                "ordinary sidecar classification before parser support",
+            ),
+        )
+        conn.commit()
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=source_path, byte_offset=1)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        snapshot = raw_frontier_integrity_snapshot(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            ops_db_path=tmp_path / "ops.db",
+        )
+
+    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 1
+    assert snapshot.cursor_authority_gap_samples[0].state == "source_raws_without_accepted_head"
+
+
+def test_terminal_artifact_retention_batches_source_paths_below_sqlite_limit(tmp_path: Path) -> None:
+    """Terminal evidence remains protectable when more than one SQL batch is needed."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        for number in range(501):
+            source_path = tmp_path / f"terminal-{number}.jsonl"
+            raw_id = f"raw-terminal-{number}"
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, 'claude-code-session', ?, ?, 0, ?, 1, ?)
+                """,
+                (raw_id, raw_id, str(source_path), number.to_bytes(32, "big"), number),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                    support_status, classification_reason, parse_as_session, schema_eligible,
+                    malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'claude-code-session', ?, 0, 'workflow_journal',
+                          'unknown', 'terminal', 0, 0, 0, ?, ?)
+                """,
+                (f"artifact-{number}", raw_id, str(source_path), number, number),
+            )
+        conn.commit()
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 500)
+        authority = active_raw_retention_authority(conn, index_db_path=index_db)
+
+    assert authority.protected_raw_ids == frozenset(f"raw-terminal-{number}" for number in range(501))
+    assert authority.eligible_raw_ids == frozenset()
 
 
 def test_active_raw_protection_rejects_incomplete_predecessor_chain(tmp_path: Path) -> None:
@@ -1768,6 +2288,38 @@ def test_raw_frontier_integrity_semantic_membership_cursor_is_intentionally_not_
     assert snapshot.overall_status == "healthy"
 
 
+def test_raw_frontier_integrity_reports_missing_semantic_head_source_raw(tmp_path: Path) -> None:
+    """Semantic membership skips byte validation only after finding its source raw."""
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-missing-semantic",
+        accepted_raw_id="raw-missing-semantic",
+        accepted_revision="semantic-revision",
+        generation=0,
+        frontier=1,
+        append_end_offset=None,
+    )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'semantic'")
+        conn.commit()
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+    with sqlite3.connect(source_db) as conn:
+        snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
+
+    assert snapshot.broken_head_status == "violated"
+    assert snapshot.broken_head_count == 1
+    assert snapshot.broken_head_checked_count == 1
+    assert snapshot.broken_head_samples[0].accepted_raw_id == "raw-missing-semantic"
+    assert "missing from source tier" in snapshot.broken_head_samples[0].reason
+
+
 def test_raw_frontier_integrity_snapshot_cursor_at_exact_accepted_frontier_is_healthy(tmp_path: Path) -> None:
     """A cursor sitting exactly at the accepted frontier (not past it) is healthy.
 
@@ -1952,6 +2504,92 @@ def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_u
     assert projection.available is False
 
 
+def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path: Path) -> None:
+    """A promoted index, rather than a stale conventional shadow, governs frontier health."""
+
+    source_db = tmp_path / "source.db"
+    shadow_index = tmp_path / "index.db"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(shadow_index, ArchiveTier.INDEX)
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-active",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-1",
+            generation=1,
+            blob_size=10,
+        )
+        conn.commit()
+    _seed_index_authority(
+        active_index,
+        session_raw_id="raw-active",
+        accepted_raw_id="raw-active",
+        accepted_revision="revision-1",
+        generation=1,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10)
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0},
+    )
+
+    assert projection.broken_head_status == "healthy"
+    assert projection.cursor_ahead_status == "healthy"
+    assert projection.overall_status == "healthy"
+    assert projection.available is True
+
+
+def test_raw_frontier_integrity_projection_reports_malformed_active_pointer(tmp_path: Path) -> None:
+    """Status reads degrade to an unavailable projection when a pointer is invalid."""
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {"available": True, "lost_source_evidence_count": 0},
+    )
+
+    assert projection.available is False
+    assert projection.overall_status == "unknown"
+    assert "active index pointer" in projection.broken_head_reason
+
+
+def test_raw_frontier_projection_retains_known_missing_source_violation_when_pointer_is_invalid(tmp_path: Path) -> None:
+    """An unavailable active pointer cannot erase known source-tier loss."""
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db\n", encoding="utf-8")
+
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        {
+            "available": True,
+            "lost_source_evidence_count": 1,
+            "lost_source_evidence_samples": [{"session_id": "missing-session"}],
+        },
+    )
+
+    assert projection.available is False
+    assert projection.overall_status == "violated"
+    assert projection.missing_source_raw_status == "violated"
+    assert projection.missing_source_raw_count == 1
+    assert projection.missing_source_raw_samples == ({"session_id": "missing-session"},)
+
+
 @pytest.mark.parametrize("index_kind", ["missing", "malformed"])
 def test_raw_frontier_integrity_snapshot_unavailable_index_tier_is_unknown_never_healthy(
     tmp_path: Path,
@@ -2005,6 +2643,22 @@ def test_raw_frontier_integrity_snapshot_unavailable_source_tier_is_unknown_neve
     assert snapshot.cursor_ahead_status == "unknown"
     assert snapshot.overall_status == "unknown"
     assert "unreadable" in snapshot.broken_head_reason
+
+
+def test_active_retention_translates_missing_source_authority_table(tmp_path: Path) -> None:
+    """Cleanup callers receive the typed fail-closed exception contract."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE placeholder (id INTEGER PRIMARY KEY)")
+        conn.commit()
+
+    with (
+        sqlite3.connect(source_db) as conn,
+        pytest.raises(RawRetentionSafetyError, match="raw retention authority is unreadable"),
+    ):
+        active_raw_retention_authority(conn, index_db_path=index_db)
 
 
 def test_raw_frontier_integrity_snapshot_partial_source_schema_is_unknown_not_violated(tmp_path: Path) -> None:

@@ -262,6 +262,112 @@ class TestLoadSamplesFromDb:
         assert len(result) == 1
         assert result[0]["uuid"] == "conv-1"
 
+    def test_sampling_keeps_successfully_reparsed_historical_validation_failure(self, tmp_path: Path) -> None:
+        db = _archive_index_db(tmp_path)
+        _insert_raw_session(
+            db_path=db,
+            origin="claude-ai-export",
+            source_path="/tmp/sessions.json",
+            raw_content=json.dumps(
+                [
+                    {
+                        "uuid": "reparsed",
+                        "name": "Retained",
+                        "summary": "successful reparse",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:05:00Z",
+                        "account": {"uuid": "acct-reparsed"},
+                        "chat_messages": [],
+                    }
+                ]
+            ).encode(),
+        )
+        with sqlite3.connect(db.with_name("source.db")) as conn:
+            cursor = conn.execute(
+                "UPDATE raw_sessions SET parsed_at_ms = 1, validated_at_ms = 0, validation_status = 'failed'"
+            )
+            assert cursor.rowcount == 1
+            conn.commit()
+
+        result = load_samples_from_db("claude-ai", db_path=db)
+
+        assert len(result) == 1
+        assert result[0]["uuid"] == "reparsed"
+
+    def test_sampling_quarantines_validation_failure_newer_than_parse(self, tmp_path: Path) -> None:
+        db = _archive_index_db(tmp_path)
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="claude-ai-export",
+            source_path="/tmp/rejected.json",
+            raw_content=b'{"uuid":"rejected","chat_messages":[]}',
+        )
+        with sqlite3.connect(db.with_name("source.db")) as conn:
+            cursor = conn.execute(
+                "UPDATE raw_sessions SET parsed_at_ms = 1, validated_at_ms = 2, validation_status = 'failed' WHERE raw_id = ?",
+                (raw_id,),
+            )
+            assert cursor.rowcount == 1
+            conn.commit()
+        outcomes: list[dict[str, object]] = []
+
+        result = list(
+            iter_schema_units(
+                "claude-ai",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert result == []
+        assert outcomes == [
+            {
+                "raw_id": raw_id,
+                "status": "quarantined",
+                "artifact_kind": None,
+                "source_path": "/tmp/rejected.json",
+                "reason": "source_validation_failed",
+            }
+        ]
+
+    def test_sampling_records_equal_raw_transition_timestamps_as_indeterminate(self, tmp_path: Path) -> None:
+        db = _archive_index_db(tmp_path)
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="claude-ai-export",
+            source_path="/tmp/equal-time.json",
+            raw_content=b'{"uuid":"equal-time","chat_messages":[]}',
+        )
+        with sqlite3.connect(db.with_name("source.db")) as conn:
+            cursor = conn.execute(
+                "UPDATE raw_sessions SET parsed_at_ms = 1, validated_at_ms = 1, validation_status = 'failed' WHERE raw_id = ?",
+                (raw_id,),
+            )
+            assert cursor.rowcount == 1
+            conn.commit()
+        outcomes: list[dict[str, object]] = []
+
+        result = list(
+            iter_schema_units(
+                "claude-ai",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert result == []
+        assert outcomes == [
+            {
+                "raw_id": raw_id,
+                "status": "quarantined",
+                "artifact_kind": None,
+                "source_path": "/tmp/equal-time.json",
+                "reason": "source_validation_parse_order_ambiguous",
+            }
+        ]
+
     def test_record_provider_sampling_streams_without_full_envelope(
         self,
         tmp_path: Path,

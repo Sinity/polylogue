@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import selectors
 import sqlite3
 import subprocess
 import sys
@@ -31,6 +33,7 @@ def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> Li
 
 
 @pytest.mark.parametrize("route", ["append", "full"])
+@pytest.mark.uses_real_clock("requires a bounded subprocess exit deadline while the injected writer remains blocked")
 def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
     script = textwrap.dedent(
         f"""
@@ -61,8 +64,13 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                 cursor=cursor,
                 write_coordinator=coordinator,
             )
+            # This proof targets the writer bridge's process-exit semantics.
+            # Disable the independent prefetch lane so an executor worker
+            # cannot determine the subprocess lifetime instead.
+            watcher._parse_stage.shutdown()
+            watcher._parse_stage = None
+            watcher._batch_processor._parse_stage = None
             started = threading.Event()
-
             def stuck(*args, **kwargs):
                 started.set()
                 threading.Event().wait()
@@ -95,21 +103,39 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await caller
             assert await coordinator.shutdown(timeout=0.01) is False
+            # The injected writer remains blocked through interpreter
+            # termination. A non-daemon bridge thread would pin this
+            # subprocess after the loop closes.
+            watcher.stop()
+            print("ready-for-interpreter-exit", flush=True)
 
         asyncio.run(main())
         """
     )
 
-    completed = subprocess.run(
+    process = subprocess.Popen(
         [sys.executable, "-c", script],
         cwd=Path(__file__).parents[3],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=6.0,
-        check=False,
     )
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        assert selector.select(timeout=30.0), "writer subprocess did not reach its exit boundary"
+        assert process.stdout.readline().strip() == "ready-for-interpreter-exit"
+        stdout, stderr = process.communicate(timeout=2.0)
+    except BaseException:
+        process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=2.0)
+        raise
+    finally:
+        selector.close()
 
-    assert completed.returncode == 0, completed.stderr
+    assert process.returncode == 0, stdout + stderr
 
 
 @pytest.mark.asyncio

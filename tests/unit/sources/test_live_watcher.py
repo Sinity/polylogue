@@ -357,6 +357,7 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     projection = reconcile._projection_for(tmp_path)
     sample = projection.cursor_ahead_samples[0]
     shadow_before = shadow_index.read_bytes()
+    active_before = active_index.read_bytes()
     with scoped_cursor_authority_authorization(
         source_path_digest=cursor_authority_path_digest(source_path),
         cursor_byte_offset=sample.cursor_byte_offset,
@@ -368,6 +369,11 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
 
     assert metrics.full_file_count == 1
     assert shadow_index.read_bytes() == shadow_before
+    assert active_index.read_bytes() != active_before
+    with sqlite3.connect(shadow_index) as conn:
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+    assert watcher._reconcile_archived_cursor(source_path, stat=source_path.stat()) is True
     watcher.stop()
 
 
@@ -1568,6 +1574,88 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
         writer.close()
 
 
+def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_roots(tmp_path: Path) -> None:
+    """The watch backend wakes only for source suffixes or real directories."""
+
+    root = tmp_path / "codex-state"
+    root.mkdir()
+    unmatched = root / "history.log"
+    unmatched.write_text("noise", encoding="utf-8")
+    child_directory = root / "new-session"
+    child_directory.mkdir()
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="codex-state", root=root, suffixes=(".jsonl",)),),
+    )
+
+    assert watcher._watch_filter(object(), str(unmatched)) is False
+    assert watcher._watch_filter(object(), str(child_directory)) is True
+
+
+def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive add recovery applies the same resolved containment as live events."""
+
+    root = tmp_path / "watched"
+    added = root / "new-directory"
+    added.mkdir(parents=True)
+    internal = added / "inside.jsonl"
+    internal.write_text("{}\n", encoding="utf-8")
+    external = tmp_path / "outside.jsonl"
+    external.write_text("secret\n", encoding="utf-8")
+    escaping = added / "escaping.jsonl"
+    escaping.symlink_to(external)
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="codex", root=root, suffixes=(".jsonl",)),),
+    )
+    enqueued: list[Path] = []
+    monkeypatch.setattr(watcher, "_enqueue", enqueued.append)
+
+    assert watcher._canonical_watch_path(escaping) is None
+    watcher._enqueue_added_directory(added)
+
+    assert enqueued == [internal]
+
+
+def test_added_directory_scan_retains_a_deeper_root_under_outer_ignore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An outer ignore rule cannot hide a configured nested source root."""
+
+    outer = tmp_path / "codex-state"
+    ignored = outer / "runtime"
+    inner = ignored / "sessions"
+    inner.mkdir(parents=True)
+    session = inner / "session.jsonl"
+    session.write_text("{}\n", encoding="utf-8")
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        outer,
+        sources=(
+            WatchSource(
+                name="codex-state",
+                root=outer,
+                suffixes=(".sqlite",),
+                ignored_dir_names=frozenset({"runtime"}),
+            ),
+            WatchSource(name="codex", root=inner, suffixes=(".jsonl",)),
+        ),
+    )
+    enqueued: list[Path] = []
+    monkeypatch.setattr(watcher, "_enqueue", enqueued.append)
+
+    assert watcher._watch_filter(object(), str(ignored)) is True
+    watcher._enqueue_added_directory(ignored)
+
+    assert enqueued == [session]
+
+
 def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path) -> None:
     root = tmp_path / "hermes"
     root.mkdir()
@@ -2176,6 +2264,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
         }
         assert summary.call_count == 1
         assert summary.journal_result_count == 1
+        assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
 
@@ -2294,6 +2383,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         await processor.ingest_files([source_path], emit_event=False)
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
+        assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
 
@@ -2433,6 +2523,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
         second = await processor.ingest_files([source_path], emit_event=False)
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
+        assert processor.require_cursor_authority() is None
 
         record = cursor.get_record(source_path)
         assert record is not None
@@ -2862,7 +2953,7 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
 
 
 @pytest.mark.asyncio
-async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_storage(
+async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_before_raw_storage(
     workspace_env: dict[str, Path],
 ) -> None:
     root = workspace_env["data_root"] / "projects"
@@ -2875,7 +2966,7 @@ async def test_live_full_ingest_excludes_invalid_jsonl_sidecars_before_raw_stora
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="projects", root=root),),
+        (WatchSource(name="claude-code", root=root),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -3233,6 +3324,56 @@ def test_catch_up_processes_pre_existing_files(tmp_path: Path) -> None:
     assert parse_sources.await_count == 1
 
 
+def test_catch_up_acquires_source_without_reading_unavailable_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real catch-up planner and batch route remain source-only while derived-only."""
+
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False):
+        pass
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "degraded-catch-up.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"degraded-catch-up"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    pointer = tmp_path / ".index-active-pointer"
+    pointer.write_bytes(b"\xff")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "cursor.sqlite", ops_db_path=tmp_path / "ops.db"),
+    )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
+    monkeypatch.setattr(parse_stage, "warm", lambda *_args: (_ for _ in ()).throw(AssertionError("must not prewarm")))
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        asyncio.run(watcher._catch_up([root]))
+    finally:
+        clear_degraded()
+        parse_stage.shutdown()
+
+    assert pointer.read_bytes() == b"\xff"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        row = conn.execute(
+            """SELECT parsed_at_ms, parse_error FROM raw_sessions
+               WHERE source_path = ? ORDER BY acquired_at_ms DESC, raw_id DESC LIMIT 1""",
+            (str(path),),
+        ).fetchone()
+    assert row == (None, None)
+
+
 def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -3478,6 +3619,135 @@ def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
     assert src.accepts(tmp_path / "README.md") is False
 
 
+def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
+    """A nested explicit root owns its files regardless of source order."""
+    root = tmp_path / "codex"
+    sessions = root / "sessions"
+    sessions.mkdir(parents=True)
+    path = sessions / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (
+            WatchSource(name="codex-state", root=root, suffixes=(".sqlite",)),
+            WatchSource(name="codex", root=sessions, suffixes=(".jsonl",)),
+        ),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
+
+    try:
+        assert watcher._source_accepts(path) is True
+        assert watcher._source_name_for(path) == "codex"
+        assert watcher._batch_processor._source_name_for(path) == "codex"
+        directory_source = watcher._source_for_directory(sessions)
+        assert directory_source is not None
+        assert directory_source.name == "codex"
+        candidates = watcher._scan_catch_up_candidates([root, sessions])
+        assert [(candidate.path, candidate.source_name) for candidate in candidates] == [(path, "codex")]
+    finally:
+        parse_stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_hook_spool_directory_retry_retries_sqlite_operational_error(tmp_path: Path) -> None:
+    """A transient spool-drain lock follows the normal delayed retry path."""
+    shard = tmp_path / "pending" / "2026-08-13"
+    shard.mkdir(parents=True)
+    (shard / "event.json").write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
+    calls = 0
+
+    async def drain() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        (shard / "event.json").unlink()
+
+    watcher._drain_hook_spool = drain  # type: ignore[method-assign]
+    try:
+        await watcher._retry_hook_spool_directory_until_populated(shard)
+    finally:
+        parse_stage.shutdown()
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_hook_spool_directory_retry_rejects_non_lock_sqlite_error(tmp_path: Path) -> None:
+    """A corrupt or incompatible spool database is not misclassified as contention."""
+
+    shard = tmp_path / "pending" / "2026-08-13"
+    shard.mkdir(parents=True)
+    (shard / "event.json").write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
+
+    async def drain() -> None:
+        raise sqlite3.OperationalError("no such table: hook_events")
+
+    watcher._drain_hook_spool = drain  # type: ignore[method-assign]
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            await watcher._retry_hook_spool_directory_until_populated(shard)
+    finally:
+        parse_stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_hook_spool_retry_observes_and_logs_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed detached retry is retrieved and reported instead of becoming an unhandled task."""
+
+    shard = tmp_path / "pending" / "2026-08-13"
+    shard.mkdir(parents=True)
+    (shard / "event.json").write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    parse_stage = watcher._parse_stage
+    assert parse_stage is not None
+    recorded_logger = MagicMock()
+    monkeypatch.setattr(live_watcher, "logger", recorded_logger)
+
+    async def drain() -> None:
+        raise sqlite3.OperationalError("database disk image is malformed")
+
+    watcher._drain_hook_spool = drain  # type: ignore[method-assign]
+    try:
+        watcher._schedule_hook_spool_directory_retry(shard)
+        task = watcher._hook_spool_directory_retry_tasks[shard.resolve()]
+        with contextlib.suppress(sqlite3.OperationalError):
+            await task
+        if watcher._hook_spool_directory_retry_tasks:
+            await asyncio.sleep(0)
+    finally:
+        parse_stage.shutdown()
+
+    assert watcher._hook_spool_directory_retry_tasks == {}
+    recorded_logger.exception.assert_called_once()
+    assert recorded_logger.exception.call_args.args == (
+        "live.watcher: hook spool directory retry failed for %s",
+        shard.resolve(),
+    )
+
+
 def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     """#1683: inbox must accept .zip (GDPR exports), .json, .jsonl, .ndjson."""
     from polylogue.sources.live.watcher import default_sources
@@ -3645,6 +3915,81 @@ def test_periodic_catch_up_drains_missed_browser_capture_event(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        assert parse_sources.await_count >= 1
+
+    asyncio.run(_drive())
+
+
+def test_periodic_catch_up_adds_configured_nested_root_created_after_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A late nested root remains recoverable after its add event is missed."""
+    outer = tmp_path / "sources"
+    nested = outer / "late-codex"
+    outer.mkdir()
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        outer,
+        sources=(
+            WatchSource(name="outer", root=outer, suffixes=(".jsonl",)),
+            WatchSource(name="nested", root=nested, suffixes=(".jsonl",)),
+        ),
+    )
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.02)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(watcher._periodic_catch_up([outer]))
+        await asyncio.sleep(0.03)
+        nested.mkdir()
+        (nested / "missed.jsonl").write_text('{"type":"session_meta","payload":{"id":"late"}}\n')
+        for _ in range(60):
+            if parse_sources.await_count >= 1:
+                break
+            await asyncio.sleep(0.05)
+        watcher.stop()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert parse_sources.await_count >= 1
+
+    asyncio.run(_drive())
+
+
+def test_watcher_run_periodically_rediscovers_nested_root_created_after_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The daemon route refreshes configured roots after its initial watch snapshot."""
+    outer = tmp_path / "sources"
+    nested = outer / "late-codex"
+    outer.mkdir()
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        outer,
+        sources=(
+            WatchSource(name="outer", root=outer, suffixes=(".jsonl",)),
+            WatchSource(name="nested", root=nested, suffixes=(".jsonl",)),
+        ),
+    )
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.02)
+
+    async def wait_for_stop(_roots: list[Path]) -> None:
+        await watcher._stop.wait()
+
+    monkeypatch.setattr(watcher, "_watch_changes", wait_for_stop)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(watcher.run())
+        await asyncio.wait_for(watcher.catch_up_complete.wait(), timeout=1.0)
+        nested.mkdir()
+        (nested / "missed.jsonl").write_text('{"type":"session_meta","payload":{"id":"late"}}\n')
+        for _ in range(60):
+            if parse_sources.await_count >= 1:
+                break
+            await asyncio.sleep(0.05)
+        watcher.stop()
+        await asyncio.wait_for(task, timeout=1.0)
         assert parse_sources.await_count >= 1
 
     asyncio.run(_drive())

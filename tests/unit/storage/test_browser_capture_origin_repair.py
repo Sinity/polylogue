@@ -606,6 +606,27 @@ def test_unified_frontier_applies_browser_origin_without_incident_receipt(tmp_pa
     assert not (tmp_path / "recovery").exists()
 
 
+def test_unified_frontier_strategy_uses_the_selected_active_generation(tmp_path: Path) -> None:
+    raw_id = _seed_mismatched_browser_head(tmp_path)
+    active_dir = tmp_path / "generations" / "active"
+    active_dir.mkdir(parents=True)
+    active_index = active_dir / "index.db"
+    (tmp_path / "index.db").rename(active_index)
+    (tmp_path / "index.db").write_bytes(b"shadow index is not authoritative")
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+
+    census = inspect_raw_authority_frontier(config)
+    selected = next(item for item in census.items if item.raw_id == raw_id)
+
+    assert selected.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert selected.actuator is RawAuthorityActuator.COPY_FORWARD_ORIGIN
+
+
 def test_unified_frontier_restores_equivalent_canonical_browser_head(tmp_path: Path) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)

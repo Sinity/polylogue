@@ -105,6 +105,15 @@ def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
     assert not (root / ".maintenance-state").exists()
 
 
+def test_source_tier_acquisition_does_not_resolve_active_index(tmp_path: Path) -> None:
+    """Acquire-only writes remain available while the derived pointer is unreadable."""
+    initialize_active_archive_root(tmp_path)
+    (tmp_path / ".index-active-pointer").write_bytes(b"\xff")
+
+    with ArchiveStore.open_source_tier_acquisition(tmp_path) as archive:
+        assert archive.source_db_path == tmp_path / "source.db"
+
+
 def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_path: Path) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,

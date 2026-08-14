@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import hashlib
 import inspect
 import os
 import sqlite3
 import stat
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -664,7 +666,7 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
         return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
 
     monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", fake_repair)
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path: None)
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
     with pytest.raises(RuntimeError, match="source-selection gate blocked"):
@@ -1054,7 +1056,12 @@ def test_raw_materialization_closes_fts_on_cancellation(
     from polylogue.daemon import cli as daemon_cli
 
     archive = tmp_path / "archive"
-    closed: list[Path] = []
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    active_index.touch()
+    archive.mkdir()
+    (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    closed: list[tuple[Path, Path]] = []
 
     class FakeRestoreResult:
         restored_count = 0
@@ -1070,12 +1077,189 @@ def test_raw_materialization_closes_fts_on_cancellation(
         lambda *_args, **_kwargs: FakeRestoreResult(),
     )
     monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", cancel_repair)
-    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", closed.append)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_close_raw_materialization_fts",
+        lambda index_db, *, ops_db_path: closed.append((index_db, ops_db_path)),
+    )
 
     with pytest.raises(asyncio.CancelledError):
         daemon_cli._drain_raw_materialization_once()
 
-    assert closed == [archive / "index.db"]
+    assert closed == [(active_index, archive / "ops.db")]
+
+
+@pytest.mark.parametrize("whale", [False, True])
+def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    whale: bool,
+) -> None:
+    """FTS closure must finish under the same promotion-excluding lease as replay."""
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    active_index.touch()
+    archive.mkdir()
+    (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    lease_events: list[str] = []
+    held = 0
+
+    @contextlib.contextmanager
+    def fake_generation_lease(_config: Config) -> Any:
+        nonlocal held
+        held += 1
+        lease_events.append("acquire")
+        try:
+            yield active_index
+        finally:
+            lease_events.append("close")
+            held -= 1
+
+    class FakeRestoreResult:
+        restored_count = 0
+
+    def restore_debt(*_args: object, **_kwargs: object) -> FakeRestoreResult:
+        assert held == 1
+        lease_events.append("restore")
+        return FakeRestoreResult()
+
+    result = SimpleNamespace(
+        success=True,
+        repaired_count=1,
+        detail="repaired",
+        metrics={"raw_materialization_remaining_candidate_count": 0},
+    )
+    closed: list[tuple[Path, Path]] = []
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        restore_debt,
+    )
+
+    def recover_frontier(_config: Config) -> tuple[()]:
+        assert held == 1
+        lease_events.append("recover")
+        return ()
+
+    def resolve_stale(_config: Config) -> int:
+        assert held == 1
+        lease_events.append("stale")
+        return 0
+
+    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", recover_frontier)
+    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
+    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr("polylogue.product.raw_authority.materialization_generation_lease", fake_generation_lease)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
+
+    def converge_frontier(_config: Config, **_kwargs: object) -> int:
+        assert held == 1
+        lease_events.append("frontier")
+        return 0
+
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", converge_frontier)
+
+    def close_fts(index_db: Path, *, ops_db_path: Path) -> None:
+        assert held == 1
+        closed.append((index_db, ops_db_path))
+        lease_events.append("fts")
+
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", close_fts)
+
+    if whale:
+        assert (
+            daemon_cli._run_raw_materialization_whale_pass_once(raw_artifact_id="raw-whale", max_payload_bytes=123)
+            is result
+        )
+    else:
+        assert daemon_cli._drain_raw_materialization_once().repaired_sessions == 1
+
+    assert closed == [(active_index, archive / "ops.db")]
+    expected_events = (
+        ["acquire", "fts", "close"] if whale else ["acquire", "restore", "recover", "stale", "fts", "frontier", "close"]
+    )
+    assert lease_events == expected_events
+    assert held == 0
+
+
+@pytest.mark.parametrize("whale", [False, True])
+def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    whale: bool,
+) -> None:
+    """Both daemon routes must emit the repair contract when pinning is refused."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+    from polylogue.storage.repair import RepairResult
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    emitted: list[RepairResult] = []
+
+    def refuse_outer_lease(_lease: ActiveWriterLease) -> None:
+        raise RebuildLeaseUnavailableError("offline rebuild is active")
+
+    def reject_restore(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("blob-reference restoration requires an acquired generation pin")
+
+    def reject_repair(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("repair must not run when the outer generation pin is refused")
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        reject_restore,
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.recover_interrupted_frontier",
+        lambda _config: pytest.fail("frontier recovery requires an acquired generation pin"),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.auto_resolve_stale_plan_blockers",
+        lambda _config: pytest.fail("stale-plan recovery requires an acquired generation pin"),
+    )
+    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", reject_repair)
+    monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)
+    monkeypatch.setattr(
+        daemon_cli,
+        "_converge_raw_authority_frontier",
+        lambda _config, **_kwargs: pytest.fail("frontier convergence requires an acquired generation pin"),
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_close_raw_materialization_fts",
+        lambda *_args, **_kwargs: pytest.fail("FTS closure requires an acquired generation pin"),
+    )
+
+    if whale:
+        returned = daemon_cli._run_raw_materialization_whale_pass_once(
+            raw_artifact_id="raw-whale",
+            max_payload_bytes=123,
+        )
+        assert returned is emitted[0]
+    else:
+        counts = daemon_cli._drain_raw_materialization_once()
+        assert counts.repaired_sessions == 0
+
+    assert len(emitted) == 1
+    result = emitted[0]
+    assert isinstance(result, RepairResult)
+    assert result.name == "raw_materialization"
+    assert result.success is False
+    assert result.repaired_count == 0
+    assert result.detail == (
+        "Skipped raw materialization while offline index rebuild owns archive: offline rebuild is active"
+    )
 
 
 def test_raw_materialization_fts_failure_records_durable_debt(
@@ -1084,13 +1268,16 @@ def test_raw_materialization_fts_failure_records_durable_debt(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    index_db = tmp_path / "index.db"
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
     index_db.touch()
     calls: list[tuple[str, str, str, str | None]] = []
 
     class FakeCursor:
-        def __init__(self, db: Path) -> None:
+        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
             assert db == index_db
+            assert ops_db_path == ops_db
 
         def clear_convergence_debt(self, **_kwargs: object) -> None:
             raise AssertionError("failed FTS repair must not clear debt")
@@ -1109,7 +1296,7 @@ def test_raw_materialization_fts_failure_records_durable_debt(
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: False)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
-    daemon_cli._close_raw_materialization_fts(index_db)
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
     assert calls == [
         (
@@ -1127,13 +1314,16 @@ def test_raw_materialization_fts_success_clears_prior_debt(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    index_db = tmp_path / "index.db"
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
     index_db.touch()
     cleared: list[dict[str, object]] = []
 
     class FakeCursor:
-        def __init__(self, db: Path) -> None:
+        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
             assert db == index_db
+            assert ops_db_path == ops_db
 
         def clear_convergence_debt(self, **kwargs: object) -> None:
             cleared.append(kwargs)
@@ -1145,7 +1335,7 @@ def test_raw_materialization_fts_success_clears_prior_debt(
     monkeypatch.setattr("polylogue.daemon.convergence_stages.repair_fts_surface", lambda *_args: True)
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
-    daemon_cli._close_raw_materialization_fts(index_db)
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
     assert cleared == [{"subject_type": "fts_surface", "subject_id": "messages_fts", "stage": "fts"}]
 
@@ -1156,13 +1346,16 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    index_db = tmp_path / "index.db"
+    index_db = tmp_path / "generations" / "active" / "index.db"
+    ops_db = tmp_path / "ops.db"
+    index_db.parent.mkdir(parents=True)
     index_db.touch()
     errors: list[str | None] = []
 
     class FakeCursor:
-        def __init__(self, db: Path) -> None:
+        def __init__(self, db: Path, *, ops_db_path: Path) -> None:
             assert db == index_db
+            assert ops_db_path == ops_db
 
         def record_convergence_debt(self, *, error: str | None = None, **_kwargs: object) -> None:
             errors.append(error)
@@ -1174,7 +1367,7 @@ def test_raw_materialization_fts_exception_becomes_explicit_debt(
     )
     monkeypatch.setattr("polylogue.sources.live.cursor.CursorStore", FakeCursor)
 
-    daemon_cli._close_raw_materialization_fts(index_db)
+    daemon_cli._close_raw_materialization_fts(index_db, ops_db_path=ops_db)
 
     assert errors == ["FTS repair failed after raw materialization: RuntimeError: injected FTS failure"]
 
@@ -2230,7 +2423,10 @@ def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: 
     )
 
 
-def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
+def test_run_live_watcher_stops_on_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     from polylogue.daemon import cli as daemon_cli
 
     class FakePolylogue:
@@ -2241,6 +2437,12 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
             return None
 
     stopped: list[bool] = []
+    shutdown_timeouts: list[float] = []
+
+    class Coordinator:
+        async def shutdown(self, *, timeout: float) -> bool:
+            shutdown_timeouts.append(timeout)
+            return True
 
     class FakeWatcher:
         stopped = False
@@ -2256,14 +2458,165 @@ def test_run_live_watcher_stops_on_keyboard_interrupt() -> None:
             stopped.append(self.stopped)
 
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
 
     with (
         patch.object(daemon_cli, "Polylogue", FakePolylogue),
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "daemon_write_coordinator", return_value=Coordinator()),
     ):
         asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
 
     assert stopped == [True]
+    assert shutdown_timeouts == [5.0]
+
+
+def test_run_live_watcher_refuses_before_entry_while_rebuild_lease_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
+
+    class ForbiddenPolylogue:
+        def __init__(self) -> None:
+            raise AssertionError("standalone watcher entered archive before rebuild refusal")
+
+    monkeypatch.setattr(daemon_cli, "Polylogue", ForbiddenPolylogue)
+    with (
+        RebuildLease(archive_root_path),
+        pytest.raises(
+            RebuildLeaseUnavailableError,
+            match="offline index rebuild owns archive",
+        ),
+    ):
+        asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
+
+
+def test_live_watcher_cancellation_during_drain_retains_rebuild_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    class BlockingCoordinator:
+        def __init__(self) -> None:
+            self.shutdown_started = asyncio.Event()
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            self.shutdown_started.set()
+            await asyncio.Event().wait()
+            return False
+
+    coordinator = BlockingCoordinator()
+
+    async def exercise() -> None:
+        with (
+            patch.object(daemon_cli, "Polylogue", FakePolylogue),
+            patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+            patch.object(daemon_cli, "daemon_write_coordinator", return_value=coordinator),
+        ):
+            task = asyncio.create_task(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
+            await coordinator.shutdown_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(exercise())
+
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_root_path):
+            pass
+
+
+def test_live_watcher_stop_failure_still_retains_undrained_rebuild_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A watcher stop exception cannot bypass coordinator drain authority."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product import raw_authority
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FailingStopWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            raise RuntimeError("watcher stop failed")
+
+    class UndrainedCoordinator:
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            return False
+
+    captured: list[raw_authority.ArchiveWriterRebuildExclusion] = []
+    real_exclusion = raw_authority.archive_writer_rebuild_exclusion
+
+    @contextlib.contextmanager
+    def capture_exclusion(root: Path) -> Iterator[raw_authority.ArchiveWriterRebuildExclusion]:
+        with real_exclusion(root) as exclusion:
+            captured.append(exclusion)
+            yield exclusion
+
+    monkeypatch.setattr(raw_authority, "archive_writer_rebuild_exclusion", capture_exclusion)
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FailingStopWatcher),
+        patch.object(daemon_cli, "daemon_write_coordinator", return_value=UndrainedCoordinator()),
+        pytest.raises(RuntimeError, match="watcher stop failed"),
+    ):
+        asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
+
+    assert len(captured) == 1
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_root_path):
+            pass
+
+    captured[0].release()
+    with RebuildLease(archive_root_path):
+        pass
 
 
 def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
@@ -3365,6 +3718,65 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 
+def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An offline rebuild must refuse the daemon before durable startup writes."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+
+    source_db = archive_root_path / "source.db"
+    publisher = ArchiveBlobPublisher(source_db, BlobStore(archive_root_path / "blob").root)
+    publisher.write_from_bytes(b"startup-rebuild-refusal")
+    publisher.flush()
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+
+    def archive_digest() -> str:
+        digest = hashlib.sha256()
+        for path in sorted(archive_root_path.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(archive_root_path).as_posix().encode()
+            payload = path.read_bytes()
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(payload).to_bytes(8, "big"))
+            digest.update(payload)
+        return digest.hexdigest()
+
+    with RebuildLease(archive_root_path):
+        before = archive_digest()
+        with pytest.raises(
+            RebuildLeaseUnavailableError,
+            match="offline index rebuild owns archive",
+        ):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    debounce_s=1.0,
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                )
+            )
+        assert archive_digest() == before
+
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+    assert not (archive_root_path / "daemon.pid").exists()
+
+
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -3409,6 +3821,83 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
         )
 
     assert stopped == [True]
+
+
+def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cleanup errors before coordinator shutdown must never reopen rebuilds."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product import raw_authority
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    async def noop() -> None:
+        return None
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            return None
+
+    captured: list[raw_authority.ArchiveWriterRebuildExclusion] = []
+    archive_roots: list[Path] = []
+    real_exclusion = raw_authority.archive_writer_rebuild_exclusion
+
+    @contextlib.contextmanager
+    def capture_exclusion(archive_root: Path) -> Iterator[raw_authority.ArchiveWriterRebuildExclusion]:
+        archive_roots.append(archive_root)
+        with real_exclusion(archive_root) as exclusion:
+            captured.append(exclusion)
+            yield exclusion
+
+    def fail_shutdown_marker() -> None:
+        raise RuntimeError("shutdown marker failed")
+
+    monkeypatch.setattr(raw_authority, "archive_writer_rebuild_exclusion", capture_exclusion)
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
+        patch.object(daemon_cli, "_reconcile_blob_publications", noop),
+        patch.object(
+            daemon_cli,
+            "_mark_interrupted_live_ingest_attempts_on_shutdown",
+            fail_shutdown_marker,
+        ),
+        pytest.raises(RuntimeError, match="shutdown marker failed"),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert len(captured) == 1
+    assert len(archive_roots) == 1
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_roots[0]):
+            pass
+
+    captured[0].release()
+    with RebuildLease(archive_roots[0]):
+        pass
 
 
 def test_lifecycle_heartbeat_runs_without_index_stats(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3681,6 +4170,28 @@ def test_pidfile_remains_locked_until_admitted_writers_are_drained(
     assert daemon_cli._release_pidfile_after_writer_drain(retained_fd, writer_drained=True) is None
     successor_fd = daemon_cli._acquire_pidfile(pidfile)
     os.close(successor_fd)
+
+
+def test_rebuild_exclusion_survives_an_undrained_writer_timeout(tmp_path: Path) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    with archive_writer_rebuild_exclusion(archive_root_path) as exclusion:
+        daemon_cli._retain_rebuild_exclusion_for_undrained_writer(
+            exclusion,
+            writer_drained=False,
+        )
+
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_root_path):
+            pass
+
+    exclusion.release()
+    with RebuildLease(archive_root_path):
+        pass
 
 
 def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path: Path) -> None:

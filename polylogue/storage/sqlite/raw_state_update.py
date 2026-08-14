@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.sources import origin_from_provider
 from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
 from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 
@@ -18,9 +17,27 @@ def compile_raw_state_update(
     """Compile one typed mutation for either SQLite connection adapter."""
     set_clauses: list[str] = []
     params: list[object] = []
+    parsed_at_ms = _timestamp_ms(state.parsed_at) if isinstance(state.parsed_at, str) else None
+    validation_transition = state.validation_status is not UNSET or state.validation_error is not UNSET
     if state.parsed_at is not UNSET:
-        set_clauses.append("parsed_at_ms = ?")
-        params.append(_timestamp_ms(state.parsed_at) if isinstance(state.parsed_at, str) else None)
+        if parsed_at_ms is None:
+            if isinstance(state.parsed_at, str):
+                raise ValueError(f"parsed_at must be a valid timestamp, got {state.parsed_at!r}")
+            set_clauses.append("parsed_at_ms = ?")
+            params.append(None)
+        elif validation_transition:
+            # SQLite evaluates every SET expression from the old row.  A
+            # combined update records validation first and parse second, so
+            # advance parse by two from either old transition (and one from
+            # this validation clock) to preserve that authority ordering even
+            # when wall time is equal or moves backward.
+            set_clauses.append(
+                "parsed_at_ms = MAX(?, ? + 1, COALESCE(parsed_at_ms + 2, ?), COALESCE(validated_at_ms + 2, ?))"
+            )
+            params.extend((parsed_at_ms, now_ms, parsed_at_ms, parsed_at_ms))
+        else:
+            set_clauses.append("parsed_at_ms = MAX(?, COALESCE(parsed_at_ms + 1, ?), COALESCE(validated_at_ms + 1, ?))")
+            params.extend((parsed_at_ms, parsed_at_ms, parsed_at_ms))
     if state.parse_error is not UNSET:
         set_clauses.append("parse_error = ?")
         params.append(state.parse_error[:2000] if isinstance(state.parse_error, str) else state.parse_error)
@@ -47,15 +64,15 @@ def compile_raw_state_update(
             provider = state.payload_provider
         elif isinstance(state.validation_provider, Provider):
             provider = state.validation_provider
-        set_clauses.append("origin = COALESCE(?, origin)")
-        params.append(origin_from_provider(provider).value if provider is not None else None)
+        set_clauses.append("detected_provider = COALESCE(?, detected_provider)")
+        params.append(provider.value if provider is not None else None)
     if state.detection_warnings is not UNSET:
         warnings = state.detection_warnings
         set_clauses.append("detection_warnings_json = ?")
         params.append(json.dumps([warnings[:2000]]) if isinstance(warnings, str) and warnings else "[]")
-    if state.validation_status is not UNSET or state.validation_error is not UNSET:
-        set_clauses.append("validated_at_ms = ?")
-        params.append(now_ms)
+    if validation_transition:
+        set_clauses.append("validated_at_ms = MAX(?, COALESCE(validated_at_ms + 1, ?), COALESCE(parsed_at_ms + 1, ?))")
+        params.extend((now_ms, now_ms, now_ms))
     return tuple(set_clauses), tuple(params)
 
 

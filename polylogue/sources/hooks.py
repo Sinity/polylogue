@@ -297,8 +297,16 @@ def drain_hook_event_spool(
     acknowledged = 0
     failed = 0
     try:
-        initialize_active_archive_root(archive_root)
-        store = ArchiveStore.open_existing(archive_root, read_only=False)
+        # Import after this module has initialized: ``sources.live.__init__``
+        # exposes the watcher, and the watcher imports this spool module.
+        from polylogue.sources.live.archive_open import (
+            _open_archive_for_live_write,
+            _source_tier_acquisition_required,
+        )
+
+        if not _source_tier_acquisition_required():
+            initialize_active_archive_root(archive_root)
+        store = _open_archive_for_live_write(archive_root)
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("hook spool drain could not open the archive; all events remain pending", exc_info=True)
         return HookSpoolDrainResult(

@@ -22,6 +22,7 @@ from . import decoders as _decoders
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
+from .dispatch import is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
@@ -35,7 +36,7 @@ _decoders.logger = logger
 
 def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
     """Return whether decoded JSON content outranks a non-session path rule."""
-    if path.suffix.lower() == ".jsonl":
+    if is_jsonl_source_path(str(path)):
         return jsonl_session_artifact(path, provider=provider) is not None
 
     if path.suffix.lower() != ".json":

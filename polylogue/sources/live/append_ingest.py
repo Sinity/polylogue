@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail, jsonl_session_artifact
@@ -20,10 +20,11 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
-from polylogue.sources.live.archive_open import _open_archive_for_live_write
+from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm
@@ -38,6 +39,70 @@ def _add_timing(timings: dict[str, float], name: str, started_at: float) -> None
 class _AppendIngestOwner(Protocol):
     _cursor: CursorStore
     _polylogue: Any
+
+
+def _bind_append_revision(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+    session_id: str,
+    plan: _AppendPlan,
+) -> tuple[str, RawRevisionAuthority]:
+    """Persist an APPEND envelope from the append plan's durable identity."""
+    if plan.cursor_fingerprint is None:
+        raise ValueError("append payload did not prove cursor identity")
+    logical_source_key = f"{provider.value}:{session_id}"
+    parent = archive.raw_append_revision_parent(
+        logical_source_key,
+        plan.start_offset,
+        plan.cursor_fingerprint,
+    )
+    predecessor_raw_id: str | None = None
+    baseline_raw_id: str | None = None
+    generation = archive.raw_full_revision_generation(logical_source_key)
+    authority = RawRevisionAuthority.QUARANTINED
+    if parent is not None:
+        predecessor_raw_id, baseline_raw_id, generation = parent
+        authority = RawRevisionAuthority.BYTE_PROVEN
+    archive.bind_raw_revision(
+        raw_id,
+        RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.APPEND,
+            source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
+            acquisition_generation=generation,
+            predecessor_source_revision=plan.cursor_fingerprint,
+            predecessor_raw_id=predecessor_raw_id,
+            baseline_raw_id=baseline_raw_id,
+            append_start_offset=plan.start_offset,
+            append_end_offset=plan.last_complete_newline,
+            authority=authority,
+        ),
+    )
+    return logical_source_key, authority
+
+
+def _write_append_raw_payload(
+    archive: Any,
+    *,
+    provider: Provider,
+    plan: _AppendPlan,
+    acquired_at_ms: int,
+) -> str:
+    """Capture literal append bytes with their migration-stable raw identity."""
+    return cast(
+        str,
+        archive.write_raw_payload(
+            provider=provider,
+            payload=plan.payload,
+            source_path=str(plan.path),
+            source_index=-1,
+            acquired_at_ms=acquired_at_ms,
+            native_id=plan.acquisition_native_id_hint,
+            post_parse=True,
+        ),
+    )
 
 
 def reset_transient_raw_parse_state(
@@ -72,9 +137,12 @@ def _ingest_append_plans_archive(
     archive_root: Path,
 ) -> _AppendResult:
     timings: dict[str, float] = {}
-    index_db = archive_root / "index.db"
     source_db = archive_root / "source.db"
-    if not index_db.exists() or not source_db.exists():
+    source_only = _source_tier_acquisition_required()
+    archive_missing = not source_db.exists()
+    if not source_only:
+        archive_missing = archive_missing or not resolve_active_index_path(archive_root).exists()
+    if archive_missing:
         t0 = time.perf_counter()
         initialize_active_archive_root(archive_root)
         _add_timing(timings, "append.archive_init", t0)
@@ -110,6 +178,30 @@ def _ingest_append_plans_archive(
                 session_artifact = None
                 try:
                     provider = Provider.from_string(plan.source_name)
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        if plan.native_id_hint is None:
+                            raise ValueError("source-only append has no durable session identity")
+                        t0 = time.perf_counter()
+                        raw_id = _write_append_raw_payload(
+                            archive,
+                            provider=provider,
+                            plan=plan,
+                            acquired_at_ms=acquired_at_ms,
+                        )
+                        _add_timing(timings, "append.source_raw_write", t0)
+                        _logical_source_key, authority = _bind_append_revision(
+                            archive,
+                            raw_id,
+                            provider=provider,
+                            session_id=plan.native_id_hint,
+                            plan=plan,
+                        )
+                        if authority is RawRevisionAuthority.QUARANTINED:
+                            deferred.append(plan)
+                        else:
+                            succeeded.append(plan)
+                        continue
                     path_artifact = classify_artifact_path(
                         str(plan.path),
                         provider=provider,
@@ -171,38 +263,13 @@ def _ingest_append_plans_archive(
                         succeeded.append(plan)
                         continue
                     t0 = time.perf_counter()
-                    raw_id = archive.write_raw_payload(
+                    raw_id = _write_append_raw_payload(
+                        archive,
                         provider=provider,
-                        payload=plan.payload,
-                        source_path=str(plan.path),
-                        source_index=-1,
+                        plan=plan,
                         acquired_at_ms=acquired_at_ms,
-                        # polylogue-u19l: persist the resolved provider
-                        # session identity as sidecar metadata instead of
-                        # splicing a synthetic session_meta record into the
-                        # hashed/stored payload (batch.py's
-                        # _append_payload_for_provider), so the stored blob
-                        # stays a literal slice of the live file.
-                        native_id=plan.native_id_hint,
-                        post_parse=True,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
-                    degraded = degraded_reason()
-                    if degraded is not None and degraded.derived_only:
-                        # polylogue-gbs02: the derived tier (index.db/
-                        # embeddings.db) is behind the running code, but
-                        # source.db just durably got this append range --
-                        # stop here, before parsing or touching the stale
-                        # derived tier. Treat as succeeded (not deferred):
-                        # the acquire itself genuinely completed, so the
-                        # cursor should advance normally rather than
-                        # re-reading the same bytes on every tick. The raw
-                        # row sits with parsed_at_ms=NULL exactly like any
-                        # other not-yet-materialized raw, and ordinary
-                        # convergence picks it up once the derived tier is
-                        # current again -- no special resolution needed.
-                        succeeded.append(plan)
-                        continue
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session
                     # identity over the bare filename stem. For Codex this is
@@ -251,33 +318,12 @@ def _ingest_append_plans_archive(
                         failed.append(plan)
                         continue
                     session = sessions[0]
-                    logical_source_key = f"{provider.value}:{session.provider_session_id}"
-                    parent = archive.raw_append_revision_parent(
-                        logical_source_key,
-                        plan.start_offset,
-                        plan.cursor_fingerprint,
-                    )
-                    predecessor_raw_id: str | None = None
-                    baseline_raw_id: str | None = None
-                    generation = archive.raw_full_revision_generation(logical_source_key)
-                    authority = RawRevisionAuthority.QUARANTINED
-                    if parent is not None:
-                        predecessor_raw_id, baseline_raw_id, generation = parent
-                        authority = RawRevisionAuthority.BYTE_PROVEN
-                    archive.bind_raw_revision(
+                    logical_source_key, authority = _bind_append_revision(
+                        archive,
                         raw_id,
-                        RawRevisionEnvelope(
-                            logical_source_key=logical_source_key,
-                            kind=RawRevisionKind.APPEND,
-                            source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
-                            acquisition_generation=generation,
-                            predecessor_source_revision=plan.cursor_fingerprint,
-                            predecessor_raw_id=predecessor_raw_id,
-                            baseline_raw_id=baseline_raw_id,
-                            append_start_offset=plan.start_offset,
-                            append_end_offset=plan.last_complete_newline,
-                            authority=authority,
-                        ),
+                        provider=provider,
+                        session_id=session.provider_session_id,
+                        plan=plan,
                     )
                     if authority is RawRevisionAuthority.QUARANTINED:
                         deferred.append(plan)

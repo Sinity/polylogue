@@ -14,6 +14,7 @@ import pytest
 from polylogue.archive import zip_admission
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_index
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage import blob_integrity
 from polylogue.storage.blob_gc import run_blob_gc_report
@@ -1019,6 +1020,111 @@ def test_blob_recovery_rejects_duplicate_container_member_before_open(
 
     assert payload is None
     assert reason == "ambiguous_container_member"
+
+
+def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_path: Path) -> None:
+    """ZIP coordinates survive one replacement and authorize the next recovery."""
+    initialize_active_archive_root(tmp_path)
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    zip_source = tmp_path / "duplicate-v2.zip"
+    member = "sessions/duplicate.json"
+    old_selected_payloads = (b'{"member":"old-first-one"}', b'{"member":"old-second-one"}')
+    current_member_payloads = (
+        b'[{"member":"current-first-zero"},{"member":"current-first-one"}]',
+        b'[{"member":"current-second-zero"},{"member":"current-second-one"}]',
+    )
+    current_selected_payloads = (
+        b'{"member":"current-first-one"}',
+        b'{"member":"current-second-one"}',
+    )
+    split_index = 1
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr(member, current_member_payloads[0])
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            archive.writestr(member, current_member_payloads[1])
+
+    source_path = f"{zip_source}:{member}"
+    old_hashes = tuple(hashlib.sha256(payload).hexdigest() for payload in old_selected_payloads)
+    current_hashes = tuple(hashlib.sha256(payload).hexdigest() for payload in current_selected_payloads)
+    coordinates = tuple(
+        zip_member_source_index(entry_ordinal=ordinal, split_index=split_index)
+        for ordinal in range(len(current_member_payloads))
+    )
+    raw_ids = tuple(
+        zip_member_raw_id(
+            source_path=source_path,
+            entry_ordinal=ordinal,
+            split_index=split_index,
+            blob_hash=old_hashes[ordinal],
+        )
+        for ordinal in range(len(current_member_payloads))
+    )
+    with sqlite3.connect(source_db) as conn:
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, file_mtime_ms
+            ) VALUES (?, 'codex-session', NULL, ?, ?, ?, ?, 1, 1)
+            """,
+            [
+                (raw_id, source_path, source_index, bytes.fromhex(blob_hash), len(payload))
+                for raw_id, source_index, blob_hash, payload in zip(
+                    raw_ids, coordinates, old_hashes, old_selected_payloads, strict=True
+                )
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, 1)
+            """,
+            [
+                (bytes.fromhex(blob_hash), raw_id, source_path, len(payload))
+                for raw_id, blob_hash, payload in zip(raw_ids, old_hashes, old_selected_payloads, strict=True)
+            ],
+        )
+
+    first = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "duplicate-v2-first-replacement.jsonl",
+    )
+
+    assert first.replaced_rows == 2
+    assert first.written_blobs == 2
+    assert all(store.exists(blob_hash) for blob_hash in current_hashes)
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute(
+            "SELECT raw_id, lower(hex(blob_hash)), source_index FROM raw_sessions ORDER BY source_index"
+        ).fetchall() == list(zip(raw_ids, current_hashes, coordinates, strict=True))
+        assert conn.execute(
+            "SELECT raw_id, coordinate_format, entry_ordinal, split_index "
+            "FROM raw_container_coordinates ORDER BY entry_ordinal"
+        ).fetchall() == [
+            (raw_ids[0], "zip-v2", 0, split_index),
+            (raw_ids[1], "zip-v2", 1, split_index),
+        ]
+
+    for blob_hash in current_hashes:
+        store.blob_path(blob_hash).unlink()
+
+    second = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "duplicate-v2-second-replacement.jsonl",
+    )
+
+    assert second.replaced_rows == 2
+    assert second.written_blobs == 2
+    assert tuple(store.read_all(blob_hash) for blob_hash in current_hashes) == current_selected_payloads
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute(
+            "SELECT raw_id, lower(hex(blob_hash)), source_index FROM raw_sessions ORDER BY source_index"
+        ).fetchall() == list(zip(raw_ids, current_hashes, coordinates, strict=True))
 
 
 def test_blob_recovery_rejects_oversized_container_member_before_open(

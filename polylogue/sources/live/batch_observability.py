@@ -17,6 +17,7 @@ from polylogue.core.metrics import (
     read_peak_rss_children_mb,
     read_peak_rss_self_mb,
 )
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 
 def record_attempt_progress(
@@ -126,7 +127,7 @@ def session_ids_for_source_path(path: Path, *, archive_root: Path | None = None)
 
 
 def _schema_archive_session_ids_for_source_path(archive_root: Path, path: Path) -> tuple[str, ...]:
-    index_db = archive_root / "index.db"
+    index_db = resolve_active_index_path(archive_root)
     source_db = archive_root / "source.db"
     if not index_db.exists() or not source_db.exists():
         return ()

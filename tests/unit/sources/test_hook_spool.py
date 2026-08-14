@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from polylogue.sources.hooks import (
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 @pytest.mark.parametrize(
@@ -267,6 +269,197 @@ async def test_live_watcher_observes_a_spool_created_after_startup(
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
 
+@pytest.mark.asyncio
+async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An added hook shard drains immediately without waiting for catch-up."""
+
+    spool_root = tmp_path / "hooks"
+    pending = pending_hook_spool_dir(spool_root)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=None)),
+        (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+
+    async def emit_added_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
+        assert roots == (pending,)
+        event_path = enqueue_hook_event(
+            event_id="directory-notification",
+            provider="codex",
+            event_type="SessionStart",
+            session_id="session-1",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"cwd": "/workspace"},
+            root=spool_root,
+        )
+        yield {(Change.added, str(event_path.parent))}
+
+    monkeypatch.setattr(watchfiles, "awatch", emit_added_shard)
+
+    await watcher._watch_changes([pending])
+    watcher.stop()
+
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob("directory-notification.json")) != []
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
+
+
+@pytest.mark.uses_real_clock("exercises production retry polling against a delayed atomic hook publish")
+@pytest.mark.asyncio
+async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late first envelope drains without its own child-file notification."""
+
+    spool_root = tmp_path / "hooks"
+    pending = pending_hook_spool_dir(spool_root)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=None)),
+        (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+    monkeypatch.setattr("polylogue.sources.hooks._day_shard", lambda: "2026-08-12")
+    shard = pending / "2026-08-12"
+    publish_task: asyncio.Task[None] | None = None
+
+    async def publish_after_fixed_grace() -> None:
+        # The old one-shot 50 ms re-drain has already completed by the time
+        # this producer publishes.  The retry must keep watching this shard.
+        await asyncio.sleep(0.10)
+        enqueue_hook_event(
+            event_id="published-after-directory-event",
+            provider="codex",
+            event_type="SessionStart",
+            session_id="session-2",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"cwd": "/workspace"},
+            root=spool_root,
+        )
+
+    async def emit_empty_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
+        nonlocal publish_task
+        assert roots == (pending,)
+        shard.mkdir(parents=True)
+        publish_task = asyncio.create_task(publish_after_fixed_grace())
+        yield {(Change.added, str(shard))}
+
+    monkeypatch.setattr(watchfiles, "awatch", emit_empty_shard)
+
+    await watcher._watch_changes([pending])
+    assert publish_task is not None
+    await publish_task
+    retry_task = watcher._hook_spool_directory_retry_tasks[shard.resolve()]
+    await asyncio.wait_for(retry_task, timeout=1.0)
+
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")) != []
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-2",)
+
+
+@pytest.mark.asyncio
+async def test_hook_shard_retry_replacement_remains_tracked_until_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old done callback cannot untrack its replacement retry task."""
+
+    class ControlledTask:
+        def __init__(self) -> None:
+            self._done = False
+            self._cancelled = False
+            self.callbacks: list[Callable[[ControlledTask], None]] = []
+
+        def done(self) -> bool:
+            return self._done
+
+        def cancel(self) -> None:
+            self._cancelled = True
+
+        def cancelled(self) -> bool:
+            return self._cancelled
+
+        def result(self) -> None:
+            return None
+
+        def add_done_callback(self, callback: Callable[[ControlledTask], None]) -> None:
+            self.callbacks.append(callback)
+
+        def finish(self) -> None:
+            self._done = True
+            for callback in self.callbacks:
+                callback(self)
+
+    created: list[ControlledTask] = []
+
+    def create_task(coro: Coroutine[Any, Any, None]) -> ControlledTask:
+        coro.close()
+        task = ControlledTask()
+        created.append(task)
+        return task
+
+    spool_root = tmp_path / "hooks"
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path / "archive", backend=None)),
+        (WatchSource(name="hooks", root=pending_hook_spool_dir(spool_root), suffixes=(".json",)),),
+        cursor=CursorStore(tmp_path / "archive" / "ops.db"),
+    )
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+    directory = pending_hook_spool_dir(spool_root) / "2026-08-13"
+
+    watcher._schedule_hook_spool_directory_retry(directory)
+    first = created[0]
+    first._done = True
+    watcher._schedule_hook_spool_directory_retry(directory)
+    replacement = created[1]
+    first.finish()
+
+    tracked_replacement = cast(object, watcher._hook_spool_directory_retry_tasks[directory.resolve()])
+    assert tracked_replacement is replacement
+    watcher.stop()
+    assert replacement.cancelled() is True
+
+
+@pytest.mark.uses_real_clock("exercises retry polling while a pending hook envelope remains unacknowledged")
+@pytest.mark.asyncio
+async def test_hook_shard_retry_waits_for_durable_acknowledgement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed drain keeps the directory retry alive until the envelope moves."""
+
+    directory = tmp_path / "hooks" / "pending" / "2026-08-12"
+    directory.mkdir(parents=True)
+    envelope = directory / "retry.json"
+    envelope.write_text("{}", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path / "archive", backend=None)),
+        (WatchSource(name="hooks", root=directory.parent, suffixes=(".json",)),),
+        cursor=CursorStore(tmp_path / "ops.db"),
+    )
+    drains = 0
+
+    async def drain_until_acknowledged() -> None:
+        nonlocal drains
+        drains += 1
+        if drains == 2:
+            envelope.unlink()
+
+    monkeypatch.setattr(watcher, "_drain_hook_spool", drain_until_acknowledged)
+
+    await watcher._retry_hook_spool_directory_until_populated(directory)
+
+    assert drains == 2
+    assert not envelope.exists()
+
+
 def test_hook_spool_retains_sqlite_failures_for_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -293,6 +486,44 @@ def test_hook_spool_retains_sqlite_failures_for_retry(
     assert result.acknowledged == 0
     assert result.failed == 1
     assert event_path.exists()
+
+
+def test_hook_spool_drain_remains_source_only_when_derived_generation_is_unavailable(tmp_path: Path) -> None:
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    archive_root = tmp_path / "archive"
+    spool_root = tmp_path / "hooks"
+    initialize_active_archive_root(archive_root)
+    pointer = archive_root / ".index-active-pointer"
+    pointer.write_bytes(b"\xff")
+    enqueue_hook_event(
+        event_id="derived-only-hook",
+        provider="codex",
+        event_type="PostToolUse",
+        session_id="session-1",
+        timestamp="2026-08-13T05:00:00Z",
+        payload={"tool_name": "exec"},
+        root=spool_root,
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="derived generation unavailable",
+            derived_only=True,
+        )
+    )
+    try:
+        result = drain_hook_event_spool(archive_root, root=spool_root)
+    finally:
+        clear_degraded()
+
+    assert result.acknowledged == 1
+    assert pointer.read_bytes() == b"\xff"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT hook_event_id FROM raw_hook_events WHERE hook_event_id = ?",
+            ("hook:derived-only-hook",),
+        ).fetchone() == ("hook:derived-only-hook",)
 
 
 @pytest.mark.parametrize(
@@ -551,8 +782,6 @@ def test_drain_opens_archive_once_per_pass_and_honors_limit(
 ) -> None:
     """One archive open per drain pass (never per record), bounded by limit,
     with remaining telling the caller to drain again."""
-    from types import SimpleNamespace
-
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     spool_root = tmp_path / "hooks"
@@ -568,17 +797,16 @@ def test_drain_opens_archive_once_per_pass_and_honors_limit(
         )
     archive_root = tmp_path / "archive"
     open_calls = 0
-    real_open = ArchiveStore.open_existing
+    from polylogue.sources.live import archive_open
 
-    def counting_open(root: Path, *, read_only: bool = True, read_timeout: float = 5.0) -> ArchiveStore:
+    real_open = archive_open._open_archive_for_live_write
+
+    def counting_open(root: Path) -> ArchiveStore:
         nonlocal open_calls
         open_calls += 1
-        return real_open(root, read_only=read_only, read_timeout=read_timeout)
+        return real_open(root)
 
-    monkeypatch.setattr(
-        "polylogue.sources.hooks.ArchiveStore",
-        SimpleNamespace(open_existing=counting_open),
-    )
+    monkeypatch.setattr(archive_open, "_open_archive_for_live_write", counting_open)
 
     first = drain_hook_event_spool(archive_root, root=spool_root, limit=2)
     assert first.acknowledged == 2

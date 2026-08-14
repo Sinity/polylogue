@@ -20,6 +20,7 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path, strong_path_classification
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -50,6 +51,11 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.raw_coordinates import (
+    zip_member_identity_coordinate,
+    zip_member_raw_id,
+    zip_member_source_index,
+)
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
@@ -65,18 +71,20 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
+    is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
-from polylogue.sources.live.archive_open import _open_archive_for_live_write
+from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
@@ -131,6 +139,7 @@ from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
+from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
@@ -143,7 +152,9 @@ from polylogue.sources.source_acquisition_components import (
     _DETECTION_PREFIX_SIZE,
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
+    stream_preserved_zip_entry_raw_data,
 )
+from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
@@ -156,11 +167,13 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ActiveByteRevisionChainError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
+    archive_tier_spec,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root as initialize_archive_root,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -269,82 +282,6 @@ def _hot_capture_prefix_is_proven(
     return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
 
 
-def _write_codex_thread_state_evidence(
-    archive: Any,
-    snapshot: codex_state.CodexStateSnapshot,
-    *,
-    source_path: str,
-    acquired_at_ms: int,
-) -> None:
-    """Attach ``threads``/``thread_spawn_edges`` evidence to EXISTING sessions.
-
-    polylogue-0jf4 acceptance criterion 3: threads.title and
-    thread_spawn_edges must reach the archive as typed evidence without ever
-    minting a session or session of their own -- the same hook-event
-    incident precedent as polylogue-31r1 (standalone hook-event ingestion
-    once inflated the archive from 18,391 to 83,286 sessions). Reuses
-    ``ArchiveStore.write_hook_event``/``raw_hook_events`` exactly as
-    ``sources/hooks.py`` does: a durable, session-scoped evidence row keyed
-    by ``session_native_id`` (here the Codex ``thread_id``), joined at read
-    time (``ArchiveStore.hook_event_summary_for_session``) rather than
-    materialized into ``index.db`` via a full session replace. No schema
-    change -- ``raw_hook_events.event_type`` is unconstrained TEXT.
-    """
-    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
-
-    for thread in snapshot.threads:
-        payload: dict[str, object] = {
-            "thread_id": thread.thread_id,
-            "title": thread.title,
-            "cwd": thread.cwd,
-            "source": thread.source,
-            "model": thread.model,
-            "agent_nickname": thread.agent_nickname,
-            "agent_role": thread.agent_role,
-            "archived": thread.archived,
-        }
-        encoded = json_dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        archive.write_hook_event(
-            provider=Provider.CODEX,
-            payload=encoded,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-title:{thread.thread_id}",
-                origin=Origin.CODEX_SESSION,
-                source_path=source_path,
-                event_type="codex_thread_title",
-                payload=payload,
-                observed_at_ms=thread.updated_at_ms or acquired_at_ms,
-                native_id=f"{thread.thread_id}:codex_thread_title",
-                session_native_id=thread.thread_id,
-            ),
-        )
-    for edge in snapshot.spawn_edges:
-        edge_payload: dict[str, object] = {
-            "parent_thread_id": edge.parent_thread_id,
-            "child_thread_id": edge.child_thread_id,
-            "status": edge.status,
-        }
-        encoded = json_dumps(edge_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        archive.write_hook_event(
-            provider=Provider.CODEX,
-            payload=encoded,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-spawn-edge:{edge.parent_thread_id}:{edge.child_thread_id}",
-                origin=Origin.CODEX_SESSION,
-                source_path=source_path,
-                event_type="codex_thread_spawn_edge",
-                payload=edge_payload,
-                observed_at_ms=acquired_at_ms,
-                native_id=f"{edge.parent_thread_id}:{edge.child_thread_id}:codex_thread_spawn_edge",
-                session_native_id=edge.parent_thread_id,
-            ),
-        )
-
-
 def _is_json_stream_decode_error(error: BaseException) -> bool:
     return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, JsonlDecodeError))
 
@@ -451,7 +388,7 @@ def _blob_jsonl_has_session_evidence(
     provider: Provider,
     source_path: str,
 ) -> bool:
-    if Path(source_path).suffix.lower() != ".jsonl":
+    if not is_jsonl_source_path(source_path):
         return False
     try:
         return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
@@ -459,10 +396,36 @@ def _blob_jsonl_has_session_evidence(
         return False
 
 
+def _record_zip_container_coordinate(
+    archive: Any,
+    record: RawSessionRecord,
+    *,
+    source_raw_id: str,
+    blob_hash: str,
+) -> None:
+    if record.source_index is None:
+        return
+    coordinate = zip_member_identity_coordinate(
+        raw_id=source_raw_id,
+        source_path=record.source_path,
+        source_index=record.source_index,
+        blob_hash=blob_hash,
+    )
+    if coordinate is None:
+        return
+    entry_ordinal, split_index = coordinate
+    archive.record_raw_container_coordinate(
+        source_raw_id,
+        coordinate_format="zip-v2",
+        entry_ordinal=entry_ordinal,
+        split_index=split_index,
+    )
+
+
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
     """Select and read eligible files for off-writer-hold pre-parse (polylogue-wf8a).
 
-    Deliberately narrow scope: only plain ``.jsonl`` provider-session files
+    Deliberately narrow scope: only JSONL/NDJSON provider-session files
     below ``_STREAMING_FULL_INGEST_BYTES`` are eligible -- exactly the branch
     at lines ~1377-1425 of ``_ingest_full_paths_sync`` that reads the whole
     payload into memory and later parses it via ``parse_payload``/
@@ -476,7 +439,7 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
     """
     candidates: list[LiveParseCandidate] = []
     for path in paths:
-        if path.suffix.lower() != ".jsonl":
+        if not is_jsonl_source_path(str(path)):
             continue
         try:
             stat = path.stat()
@@ -514,8 +477,7 @@ def _captured_jsonl_ends_at_record_boundary(
     blob_hash: str,
     blob_size: int,
 ) -> bool:
-    path = Path(source_path)
-    if not required or path.suffix.lower() not in {".jsonl", ".ndjson"}:
+    if not required or not is_jsonl_source_path(source_path):
         return True
     if blob_size <= 0:
         # A zero-byte capture has zero records -- none complete, none
@@ -639,6 +601,12 @@ class LiveBatchProcessor:
         exist. Once they do, the readiness proof is fail-closed and shared
         with raw convergence, recovery, and reindex.
         """
+        if _source_tier_acquisition_required():
+            # The derived tier is explicitly unavailable in this mode. Raw
+            # admission establishes source authority without consulting or
+            # mutating it; trying to resolve the active index pointer here
+            # would defeat the acquire-only route before it can run.
+            return None
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         if (
             not (archive_root / "source.db").is_file()
@@ -891,6 +859,13 @@ class LiveBatchProcessor:
             if authorization is not None and authorization.force_full_ingest:
                 full_paths.append(path)
                 continue
+            if _source_tier_acquisition_required():
+                # Append planning and replay both consult the active index to
+                # prove lineage. In acquire-only mode the derived tier is the
+                # unavailable component, so capture the complete source
+                # observation through the source-only full route instead.
+                full_paths.append(path)
+                continue
             if is_fully_degraded():
                 full_paths.append(path)
                 continue
@@ -1109,7 +1084,8 @@ class LiveBatchProcessor:
                     )
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
-                    self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
+                    if not _source_tier_acquisition_required():
+                        self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
@@ -1138,7 +1114,7 @@ class LiveBatchProcessor:
             stage_payload=summary_stage_payload,
         )
 
-        if succeeded_paths:
+        if succeeded_paths and not _source_tier_acquisition_required():
             await self._run_sync(
                 "watcher.live_ingest.raw_compaction",
                 self._compact_superseded_raw_snapshots,
@@ -1742,13 +1718,9 @@ class LiveBatchProcessor:
         return self._parser_fingerprint
 
     def _source_name_for(self, path: Path) -> str:
-        resolved = path.resolve()
-        for source in self._sources:
-            try:
-                if resolved.is_relative_to(source.root.resolve()):
-                    return str(source.name)
-            except OSError:
-                continue
+        source = deepest_source_for_path(path, self._sources)
+        if source is not None:
+            return str(source.name)
         return path.parent.name
 
     def _can_ingest_appends_directly(self) -> bool:
@@ -1765,7 +1737,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
-        if self._parse_stage is not None:
+        if self._parse_stage is not None and not _source_tier_acquisition_required():
             # polylogue-wf8a: pre-parse eligible candidates BEFORE ever
             # asking the write coordinator for the writer hold below --
             # identical sequencing guarantee to ``DaemonParseStage.warm``
@@ -1832,9 +1804,6 @@ class LiveBatchProcessor:
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = archive_root / "blob"
-        from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-        blob_store = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
         raw_records: list[RawSessionRecord] = []
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
@@ -1850,7 +1819,20 @@ class LiveBatchProcessor:
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         acquisition_capture_mode = fallback_provider
 
-        archive_bootstrapped = not self._archive_active(archive_root)
+        source_only = _source_tier_acquisition_required()
+        source_db = archive_root / "source.db"
+        if source_only and not source_db.is_file():
+            logger.error("source-only acquisition refused because the durable source tier is missing: %s", source_db)
+            return _FullIngestResult(
+                succeeded=[],
+                failed=list(paths),
+                source_payload_read_bytes=0,
+            )
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+        blob_store = ArchiveBlobPublisher(source_db, blob_root)
+        archive_active = self._archive_active(archive_root)
+        archive_bootstrapped = not archive_active and not source_only
         if archive_bootstrapped:
             initialize_archive_root(archive_root)
         archive_active = self._archive_active(archive_root)
@@ -1877,6 +1859,8 @@ class LiveBatchProcessor:
                 continue
             captured_file_observations[path] = _file_observation(stat)
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
+            path_artifact = classify_artifact_path(path, provider=fallback_provider)
+            strong_path_artifact = strong_path_classification(path, provider=fallback_provider)
             if heartbeat is not None:
                 heartbeat(
                     "full_file_scan",
@@ -1885,12 +1869,24 @@ class LiveBatchProcessor:
                 )
             if path.suffix.lower() == ".zip":
                 file_mtime = datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat()
-                zip_records, zip_bytes = self._extract_zip_member_records(
-                    path,
-                    blob_store=blob_store,
-                    fallback_provider=fallback_provider,
-                    file_mtime=file_mtime,
-                )
+                if source_only:
+                    source_only_zip = self._extract_source_only_zip_member_records(
+                        path,
+                        blob_store=blob_store,
+                        fallback_provider=fallback_provider,
+                        file_mtime=file_mtime,
+                    )
+                    if source_only_zip is None:
+                        failed.append(path)
+                        continue
+                    zip_records, zip_bytes = source_only_zip
+                else:
+                    zip_records, zip_bytes = self._extract_zip_member_records(
+                        path,
+                        blob_store=blob_store,
+                        fallback_provider=fallback_provider,
+                        file_mtime=file_mtime,
+                    )
                 if not zip_records:
                     self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
                     continue
@@ -1907,9 +1903,19 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            if hermes_state.looks_like_state_db_path(
-                path
-            ) or hermes_verification.looks_like_verification_evidence_db_path(path):
+            hermes_owned_sqlite_name = (
+                source_only
+                and fallback_provider is Provider.HERMES
+                and path.name in {"state.db", "verification_evidence.db"}
+            )
+            codex_owned_sqlite_name = (
+                source_only and fallback_provider is Provider.CODEX and path.name in _CODEX_STATE_DB_NAMES
+            )
+            if (
+                hermes_owned_sqlite_name
+                or hermes_state.looks_like_state_db_path(path)
+                or hermes_verification.looks_like_verification_evidence_db_path(path)
+            ):
                 provider = Provider.HERMES
                 source_name = provider.value
                 try:
@@ -1943,7 +1949,9 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif path.name in _CODEX_STATE_DB_NAMES and codex_state.is_in_scope_codex_sqlite_path(path):
+            elif codex_owned_sqlite_name or (
+                path.name in _CODEX_STATE_DB_NAMES and codex_state.is_in_scope_codex_sqlite_path(path)
+            ):
                 # polylogue-0jf4: acquire live Codex SQLite state the same
                 # way Hermes acquires its state.db -- a consistent
                 # backup/snapshot (never a raw read of a possibly-live-locked
@@ -1951,6 +1959,9 @@ class LiveBatchProcessor:
                 # gate keeps this cheap for the vast majority of ~/.codex
                 # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
                 # then re-confirms the table shape before trusting the name.
+                # Source-only acquisition intentionally skips that structural
+                # decode: a mid-write or future-schema state snapshot is still
+                # durable authority to replay once the derived tier returns.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -1994,6 +2005,73 @@ class LiveBatchProcessor:
                 # the bytes as a generic session artifact.
                 self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
                 continue
+            elif source_only:
+                # A derived-only outage must not turn durable acquisition into
+                # an ad hoc parse pass. Provider detection and session/artifact
+                # classification decode payload bytes, while this route has no
+                # derived tier to consume their result. Preserve the original
+                # bytes under the configured source identity and let the
+                # normal raw replay classify them once the index is available.
+                # Antigravity brain metadata is the one path whose parser also
+                # reads a mutable sibling artifact. Until the derived route can
+                # consume both contemporaneously, leave this observation
+                # pending instead of advancing a cursor backed by only half of
+                # its material.
+                if fallback_provider is Provider.ANTIGRAVITY and path.name.endswith(".metadata.json"):
+                    failed.append(path)
+                    continue
+                provider = fallback_provider
+                source_name = provider.value
+                try:
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
+                    raw_id, blob_size = blob_store.write_from_path(
+                        path,
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
+                    )
+                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
+            elif (
+                origin_artifact_rule is None
+                and not is_jsonl_source_path(str(path))
+                and path_artifact is not None
+                and not path_artifact.parse_as_session
+                and stat.st_size < _STREAMING_FULL_INGEST_BYTES
+                # An unknown JSON payload under the weak ``analysis/`` path
+                # heuristic must reach the generic JSON route. That route
+                # retains raw bytes and records a typed terminal outcome for
+                # malformed or empty input. Strong named sidecars such as
+                # ``sessions-index.json`` remain excluded before acquisition.
+                and not (
+                    fallback_provider is Provider.UNKNOWN
+                    and path.suffix.lower() == ".json"
+                    and path_artifact.kind is ArtifactKind.METADATA_DOCUMENT
+                    and (strong_path_artifact is None or strong_path_artifact.parse_as_session)
+                )
+                and not has_decoded_session_evidence(path, provider=fallback_provider)
+            ):
+                # Keep path-only metadata out of the generic JSON fallback,
+                # but let real decoded session evidence outrank a stale or
+                # overbroad filename rule just as offline source parsing does.
+                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                continue
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
                 provider = fallback_provider
                 source_name = provider.value
@@ -2034,9 +2112,14 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif path.suffix.lower() == ".jsonl":
+            elif is_jsonl_source_path(str(path)):
                 provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
                 source_name = provider.value
+                # An unknown JSONL cannot be safely excluded from acquire: the
+                # strict parse route persists typed terminal evidence for empty
+                # and malformed exports. Known-provider sidecars remain
+                # cursor-excluded here because their classification is already
+                # authoritative.
                 if not parse_as_session and provider is not Provider.UNKNOWN:
                     self._mark_excluded_cursor(path, stat, source_name=source_name)
                     continue
@@ -2194,9 +2277,7 @@ class LiveBatchProcessor:
                     raw_id=raw_id,
                     blob_hash=(blob_hash if acquired_via_sqlite_snapshot and blob_hash is not None else None),
                     payload_provider=provider,
-                    capture_mode=(
-                        acquisition_capture_mode if acquisition_capture_mode is not Provider.UNKNOWN else provider
-                    ),
+                    capture_mode=acquisition_capture_mode,
                     source_name=source_name,
                     source_path=(
                         str(original_sqlite_source_path(path) or path) if path in raw_source_revisions else str(path)
@@ -2207,7 +2288,7 @@ class LiveBatchProcessor:
                     acquired_at=datetime.now(UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
-                    requires_complete_record_boundary=path.suffix.lower() in {".jsonl", ".ndjson"},
+                    requires_complete_record_boundary=is_jsonl_source_path(str(path)),
                 )
             )
             raw_source_revisions.setdefault(path, raw_id)
@@ -2317,6 +2398,8 @@ class LiveBatchProcessor:
         return result
 
     def _archive_active(self, archive_root: Path) -> bool:
+        if _source_tier_acquisition_required():
+            return (archive_root / "source.db").exists() and (archive_root / "user.db").exists()
         return (
             ArchiveLocation.resolve(archive_root).active_index_path.exists() and (archive_root / "source.db").exists()
         )
@@ -2328,14 +2411,26 @@ class LiveBatchProcessor:
         archive_active: bool,
         archive_bootstrapped: bool,
     ) -> dict[str, object]:
-        tier_paths = {
-            spec.tier.value: (
-                ArchiveLocation.resolve(archive_root).active_index_path
-                if spec.tier.value == "index"
-                else archive_root / spec.filename
-            )
-            for spec in ARCHIVE_TIER_SPECS.values()
-        }
+        if _source_tier_acquisition_required():
+            tier_paths = {
+                tier.value: archive_root / archive_tier_spec(tier).filename
+                for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
+            }
+            storage_route = "archive_source_acquisition"
+            storage_tiers = ",".join(tier_paths)
+            storage_write_tiers = ArchiveTier.SOURCE.value
+        else:
+            tier_paths = {
+                spec.tier.value: (
+                    ArchiveLocation.resolve(archive_root).active_index_path
+                    if spec.tier.value == "index"
+                    else archive_root / spec.filename
+                )
+                for spec in ARCHIVE_TIER_SPECS.values()
+            }
+            storage_route = "archive_full"
+            storage_tiers = _ARCHIVE_RUNTIME_TIERS
+            storage_write_tiers = _ARCHIVE_NATIVE_WRITE_TIERS
         present = [tier for tier, path in tier_paths.items() if path.exists()]
         missing = [tier for tier, path in tier_paths.items() if not path.exists()]
         user_versions: dict[str, int | None] = {}
@@ -2352,9 +2447,9 @@ class LiveBatchProcessor:
             except sqlite3.Error:
                 user_versions[tier] = -1
         return {
-            "storage_route": "archive_full",
-            "storage_tiers": _ARCHIVE_RUNTIME_TIERS,
-            "storage_write_tiers": _ARCHIVE_NATIVE_WRITE_TIERS,
+            "storage_route": storage_route,
+            "storage_tiers": storage_tiers,
+            "storage_write_tiers": storage_write_tiers,
             "archive_active": archive_active,
             "archive_bootstrapped": archive_bootstrapped,
             "archive_present_tiers": ",".join(present),
@@ -2377,6 +2472,7 @@ class LiveBatchProcessor:
         result = _ArchiveFullWriteResult()
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         with _open_archive_for_live_write(archive_root) as archive:
+            source_only = _source_tier_acquisition_required()
             for record_index, record in enumerate(records):
                 # polylogue-11cg9: a single logical session write cannot be
                 # split mid-transaction (it must remain atomic), so the
@@ -2402,34 +2498,46 @@ class LiveBatchProcessor:
                     record_timings: dict[str, float] = {}
                     t0 = time.perf_counter()
                     provider = record.payload_provider or Provider.from_string(record.source_name)
+                    acquisition_provider = record.capture_mode or provider
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
-                    artifact_classification = _declared_non_session_artifact_classification(
-                        provider,
-                        record.source_path,
-                    )
-                    session_evidence = (
-                        _blob_jsonl_has_session_evidence(
-                            blob_store,
-                            blob_hash,
-                            provider=provider,
-                            source_path=record.source_path,
-                        )
-                        if payload is None
-                        else _parse_payload_as_session_artifact(
-                            Path(record.source_path),
-                            provider=provider,
-                            payload=payload,
+                    # Source-only acquisition deliberately has no decoded
+                    # evidence with which to confirm or override a path
+                    # classification. Keep every such raw pending instead of
+                    # giving a filename-only fact/sidecar rule terminal
+                    # authority that a recovered derived tier could not undo.
+                    artifact_classification = (
+                        None
+                        if source_only
+                        else _declared_non_session_artifact_classification(
+                            provider,
+                            record.source_path,
                         )
                     )
+                    session_evidence = False
+                    if artifact_classification is not None and not source_only:
+                        session_evidence = (
+                            _blob_jsonl_has_session_evidence(
+                                blob_store,
+                                blob_hash,
+                                provider=provider,
+                                source_path=record.source_path,
+                            )
+                            if payload is None
+                            else _parse_payload_as_session_artifact(
+                                Path(record.source_path),
+                                provider=provider,
+                                payload=payload,
+                            )
+                        )
                     if artifact_classification is not None and not session_evidence:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(
-                                provider=provider,
+                                provider=acquisition_provider,
                                 blob_hash_hex=blob_hash,
                                 blob_size=record.blob_size,
                                 source_path=record.source_path,
@@ -2441,7 +2549,7 @@ class LiveBatchProcessor:
                             ).raw_id
                         else:
                             source_raw_id = archive.admit_raw_artifact_payload(
-                                provider=provider,
+                                provider=acquisition_provider,
                                 payload=payload,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
@@ -2450,25 +2558,32 @@ class LiveBatchProcessor:
                                 classification=artifact_classification,
                                 blob_publication_receipt_id=record.blob_publication_receipt_id,
                             ).raw_id
+                        _record_zip_container_coordinate(
+                            archive,
+                            record,
+                            source_raw_id=source_raw_id,
+                            blob_hash=blob_hash,
+                        )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     source_write_started = time.perf_counter()
                     if payload is None:
                         source_raw_id = archive.write_raw_blob_ref(
-                            provider=provider,
+                            provider=acquisition_provider,
                             capture_mode=record.capture_mode,
                             blob_hash_hex=blob_hash,
                             blob_size=record.blob_size,
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
-                            # A populated ``blob_hash`` field marks a
-                            # sqlite-snapshot acquisition (Hermes or, per
-                            # polylogue-0jf4, Codex state dbs), whose raw_id
-                            # is a deterministic profile/path-scoped id
-                            # distinct from the blob's own content hash --
-                            # every other provider's raw_id already IS the
-                            # content hash, so passing it again is a no-op.
+                            # A populated ``blob_hash`` field means this
+                            # record already has a durable blob reference.
+                            # SQLite snapshots and ZIP members both keep a
+                            # raw id distinct from that blob address: the
+                            # former is profile/path scoped, the latter is
+                            # coordinate scoped.  Preserve that identity at
+                            # source admission rather than collapsing either
+                            # kind back onto a shared content hash.
                             raw_id=(record.raw_id if record.blob_hash is not None else None),
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
@@ -2477,7 +2592,7 @@ class LiveBatchProcessor:
                         source_write_name = "full.source_raw_blob_ref_write"
                     else:
                         source_raw_id = archive.write_raw_payload(
-                            provider=provider,
+                            provider=acquisition_provider,
                             capture_mode=record.capture_mode,
                             payload=payload,
                             source_path=record.source_path,
@@ -2487,6 +2602,12 @@ class LiveBatchProcessor:
                             post_parse=True,
                         )
                         source_write_name = "full.source_raw_write"
+                    _record_zip_container_coordinate(
+                        archive,
+                        record,
+                        source_raw_id=source_raw_id,
+                        blob_hash=blob_hash,
+                    )
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
                     degraded = degraded_reason()
                     if degraded is not None and degraded.derived_only:
@@ -2600,7 +2721,7 @@ class LiveBatchProcessor:
                         state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
                         if state_kind == "thread_state":
                             state_snapshot = codex_state.parse_codex_state_db(state_path, immutable=True)
-                            _write_codex_thread_state_evidence(
+                            write_codex_thread_state_evidence(
                                 archive,
                                 state_snapshot,
                                 source_path=record.source_path,
@@ -3170,7 +3291,9 @@ class LiveBatchProcessor:
         )
         try:
             with zipfile.ZipFile(path) as zf:
-                entries = list(validator.filter_entries(zf.infolist()))
+                central_directory = zf.infolist()
+                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
+                entries = [(entry_ordinals[id(info)], info) for info in validator.filter_entries(central_directory)]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
                 # inbox (``fallback_provider is Provider.UNKNOWN``) still has
                 # a real dominant provider -- it just isn't visible from any
@@ -3185,8 +3308,10 @@ class LiveBatchProcessor:
                 # provider (a per-provider watched directory) is left alone.
                 zip_provider_hint = fallback_provider
                 if fallback_provider is Provider.UNKNOWN:
-                    zip_provider_hint = self._sniff_zip_provider(zf, entries) or fallback_provider
-                for info in entries:
+                    zip_provider_hint = (
+                        self._sniff_zip_provider(zf, [info for _ordinal, info in entries]) or fallback_provider
+                    )
+                for entry_ordinal, info in entries:
                     if info.file_size == 0:
                         continue
                     try:
@@ -3206,20 +3331,28 @@ class LiveBatchProcessor:
                             member_provider = raw_data.provider_hint or fallback_provider
                             member_size = raw_data.blob_size or 0
                             total_bytes += member_size
+                            split_index = raw_data.source_index if raw_data.source_index is not None else 0
+                            source_index = zip_member_source_index(
+                                entry_ordinal=entry_ordinal,
+                                split_index=split_index,
+                            )
+                            member_raw_id = zip_member_raw_id(
+                                source_path=raw_data.source_path,
+                                entry_ordinal=entry_ordinal,
+                                split_index=split_index,
+                                blob_hash=raw_data.blob_hash,
+                            )
                             records.append(
                                 (
-                                    raw_data.blob_hash,
+                                    member_raw_id,
                                     RawSessionRecord(
-                                        raw_id=raw_data.blob_hash,
+                                        raw_id=member_raw_id,
+                                        blob_hash=raw_data.blob_hash,
                                         payload_provider=member_provider,
-                                        capture_mode=(
-                                            fallback_provider
-                                            if fallback_provider is not Provider.UNKNOWN
-                                            else member_provider
-                                        ),
+                                        capture_mode=fallback_provider,
                                         source_name=member_provider.value,
                                         source_path=raw_data.source_path,
-                                        source_index=raw_data.source_index or 0,
+                                        source_index=source_index,
                                         blob_size=member_size,
                                         blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
                                         acquired_at=acquired_at,
@@ -3232,6 +3365,92 @@ class LiveBatchProcessor:
         except (zipfile.BadZipFile, OSError) as exc:
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
+        return records, total_bytes
+
+    def _extract_source_only_zip_member_records(
+        self,
+        path: Path,
+        *,
+        blob_store: BlobStore,
+        fallback_provider: Provider,
+        file_mtime: str,
+    ) -> tuple[list[tuple[str, RawSessionRecord]], int] | None:
+        """Acquire admitted ZIP members without interpreting their bytes.
+
+        A derived-tier outage does not authorize the source tier to infer a
+        provider, parse JSON, or classify a member.  It does still enforce the
+        ordinary ZIP admission policy before streaming every retained member
+        under its exact ``<zip>:<member>`` coordinate.
+        """
+        source = Source(name=fallback_provider.value, path=path.parent)
+        acquired_at = datetime.now(UTC).isoformat()
+        records: list[tuple[str, RawSessionRecord]] = []
+        total_bytes = 0
+        validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                central_directory = zf.infolist()
+                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
+                for info in validator.filter_entries(central_directory):
+                    if info.file_size == 0:
+                        continue
+                    entry_ordinal = entry_ordinals[id(info)]
+                    split_index = 0
+                    source_index = zip_member_source_index(
+                        entry_ordinal=entry_ordinal,
+                        split_index=split_index,
+                    )
+                    try:
+                        raw_data = stream_preserved_zip_entry_raw_data(
+                            zf,
+                            ZipEntryReadContext(
+                                source=source,
+                                zip_path=path,
+                                entry=info,
+                                file_mtime=file_mtime,
+                                provider_hint=fallback_provider,
+                                blob_store=blob_store,
+                            ),
+                            provider_hint=fallback_provider,
+                            source_index=source_index,
+                        )
+                    except ZipBombError as exc:
+                        logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        continue
+                    if raw_data.blob_hash is None:
+                        continue
+                    total_bytes += raw_data.blob_size or 0
+                    member_raw_id = zip_member_raw_id(
+                        source_path=raw_data.source_path,
+                        entry_ordinal=entry_ordinal,
+                        split_index=split_index,
+                        blob_hash=raw_data.blob_hash,
+                    )
+                    records.append(
+                        (
+                            member_raw_id,
+                            RawSessionRecord(
+                                raw_id=member_raw_id,
+                                blob_hash=raw_data.blob_hash,
+                                payload_provider=fallback_provider,
+                                capture_mode=fallback_provider,
+                                source_name=fallback_provider.value,
+                                source_path=raw_data.source_path,
+                                source_index=source_index,
+                                blob_size=raw_data.blob_size or 0,
+                                blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+                                acquired_at=acquired_at,
+                                file_mtime=raw_data.file_mtime,
+                            ),
+                        )
+                    )
+        except (zipfile.BadZipFile, OSError) as exc:
+            logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
+            # A transport/read failure is not evidence that the archive has no
+            # admissible members. Keep it distinct from a successful empty
+            # extraction so the caller records retryable failure state instead
+            # of permanently acknowledging this source coordinate as excluded.
+            return None
         return records, total_bytes
 
     @staticmethod
@@ -3585,7 +3804,7 @@ class LiveBatchProcessor:
         append_result = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
         if append_result is None:
             return None
-        append_payload, native_id_hint = append_result
+        append_payload, native_id_hint, acquisition_native_id_hint = append_result
         tail_hash = sha256(complete_payload).hexdigest()
         return _AppendPlan(
             path=path,
@@ -3605,12 +3824,13 @@ class LiveBatchProcessor:
             accepted_prefix_hash=accepted_prefix_hash,
             authority_bytes_read=last_complete_newline,
             native_id_hint=native_id_hint,
+            acquisition_native_id_hint=acquisition_native_id_hint,
         )
 
     def _append_payload_for_provider(
         self, path: Path, source_name: str, payload: bytes
-    ) -> tuple[bytes, str | None] | None:
-        """Return the literal append payload plus an optional identity hint.
+    ) -> tuple[bytes, str | None, str | None] | None:
+        """Return literal bytes plus logical and acquisition identity hints.
 
         polylogue-u19l: this used to prepend a synthetic ``session_meta``
         line ahead of ``payload`` for Codex before hashing/storing it, so the
@@ -3623,8 +3843,8 @@ class LiveBatchProcessor:
 
         Now the identity is resolved here exactly as before, but returned as
         a sidecar hint instead of being spliced into the hashed bytes.
-        Callers persist it to ``raw_sessions.native_id`` (``_AppendPlan.
-        native_id_hint`` -> ``append_ingest.py``) and pass it back as the
+        Callers persist the Codex acquisition hint to
+        ``raw_sessions.native_id`` and pass the logical hint back as the
         parser's ``fallback_id`` at replay time
         (``revision_backfill.parse_retained_raw_sessions``), which is exactly
         equivalent for Codex: ``_parse_records`` only ever falls back to
@@ -3670,12 +3890,16 @@ class LiveBatchProcessor:
                 "identity recovered from archived session / prior session_meta "
                 "line and carried as native_id_hint, not spliced into hashed bytes",
             )
-            return payload, identity
+            return payload, identity, identity
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(
             path, payload, existing_id=identity
         ):
             return None
-        return payload, None
+        # Claude append raws have historically used native_id=NULL. Its own
+        # records carry sessionId, so the resolved identity is needed for
+        # governance but must not change deterministic acquisition identity
+        # for a retry of pre-upgrade bytes.
+        return payload, identity, None
 
     def _existing_provider_session_id(self, path: Path, *, expected_origin: str) -> str | None:
         identity = self._existing_archive_session_native_id(path, expected_origin=expected_origin)
@@ -3833,8 +4057,9 @@ class LiveBatchProcessor:
         return ingest_append_plans(self, plans)
 
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
-        if not paths:
+        if not paths or _source_tier_acquisition_required():
             return
+        from polylogue.storage.index_generation import ActiveWriterLease
         from polylogue.storage.raw_retention import (
             RawRetentionSafetyError,
             active_raw_retention_authority,
@@ -3843,24 +4068,33 @@ class LiveBatchProcessor:
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        index_db = ArchiveLocation.resolve(archive_root).active_index_path
         if not source_db.exists():
             return
-        with closing(sqlite3.connect(source_db)) as conn, conn:
-            conn.row_factory = sqlite3.Row
-            try:
-                retention_authority = active_raw_retention_authority(conn, index_db_path=index_db)
-            except RawRetentionSafetyError as exc:
-                logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
-                return
-            result = compact_paths_superseded_raw_snapshots(
-                conn,
-                paths,
-                limit_per_path=25,
-                min_acquired_at=self._raw_compaction_min_acquired_at,
-                protected_raw_ids=retention_authority.protected_raw_ids,
-                eligible_raw_ids=retention_authority.eligible_raw_ids,
-            )
+        lease = ActiveWriterLease(archive_root)
+        lease.acquire()
+        try:
+            index_db = ArchiveLocation.resolve(archive_root).active_index_path
+            with closing(sqlite3.connect(source_db)) as conn, conn:
+                conn.row_factory = sqlite3.Row
+                try:
+                    retention_authority = active_raw_retention_authority(
+                        conn,
+                        index_db_path=index_db,
+                        terminal_source_paths=paths,
+                    )
+                except RawRetentionSafetyError as exc:
+                    logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
+                    return
+                result = compact_paths_superseded_raw_snapshots(
+                    conn,
+                    paths,
+                    limit_per_path=25,
+                    min_acquired_at=self._raw_compaction_min_acquired_at,
+                    protected_raw_ids=retention_authority.protected_raw_ids,
+                    eligible_raw_ids=retention_authority.eligible_raw_ids,
+                )
+        finally:
+            lease.close()
         if result.errors:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 

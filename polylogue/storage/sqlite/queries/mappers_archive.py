@@ -180,14 +180,15 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
     validation_mode = _row_text(row, "validation_mode")
     blob_hash_value = _row_get(row, "blob_hash")
     blob_hash = bytes(blob_hash_value).hex() if isinstance(blob_hash_value, (bytes, bytearray)) else None
-    # raw_sessions carries a single ``origin`` column (#1743). The in-memory
-    # record still exposes provider-wire ``source_name``/``payload_provider``;
-    # both project from the stored origin.
+    # Acquisition origin is immutable raw identity. A later parser may retain
+    # its exact provider separately without rewriting that identity.
     capture_mode = _row_text(row, "capture_mode")
-    provider = provider_from_origin(
+    detected_provider = _row_text(row, "detected_provider")
+    acquisition_provider = provider_from_origin(
         Origin.from_string(row["origin"]),
         family_hint=capture_mode,
     )
+    provider = Provider.from_string(detected_provider) if detected_provider is not None else acquisition_provider
     logical_source_key = _row_text(row, "logical_source_key")
     source_revision = _row_text(row, "source_revision")
     generation = _row_int(row, "acquisition_generation")
@@ -210,7 +211,7 @@ def _row_to_raw_session(row: sqlite3.Row) -> RawSessionRecord:
         blob_hash=blob_hash,
         payload_provider=provider,
         capture_mode=Provider.from_string(capture_mode) if capture_mode is not None else None,
-        source_name=provider.value,
+        source_name=acquisition_provider.value,
         source_path=row["source_path"],
         source_index=row["source_index"],
         blob_size=row["blob_size"],

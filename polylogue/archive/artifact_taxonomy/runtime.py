@@ -102,6 +102,21 @@ def classify_artifact_path(
     """
     if weak := _self_generated_artifact_dir_classification(source_path, provider=provider):
         return weak
+    return strong_path_classification(source_path, provider=provider)
+
+
+def strong_path_classification(
+    source_path: str | Path | None,
+    *,
+    provider: str | Provider,
+) -> ArtifactClassification | None:
+    """Classify only definitive path rules.
+
+    Live admission uses this before deciding whether a payload may enter a
+    bounded streaming route. The weak ``analysis/`` location heuristic is
+    deliberately excluded there because it must yield to bounded payload
+    evidence or the streaming policy.
+    """
     return _classify_artifact_path_strong(source_path, provider=provider)
 
 

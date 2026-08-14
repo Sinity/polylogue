@@ -630,6 +630,7 @@ def _item(
 def _classify_frontier(
     conn: sqlite3.Connection,
     blob_store: BlobStore,
+    index_db: Path,
     row: dict[str, object],
     strategy_override: _StrategyOverride | None,
 ) -> RawAuthorityFrontierItem:
@@ -671,7 +672,7 @@ def _classify_frontier(
 
         if len(duplicate_siblings) != 1:
             raise RuntimeError(f"duplicate alias classification is not injective for {raw_id}")
-        with closing(sqlite3.connect(f"file:{blob_store.root.parent / 'index.db'}?mode=ro", uri=True)) as proof_conn:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
             proof_conn.row_factory = sqlite3.Row
             proof_conn.execute(
                 "ATTACH DATABASE ? AS source",
@@ -782,6 +783,8 @@ def _classify_frontier(
 def _strategy_overrides(
     config: Config,
     rows: list[dict[str, object]],
+    *,
+    index_db_path: Path,
 ) -> dict[str, _StrategyOverride]:
     """Ask legacy incident inspectors for proofs, never for plan identity."""
     from polylogue.storage.repair import (
@@ -799,7 +802,11 @@ def _strategy_overrides(
         }
     )
     for browser_chunk in _chunks(browser_ids):
-        browser_items = inspect_browser_capture_origin_mismatches(config, browser_chunk)
+        browser_items = inspect_browser_capture_origin_mismatches(
+            config,
+            browser_chunk,
+            index_db_path=index_db_path,
+        )
         for browser_item in browser_items:
             if browser_item.status in {"eligible", "already_repaired"}:
                 overrides[browser_item.raw_id] = _StrategyOverride(
@@ -809,7 +816,11 @@ def _strategy_overrides(
                     witness=_browser_strategy_witness(browser_item),
                     input_raw_ids=_browser_strategy_raw_ids(browser_item),
                 )
-        conflicts = inspect_browser_canonical_authority_conflicts(config, browser_chunk)
+        conflicts = inspect_browser_canonical_authority_conflicts(
+            config,
+            browser_chunk,
+            index_db_path=index_db_path,
+        )
         for conflict_item in conflicts.items:
             if conflict_item.raw_id in overrides:
                 continue
@@ -860,7 +871,11 @@ def _strategy_overrides(
         }
     )
     for quarantine_chunk in _chunks(quarantine_pairs, size=100):
-        quarantine_items = inspect_quarantined_accepted_raws(config, quarantine_chunk)
+        quarantine_items = inspect_quarantined_accepted_raws(
+            config,
+            quarantine_chunk,
+            index_db_path=index_db_path,
+        )
         for (raw_id, logical_source_key), quarantine_item in zip(quarantine_chunk, quarantine_items, strict=True):
             if quarantine_item.status in {"eligible", "already_repaired"}:
                 overrides[_quarantine_override_key(raw_id, logical_source_key)] = _StrategyOverride(
@@ -1194,14 +1209,14 @@ def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
 def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...], int, int]:
     root = _archive_root(config)
     source_db = root / "source.db"
-    index_db = root / "index.db"
+    index_db = config.current_db_path()
     if not source_db.is_file() or not index_db.is_file():
         raise RuntimeError("raw authority frontier census requires initialized source and index tiers")
     with closing(sqlite3.connect(source_db)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         head_rows = _frontier_rows(conn)
-        overrides = _strategy_overrides(config, head_rows)
+        overrides = _strategy_overrides(config, head_rows, index_db_path=index_db)
 
         def _override_for(row: dict[str, object]) -> _StrategyOverride | None:
             raw_id = str(row["accepted_raw_id"])
@@ -1216,7 +1231,9 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
         # through this same connection; the outer ``conn`` context manager commits
         # those writes on clean exit (or rolls back on exception), so a receipt is
         # never durably recorded for bytes this pass didn't finish inspecting.
-        head_items = [_classify_frontier(conn, BlobStore(root / "blob"), row, _override_for(row)) for row in head_rows]
+        head_items = [
+            _classify_frontier(conn, BlobStore(root / "blob"), index_db, row, _override_for(row)) for row in head_rows
+        ]
         superseded_items = _terminal_superseded_items(conn)
     all_items = _apply_judgment_dispositions(config, (*head_items, *superseded_items))
     return (
@@ -1352,8 +1369,6 @@ def _apply_strategy(
 
     root = _archive_root(config)
     source_db = root / "source.db"
-    index_db = root / "index.db"
-
     if item.actuator is RawAuthorityActuator.RESOLVE_CONFLICT:
         conflict = item.strategy_witness.get("conflict")
         judgment = item.strategy_witness.get("judgment")
@@ -1362,7 +1377,7 @@ def _apply_strategy(
         evidence = conflict.get("evidence")
         if not isinstance(evidence, dict) or judgment.get("disposition") != "retain_canonical_authority":
             raise RuntimeError("conflict-resolution strategy is not explicitly authorized")
-        with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
@@ -1387,7 +1402,7 @@ def _apply_strategy(
         if item.logical_source_key is None:
             raise RuntimeError("duplicate-alias plan is missing the logical source key it was proven against")
         logical_source_key = item.logical_source_key
-        with RebuildLease(root), closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+        with RebuildLease(root), closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
@@ -1454,7 +1469,7 @@ def _apply_strategy(
         from polylogue.storage.blob_publication import exclude_archive_blob_publishers
 
         with RebuildLease(root), exclude_archive_blob_publishers(source_db):
-            with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as proof_conn:
+            with closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=ro", uri=True)) as proof_conn:
                 proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 preview = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=proof_conn)
             if _browser_strategy_witness(preview) != item.strategy_witness:
@@ -1475,7 +1490,7 @@ def _apply_strategy(
                 pass
             elif preview.status != "already_repaired":
                 raise RuntimeError(f"browser-origin strategy lost its exact proof: {preview.reason}")
-            with closing(sqlite3.connect(f"file:{index_db}?mode=rw", uri=True)) as conn:
+            with closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
                 conn.execute("PRAGMA foreign_keys = ON")
                 conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 conn.execute("BEGIN IMMEDIATE")
@@ -1506,7 +1521,7 @@ def _apply_strategy(
         logical_source_key = item.logical_source_key
         with RebuildLease(root), closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
             source_conn.execute("PRAGMA foreign_keys = ON")
-            _attach_repair_index(source_conn, index_db)
+            _attach_repair_index(source_conn, config.current_db_path())
             source_conn.execute("BEGIN IMMEDIATE")
             try:
                 # Apply-side stays fail-closed: an authorized plan whose single

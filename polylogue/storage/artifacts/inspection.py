@@ -8,9 +8,23 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
-from polylogue.archive.raw_payload import JSONValue, RawPayloadEnvelope, build_raw_payload_envelope
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactKind,
+    classify_artifact_path,
+    strong_path_classification,
+)
+from polylogue.archive.raw_payload import (
+    JSONValue,
+    RawPayloadEnvelope,
+    build_raw_payload_envelope,
+)
+from polylogue.archive.raw_payload.decode import (
+    JSONL_RECORD_INSPECTION_BYTES,
+    JSONLSessionArtifactScan,
+    scan_jsonl_session_artifact,
+)
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -170,6 +184,26 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     return envelope
 
 
+def _complete_stream_session_artifact(
+    record: RawSessionRecord,
+    *,
+    provider: Provider,
+    blob_store: BlobStore,
+) -> JSONLSessionArtifactScan | None:
+    """Recover positive stream evidence hidden by bounded inspection."""
+    if not _prefers_json_stream(record.source_path) or provider not in {Provider.CLAUDE_CODE, Provider.CODEX}:
+        return None
+    path_artifact = strong_path_classification(record.source_path, provider=provider)
+    if path_artifact is not None and not path_artifact.parse_as_session:
+        return None
+    return scan_jsonl_session_artifact(
+        blob_store.blob_path(_record_blob_ref(record)),
+        provider=provider,
+        source_path=record.source_path,
+        max_record_bytes=_INSPECTION_PREFIX_BYTES,
+    )
+
+
 def _sidecar_agent_type(payload: JSONValue) -> str | None:
     if isinstance(payload, dict):
         agent_type = payload.get("agentType")
@@ -210,7 +244,7 @@ def _support_status(
     return ArtifactSupportStatus.UNSUPPORTED_PARSEABLE
 
 
-_INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
+_INSPECTION_PREFIX_BYTES = JSONL_RECORD_INSPECTION_BYTES
 _FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
 
 
@@ -252,7 +286,9 @@ def _full_scan_malformed_jsonl(record: RawSessionRecord, *, blob_store: BlobStor
     The prefix-based classification only inspects the first 64 KB, so malformed
     content past the prefix never marks the artifact failed (#1745). This scan
     streams the whole blob line-by-line (never materializing it) so the
-    malformed-line count and decode status reflect the full artifact.
+    malformed-line count and decode status reflect the full artifact. Records
+    larger than the inspection bound are discarded in chunks but are not
+    counted as malformed: bounded inspection is not evidence of decode loss.
 
     Returns ``(malformed_lines, had_valid_records)``. ``had_valid_records`` is
     ``True`` when at least one line decoded successfully; the sampling helper
@@ -269,6 +305,7 @@ def _full_scan_malformed_jsonl(record: RawSessionRecord, *, blob_store: BlobStor
             max_samples=1,
             jsonl_dict_only=False,
             scan_full=True,
+            max_record_bytes=_INSPECTION_PREFIX_BYTES,
         )
     except ValueError:
         # No valid JSONL records at all — leave the decision to the prefix-based
@@ -312,16 +349,17 @@ def _stream_loss_accounting(
 def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> ArtifactObservationRecord:
     """Inspect one raw record into a durable artifact observation.
 
-    Uses only a small prefix of raw_content for classification — never
-    decodes the full payload. This keeps memory bounded regardless of
-    file size (a 1.5 GB JSONL file is classified from its first line).
+    Classification starts from a small prefix. If that prefix would refuse a
+    Claude or Codex JSONL stream, a memory-bounded rolling scan must confirm
+    that no later record supplies positive session evidence.
     """
     resolved_blob_store = blob_store or get_blob_store()
     provider_hint = _normalize_payload_provider_hint(record)
     provider_token = provider_hint or record.source_name or ""
     bundle_scope = derive_bundle_scope(provider_token, record.source_path)
+    observation_origin = origin_from_provider(Provider.from_string(provider_token))
     observation_id = artifact_observation_id(
-        source_name=record.source_name,
+        source_name=observation_origin.value,
         source_path=record.source_path,
         source_index=record.source_index,
     )
@@ -329,8 +367,43 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
     registry = _SCHEMA_REGISTRY
 
     try:
-        envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
+        try:
+            envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
+        except Exception:
+            stream_provider = Provider.from_string(provider_token)
+            recovered_scan = _complete_stream_session_artifact(
+                record,
+                provider=stream_provider,
+                blob_store=resolved_blob_store,
+            )
+            if recovered_scan is None or recovered_scan.artifact is None:
+                raise
+            envelope = RawPayloadEnvelope(
+                payload=list(recovered_scan.sample),
+                provider=stream_provider,
+                wire_format="jsonl",
+                artifact=recovered_scan.artifact,
+                malformed_jsonl_lines=0,
+                malformed_jsonl_detail=None,
+            )
         payload_provider = envelope.provider
+        artifact = envelope.artifact
+        if not artifact.parse_as_session:
+            recovered_scan = _complete_stream_session_artifact(
+                record,
+                provider=payload_provider,
+                blob_store=resolved_blob_store,
+            )
+            if recovered_scan is not None and recovered_scan.artifact is not None:
+                envelope = RawPayloadEnvelope(
+                    payload=list(recovered_scan.sample),
+                    provider=payload_provider,
+                    wire_format="jsonl",
+                    artifact=recovered_scan.artifact,
+                    malformed_jsonl_lines=envelope.malformed_jsonl_lines,
+                    malformed_jsonl_detail=envelope.malformed_jsonl_detail,
+                )
+                artifact = envelope.artifact
         resolution: SchemaResolution | None = None
         has_supported_resolution = False
 
@@ -344,7 +417,7 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
             blob_store=resolved_blob_store,
         )
 
-        if envelope.artifact.parse_as_session and envelope.artifact.schema_eligible and malformed_jsonl_lines == 0:
+        if artifact.parse_as_session and artifact.schema_eligible and malformed_jsonl_lines == 0:
             resolution, has_supported_resolution = _resolve_payload_support(
                 registry=registry,
                 payload_provider=payload_provider,
@@ -356,10 +429,10 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
         resolution_reason = resolution.reason if resolution is not None else None
 
         support_status = _support_status(
-            parse_as_session=envelope.artifact.parse_as_session,
-            schema_eligible=envelope.artifact.schema_eligible,
+            parse_as_session=artifact.parse_as_session,
+            schema_eligible=artifact.schema_eligible,
             malformed_jsonl_lines=malformed_jsonl_lines,
-            artifact_kind=envelope.artifact.kind.value,
+            artifact_kind=artifact.kind.value,
             has_supported_resolution=has_supported_resolution,
             had_decode_error=False,
             partial_decode=partial_decode,
@@ -374,23 +447,21 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
             source_index=record.source_index,
             file_mtime=record.file_mtime,
             wire_format=envelope.wire_format,
-            artifact_kind=envelope.artifact.kind.value,
-            classification_reason=envelope.artifact.reason,
-            parse_as_session=envelope.artifact.parse_as_session,
-            schema_eligible=envelope.artifact.schema_eligible,
+            artifact_kind=artifact.kind.value,
+            classification_reason=artifact.reason,
+            parse_as_session=artifact.parse_as_session,
+            schema_eligible=artifact.schema_eligible,
             support_status=support_status,
             malformed_jsonl_lines=malformed_jsonl_lines,
             decode_error=None,
             bundle_scope=bundle_scope,
-            cohort_id=schema_cluster_id(envelope.payload, envelope.artifact.cohort),
+            cohort_id=schema_cluster_id(envelope.payload, artifact.cohort),
             resolved_package_version=resolved_package_version,
             resolved_element_kind=resolved_element_kind,
             resolution_reason=resolution_reason,
             link_group_key=_link_group_key(record.source_path),
             sidecar_agent_type=(
-                _sidecar_agent_type(envelope.payload)
-                if envelope.artifact.kind is ArtifactKind.AGENT_SIDECAR_META
-                else None
+                _sidecar_agent_type(envelope.payload) if artifact.kind is ArtifactKind.AGENT_SIDECAR_META else None
             ),
             first_observed_at=observed_at,
             last_observed_at=observed_at,

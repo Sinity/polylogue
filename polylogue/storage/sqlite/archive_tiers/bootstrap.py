@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -74,6 +75,13 @@ ARCHIVE_TIER_SPECS: dict[ArchiveTier, ArchiveTierSpec] = {
         backup_required=True,
     ),
 }
+
+
+# ``OwnedArchiveLocation`` protects against other processes. Its deliberate
+# reentrancy permits nested production opens in one process, so bootstrap also
+# needs this process-local serialization around the fresh durable receipt
+# protocol.
+_ACTIVE_ARCHIVE_BOOTSTRAP_LOCK = threading.RLock()
 
 
 def archive_tier_spec(tier: ArchiveTier) -> ArchiveTierSpec:
@@ -310,7 +318,7 @@ def initialize_archive_database(
         conn.close()
 
 
-def initialize_active_archive_root(root: Path) -> None:
+def _initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
     from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
     from polylogue.storage.archive_identity import (
@@ -429,9 +437,11 @@ def initialize_active_archive_root(root: Path) -> None:
         if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
+        location = ArchiveLocation.resolve(root)
         for spec in ARCHIVE_TIER_SPECS.values():
             assert_owned_root()
-            initialize_archive_database(root / spec.filename, spec.tier)
+            tier_path = location.active_index_path if spec.tier is ArchiveTier.INDEX else root / spec.filename
+            initialize_archive_database(tier_path, spec.tier)
         # Mutation composition performs source/audit reconciliation immediately
         # before it consumes authority. Ordinary archive opens stay read-only
         # with respect to continuity, including their steady-state path.
@@ -451,6 +461,13 @@ def initialize_active_archive_root(root: Path) -> None:
             # completed marker has passed normal startup reconciliation.
             assert_owned_root()
             pending_bootstrap_path.unlink(missing_ok=True)
+
+
+def initialize_active_archive_root(root: Path) -> None:
+    """Create or initialize every active archive tier under one local bootstrap owner."""
+
+    with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
+        _initialize_active_archive_root(root)
 
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:

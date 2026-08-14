@@ -12,13 +12,21 @@ from typing import Protocol
 
 import ijson
 
-from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
-from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+from polylogue.archive.artifact_taxonomy import (
+    classify_artifact,
+    classify_artifact_path,
+    strong_path_classification,
+)
+from polylogue.archive.raw_payload.decode import (
+    JSONL_RECORD_INSPECTION_BYTES,
+    _sample_jsonl_payload_with_detail,
+    jsonl_session_artifact,
+)
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.pipeline.services.ingest_batch._core import _select_ingest_worker_count
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider
+from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -129,14 +137,14 @@ class _AppendPlan:
     ctime_ns: int | None = None
     accepted_prefix_hash: str | None = None
     authority_bytes_read: int = 0
-    # polylogue-u19l: the resolved provider session identity for this append,
-    # when the provider's own record stream cannot self-describe it (Codex
-    # append deltas have no ``session_meta`` record of their own). Carried as
-    # sidecar metadata -- persisted to ``raw_sessions.native_id`` and used to
-    # override the replay ``fallback_id`` -- instead of being injected into
-    # the hashed/stored payload bytes, so the stored blob stays a literal
-    # slice of the live file. ``None`` for providers/plans that don't need it.
+    # The resolved logical session identity used to bind this append and as a
+    # parser fallback when its own record stream cannot self-describe it.
     native_id_hint: str | None = None
+    # Acquisition identity is deliberately separate from logical identity.
+    # Codex append rows introduced this sidecar together with literal delta
+    # bytes. Claude append rows predate it with native_id=NULL, so retaining
+    # NULL keeps deterministic raw IDs stable across upgrades and retries.
+    acquisition_native_id_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,18 +544,15 @@ def _browser_capture_provider_from_path(path: Path) -> Provider | None:
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
-    records: list[JSONValue] = []
-    with path.open("rb") as handle:
-        for line in handle:
-            if len(records) >= max_records:
-                break
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                records.append(json_loads(raw))
-            except JSONDecodeError:
-                continue
+    try:
+        records, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
+            path,
+            max_samples=max_records,
+            scan_full=False,
+            max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
+        )
+    except ValueError:
+        return []
     return records
 
 
@@ -556,7 +561,7 @@ def _detect_provider_from_path_sample(path: Path, fallback_provider: Provider) -
         path
     ):
         return Provider.HERMES
-    if path.suffix.lower() == ".jsonl":
+    if is_jsonl_source_path(str(path)):
         records = _jsonl_sample_from_path(path)
         if records:
             return detect_provider(records) or fallback_provider
@@ -591,12 +596,12 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
         or hermes_verification.looks_like_verification_evidence_db_path(path)
     ):
         return True
-    if path.suffix.lower() == ".jsonl":
+    if is_jsonl_source_path(str(path)):
         if jsonl_session_artifact(path, provider=provider) is not None:
             return True
         path_classification = classify_artifact_path(path, provider=provider)
         return path_classification.parse_as_session if path_classification is not None else False
-    path_classification = classify_artifact_path(path, provider=provider)
+    path_classification = strong_path_classification(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
     if _path_size(path) > _STREAMING_FULL_INGEST_BYTES:
@@ -638,12 +643,12 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
         return hermes_state.looks_like_state_db_path(
             path
         ) or hermes_verification.looks_like_verification_evidence_db_path(path)
-    if path.suffix.lower() == ".jsonl":
+    if is_jsonl_source_path(str(path)):
         if jsonl_session_artifact(payload, provider=provider) is not None:
             return True
         path_classification = classify_artifact_path(path, provider=provider)
         return path_classification.parse_as_session if path_classification is not None else False
-    path_classification = classify_artifact_path(path, provider=provider)
+    path_classification = strong_path_classification(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session
     try:

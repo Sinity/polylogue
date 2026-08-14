@@ -45,7 +45,7 @@ from polylogue.maintenance.targets import (
 )
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.storage.archive_identity import archive_file_set_root
+from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
@@ -61,6 +61,7 @@ from polylogue.storage.message_type_backfill import (
     count_unclassified_message_type_sync,
 )
 from polylogue.storage.raw_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RAW_REPLAY_NO_PROGRESS_REASON,
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     RawAuthorityCensusReceipt,
@@ -83,6 +84,7 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
@@ -1228,6 +1230,8 @@ def _cas_refine_quarantined_accepted_raw(
 def inspect_quarantined_accepted_raws(
     config: Config,
     raw_ids_with_keys: list[tuple[str, str]],
+    *,
+    index_db_path: Path | None = None,
 ) -> tuple[QuarantinedAcceptedRawRepairItem, ...]:
     """Return exact typed quarantine-refinement proofs without mutation.
 
@@ -1246,7 +1250,7 @@ def inspect_quarantined_accepted_raws(
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
@@ -2995,6 +2999,8 @@ def _inspect_browser_capture_origin_strategy(
 def inspect_browser_capture_origin_mismatches(
     config: Config,
     raw_ids: list[str],
+    *,
+    index_db_path: Path | None = None,
 ) -> tuple[BrowserCaptureOriginRepairItem, ...]:
     """Return the exact admitted browser-origin strategy for each raw.
 
@@ -3010,7 +3016,7 @@ def inspect_browser_capture_origin_mismatches(
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
@@ -3241,7 +3247,10 @@ def _browser_canonical_authority_conflict_witness(
 
 
 def inspect_browser_canonical_authority_conflicts(
-    config: Config, raw_ids: list[str]
+    config: Config,
+    raw_ids: list[str],
+    *,
+    index_db_path: Path | None = None,
 ) -> BrowserCanonicalAuthorityConflictReport:
     """Build read-only evidence packets for browser-capture raws a safe rekey refuses.
 
@@ -3268,7 +3277,7 @@ def inspect_browser_canonical_authority_conflicts(
         raise ValueError("raw ids must be lowercase SHA-256 identifiers")
     archive_root = _raw_materialization_archive_root(config)
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or config.current_db_path()
     if not source_db.exists() or not index_db.exists():
         raise RuntimeError("source or index tier is missing")
 
@@ -3772,17 +3781,34 @@ def _raw_materialization_archive_root(config: Config) -> Path:
 
 
 def _raw_materialization_index_path(config: Config, archive_root: Path) -> Path:
-    """Return the active derived tier while keeping durable tiers at root."""
-    return config.db_path if config.db_path.name == "index.db" else archive_root / "index.db"
+    """Return an explicit index override or the archive's active generation."""
+    del archive_root
+    return config.current_db_path()
 
 
 def _raw_artifact_coordinate_predicate(*, artifact_alias: str, raw_alias: str) -> str:
     """Correlate evidence with the exact failed artifact observation."""
+    provider_origin = raw_provider_origin_sql(table_alias=raw_alias)
     return f"""
                          AND {artifact_alias}.raw_id IS {raw_alias}.raw_id
-                         AND {artifact_alias}.origin IS {raw_alias}.origin
+                         AND (
+                           {artifact_alias}.origin IS {raw_alias}.origin
+                           OR {artifact_alias}.origin IS ({provider_origin})
+                         )
                          AND {artifact_alias}.source_path IS {raw_alias}.source_path
                          AND {artifact_alias}.source_index IS {raw_alias}.source_index
+    """
+
+
+def _failed_validation_overrides_parse_predicate(*, raw_alias: str) -> str:
+    """Return the durable state in which validation blocks raw replay."""
+    return f"""
+                COALESCE({raw_alias}.validation_status, '') = 'failed'
+                AND (
+                  {raw_alias}.parsed_at_ms IS NULL
+                  OR {raw_alias}.validated_at_ms IS NULL
+                  OR {raw_alias}.validated_at_ms >= {raw_alias}.parsed_at_ms
+                )
     """
 
 
@@ -3850,10 +3876,11 @@ def _raw_materialization_candidate_ids(
         if raw_artifact_id is not None:
             raw_filter = "AND r.raw_id = ?"
             params.append(raw_artifact_id)
+        effective_origin = raw_provider_origin_sql(table_alias="r")
         origin_filter = ""
         provider_origin = _raw_materialization_origin_from_provider(provider)
         if provider_origin is not None:
-            origin_filter += " AND r.origin = ?"
+            origin_filter += f" AND {effective_origin} = ?"
             params.append(provider_origin)
         if source_family is not None:
             origin_filter += " AND r.origin = ?"
@@ -3866,8 +3893,9 @@ def _raw_materialization_candidate_ids(
         terminal_pair_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_hash, r.blob_size,
-                   r.acquired_at_ms, r.parsed_at_ms,
+            SELECT r.raw_id, r.origin, {effective_origin} AS provider_origin,
+                   r.native_id, r.source_path, r.blob_hash, r.blob_size,
+                   r.acquired_at_ms, r.parsed_at_ms, r.validated_at_ms,
                    r.parse_error,
                    (
                        SELECT a.artifact_kind
@@ -3913,6 +3941,15 @@ def _raw_materialization_candidate_ids(
                    , EXISTS (
                        SELECT 1
                        FROM raw_membership_census AS c
+                       WHERE c.raw_id = r.raw_id
+                         AND c.parser_fingerprint = ?
+                         AND c.status = 'non_session'
+                         AND r.parsed_at_ms IS NOT NULL
+                         AND r.parse_error IS NULL
+                   ) AS membership_non_session_terminal
+                   , EXISTS (
+                       SELECT 1
+                       FROM raw_membership_census AS c
                        JOIN raw_session_memberships AS m ON m.raw_id = c.raw_id
                        WHERE c.raw_id = r.raw_id
                          AND c.status = 'complete'
@@ -3940,7 +3977,7 @@ def _raw_materialization_candidate_ids(
             LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
             LEFT JOIN index_tier.sessions AS s_by_native
               ON r.native_id IS NOT NULL
-             AND s_by_native.origin = r.origin
+             AND s_by_native.origin = {effective_origin}
              AND s_by_native.native_id = r.native_id
             LEFT JOIN raw_sessions AS existing_native_raw
               ON existing_native_raw.raw_id = s_by_native.raw_id
@@ -3949,10 +3986,14 @@ def _raw_materialization_candidate_ids(
                 s_by_native.native_id IS NULL
                 OR existing_native_raw.raw_id IS NULL
               )
-              -- A failed worker validation is not replay authority.  Keep
-              -- the raw bytes and their diagnostics, but require a fresh
-              -- validation outcome before materialization can select them.
-              AND COALESCE(r.validation_status, '') != 'failed'
+              -- A failed worker validation is replay authority only until a
+              -- successful parse records a durable parsed timestamp. Keep
+              -- that historical diagnostic, but do not let it block an
+              -- index reset from replaying successfully parsed raw bytes.
+              -- Equal legacy timestamps are indeterminate. Do not replay
+              -- and overwrite either authority until a monotonic transition
+              -- resolves the ambiguity.
+              AND NOT ({_failed_validation_overrides_parse_predicate(raw_alias="r")})
               AND (
                 r.parse_error IS NULL
                 OR r.parse_error = 'OperationalError: database is locked'
@@ -3981,6 +4022,10 @@ def _raw_materialization_candidate_ids(
                   AND (terminal_evidence.artifact_kind, terminal_evidence.support_status) IN (
                     {terminal_pair_placeholders}
                   )
+                  AND (
+                    r.parse_error IS NOT NULL
+                    OR ({_failed_validation_overrides_parse_predicate(raw_alias="r")})
+                  )
               )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
@@ -3995,6 +4040,7 @@ def _raw_materialization_candidate_ids(
             [
                 *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
                 RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+                RAW_AUTHORITY_PARSER_FINGERPRINT,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 BYTE_AUTHORITY_CENSUS_DETAIL,
                 *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
@@ -4044,13 +4090,15 @@ def _raw_materialization_candidate_ids(
                 continue
             if _raw_materialized_by_source_path_native(materialized_aliases, row):
                 continue
+            if bool(row["membership_non_session_terminal"]):
+                continue
             if _raw_materialization_parsed_non_session_artifact(archive_root, row):
                 continue
             blob_hash = row["blob_hash"].hex() if isinstance(row["blob_hash"], bytes) else str(row["blob_hash"])
             if blob_store.exists(blob_hash):
                 raw_id = str(row["raw_id"])
                 raw_ids.append(raw_id)
-                raw_origins[raw_id] = str(row["origin"] or "")
+                raw_origins[raw_id] = str(row["provider_origin"] or "")
                 raw_source_paths[raw_id] = str(row["source_path"] or "")
                 raw_acquired_at_ms[raw_id] = int(row["acquired_at_ms"] or 0)
                 blob_size = row["blob_size"]
@@ -4072,8 +4120,12 @@ def _raw_materialization_candidate_ids(
         for offset in range(0, len(expanded_raw_ids), 500):
             raw_id_chunk = expanded_raw_ids[offset : offset + 500]
             placeholders = ",".join("?" for _ in raw_id_chunk)
+            expanded_effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
             for row in conn.execute(
-                f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                f"""
+                SELECT raw_id, blob_size, {expanded_effective_origin}, source_path
+                FROM raw_sessions WHERE raw_id IN ({placeholders})
+                """,
                 raw_id_chunk,
             ):
                 rid = str(row[0])
@@ -4135,9 +4187,10 @@ def _raw_materialization_parser_census_candidates(
         if raw_artifact_id is not None:
             filters.append("r.raw_id = ?")
             params.append(raw_artifact_id)
+        effective_origin = raw_provider_origin_sql(table_alias="r")
         provider_origin = _raw_materialization_origin_from_provider(provider)
         if provider_origin is not None:
-            filters.append("r.origin = ?")
+            filters.append(f"{effective_origin} = ?")
             params.append(provider_origin)
         if source_family is not None:
             filters.append("r.origin = ?")
@@ -4149,7 +4202,8 @@ def _raw_materialization_parser_census_candidates(
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         rows = conn.execute(
             f"""
-            SELECT r.raw_id, r.blob_size, r.origin, r.source_path, r.acquired_at_ms
+            SELECT r.raw_id, r.blob_size, {effective_origin} AS provider_origin,
+                   r.source_path, r.acquired_at_ms
             FROM raw_sessions AS r
             {where}
             ORDER BY r.acquired_at_ms DESC, r.raw_id ASC
@@ -4165,7 +4219,7 @@ def _raw_materialization_parser_census_candidates(
             raw_id = str(row["raw_id"])
             raw_ids.append(raw_id)
             raw_blob_bytes[raw_id] = int(row["blob_size"] or 0)
-            raw_origins[raw_id] = str(row["origin"] or "")
+            raw_origins[raw_id] = str(row["provider_origin"] or "")
             raw_source_paths[raw_id] = str(row["source_path"] or "")
             raw_acquired_at_ms[raw_id] = int(row["acquired_at_ms"] or 0)
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -4178,8 +4232,12 @@ def _raw_materialization_parser_census_candidates(
         for offset in range(0, len(expanded_raw_ids), 500):
             raw_id_chunk = expanded_raw_ids[offset : offset + 500]
             placeholders = ",".join("?" for _ in raw_id_chunk)
+            expanded_effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
             for row in conn.execute(
-                f"SELECT raw_id, blob_size, origin, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                f"""
+                SELECT raw_id, blob_size, {expanded_effective_origin}, source_path
+                FROM raw_sessions WHERE raw_id IN ({placeholders})
+                """,
                 raw_id_chunk,
             ):
                 raw_id = str(row[0])
@@ -4275,18 +4333,23 @@ def raw_materialization_readonly_descriptors(
             placeholders = ",".join("?" for _ in raw_id_chunk)
             rows = conn.execute(
                 f"""
-                SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, blob_size
+                SELECT raw_id, origin, detected_provider, capture_mode,
+                       lower(hex(blob_hash)), source_path, revision_kind, blob_size
                 FROM raw_sessions WHERE raw_id IN ({placeholders})
                 """,
                 raw_id_chunk,
             ).fetchall()
             for row in rows:
                 result[str(row[0])] = (
-                    provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2]),
-                    str(row[3]),
+                    (
+                        Provider.from_string(str(row[2]))
+                        if row[2] is not None
+                        else provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[3])
+                    ),
                     str(row[4]),
-                    RawRevisionKind(str(row[5])),
-                    int(row[6]),
+                    str(row[5]),
+                    RawRevisionKind(str(row[6])),
+                    int(row[7]),
                 )
     return result
 
@@ -4355,12 +4418,13 @@ def _raw_materialization_ordered_components(
     candidates: RawMaterializationCandidates,
     *,
     archive_root: Path,
+    index_db_path: Path | None = None,
 ) -> list[tuple[str, ...]]:
     """Order complete components fairly without splitting authority cohorts."""
     candidate_ids = set(candidates.raw_ids)
     source_components = candidates.authority_components or tuple((raw_id,) for raw_id in candidates.raw_ids)
     components = [component for component in source_components if candidate_ids.intersection(component)]
-    plans = build_raw_replay_plans(archive_root, components)
+    plans = build_raw_replay_plans(archive_root, components, index_db_path=index_db_path)
     plan_ids = {plan.input_raw_ids: plan.plan_id for plan in plans}
     last_attempts = raw_replay_plan_last_attempts(archive_root)
 
@@ -4456,7 +4520,11 @@ def raw_materialization_whale_pass_candidate(
     ):
         if not candidates.raw_ids:
             continue
-        ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
+        ordered_components = _raw_materialization_ordered_components(
+            candidates,
+            archive_root=archive_root,
+            index_db_path=_raw_materialization_index_path(config, archive_root),
+        )
         for component in ordered_components:
             if census_only and not blocked_raw_ids.intersection(component):
                 continue
@@ -4527,10 +4595,15 @@ def _raw_authority_postflight_snapshot(
     candidates: RawMaterializationCandidates,
     *,
     max_payload_bytes: int,
+    index_db_path: Path | None = None,
 ) -> tuple[tuple[RawReplayPlan, ...], dict[str, object]]:
     """Build the complete post-pass plan inventory and typed residual debt."""
-    components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
-    plans = build_raw_replay_plans(archive_root, components)
+    components = _raw_materialization_ordered_components(
+        candidates,
+        archive_root=archive_root,
+        index_db_path=index_db_path,
+    )
+    plans = build_raw_replay_plans(archive_root, components, index_db_path=index_db_path)
     blocked_plan_ids = tuple(
         sorted(
             plan.plan_id
@@ -4687,7 +4760,7 @@ def _raw_replay_plan_outcome(
             SELECT 1
             FROM raw_sessions
             WHERE raw_id IN ({placeholders})
-              AND validation_status = 'failed'
+              AND ({_failed_validation_overrides_parse_predicate(raw_alias="raw_sessions")})
             UNION ALL
             SELECT 1
             FROM raw_sessions
@@ -4756,6 +4829,7 @@ def _raw_replay_plan_outcome(
 
 def _raw_replay_plan_outcomes(
     archive_root: Path,
+    index_db: Path,
     plans: Sequence[RawReplayPlan],
     *,
     remaining: RawMaterializationCandidates,
@@ -4765,7 +4839,7 @@ def _raw_replay_plan_outcomes(
         return ()
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         return tuple(
             _raw_replay_plan_outcome(conn, plan, remaining=remaining, no_progress=no_progress) for plan in plans
         )
@@ -5065,7 +5139,7 @@ def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
 
 
 def _raw_materialized_by_source_path_native(materialized_aliases: set[tuple[str, str]], row: sqlite3.Row) -> bool:
-    origin = str(row["origin"] or "")
+    origin = str(row["provider_origin"] or "")
     if not origin:
         return False
     for native_id in _source_path_native_id_candidates(str(row["source_path"] or "")):
@@ -5084,7 +5158,7 @@ def _raw_materialization_parsed_non_session_artifact(archive_root: Path, row: sq
     return (
         parsed_non_session_artifact_reason(
             archive_root=archive_root,
-            origin=str(row["origin"] or ""),
+            origin=str(row["provider_origin"] or ""),
             source_path=str(row["source_path"] or ""),
             blob_hash=blob_hash,
         )
@@ -5113,7 +5187,6 @@ def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
 
 def _open_archive_index_connection() -> sqlite3.Connection:
     from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
 
     conn = sqlite3.connect(resolve_active_index_path(archive_root()))
     conn.row_factory = sqlite3.Row
@@ -5562,6 +5635,16 @@ def _internal_derived_repair_result(
     )
 
 
+def raw_materialization_lease_refusal_result(error: BaseException) -> RepairResult:
+    """Translate active-generation lease refusal into the repair contract."""
+    return _internal_derived_repair_result(
+        "raw_materialization",
+        repaired_count=0,
+        success=False,
+        detail=f"Skipped raw materialization while offline index rebuild owns archive: {error}",
+    )
+
+
 def _archive_debt_status(
     target_name: str,
     *,
@@ -5880,6 +5963,30 @@ def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
 
 
 def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
+    """Delete redundant raw snapshots while promotion cannot change the protected set."""
+
+    if dry_run:
+        return _repair_superseded_raw_snapshots(config, dry_run=True)
+
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+
+    lease = ActiveWriterLease(_raw_materialization_archive_root(config))
+    try:
+        lease.acquire()
+    except RebuildLeaseUnavailableError as exc:
+        return _repair_result(
+            "superseded_raw_snapshots",
+            repaired_count=0,
+            success=False,
+            detail=f"Skipped destructive raw cleanup: {exc}",
+        )
+    try:
+        return _repair_superseded_raw_snapshots(config, dry_run=False)
+    finally:
+        lease.close()
+
+
+def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
     from polylogue.storage.raw_retention import (
         RawRetentionSafetyError,
         active_raw_retention_authority,
@@ -5890,7 +5997,7 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
     archive_root = _raw_materialization_archive_root(config)
     repair_db_path = archive_root / "source.db"
     if repair_db_path.exists():
-        index_db_path = archive_root / "index.db"
+        index_db_path = _raw_materialization_index_path(config, archive_root)
         with closing(open_connection(repair_db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             try:
@@ -6051,7 +6158,6 @@ def repair_session_insights(
     clearing the active daemon's debt ledger.
     """
     from polylogue.paths import archive_root as _resolve_archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.insights.session.rebuild import (
         rebuild_archive_session_insights,
         refresh_session_insight_aggregates_sync,
@@ -6210,6 +6316,58 @@ def repair_raw_materialization(
     prefetch_cache: RawParsePrefetchCache | None = None,
     max_pass_seconds: float | None = None,
 ) -> RepairResult:
+    """Converge one raw-materialization pass under active-generation ownership."""
+
+    def run() -> RepairResult:
+        return _repair_raw_materialization(
+            config,
+            dry_run=dry_run,
+            raw_artifact_id=raw_artifact_id,
+            provider=provider,
+            source_family=source_family,
+            source_root=source_root,
+            raw_artifact_limit=raw_artifact_limit,
+            max_payload_bytes=max_payload_bytes,
+            ingest_workers=ingest_workers,
+            commit_batch_size=commit_batch_size,
+            progress_callback=progress_callback,
+            prefetch_cache=prefetch_cache,
+            max_pass_seconds=max_pass_seconds,
+        )
+
+    if dry_run:
+        return run()
+
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+
+    archive_root = _raw_materialization_archive_root(config)
+    lease = ActiveWriterLease(archive_root)
+    try:
+        lease.acquire()
+    except RebuildLeaseUnavailableError as exc:
+        return raw_materialization_lease_refusal_result(exc)
+    try:
+        return run()
+    finally:
+        lease.close()
+
+
+def _repair_raw_materialization(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    raw_artifact_id: str | None = None,
+    provider: str | None = None,
+    source_family: str | None = None,
+    source_root: Path | None = None,
+    raw_artifact_limit: int | None = None,
+    max_payload_bytes: int = RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
+    ingest_workers: int | None = None,
+    commit_batch_size: int | None = None,
+    progress_callback: ProgressCallback | None = None,
+    prefetch_cache: RawParsePrefetchCache | None = None,
+    max_pass_seconds: float | None = None,
+) -> RepairResult:
     """Converge retained raws through typed per-session revision authority.
 
     ``ingest_workers`` bounds how many processes parse independent raws
@@ -6278,7 +6436,8 @@ def repair_raw_materialization(
         return max_pass_seconds is not None and (time.monotonic() - pass_started_monotonic) >= max_pass_seconds
 
     archive_root = _raw_materialization_archive_root(config)
-    recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
+    index_db = _raw_materialization_index_path(config, archive_root)
+    recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root, index_db_path=index_db)
     for recovered_census_id, recovered_scope in recovered_censuses:
         recovered_envelope = recovered_scope.get("max_payload_bytes")
         recovered_max_payload_bytes = (
@@ -6289,6 +6448,7 @@ def repair_raw_materialization(
             archive_root,
             recovered_candidates,
             max_payload_bytes=recovered_max_payload_bytes,
+            index_db_path=index_db,
         )
         finalize_raw_authority_census(
             archive_root,
@@ -6344,7 +6504,11 @@ def repair_raw_materialization(
         raise ValueError("raw_artifact_limit must be positive")
     census_components_attempted = 0
     if uncensused_raw_ids:
-        preliminary_components = _raw_materialization_ordered_components(census_candidates, archive_root=archive_root)
+        preliminary_components = _raw_materialization_ordered_components(
+            census_candidates,
+            archive_root=archive_root,
+            index_db_path=index_db,
+        )
         for component in preliminary_components:
             if not uncensused_raw_ids.intersection(component):
                 continue
@@ -6363,6 +6527,7 @@ def repair_raw_materialization(
             try:
                 census_historical_revision_evidence(
                     archive_root,
+                    active_index_path=index_db,
                     selected_raw_ids=[seed],
                     max_payload_bytes=max_payload_bytes,
                     ingest_workers=ingest_workers,
@@ -6491,8 +6656,12 @@ def repair_raw_materialization(
             census_receipt=census_receipt,
         )
     candidate_raw_ids = candidates.raw_ids
-    ordered_components = _raw_materialization_ordered_components(candidates, archive_root=archive_root)
-    plans = build_raw_replay_plans(archive_root, ordered_components)
+    ordered_components = _raw_materialization_ordered_components(
+        candidates,
+        archive_root=archive_root,
+        index_db_path=index_db,
+    )
+    plans = build_raw_replay_plans(archive_root, ordered_components, index_db_path=index_db)
     plan_by_component = {plan.input_raw_ids: plan for plan in plans}
     all_blocked_components = [
         component
@@ -6759,7 +6928,7 @@ def repair_raw_materialization(
     stale_outcomes: list[RawReplayPlanOutcome] = []
     validated_plans: list[RawReplayPlan] = []
     for plan in executable_plans:
-        valid, observed = validate_raw_replay_plan(archive_root, plan)
+        valid, observed = validate_raw_replay_plan(archive_root, plan, index_db_path=index_db)
         if valid:
             validated_plans.append(plan)
         else:
@@ -6788,6 +6957,7 @@ def repair_raw_materialization(
             archive_root,
             stale_candidates,
             max_payload_bytes=max_payload_bytes,
+            index_db_path=index_db,
         )
         census_receipt = finalize_raw_authority_census(
             archive_root,
@@ -6828,7 +6998,7 @@ def repair_raw_materialization(
     # writer-hot table before this bounded live pass; this is the same
     # planner invariant seeded for a fresh index bootstrap, without turning
     # raw materialization into a full rebuild.
-    with closing(sqlite3.connect(archive_root / "index.db", timeout=60)) as planner_conn:
+    with closing(sqlite3.connect(index_db, timeout=60)) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
         # A freshly reset index uses representative bootstrap statistics.
         # ``ANALYZE blocks`` on an empty table deletes that seed and brings
@@ -6880,6 +7050,7 @@ def repair_raw_materialization(
         try:
             part = backfill_historical_revision_evidence(
                 archive_root,
+                active_index_path=index_db,
                 selected_raw_ids=[raw_id],
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
@@ -6927,7 +7098,7 @@ def repair_raw_materialization(
             continue
         except Exception as exc:
             logger.exception("raw replay plan %s failed", plan.plan_id)
-            application_receipt = raw_replay_application_receipt(archive_root, plan)
+            application_receipt = raw_replay_application_receipt(archive_root, plan, index_db_path=index_db)
             receipt_valid, receipt_problems = validate_raw_replay_application_receipt(plan, application_receipt)
             if receipt_valid:
                 outcome = RawReplayPlanOutcome(
@@ -6940,7 +7111,11 @@ def repair_raw_materialization(
                 )
                 record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
             else:
-                plan_still_valid, _ = validate_raw_replay_plan(archive_root, plan)
+                plan_still_valid, _ = validate_raw_replay_plan(
+                    archive_root,
+                    plan,
+                    index_db_path=index_db,
+                )
                 if plan_still_valid:
                     outcome = RawReplayPlanOutcome(
                         plan.plan_id,
@@ -6984,9 +7159,11 @@ def repair_raw_materialization(
         # ``_raw_replay_plan_outcome`` types this TERMINAL (not RETRYABLE) so
         # it stops being silently reselected forever.
         no_progress = part.replayed_logical_sources == 0 and part.quarantined == 0 and part.adoption_deferred == 0
-        component_outcomes = _raw_replay_plan_outcomes(archive_root, [plan], remaining=current, no_progress=no_progress)
+        component_outcomes = _raw_replay_plan_outcomes(
+            archive_root, index_db, [plan], remaining=current, no_progress=no_progress
+        )
         for outcome in component_outcomes:
-            application_receipt = raw_replay_application_receipt(archive_root, plan)
+            application_receipt = raw_replay_application_receipt(archive_root, plan, index_db_path=index_db)
             receipted = dataclasses.replace(outcome, application_receipt=application_receipt)
             if outcome.status is RawReplayPlanStatus.EXECUTED:
                 receipt_valid, receipt_problems = validate_raw_replay_application_receipt(plan, application_receipt)
@@ -7047,7 +7224,10 @@ def repair_raw_materialization(
     )
     plan_outcomes = tuple(execution_outcomes) + blocked_plan_outcomes
     post_plans, post_residual = _raw_authority_postflight_snapshot(
-        archive_root, remaining, max_payload_bytes=max_payload_bytes
+        archive_root,
+        remaining,
+        max_payload_bytes=max_payload_bytes,
+        index_db_path=index_db,
     )
     census_receipt = finalize_raw_authority_census(
         archive_root,
@@ -7321,6 +7501,7 @@ __all__ = [
     "preview_superseded_raw_snapshots",
     "preview_message_type_backfill",
     "preview_session_insights",
+    "raw_materialization_lease_refusal_result",
     "raw_materialization_replay_backlog",
     "raw_materialization_scale_profile",
     "repair_empty_sessions",

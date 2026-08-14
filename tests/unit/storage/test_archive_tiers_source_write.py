@@ -276,6 +276,56 @@ def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_f
     assert tuple(ordinary) == ("ordinary-coordinate", raw_ids[0], "session_export")
 
 
+def test_source_artifact_upsert_refreshes_current_equal_time_carrier(tmp_path: Path) -> None:
+    """The current raw may refine its own coordinate even at the same timestamp."""
+    conn = _connect(tmp_path / "source.db")
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/tmp/current.jsonl",
+        source_index=0,
+        payload=b"current",
+        acquired_at_ms=1,
+    )
+    upsert_raw_artifact(
+        conn,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id="deferred-current",
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/current.jsonl",
+            source_index=0,
+            artifact_kind="deferred_cas_frontier",
+            classification_reason="deferred",
+            support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+        ),
+    )
+    upsert_raw_artifact(
+        conn,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id="terminal-current",
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/current.jsonl",
+            source_index=0,
+            artifact_kind="terminal_corrupt_input",
+            classification_reason="corrupt",
+            support_status=ArtifactSupportStatus.DECODE_FAILED,
+        ),
+    )
+
+    row = conn.execute(
+        "SELECT artifact_id, artifact_kind, support_status, classification_reason FROM raw_artifacts"
+    ).fetchone()
+    assert row is not None
+    assert tuple(row) == (
+        "deferred-current",
+        "terminal_corrupt_input",
+        ArtifactSupportStatus.DECODE_FAILED.value,
+        "corrupt",
+    )
+
+
 def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "source.db")
     payload = b'{"kind":"session","messages":["hello"]}'

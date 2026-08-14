@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.parse_prefetch import DaemonParseStage
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.product.raw_authority import ArchiveWriterRebuildExclusion, RawMaterializationCounts
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
@@ -1277,60 +1277,81 @@ def _drain_raw_materialization_once(
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
     archive = archive_root()
-    restored = restore_direct_blob_reference_debt(
-        archive / "source.db",
-        dry_run=False,
-        max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
-        sample_size=0,
-    )
-    if restored.restored_count:
-        logger.info(
-            "blob references: restored %d direct source blob(s) before raw materialization",
-            restored.restored_count,
-        )
-
     config = Config(
         archive_root=archive,
         render_root=render_root(),
         sources=[],
     )
-    if recover:
-        raw_authority.recover_interrupted_frontier(config)
-    # polylogue-d7im: a stale-plan blocker requires no operator judgment (it
-    # is a pure TOCTOU race between a census and its apply, already
-    # recomputed unattended in the crash-recovery path above) but, left
-    # unresolved, unresolved_raw_replay_blockers makes repair_materialization
-    # below fail closed for the WHOLE archive, not just the affected raw.
-    # Clear these automatically before every pass instead of waiting for a
-    # manual raw-authority-blocker-resolve invocation.
-    auto_resolved = raw_authority.auto_resolve_stale_plan_blockers(config)
-    if auto_resolved:
-        logger.info(
-            "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
-            auto_resolved,
-        )
-    try:
-        result = raw_authority.repair_materialization(
-            config,
-            dry_run=False,
-            raw_artifact_limit=limit,
-            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-            prefetch_cache=prefetch_cache,
-            max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
-        )
-    finally:
-        _close_raw_materialization_fts(config.archive_root / "index.db")
+    generation_pin_refused = False
+    frontier_repaired = 0
+    with contextlib.ExitStack() as lease_stack:
+        try:
+            index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
+        except Exception as exc:
+            refused_result = raw_authority.materialization_lease_refusal_result(exc)
+            if refused_result is None:
+                raise
+            result = refused_result
+            generation_pin_refused = True
+        else:
+            restored = restore_direct_blob_reference_debt(
+                archive / "source.db",
+                dry_run=False,
+                max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
+                sample_size=0,
+            )
+            if restored.restored_count:
+                logger.info(
+                    "blob references: restored %d direct source blob(s) before raw materialization",
+                    restored.restored_count,
+                )
+            if recover:
+                raw_authority.recover_interrupted_frontier(config)
+            # polylogue-d7im: a stale-plan blocker requires no operator
+            # judgment.  Recovery, stale-plan resolution, repair, FTS closure,
+            # and frontier apply all consume the selected index generation,
+            # so the one promotion-excluding lease must cover the complete
+            # sequence rather than only the middle repair call.
+            auto_resolved = raw_authority.auto_resolve_stale_plan_blockers(config)
+            if auto_resolved:
+                logger.info(
+                    "raw authority: auto-resolved %d stale-plan blocker(s) before raw materialization",
+                    auto_resolved,
+                )
+            try:
+                result = raw_authority.repair_materialization(
+                    config,
+                    dry_run=False,
+                    raw_artifact_limit=limit,
+                    max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+                    prefetch_cache=prefetch_cache,
+                    max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
+                )
+            finally:
+                _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
+            frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
+    if generation_pin_refused:
+        _emit_raw_materialization_pass(result)
+        if not result.success:
+            logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+        return _raw_materialization_counts(result)
     _emit_raw_materialization_pass(result)
-    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+    return _raw_materialization_counts(result, executed_plans=frontier_repaired)
+
+
+def _raw_materialization_counts(result: Any, *, executed_plans: int = 0) -> RawMaterializationCounts:
+    """Project one typed raw-materialization result into daemon scheduling counts."""
+    from polylogue.product import raw_authority
+
     metrics = dict(getattr(result, "metrics", {}))
     remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
     if remaining == 0:
         remaining = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
     return raw_authority.RawMaterializationCounts(
         repaired_sessions=result.repaired_count,
-        executed_plans=frontier_repaired,
+        executed_plans=executed_plans,
         remaining_candidates=remaining,
         censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
         candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),
@@ -1378,16 +1399,25 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
 
     archive = archive_root()
     config = Config(archive_root=archive, render_root=render_root(), sources=[])
-    try:
-        result = raw_authority.repair_materialization(
-            config,
-            dry_run=False,
-            raw_artifact_limit=1,
-            max_payload_bytes=max_payload_bytes,
-            raw_artifact_id=raw_artifact_id,
-        )
-    finally:
-        _close_raw_materialization_fts(config.archive_root / "index.db")
+    with contextlib.ExitStack() as lease_stack:
+        try:
+            index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
+        except Exception as exc:
+            refused_result = raw_authority.materialization_lease_refusal_result(exc)
+            if refused_result is None:
+                raise
+            result = refused_result
+        else:
+            try:
+                result = raw_authority.repair_materialization(
+                    config,
+                    dry_run=False,
+                    raw_artifact_limit=1,
+                    max_payload_bytes=max_payload_bytes,
+                    raw_artifact_id=raw_artifact_id,
+                )
+            finally:
+                _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
     _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)
@@ -1606,7 +1636,7 @@ def _emit_raw_materialization_pass(result: Any) -> None:
     )
 
 
-def _close_raw_materialization_fts(index_db: Path) -> None:
+def _close_raw_materialization_fts(index_db: Path, *, ops_db_path: Path) -> None:
     """Return message search to ready or leave explicit retryable debt.
 
     Large raw replay batches deliberately suspend FTS triggers and may skip
@@ -1620,7 +1650,9 @@ def _close_raw_materialization_fts(index_db: Path) -> None:
     try:
         needs_repair = _raw_materialization_fts_needs_repair(index_db)
     except Exception as exc:
-        _record_raw_materialization_fts_debt(index_db, f"FTS readiness probe failed after raw materialization: {exc}")
+        _record_raw_materialization_fts_debt(
+            index_db, ops_db_path=ops_db_path, error=f"FTS readiness probe failed after raw materialization: {exc}"
+        )
         return
     if not needs_repair:
         return
@@ -1632,14 +1664,15 @@ def _close_raw_materialization_fts(index_db: Path) -> None:
         # this closure retryable instead of masking the initiating failure.
         _record_raw_materialization_fts_debt(
             index_db,
-            f"FTS repair failed after raw materialization: {type(exc).__name__}: {exc}",
+            ops_db_path=ops_db_path,
+            error=f"FTS repair failed after raw materialization: {type(exc).__name__}: {exc}",
         )
         return
     if repaired:
         try:
             from polylogue.sources.live.cursor import CursorStore
 
-            CursorStore(index_db).clear_convergence_debt(
+            CursorStore(index_db, ops_db_path=ops_db_path).clear_convergence_debt(
                 subject_type="fts_surface",
                 subject_id="messages_fts",
                 stage="fts",
@@ -1649,15 +1682,16 @@ def _close_raw_materialization_fts(index_db: Path) -> None:
         return
     _record_raw_materialization_fts_debt(
         index_db,
-        "raw materialization exited without restoring message FTS readiness",
+        ops_db_path=ops_db_path,
+        error="raw materialization exited without restoring message FTS readiness",
     )
 
 
-def _record_raw_materialization_fts_debt(index_db: Path, error: str) -> None:
+def _record_raw_materialization_fts_debt(index_db: Path, *, ops_db_path: Path, error: str) -> None:
     from polylogue.sources.live.cursor import CursorStore
 
     try:
-        CursorStore(index_db).record_convergence_debt(
+        CursorStore(index_db, ops_db_path=ops_db_path).record_convergence_debt(
             stage="fts",
             subject_type="fts_surface",
             subject_id="messages_fts",
@@ -2069,30 +2103,133 @@ async def _emit_daemon_lifecycle_event(
         logger.warning("daemon: failed to emit lifecycle event %s", phase, exc_info=True)
 
 
+def _retain_rebuild_exclusion_for_undrained_writer(
+    rebuild_exclusion: ArchiveWriterRebuildExclusion,
+    *,
+    writer_drained: bool,
+) -> None:
+    """Transfer rebuild exclusion to process lifetime after a drain timeout."""
+    if not writer_drained:
+        rebuild_exclusion.retain_until_process_exit()
+
+
+async def _shutdown_writer_coordinator_with_rebuild_exclusion(
+    coordinator: DaemonWriteCoordinator,
+    rebuild_exclusion: ArchiveWriterRebuildExclusion,
+    *,
+    timeout: float,
+) -> bool:
+    """Drain writers or retain rebuild exclusion when drain cannot be proven."""
+    try:
+        writer_drained = await coordinator.shutdown(timeout=timeout)
+    except BaseException:
+        rebuild_exclusion.retain_until_process_exit()
+        raise
+    _retain_rebuild_exclusion_for_undrained_writer(
+        rebuild_exclusion,
+        writer_drained=writer_drained,
+    )
+    return writer_drained
+
+
 async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
 ) -> None:
     from polylogue.daemon.events import emit_catch_up_cycle
+    from polylogue.paths import archive_root
+    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
 
-    async with Polylogue() as polylogue:
-        watcher = LiveWatcher(
-            polylogue,
-            sources,
-            debounce_s=debounce_s,
-            event_emitter=_emit_live_batch_event,
-            catch_up_event_emitter=emit_catch_up_cycle,
-            write_coordinator=daemon_write_coordinator(),
-        )
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
+        coordinator = daemon_write_coordinator()
+        watcher: LiveWatcher | None = None
         try:
-            await watcher.run()
-        except KeyboardInterrupt:
-            watcher.stop()
+            async with Polylogue() as polylogue:
+                watcher = LiveWatcher(
+                    polylogue,
+                    sources,
+                    debounce_s=debounce_s,
+                    event_emitter=_emit_live_batch_event,
+                    catch_up_event_emitter=emit_catch_up_cycle,
+                    write_coordinator=coordinator,
+                )
+                with contextlib.suppress(KeyboardInterrupt):
+                    await watcher.run()
+        finally:
+            try:
+                if watcher is not None:
+                    watcher.stop()
+            finally:
+                await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                    coordinator,
+                    rebuild_exclusion,
+                    timeout=5.0,
+                )
 
 
 async def run_daemon_services(
     *,
+    sources: tuple[WatchSource, ...],
+    debounce_s: float,
+    enable_watch: bool,
+    enable_source_catchup: bool = True,
+    enable_browser_capture: bool,
+    browser_capture_host: str,
+    browser_capture_port: int,
+    browser_capture_spool_path: Path | None,
+    browser_capture_allow_remote: bool = False,
+    browser_capture_auth_token: str | None = None,
+    browser_capture_allow_no_auth: bool = False,
+    browser_capture_extra_origins: tuple[str, ...] = (),
+    enable_api: bool = False,
+    api_host: str = "127.0.0.1",
+    api_port: int = 8766,
+    api_auth_token: str | None = None,
+    api_allow_no_auth: bool = False,
+) -> None:
+    """Run the daemon while excluding every offline index rebuild.
+
+    The lease is intentionally process-lifetime authority rather than a
+    per-maintenance-call guard.  Startup readiness, reservation recovery,
+    live acquisition, and periodic convergence all mutate source or index
+    state; an offline rebuild must therefore refuse the daemon before any of
+    those routes can run, and the daemon must prevent a rebuild from starting
+    until its writer coordinator has drained.
+    """
+    from polylogue.paths import archive_root
+    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
+
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
+        await _run_daemon_services_under_active_writer_lease(
+            rebuild_exclusion=rebuild_exclusion,
+            sources=sources,
+            debounce_s=debounce_s,
+            enable_watch=enable_watch,
+            enable_source_catchup=enable_source_catchup,
+            enable_browser_capture=enable_browser_capture,
+            browser_capture_host=browser_capture_host,
+            browser_capture_port=browser_capture_port,
+            browser_capture_spool_path=browser_capture_spool_path,
+            browser_capture_allow_remote=browser_capture_allow_remote,
+            browser_capture_auth_token=browser_capture_auth_token,
+            browser_capture_allow_no_auth=browser_capture_allow_no_auth,
+            browser_capture_extra_origins=browser_capture_extra_origins,
+            enable_api=enable_api,
+            api_host=api_host,
+            api_port=api_port,
+            api_auth_token=api_auth_token,
+            api_allow_no_auth=api_allow_no_auth,
+        )
+
+
+async def _run_daemon_services_under_active_writer_lease(
+    *,
+    rebuild_exclusion: ArchiveWriterRebuildExclusion,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
     enable_watch: bool,
@@ -2317,7 +2454,11 @@ async def run_daemon_services(
         if lifecycle is not None:
             with contextlib.suppress(Exception):
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
-        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
+            write_coordinator,
+            rebuild_exclusion,
+            timeout=5.0,
+        )
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         if writer_drained:
             archive_owner.release()
@@ -2352,7 +2493,11 @@ async def run_daemon_services(
         if lifecycle is not None:
             with contextlib.suppress(Exception):
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
-        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
+            write_coordinator,
+            rebuild_exclusion,
+            timeout=5.0,
+        )
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         if writer_drained:
             archive_owner.release()
@@ -2713,9 +2858,22 @@ async def run_daemon_services(
                 except Exception:
                     logger.warning("daemon: could not persist final lifecycle stop", exc_info=True)
 
-            writer_drained = await write_coordinator.shutdown(timeout=5.0)
+            writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                write_coordinator,
+                rebuild_exclusion,
+                timeout=5.0,
+            )
             pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
         finally:
+            # Any exception or repeated cancellation before coordinator
+            # shutdown leaves writer drain unproven.  The outer product
+            # context must not interpret that control-flow escape as a safe
+            # release: keep rebuild exclusion until process exit unless the
+            # coordinator returned an affirmative drain result.
+            _retain_rebuild_exclusion_for_undrained_writer(
+                rebuild_exclusion,
+                writer_drained=writer_drained,
+            )
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()

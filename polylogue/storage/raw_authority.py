@@ -744,11 +744,20 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
     )
 
 
-def build_raw_replay_plans(archive_root: Path, components: Sequence[tuple[str, ...]]) -> tuple[RawReplayPlan, ...]:
+def build_raw_replay_plans(
+    archive_root: Path,
+    components: Sequence[tuple[str, ...]],
+    *,
+    index_db_path: Path | None = None,
+) -> tuple[RawReplayPlan, ...]:
     if not components:
         return ()
+    if index_db_path is None:
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        index_db_path = resolve_active_index_path(archive_root)
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
         return tuple(build_raw_replay_plan(conn, component) for component in components)
 
 
@@ -1275,19 +1284,37 @@ def record_raw_authority_census(
     )
 
 
-def validate_raw_replay_plan(archive_root: Path, plan: RawReplayPlan) -> tuple[bool, JSONDocument]:
+def validate_raw_replay_plan(
+    archive_root: Path,
+    plan: RawReplayPlan,
+    *,
+    index_db_path: Path | None = None,
+) -> tuple[bool, JSONDocument]:
     try:
-        observed = build_raw_replay_plans(archive_root, (plan.input_raw_ids,))[0]
+        observed = build_raw_replay_plans(
+            archive_root,
+            (plan.input_raw_ids,),
+            index_db_path=index_db_path,
+        )[0]
     except Exception as exc:
         logger.warning("raw replay plan validation could not rebuild %s", plan.plan_id, exc_info=True)
         return False, json_document({"error": f"{type(exc).__name__}: {exc}"})
     return observed == plan, observed.to_dict()
 
 
-def raw_replay_application_receipt(archive_root: Path, plan: RawReplayPlan) -> JSONDocument:
+def raw_replay_application_receipt(
+    archive_root: Path,
+    plan: RawReplayPlan,
+    *,
+    index_db_path: Path | None = None,
+) -> JSONDocument:
+    if index_db_path is None:
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        index_db_path = resolve_active_index_path(archive_root)
     marks = ",".join("?" for _ in plan.input_raw_ids)
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(archive_root / "index.db"),))
+        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db_path),))
         source = _rows(
             conn,
             f"""
@@ -1349,6 +1376,7 @@ def raw_replay_application_receipt(archive_root: Path, plan: RawReplayPlan) -> J
     return json_document(
         {
             "schema": "polylogue.raw-replay-application-receipt.v2",
+            "index_db_path": str(index_db_path),
             "source_rows": source,
             "membership_rows": memberships,
             "application_rows": applications,
@@ -1735,6 +1763,8 @@ def finalize_raw_authority_census(
 
 def recover_interrupted_raw_authority_censuses(
     archive_root: Path,
+    *,
+    index_db_path: Path | None = None,
 ) -> tuple[tuple[str, JSONDocument], ...]:
     """Reconcile unfinished apply censuses from durable postconditions."""
     source_db = archive_root / "source.db"
@@ -1771,7 +1801,7 @@ def recover_interrupted_raw_authority_censuses(
     for row in rows:
         census_id = str(row["census_id"])
         plan = _raw_replay_plan_from_row(row)
-        receipt = raw_replay_application_receipt(archive_root, plan)
+        receipt = raw_replay_application_receipt(archive_root, plan, index_db_path=index_db_path)
         valid_receipt, problems = validate_raw_replay_application_receipt(plan, receipt)
         if valid_receipt:
             outcome = RawReplayPlanOutcome(
@@ -1784,7 +1814,7 @@ def recover_interrupted_raw_authority_censuses(
             )
             record_raw_replay_outcome(archive_root, census_id, outcome)
             continue
-        valid_plan, observed = validate_raw_replay_plan(archive_root, plan)
+        valid_plan, observed = validate_raw_replay_plan(archive_root, plan, index_db_path=index_db_path)
         if not valid_plan:
             reject_stale_raw_replay_plan(archive_root, census_id, plan, observed)
         else:

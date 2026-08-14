@@ -10,12 +10,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
+from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
+
+_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS = frozenset(
+    kind.value for kind in RawFailureEvidenceKind if kind.lifecycle == "terminal"
+)
 
 _V1_RAW_CANDIDATE_SQL = """
 WITH ranked AS (
@@ -375,6 +381,7 @@ def active_raw_retention_authority(
     conn: sqlite3.Connection,
     *,
     index_db_path: Path,
+    terminal_source_paths: Iterable[Path] | None = None,
 ) -> RawRetentionAuthority:
     """Return current protection plus explicitly authorized deletion rows.
 
@@ -383,6 +390,9 @@ def active_raw_retention_authority(
     immutable ``superseded`` receipt tied to the current head authorizes raw
     deletion. Callers must serialize this read with source deletion under the
     daemon's single-writer contract, or stop the daemon for manual cleanup.
+    ``terminal_source_paths`` scopes terminal-artifact protection only for a
+    deletion operation constrained to those same physical paths; callers that
+    may delete archive-wide must leave it unset.
     """
     original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
@@ -391,15 +401,33 @@ def active_raw_retention_authority(
         seeds = set(session_raw_ids)
         seeds.update(head.accepted_raw_id for head in heads)
         if not seeds:
-            if conn.execute("SELECT 1 FROM raw_sessions LIMIT 1").fetchone() is not None:
+            all_raw_ids = frozenset(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions").fetchall())
+            terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn)
+            if all_raw_ids and all_raw_ids.issubset(terminal_artifact_raw_ids):
+                return RawRetentionAuthority(protected_raw_ids=all_raw_ids, eligible_raw_ids=frozenset())
+            if all_raw_ids:
                 raise RawRetentionSafetyError("source tier contains raw evidence but index has no raw authority")
             return RawRetentionAuthority(protected_raw_ids=frozenset(), eligible_raw_ids=frozenset())
+        terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn, source_paths=terminal_source_paths)
         authority_raw_ids = seeds.union(receipt.raw_id for receipt in eligible_receipts)
         rows_by_id = _raw_revision_rows(conn, authority_raw_ids)
         protected: set[str] = set()
+        byte_head_raw_ids = {head.accepted_raw_id for head in heads if head.accepted_frontier_kind == "byte"}
+        semantic_only_raw_ids = {
+            head.accepted_raw_id for head in heads if head.accepted_frontier_kind != "byte"
+        }.difference(byte_head_raw_ids)
+        # A semantic membership head is accepted authority for retention, but
+        # it is deliberately not a byte-predecessor proof. Keep it protected
+        # without reinterpreting it as one.
+        protected.update(semantic_only_raw_ids)
+        protected.update(terminal_artifact_raw_ids)
         for seed_raw_id in sorted(session_raw_ids):
+            if seed_raw_id in semantic_only_raw_ids:
+                continue
             protected.update(_validate_active_revision_chain(rows_by_id, seed_raw_id))
         for head in heads:
+            if head.accepted_raw_id in semantic_only_raw_ids:
+                continue
             row = rows_by_id[head.accepted_raw_id]
             if head.accepted_frontier_kind == "byte":
                 _validate_byte_head(row, head)
@@ -413,6 +441,8 @@ def active_raw_retention_authority(
             protected_raw_ids=protected_ids,
             eligible_raw_ids=frozenset(eligible.difference(protected_ids)),
         )
+    except sqlite3.Error as exc:
+        raise RawRetentionSafetyError(f"raw retention authority is unreadable: {exc}") from exc
     finally:
         conn.row_factory = original_row_factory
 
@@ -1156,7 +1186,16 @@ def raw_frontier_integrity_projection(
         raw_materialization_readiness,
         sample_limit=sample_limit,
     )
-    index_db_path = archive_root / "index.db"
+    try:
+        index_db_path = resolve_active_index_path(archive_root)
+    except ArchiveLocationError as exc:
+        return unknown_raw_frontier_integrity_projection(
+            f"active index pointer unavailable: {exc}",
+            missing_source_raw_status=missing_status,
+            missing_source_raw_count=missing_count,
+            missing_source_raw_samples=missing_samples,
+            missing_source_raw_reason=missing_reason,
+        )
     source_db_path = archive_root / "source.db"
     ops_db_path = archive_root / "ops.db"
     snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unavailable: {source_db_path}")
@@ -1206,7 +1245,14 @@ def raw_frontier_integrity_projection(
     )
 
 
-def unknown_raw_frontier_integrity_projection(reason: str) -> RawFrontierIntegrityProjection:
+def unknown_raw_frontier_integrity_projection(
+    reason: str,
+    *,
+    missing_source_raw_status: RawFrontierIntegrityStatus = "unknown",
+    missing_source_raw_count: int = 0,
+    missing_source_raw_samples: tuple[Mapping[str, object], ...] = (),
+    missing_source_raw_reason: str | None = None,
+) -> RawFrontierIntegrityProjection:
     """Return the canonical explicit-unknown projection for an unavailable read.
 
     Cache and presentation adapters use this instead of inventing partial
@@ -1215,18 +1261,19 @@ def unknown_raw_frontier_integrity_projection(reason: str) -> RawFrontierIntegri
     """
 
     snapshot = _unavailable_frontier_integrity_snapshot(reason)
+    statuses = (snapshot.broken_head_status, missing_source_raw_status, snapshot.cursor_ahead_status)
     return RawFrontierIntegrityProjection(
         available=False,
-        overall_status="unknown",
+        overall_status=combine_raw_frontier_integrity_statuses(*statuses),
         broken_head_status=snapshot.broken_head_status,
         broken_head_count=snapshot.broken_head_count,
         broken_head_checked_count=snapshot.broken_head_checked_count,
         broken_head_samples=snapshot.broken_head_samples,
         broken_head_reason=snapshot.broken_head_reason,
-        missing_source_raw_status="unknown",
-        missing_source_raw_count=0,
-        missing_source_raw_samples=(),
-        missing_source_raw_reason=reason,
+        missing_source_raw_status=missing_source_raw_status,
+        missing_source_raw_count=missing_source_raw_count,
+        missing_source_raw_samples=missing_source_raw_samples,
+        missing_source_raw_reason=reason if missing_source_raw_reason is None else missing_source_raw_reason,
         cursor_ahead_status=snapshot.cursor_ahead_status,
         cursor_ahead_count=snapshot.cursor_ahead_count,
         cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,
@@ -1369,6 +1416,15 @@ def _check_broken_active_chains(
     for head in heads:
         heads_by_raw_id.setdefault(head.accepted_raw_id, []).append(head)
     seed_raw_ids = set(session_raw_ids).union(heads_by_raw_id)
+    # Membership-governed snapshots carry a semantic head, not a byte
+    # predecessor chain. They remain active source authority and must be
+    # retained, but applying byte-chain validation to them turns a normal
+    # membership snapshot into a false broken-head violation. A raw selected
+    # by both regimes remains byte-validated.
+    byte_head_raw_ids = {head.accepted_raw_id for head in heads if head.accepted_frontier_kind == "byte"}
+    semantic_only_raw_ids = {
+        head.accepted_raw_id for head in heads if head.accepted_frontier_kind != "byte"
+    }.difference(byte_head_raw_ids)
     try:
         rows_by_id = _raw_revision_rows(conn, seed_raw_ids, allow_missing=True)
     except _RawRevisionAuthorityUnavailableError as exc:
@@ -1388,6 +1444,8 @@ def _check_broken_active_chains(
         try:
             if row is None:
                 raise RawRetentionSafetyError(f"active index raw is missing from source tier: {seed_raw_id}")
+            if seed_raw_id in semantic_only_raw_ids:
+                continue
             for head in seed_heads:
                 if head.accepted_frontier_kind == "byte":
                     _validate_byte_head(row, head)
@@ -1479,6 +1537,11 @@ def _check_cursor_ahead_of_accepted(
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: cursor source path lookup failed: %s", exc)
         return "unknown", 0, 0, 0, 0, (), 0, (), f"cursor source path lookup failed: {exc}"
+    try:
+        terminal_artifact_paths = _terminal_artifact_paths(conn, set(cursor_map))
+    except sqlite3.Error as exc:
+        logger.warning("raw frontier integrity: terminal artifact authority lookup failed: %s", exc)
+        return "unknown", 0, 0, 0, 0, (), 0, (), f"terminal artifact authority is unreadable: {exc}"
     for path, cursor in cursor_map.items():
         cursor_offset = cursor.byte_offset
         if cursor.is_deferred:
@@ -1501,7 +1564,7 @@ def _check_cursor_ahead_of_accepted(
         if not comparable_heads:
             # A path governed exclusively by membership authority has no
             # comparable byte frontier and is intentionally out of scope.
-            if path in all_head_paths:
+            if path in all_head_paths or path in terminal_artifact_paths:
                 continue
             gap_count += 1
             if len(gaps) < sample_limit:
@@ -1591,6 +1654,167 @@ def _source_paths_for_paths(conn: sqlite3.Connection, source_paths: set[str]) ->
         ).fetchall()
         result.update(str(row[0]) for row in rows if row[0] is not None)
     return result
+
+
+def _terminal_artifact_paths(conn: sqlite3.Connection, source_paths: set[str]) -> set[str]:
+    """Return paths whose every current source coordinate is terminal evidence.
+
+    A full-route cursor can legitimately advance over a workflow/fact artifact
+    that has no session head. ``raw_artifacts.parse_as_session = 0`` is the
+    source-tier terminal authority for that case. Ordinary artifact upserts
+    retain the source coordinate's latest receipt while ``raw_sessions``
+    retains its historical acquisition evidence, so authority attaches to each
+    coordinate's newest raw observation rather than requiring a duplicate
+    receipt on every historical raw. A failure-kind carrier remains authority
+    only while that raw's current parse or validation state is failed; a later
+    successful reparse makes the retained carrier historical evidence. Every
+    ``(origin, source_index)`` member of a physical path must be terminal before
+    the cursor path is exempt.
+    """
+
+    result: set[str] = set()
+    raw_failure_kinds = tuple(sorted(RAW_FAILURE_EVIDENCE_KINDS))
+    terminal_raw_failure_kinds = tuple(sorted(_TERMINAL_RAW_FAILURE_EVIDENCE_KINDS))
+    raw_failure_placeholders = ", ".join("?" for _ in raw_failure_kinds)
+    terminal_raw_failure_placeholders = ", ".join("?" for _ in terminal_raw_failure_kinds)
+    # The path batch binds once for observation receipts and once for raw rows.
+    path_batch_size = max(1, (500 - len(raw_failure_kinds) - len(terminal_raw_failure_kinds)) // 2)
+    pending = set(source_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:path_batch_size])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            WITH latest_raw_observation AS (
+                SELECT raw_id, acquired_at_ms, observation_rowid
+                FROM (
+                    SELECT
+                        ref_id AS raw_id,
+                        acquired_at_ms,
+                        rowid AS observation_rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ref_id
+                            ORDER BY acquired_at_ms DESC, rowid DESC
+                        ) AS observation_rank
+                    FROM blob_refs
+                    WHERE ref_type = 'raw_payload'
+                      AND source_path IN ({placeholders})
+                )
+                WHERE observation_rank = 1
+            ),
+            newest_per_coordinate AS (
+                SELECT raw_id, source_path, origin, source_index, parse_error,
+                       validation_status, validated_at_ms, parsed_at_ms
+                FROM (
+                    SELECT
+                        raw.raw_id,
+                        raw.source_path,
+                        raw.origin,
+                        raw.source_index,
+                        raw.parse_error,
+                        raw.validation_status,
+                        raw.validated_at_ms,
+                        raw.parsed_at_ms,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY raw.source_path, raw.origin, raw.source_index
+                            ORDER BY
+                                COALESCE(observation.acquired_at_ms, raw.acquired_at_ms) DESC,
+                                COALESCE(observation.observation_rowid, raw.rowid) DESC
+                        ) AS coordinate_rank
+                    FROM raw_sessions AS raw
+                    LEFT JOIN latest_raw_observation AS observation ON observation.raw_id = raw.raw_id
+                    WHERE raw.source_path IN ({placeholders})
+                )
+                WHERE coordinate_rank = 1
+            ),
+            terminal_artifacts AS (
+                SELECT artifact.raw_id
+                FROM raw_artifacts AS artifact
+                JOIN newest_per_coordinate AS evidence_raw ON evidence_raw.raw_id = artifact.raw_id
+                WHERE artifact.parse_as_session = 0
+                  AND (
+                      (
+                          artifact.artifact_kind NOT IN ({raw_failure_placeholders})
+                          AND (
+                              evidence_raw.parsed_at_ms IS NULL
+                              OR artifact.last_observed_at_ms >= evidence_raw.parsed_at_ms
+                          )
+                      )
+                      OR (
+                          artifact.artifact_kind IN ({terminal_raw_failure_placeholders})
+                          AND (
+                              evidence_raw.parse_error IS NOT NULL
+                              OR (
+                                  evidence_raw.validation_status = 'failed'
+                                  AND (
+                                      evidence_raw.parsed_at_ms IS NULL
+                                      OR evidence_raw.validated_at_ms IS NULL
+                                      -- A legacy tie has no proven winner;
+                                      -- retain it rather than deleting raw
+                                      -- authority based on an arbitrary side.
+                                      OR evidence_raw.validated_at_ms >= evidence_raw.parsed_at_ms
+                                  )
+                              )
+                          )
+                      )
+                  )
+            ),
+            terminal_evidence AS (
+                SELECT raw_id FROM terminal_artifacts
+                UNION
+                SELECT evidence_raw.raw_id
+                FROM newest_per_coordinate AS evidence_raw
+                JOIN raw_membership_census AS census ON census.raw_id = evidence_raw.raw_id
+                WHERE census.status = 'non_session'
+            )
+            SELECT DISTINCT terminal_raw.source_path
+            FROM terminal_evidence AS artifact
+            JOIN newest_per_coordinate AS terminal_raw ON terminal_raw.raw_id = artifact.raw_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM newest_per_coordinate AS coordinate
+                WHERE coordinate.source_path = terminal_raw.source_path
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM terminal_evidence AS current_artifact
+                      WHERE current_artifact.raw_id = coordinate.raw_id
+                  )
+            )
+            """,
+            (*batch, *batch, *raw_failure_kinds, *terminal_raw_failure_kinds),
+        ).fetchall()
+        result.update(str(row[0]) for row in rows)
+    return result
+
+
+def _terminal_artifact_raw_ids(
+    conn: sqlite3.Connection,
+    *,
+    source_paths: Iterable[Path] | None = None,
+) -> frozenset[str]:
+    """Return all retained raw evidence for paths with terminal current observations."""
+
+    selected_paths = (
+        {str(row[0]) for row in conn.execute("SELECT DISTINCT source_path FROM raw_sessions").fetchall()}
+        if source_paths is None
+        else {str(path) for path in source_paths}
+    )
+    terminal_paths = _terminal_artifact_paths(conn, selected_paths)
+    if not terminal_paths:
+        return frozenset()
+    raw_ids: set[str] = set()
+    pending = set(terminal_paths)
+    while pending:
+        batch = tuple(sorted(pending)[:500])
+        pending.difference_update(batch)
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({placeholders})",
+            batch,
+        ).fetchall()
+        raw_ids.update(str(row[0]) for row in rows)
+    return frozenset(raw_ids)
 
 
 def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, _OpsCursorAuthority]:

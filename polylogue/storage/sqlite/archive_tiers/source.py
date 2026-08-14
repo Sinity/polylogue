@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, 
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 32
+SOURCE_SCHEMA_VERSION = 33
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -58,6 +58,14 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
         CHECK ({check("revision_authority", RawRevisionAuthority)})
     ,revision_authority_evidence TEXT
         CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))
+    ,detected_provider       TEXT CHECK ({nullable_check("detected_provider", Provider)})
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS raw_container_coordinates (
+    raw_id             TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    coordinate_format  TEXT NOT NULL CHECK(coordinate_format = 'zip-v2'),
+    entry_ordinal      INTEGER NOT NULL CHECK(entry_ordinal >= 0),
+    split_index        INTEGER NOT NULL CHECK(split_index >= 0)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin

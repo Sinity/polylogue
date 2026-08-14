@@ -103,6 +103,7 @@ class Config:
     # the defaults makes the spec honest about the optional surface.
     drive_config: DriveConfig | None = None
     index_config: IndexConfig | None = None
+    _db_path_explicit: bool = False
     embedding_model: str = "voyage-4-lite"
     embedding_dimension: int = 1024
     judgment_automation_interval_s: int = 3600
@@ -122,6 +123,7 @@ class Config:
         self.archive_root = archive_root
         self.render_root = render_root
         self.sources = sources
+        self._db_path_explicit = db_path is not None
         self.db_path = db_path if db_path is not None else resolve_active_index_path(archive_root)
         self.drive_config = drive_config
         self.index_config = index_config
@@ -136,6 +138,13 @@ class Config:
                 raise ConfigError(f"Config.{attr} must be an absolute path, got {value!r}")
         if isinstance(judgment_automation_interval_s, bool) or not isinstance(judgment_automation_interval_s, int):
             raise ConfigError("Config.judgment_automation_interval_s must be an integer")
+
+    def current_db_path(self) -> Path:
+        """Resolve the current generation unless the caller pinned an override."""
+
+        if self._db_path_explicit:
+            return self.db_path
+        return resolve_active_index_path(self.archive_root)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Config):
@@ -166,7 +175,7 @@ class Config:
             archive_root=self.archive_root,
             render_root=self.render_root,
             sources=sources,
-            db_path=self.db_path,
+            db_path=self.db_path if self._db_path_explicit else None,
             drive_config=self.drive_config,
             index_config=self.index_config,
             embedding_model=self.embedding_model,

@@ -19,6 +19,13 @@ from polylogue.core.degraded import degraded_reason
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
+def _source_tier_acquisition_required() -> bool:
+    """Return whether live ingest must avoid every derived-tier read."""
+
+    reason = degraded_reason()
+    return reason is not None and reason.derived_only
+
+
 def _open_archive_for_live_write(archive_root: Path) -> ArchiveStore:
     """Open the archive for a live ingest write pass.
 
@@ -29,7 +36,6 @@ def _open_archive_for_live_write(archive_root: Path) -> ArchiveStore:
     nothing beyond raw admission is reached. Otherwise returns the ordinary
     full writer, preserving its all-tier validation exactly.
     """
-    reason = degraded_reason()
-    if reason is not None and reason.derived_only:
+    if _source_tier_acquisition_required():
         return ArchiveStore.open_source_tier_acquisition(archive_root)
     return ArchiveStore.open_existing(archive_root, read_only=False)

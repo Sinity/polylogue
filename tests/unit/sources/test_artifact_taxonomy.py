@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
@@ -283,6 +284,38 @@ def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_rou
             ArtifactKind.AGENT_SIDECAR_META.value,
         )
     ]
+
+
+def test_schema_sampling_uses_detected_provider_for_unknown_acquisition(workspace_env: dict[str, Path]) -> None:
+    """Provider-scoped schema reads include source-only raws learned during replay."""
+    archive_root = workspace_env["archive_root"]
+    payload = (
+        b'{"type":"user","uuid":"message-1","sessionId":"learned-session",'
+        b'"parentUuid":null,"message":{"role":"user","content":"hello"}}\n'
+    )
+    with ArchiveStore(archive_root) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="/captures/learned/session.jsonl",
+            acquired_at_ms=1,
+        )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET detected_provider = 'claude-code' WHERE raw_id = ?",
+            (raw_id,),
+        )
+
+    units = list(
+        _iter_schema_units_from_db(
+            Provider.CLAUDE_CODE,
+            db_path=archive_root / "index.db",
+            config=resolve_provider_config(Provider.CLAUDE_CODE),
+        )
+    )
+
+    assert units
+    assert {unit.raw_id for unit in units} == {raw_id}
 
 
 def test_tool_result_sidecar_never_classifies_as_session_even_when_content_looks_like_one() -> None:

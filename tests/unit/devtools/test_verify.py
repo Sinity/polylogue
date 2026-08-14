@@ -2077,6 +2077,35 @@ def test_checkout_mutation_monitor_uses_portable_watchfiles_events_without_linux
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path="tracked.py")
 
 
+def test_checkout_mutation_monitor_prepares_paths_before_backend_startup_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    original_watched_directories = monitor._watched_directories
+    discovery_threads: list[threading.Thread] = []
+
+    def observed_discovery() -> list[Path]:
+        discovery_threads.append(threading.current_thread())
+        return original_watched_directories()
+
+    def portable_watch(*_paths: Path, **kwargs: object) -> object:
+        yield set()
+        stop_event = kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait()
+
+    monkeypatch.setattr(monitor, "_watched_directories", observed_discovery)
+    monkeypatch.setattr(watchfiles, "watch", portable_watch)
+
+    monitor.start()
+    observation = monitor.finish()
+
+    assert discovery_threads[0] is threading.main_thread()
+    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
 def test_checkout_mutation_monitor_rejects_source_topology_changed_during_startup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2257,6 +2286,89 @@ def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: 
         unavailable=False,
         observed_path=f".git/{branch}",
     )
+
+
+def test_checkout_mutation_monitor_ignores_shared_packed_refs_when_current_ref_is_loose(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--no-prune"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git" / "packed-refs")
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_checkout_mutation_monitor_watches_packed_refs_when_current_ref_is_packed(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--prune"], cwd=tmp_path, check=True)
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    loose_ref = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-path", branch],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    assert not loose_ref.exists()
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git" / "packed-refs")
+
+    assert monitor.finish() == CheckoutMutationObservation(
+        changed=True,
+        unavailable=False,
+        observed_path=".git/packed-refs",
+    )
+
+
+def test_checkout_mutation_monitor_ignores_shared_packed_refs_when_head_is_detached(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "switch", "--detach", "--quiet"], cwd=tmp_path, check=True)
+    packed_refs = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-path", "packed-refs"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    monitor._record_change(packed_refs)
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a loose ref created from packed authority")
@@ -4937,6 +5049,36 @@ def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
     assert checkout_step["diagnosis"] == "checkout_fingerprint_unavailable"
     assert checkout_step["initial_worktree_fingerprint"] == fingerprints[0]
     assert checkout_step["final_worktree_fingerprint"] == fingerprints[1]
+
+
+def test_verify_classifies_unavailable_mutation_monitor_separately(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _UnavailableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=True)
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.CheckoutMutationMonitor", _UnavailableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == 125
+    payload = json.loads(capsys.readouterr().out)
+    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert checkout_step["diagnosis"] == "checkout_mutation_monitor_unavailable"
 
 
 def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(

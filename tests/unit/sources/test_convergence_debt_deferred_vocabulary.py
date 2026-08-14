@@ -32,8 +32,63 @@ from polylogue.sources.live.convergence_debt import (
     convergence_debt_from_states,
     is_deferred_stage_state,
 )
+from polylogue.sources.live.convergence_debt_retry import convergence_debt_source_path
 from polylogue.sources.live.convergence_outcome import record_convergence_outcome
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: Path) -> None:
+    """Outcome and retry lookups ignore a stale conventional index database."""
+
+    source_db = tmp_path / "source.db"
+    shadow_index = tmp_path / "index.db"
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(shadow_index, ArchiveTier.INDEX)
+    initialize_archive_database(active_index, ArchiveTier.INDEX)
+    source_path = tmp_path / "active.jsonl"
+    source_path.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-active', 'codex-session', 'active', ?, 0, ?, 1, 1)
+            """,
+            (str(source_path), bytes(32)),
+        )
+        conn.commit()
+    with sqlite3.connect(active_index) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('active', 'codex-session', 'raw-active', 'active', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+    cursor = CursorStore(tmp_path / "ops.db")
+    debt = ConvergenceDebt(path=source_path, stage="fts", error="deferred", deferred=True)
+
+    record_convergence_outcome(cursor, source_path, (debt,), archive_root=tmp_path)
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        session_debts = conn.execute(
+            "SELECT target_id FROM convergence_debt WHERE target_type = 'session_id'"
+        ).fetchall()
+        assert (
+            convergence_debt_source_path(
+                conn,
+                subject_type="session_id",
+                subject_id="codex-session:active",
+                archive_root=tmp_path,
+            )
+            == source_path
+        )
+
+    assert session_debts == [("codex-session:active",)]
 
 
 def test_is_deferred_stage_state_true_only_for_pending() -> None:

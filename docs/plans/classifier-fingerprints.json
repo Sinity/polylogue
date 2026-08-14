@@ -10,11 +10,11 @@
       }
     },
     "polylogue/archive/artifact_taxonomy/runtime.py:classify_artifact_path": {
-      "fingerprint": "10f54d1827fdca585985cf3180e54c27098de26121530076e51a26cef7b2de24",
+      "fingerprint": "32b6f26516b4cc9ed0342c262e492fca469aaca9fb47a66e4ca1c76b7f58987a",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "reason": "Strong-only admission helper preserves this classifier output; no archived payload classification changes.",
+        "ref": "#3952"
       }
     },
     "polylogue/archive/artifact_taxonomy/support.py:looks_like_beads_interaction": {

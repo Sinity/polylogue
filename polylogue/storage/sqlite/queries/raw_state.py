@@ -12,9 +12,39 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
-# raw_sessions carries a single ``origin`` column (#1743). Provider-token
-# filters translate the token to its canonical origin value before matching.
-RAW_ORIGIN_FILTER_SQL = "origin"
+
+def raw_provider_origin_sql(*, table_alias: str | None = None) -> str:
+    """Project parser-classified provider evidence into Origin vocabulary.
+
+    Acquisition ``origin`` remains immutable raw identity. Provider-scoped
+    readers use this expression so a later positive parser classification is
+    visible without rewriting that identity. ``table_alias`` keeps the same
+    contract usable in joined repair and sampling queries.
+    """
+    prefix = f"{table_alias}." if table_alias else ""
+    detected = f"{prefix}detected_provider"
+    origin = f"{prefix}origin"
+    return f"""
+CASE {detected}
+    WHEN 'chatgpt' THEN 'chatgpt-export'
+    WHEN 'claude-ai' THEN 'claude-ai-export'
+    WHEN 'claude-design' THEN 'claude-design-session'
+    WHEN 'claude-code' THEN 'claude-code-session'
+    WHEN 'codex' THEN 'codex-session'
+    WHEN 'gemini' THEN 'aistudio-drive'
+    WHEN 'drive' THEN 'aistudio-drive'
+    WHEN 'gemini-cli' THEN 'gemini-cli-session'
+    WHEN 'hermes' THEN 'hermes-session'
+    WHEN 'antigravity' THEN 'antigravity-session'
+    WHEN 'beads' THEN 'beads-issue'
+    WHEN 'grok' THEN 'grok-export'
+    WHEN 'unknown' THEN 'unknown-export'
+    ELSE {origin}
+END
+""".strip()
+
+
+RAW_ORIGIN_FILTER_SQL = raw_provider_origin_sql()
 
 
 def origin_filter_value(token: str) -> str:
@@ -217,6 +247,7 @@ __all__ = [
     "coerce_provider",
     "coerce_status",
     "origin_filter_value",
+    "raw_provider_origin_sql",
     "mark_raw_parsed",
     "mark_raw_validated",
     "reset_parse_status",

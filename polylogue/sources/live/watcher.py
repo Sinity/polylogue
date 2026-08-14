@@ -31,6 +31,7 @@ from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
+from polylogue.sources.live.archive_open import _source_tier_acquisition_required
 from polylogue.sources.live.batch import (
     CursorAuthorityBlockedError,
     LiveBatchEventEmitter,
@@ -51,7 +52,9 @@ from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord,
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
+from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
+from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -61,6 +64,13 @@ _PARSER_FINGERPRINT = "live-batched-v2"
 # One bounded writer hold per hook-spool drain batch; the drain loops until
 # the backlog is gone, releasing the writer between batches.
 _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
+# A hook creates a day-shard directory before atomically publishing its first
+# envelope. An added-directory event can therefore precede the child-file
+# event that a recursive watcher is about to install. Poll only that new shard
+# until its first envelope is visible, rather than leaving it to periodic
+# catch-up or relying on a scheduler-dependent fixed grace period.
+_HOOK_SPOOL_DIRECTORY_RETRY_POLL_S = 0.05
+_HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS = 5.0
 # A catch-up writer owns the only archive writer for the whole chunk.  The
 # former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
 # starving fresh watcher events.  Keep historical convergence fair by
@@ -262,6 +272,7 @@ class LiveWatcher:
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
         self._periodic_catch_up_task: asyncio.Task[None] | None = None
+        self._hook_spool_directory_retry_tasks: dict[Path, asyncio.Task[None]] = {}
         self._failed_retry_deadline: float | None = None
         self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
@@ -306,6 +317,10 @@ class LiveWatcher:
     def catch_up_complete(self) -> asyncio.Event:
         return self._catch_up_complete
 
+    def _existing_source_roots(self) -> list[Path]:
+        """Return configured roots that exist at the instant of a scan."""
+        return [source.root for source in self._sources if source.exists()]
+
     async def run(self) -> None:
         # Hook commands create their first pending envelope lazily.  Ensure the
         # nested root exists before ``awatch`` snapshots its roots, otherwise a
@@ -313,7 +328,7 @@ class LiveWatcher:
         for source in self._sources:
             if source.name == "hooks":
                 source.root.mkdir(parents=True, exist_ok=True)
-        roots = [s.root for s in self._sources if s.exists()]
+        roots = self._existing_source_roots()
         if not roots:
             logger.warning("live.watcher: no source roots exist; nothing to watch")
             self._catch_up_complete.set()
@@ -341,6 +356,7 @@ class LiveWatcher:
             with suppress(asyncio.CancelledError):
                 await watch_task
             self._cancel_periodic_catch_up()
+            self._cancel_hook_spool_directory_retries()
 
     async def _watch_changes(self, roots: list[Path]) -> None:
         from watchfiles import Change, awatch
@@ -354,7 +370,19 @@ class LiveWatcher:
             for change, raw_path in changes:
                 if change is Change.deleted:
                     continue
-                path = self._canonical_watch_path(Path(raw_path))
+                observed_path = Path(raw_path)
+                if change is Change.added and observed_path.is_dir():
+                    if self._is_hook_spool_path(observed_path):
+                        needs_first_envelope_retry = self._is_hook_spool_shard_directory(
+                            observed_path
+                        ) and not self._hook_spool_directory_has_envelope(observed_path)
+                        await self._drain_hook_spool()
+                        if needs_first_envelope_retry:
+                            self._schedule_hook_spool_directory_retry(observed_path)
+                        continue
+                    self._enqueue_added_directory(observed_path)
+                    continue
+                path = self._canonical_watch_path(observed_path)
                 if path is None:
                     continue
                 if not self._source_accepts(path):
@@ -368,6 +396,7 @@ class LiveWatcher:
         self._stop.set()
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
+        self._cancel_hook_spool_directory_retries()
         if self._parse_stage is not None and self._owns_parse_stage:
             self._parse_stage.shutdown()
 
@@ -379,15 +408,18 @@ class LiveWatcher:
         self._pending_scheduled = False
         self._cancel_failed_retry_task()
         self._cancel_periodic_catch_up()
+        self._cancel_hook_spool_directory_retries()
 
-    async def _periodic_catch_up(self, roots: list[Path]) -> None:
+    async def _periodic_catch_up(self, _initial_roots: list[Path]) -> None:
         delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
         while not self._stop.is_set():
             await asyncio.sleep(delay_s)
             if self._stop.is_set():
                 return
             try:
-                await self._catch_up(roots)
+                roots = self._existing_source_roots()
+                if roots:
+                    await self._catch_up(roots)
             except sqlite3.OperationalError as exc:
                 if not _is_database_locked(exc):
                     raise
@@ -403,6 +435,67 @@ class LiveWatcher:
         if task is not None and not task.done():
             task.cancel()
         self._periodic_catch_up_task = None
+
+    def _schedule_hook_spool_directory_retry(self, directory: Path) -> None:
+        """Drain a newly added hook shard when its first envelope appears.
+
+        The initial drain above handles an already-published envelope.  This
+        task covers the narrow event-ordering race where the directory arrives
+        first and the recursive watcher misses the first child notification.
+        It does not block subsequent watcher events or start a source-tree
+        catch-up scan.
+        """
+
+        directory = directory.resolve()
+        existing = self._hook_spool_directory_retry_tasks.get(directory)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(self._retry_hook_spool_directory_until_populated(directory))
+        self._hook_spool_directory_retry_tasks[directory] = task
+
+        def discard_completed_task(completed: asyncio.Task[None]) -> None:
+            if self._hook_spool_directory_retry_tasks.get(directory) is completed:
+                self._hook_spool_directory_retry_tasks.pop(directory, None)
+            if completed.cancelled():
+                return
+            try:
+                completed.result()
+            except Exception:
+                logger.exception("live.watcher: hook spool directory retry failed for %s", directory)
+
+        task.add_done_callback(discard_completed_task)
+
+    async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
+        """Wait for an added shard's first envelope until it is acknowledged."""
+
+        deadline = asyncio.get_running_loop().time() + _HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS
+        delay_s = _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S
+        while not self._stop.is_set() and asyncio.get_running_loop().time() < deadline:
+            try:
+                if not directory.exists():
+                    return
+                if any(directory.glob("*.json")):
+                    await self._drain_hook_spool()
+                    if not any(directory.glob("*.json")):
+                        return
+            except sqlite3.OperationalError as exc:
+                # The normal periodic catch-up route retries transient source
+                # tier contention.  A just-created shard must get the same
+                # treatment instead of letting this narrow event-ordering
+                # recovery task die before its envelope is acknowledged.
+                if not _is_database_locked(exc):
+                    raise
+                logger.warning("live.watcher: archive busy while draining new hook shard; will retry")
+            except OSError:
+                return
+            await asyncio.sleep(delay_s)
+            delay_s = min(delay_s * 2, 0.5)
+
+    def _cancel_hook_spool_directory_retries(self) -> None:
+        for task in tuple(self._hook_spool_directory_retry_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._hook_spool_directory_retry_tasks.clear()
 
     # ------------------------------------------------------------------
     # Catch-up: batch all changed files
@@ -620,6 +713,8 @@ class LiveWatcher:
                 ]
                 for filename in filenames:
                     path = Path(directory) / filename
+                    if deepest_source_for_path(path, self._sources) is not source:
+                        continue
                     if not source.accepts(path):
                         # Unclaimed-file sweep (mission item 2): a file this
                         # source's own root walk reached but whose suffix no
@@ -1201,9 +1296,20 @@ class LiveWatcher:
         cached connection would keep reading a replaced index.db inode
         across a blue-green generation swap.
         """
+        if _source_tier_acquisition_required():
+            self._archived_cursor_conns = None
+            self._archived_cursor_index_untrusted = False
+            yield
+            return
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
-        index_db = archive_root / "index.db"
+        try:
+            index_db = resolve_active_index_path(archive_root)
+        except (ArchiveLocationError, OSError, UnicodeError):
+            self._archived_cursor_conns = None
+            self._archived_cursor_index_untrusted = False
+            yield
+            return
         conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         if source_db.exists() and index_db.exists():
             try:
@@ -1330,7 +1436,7 @@ class LiveWatcher:
                 return self._path_corroborated_by_index(path, source_conn=shared[0], index_conn=shared[1])
             archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
             source_db = archive_root / "source.db"
-            index_db = archive_root / "index.db"
+            index_db = resolve_active_index_path(archive_root)
             if not source_db.exists() or not index_db.exists():
                 return True
             with (
@@ -1338,7 +1444,7 @@ class LiveWatcher:
                 closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
             ):
                 return self._path_corroborated_by_index(path, source_conn=source_conn, index_conn=index_conn)
-        except sqlite3.Error:
+        except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             # Cannot prove absence on a transient DB error -- don't force a
             # spurious re-ingest of an otherwise-healthy cursor.
             return True
@@ -1359,6 +1465,11 @@ class LiveWatcher:
         archived prefix so catch-up can take the append path instead of
         parsing the whole active JSONL again.
         """
+        if _source_tier_acquisition_required():
+            # Derived corroboration is inapplicable in acquire-only mode.
+            # Force a fresh source observation instead of deferring on an
+            # index that this mode is explicitly forbidden to read.
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         shared = self._archived_cursor_conns
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
@@ -1366,7 +1477,7 @@ class LiveWatcher:
                 row = self._archived_cursor_row(path, source_conn=shared[0], index_conn=shared[1])
             else:
                 source_db = archive_root / "source.db"
-                index_db = archive_root / "index.db"
+                index_db = resolve_active_index_path(archive_root)
                 if not source_db.exists() or not index_db.exists():
                     return _ArchivedCursorReconciliation.UNAVAILABLE
                 with (
@@ -1374,7 +1485,7 @@ class LiveWatcher:
                     closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
                 ):
                     row = self._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn)
-        except sqlite3.Error:
+        except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
             return _ArchivedCursorReconciliation.INCOMPATIBLE
@@ -1517,24 +1628,14 @@ class LiveWatcher:
         await operation()
 
     def _source_name_for(self, path: Path) -> str:
-        resolved = path.resolve()
-        for source in self._sources:
-            try:
-                if resolved.is_relative_to(source.root.resolve()):
-                    return source.name
-            except OSError:
-                continue
+        source = deepest_source_for_path(path, self._sources)
+        if source is not None:
+            return source.name
         return path.parent.name
 
     def _source_accepts(self, path: Path) -> bool:
-        resolved = path.resolve()
-        for source in self._sources:
-            try:
-                if resolved.is_relative_to(source.root.resolve()):
-                    return source.accepts(path)
-            except OSError:
-                continue
-        return path.suffix == ".jsonl"
+        source = deepest_source_for_path(path, self._sources)
+        return source.accepts(path) if source is not None else False
 
     def _is_hook_spool_path(self, path: Path) -> bool:
         for source in self._sources:
@@ -1545,6 +1646,25 @@ class LiveWatcher:
             except OSError:
                 return False
         return False
+
+    def _is_hook_spool_shard_directory(self, path: Path) -> bool:
+        """Return whether ``path`` is a direct day shard beneath ``pending``."""
+
+        for source in self._sources:
+            if source.name != "hooks":
+                continue
+            try:
+                return path.resolve().parent == source.root.resolve()
+            except OSError:
+                return False
+        return False
+
+    @staticmethod
+    def _hook_spool_directory_has_envelope(directory: Path) -> bool:
+        try:
+            return next(directory.glob("*.json"), None) is not None
+        except OSError:
+            return False
 
     def _hook_spool_root(self) -> Path:
         """Return the root paired with this watcher's hook source."""
@@ -1574,6 +1694,48 @@ class LiveWatcher:
             return database
         return None
 
+    def _source_for_directory(self, path: Path) -> WatchSource | None:
+        """Return the watched source owning a non-ignored directory."""
+
+        source = deepest_source_for_path(path, self._sources)
+        if source is None:
+            return None
+        try:
+            relative = path.resolve().relative_to(source.root.resolve())
+        except (OSError, ValueError):
+            return None
+        return None if any(source.ignores_directory(Path(part)) for part in relative.parts) else source
+
+    def _directory_is_watch_relevant(self, path: Path) -> bool:
+        """Return whether a directory is owned or leads to a configured source root."""
+
+        if self._source_for_directory(path) is not None:
+            return True
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        for source in self._sources:
+            try:
+                if source.root.resolve().is_relative_to(resolved):
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    def _enqueue_added_directory(self, directory: Path) -> None:
+        """Cover files created before a recursive watcher installs its new sub-watch."""
+
+        if not self._directory_is_watch_relevant(directory):
+            return
+        for parent, dir_names, file_names in os.walk(directory):
+            dir_names[:] = [name for name in dir_names if self._directory_is_watch_relevant(Path(parent) / name)]
+            for name in file_names:
+                candidate = Path(parent) / name
+                canonical = self._canonical_watch_path(candidate)
+                if canonical is not None:
+                    self._enqueue(canonical)
+
     def _watch_filter(self, _change: object, path: str) -> bool:
         """Accept configured source files under hidden canonical roots.
 
@@ -1583,7 +1745,10 @@ class LiveWatcher:
         writes. This filter keeps the project's own source/suffix predicate as
         the gate instead.
         """
-        return self._canonical_watch_path(Path(path)) is not None
+        observed_path = Path(path)
+        return self._canonical_watch_path(observed_path) is not None or (
+            observed_path.is_dir() and self._directory_is_watch_relevant(observed_path)
+        )
 
 
 def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[CandidateSourceFile]:
@@ -1729,7 +1894,14 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
 
 
 def _is_database_locked(exc: sqlite3.OperationalError) -> bool:
-    return "database is locked" in str(exc).lower()
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+        return True
+    message = str(exc).lower()
+    return any(
+        locked_message in message
+        for locked_message in ("database is locked", "database table is locked", "database schema is locked")
+    )
 
 
 def _cursor_age_exceeds(cursor: CursorRecord, min_age_s: float) -> bool:

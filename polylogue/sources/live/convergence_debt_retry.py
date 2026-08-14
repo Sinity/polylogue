@@ -6,6 +6,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.introspection import table_exists as _table_exists
 
 _HOT_INSIGHT_DEFERRED = "insights deferred until source quiet"
@@ -69,7 +70,7 @@ def convergence_debt_source_path(
 
 
 def _archive_convergence_debt_source_path_from_root(archive_root: Path, session_id: str) -> Path | None:
-    index_db = archive_root / "index.db"
+    index_db = resolve_active_index_path(archive_root)
     source_db = archive_root / "source.db"
     if not index_db.exists() or not source_db.exists():
         return None

@@ -17,12 +17,9 @@ async def save_raw_session(
     record: RawSessionRecord,
     transaction_depth: int,
 ) -> bool:
-    # payload_provider wins when the payload has been classified; otherwise fall
-    # back to the source_name token (#1743 collapses both onto origin).
-    if record.payload_provider is not None:
-        origin = origin_from_provider(record.payload_provider)
-    else:
-        origin = origin_from_provider(Provider.from_string(record.source_name or "unknown"))
+    acquisition_provider = Provider.from_string(record.source_name or "unknown")
+    origin = origin_from_provider(acquisition_provider)
+    detected_provider = record.payload_provider
     # Only the acquisition path can assert a capture mode.  A hydrated legacy
     # row has ``None`` here even though its compatibility projection supplies
     # a canonical payload provider; writing that projection back must not turn
@@ -40,17 +37,18 @@ async def save_raw_session(
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO raw_sessions (
-            raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+            raw_id, origin, detected_provider, capture_mode, native_id, source_path, source_index, blob_hash,
             blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
             validated_at_ms, validation_status, validation_error, validation_drift_count,
             validation_mode, detection_warnings_json, logical_source_key, revision_kind,
             source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
             append_end_offset, acquisition_generation, revision_authority, revision_authority_evidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
             origin.value,
+            detected_provider.value if detected_provider is not None else None,
             capture_mode.value if capture_mode is not None else None,
             None,
             record.source_path,

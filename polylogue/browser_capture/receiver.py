@@ -31,6 +31,7 @@ from polylogue.browser_capture.models import (
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import JSONDecodeError, dumps_bytes
 from polylogue.core.json import loads as json_loads
+from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
@@ -39,6 +40,7 @@ from polylogue.paths import (
     browser_capture_receiver_token_path,
     browser_capture_spool_root,
 )
+from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
@@ -370,7 +372,7 @@ def _lookup_raw_archive_state(
             return _RawArchiveLookup()
         columns = _columns(conn, "raw_sessions")
         select = ["raw_id"] if "raw_id" in columns else []
-        for optional in ("parse_error", "validation_error", "validation_status"):
+        for optional in ("parse_error", "validation_error", "validation_status", "parsed_at_ms", "validated_at_ms"):
             if optional in columns:
                 select.append(optional)
         if not select:
@@ -404,15 +406,26 @@ def _lookup_raw_archive_state(
         validation_status = (
             str(row["validation_status"]) if "validation_status" in row_keys and row["validation_status"] else None
         )
+        validation_authority = raw_state_authority(
+            row["parsed_at_ms"] if "parsed_at_ms" in row_keys else None,
+            row["validated_at_ms"] if "validated_at_ms" in row_keys else None,
+        )
         if isinstance(parse_error, str) and parse_error:
             latest_failure = parse_error
             failure_source = "raw_parse"
-        elif isinstance(validation_error, str) and validation_error:
+        elif validation_authority == "validation" and isinstance(validation_error, str) and validation_error:
             latest_failure = validation_error
             failure_source = "raw_validation"
-        elif validation_status is not None and validation_status not in {"passed", "valid", "ok"}:
+        elif (
+            validation_authority == "validation"
+            and validation_status is not None
+            and validation_status not in {"passed", "valid", "ok"}
+        ):
             latest_failure = validation_status
             failure_source = "raw_validation"
+        elif validation_authority == "ambiguous" and validation_status not in {None, "passed", "valid", "ok"}:
+            latest_failure = "raw validation and parse timestamps are indeterminate"
+            failure_source = "raw_state_order"
         return _RawArchiveLookup(
             raw_row_exists=True,
             raw_id=str(row["raw_id"]) if "raw_id" in row_keys and row["raw_id"] is not None else None,
@@ -432,7 +445,14 @@ def _lookup_index_archive_state(
     provider: str,
     provider_session_id: str,
 ) -> _IndexArchiveLookup:
-    conn = _open_readonly_sqlite(archive_root / "index.db")
+    try:
+        index_path = resolve_active_index_path(archive_root)
+    except ArchiveLocationError:
+        # Archive state is a best-effort capture acknowledgement. A malformed
+        # active-generation pointer must not turn a receiver GET into a 500 or
+        # make us consult the conventional shadow index instead.
+        return _IndexArchiveLookup()
+    conn = _open_readonly_sqlite(index_path)
     if conn is None:
         return _IndexArchiveLookup()
     try:

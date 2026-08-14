@@ -9,15 +9,17 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from io import BytesIO
-from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Final, Literal, cast
+from typing import BinaryIO, Final, Literal, Protocol, cast
+
+import ijson
+from ijson.common import ObjectBuilder
 
 from polylogue import logging as _polylogue_logging
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
@@ -44,17 +46,24 @@ from polylogue.pipeline.services.process_pool import (
     parallel_threads_effective,
     resolve_revision_backfill_census_dispatch,
 )
+from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
+    detect_provider_evidence,
+    detect_provider_from_raw_bytes_evidence,
+    is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.artifacts.inspection import artifact_observation_id
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
@@ -63,11 +72,549 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     FrozenSourceRemediationRequiredError,
+    _raw_parse_success_state,
     record_current_parser_source_census,
+)
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    apply_source_raw_state_update,
+    upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
+_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
+_REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES: Final[int] = 64 * 1024
+_REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES: Final[int] = 4096
+
+
+class _ReadableBinary(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
+class _LineReadableBinary(_ReadableBinary, Protocol):
+    def readline(self, size: int = -1) -> bytes: ...
+
+
+class _SeekableReadableBinary(_LineReadableBinary, Protocol):
+    def seek(self, offset: int, whence: int = 0) -> int: ...
+
+
+_DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "account_uuid",
+        "artifactType",
+        "cascadeId",
+        "chat_messages",
+        "chunkedPrompt",
+        "chunks",
+        "conversation_id",
+        "conversations",
+        "conversations_memory",
+        "create_time",
+        "current_node",
+        "cwd",
+        "id",
+        "kind",
+        "lastUpdated",
+        "last_updated",
+        "leafUuid",
+        "mapping",
+        "markdown",
+        "message",
+        "messages",
+        "parentUuid",
+        "payload",
+        "platform",
+        "polylogue_capture_kind",
+        "project",
+        "projectHash",
+        "project_memories",
+        "record_type",
+        "session",
+        "sessionId",
+        "session_id",
+        "session_start",
+        "shared_conversation_id",
+        "source",
+        "startTime",
+        "summary",
+        "type",
+        "updatedAt",
+        "uuid",
+        "version",
+    }
+)
+_DOCUMENT_PROBE_EXACT_STRING_KEYS: Final[frozenset[str]] = frozenset(
+    {"kind", "polylogue_capture_kind", "record_type", "role", "source", "type"}
+)
+_DOCUMENT_PROBE_CHUNK_CONTENT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "codeExecutionResult",
+        "driveAudio",
+        "driveDocument",
+        "driveImage",
+        "driveVideo",
+        "errorMessage",
+        "executableCode",
+        "grounding",
+        "inlineFile",
+        "inlineImage",
+        "isThought",
+        "parts",
+        "text",
+        "youtubeVideo",
+    }
+)
+
+
+def _document_probe_value(key: str, event: str, value: object) -> object | None:
+    """Retain only detector-relevant scalar type/equality evidence."""
+    if event == "string":
+        return str(value) if key in _DOCUMENT_PROBE_EXACT_STRING_KEYS else "present"
+    if event == "number":
+        return 0
+    if event == "boolean":
+        return bool(value)
+    if event == "null":
+        return None
+    return None
+
+
+class _ScalarBoundedJSONReader:
+    """Stream JSON while capping every scalar token before ijson sees it."""
+
+    def __init__(self, payload: _ReadableBinary) -> None:
+        self._payload = payload
+        self._output = bytearray()
+        self._eof = False
+        self._in_string = False
+        self._string_bytes = 0
+        self._escape = bytearray()
+        self._escape_target = 0
+        self._utf8_remaining = 0
+        self._emit_utf8 = False
+        self._in_number = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        if size < 0:
+            chunks: list[bytes] = []
+            while chunk := self.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        while len(self._output) < size and not self._eof:
+            chunk = self._payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES)
+            if not chunk:
+                self._eof = True
+                break
+            self._filter(chunk)
+        result = bytes(self._output[:size])
+        del self._output[:size]
+        return result
+
+    def _filter(self, chunk: bytes) -> None:
+        for byte in chunk:
+            if self._in_string:
+                self._filter_string_byte(byte)
+                continue
+            if self._in_number:
+                if byte in b"0123456789.eE+-":
+                    continue
+                self._in_number = False
+            if byte == ord('"'):
+                self._output.append(byte)
+                self._in_string = True
+                self._string_bytes = 0
+            elif byte in b"-0123456789":
+                self._output.extend(b"0")
+                self._in_number = True
+            else:
+                self._output.append(byte)
+
+    def _filter_string_byte(self, byte: int) -> None:
+        if self._escape:
+            self._escape.append(byte)
+            if len(self._escape) == 2:
+                self._escape_target = 6 if byte == ord("u") else 2
+            if len(self._escape) == self._escape_target:
+                if self._string_bytes + len(self._escape) <= _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES:
+                    self._output.extend(self._escape)
+                    self._string_bytes += len(self._escape)
+                self._escape.clear()
+                self._escape_target = 0
+            return
+        if self._utf8_remaining:
+            if self._emit_utf8:
+                self._output.append(byte)
+            self._utf8_remaining -= 1
+            return
+        if byte == ord("\\"):
+            self._escape.append(byte)
+            return
+        if byte == ord('"'):
+            self._output.append(byte)
+            self._in_string = False
+            return
+        if byte < 0x80:
+            if self._string_bytes < _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES:
+                self._output.append(byte)
+                self._string_bytes += 1
+            return
+        utf8_bytes = 2 if byte < 0xE0 else 3 if byte < 0xF0 else 4 if byte < 0xF8 else 1
+        self._utf8_remaining = utf8_bytes - 1
+        self._emit_utf8 = self._string_bytes + utf8_bytes <= _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
+        if self._emit_utf8:
+            self._output.append(byte)
+            self._string_bytes += utf8_bytes
+
+
+class _BoundedJSONLRecordReader:
+    """Expose one JSONL record without exceeding the shared scan budget."""
+
+    def __init__(self, payload: _LineReadableBinary, byte_budget: int) -> None:
+        self._payload = payload
+        self._remaining = byte_budget
+        self.bytes_read = 0
+        self._done = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0 or self._done:
+            return b""
+        if self._remaining <= 0:
+            self._done = True
+            return b""
+        read_size = _REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES if size < 0 else size
+        read_size = min(read_size, _REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES, self._remaining)
+        chunk = self._payload.readline(read_size)
+        self.bytes_read += len(chunk)
+        self._remaining -= len(chunk)
+        if not chunk or chunk.endswith(b"\n") or self._remaining <= 0:
+            self._done = True
+        return chunk
+
+    def drain(self) -> None:
+        """Consume this physical record, subject to the remaining scan budget."""
+        while not self._done:
+            self.read(_REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES)
+
+
+@dataclass(slots=True)
+class _StreamingDocumentProviderProbe:
+    """Bounded structural summary for one object in a JSON document.
+
+    Cardinality is fixed by provider detector fields. Large scalar bodies,
+    unrelated keys, repeated messages, and repeated mapping nodes are never
+    retained; the ijson event stream can therefore continue to EOF without a
+    whole-document allocation or a scan-count cutoff.
+    """
+
+    payload: dict[str, object] = field(default_factory=dict)
+    mapping_seen: bool = False
+    mapping_valid: bool = True
+    mapping_node_open: bool = False
+    mapping_node_message: Literal["absent", "null", "map", "invalid"] = "absent"
+    mapping_node_author: bool = False
+    chat_message_item: dict[str, object] = field(default_factory=dict)
+    chat_message_matched: bool = False
+    first_message_item: dict[str, object] = field(default_factory=dict)
+    first_message_complete: bool = False
+    chunk_item: dict[str, object] = field(default_factory=dict)
+    chunk_matched: bool = False
+    conversation_item_has_conversation: bool = False
+    conversation_item_has_responses: bool = False
+    conversation_matched: bool = False
+
+    def _set_root(self, key: str, event: str, value: object) -> None:
+        if key not in _DOCUMENT_PROBE_ROOT_KEYS:
+            return
+        if event == "start_map":
+            self.payload[key] = {}
+        elif event == "start_array":
+            self.payload[key] = []
+        elif event in {"string", "number", "boolean", "null"}:
+            self.payload[key] = _document_probe_value(key, event, value)
+
+    @staticmethod
+    def _set_item_value(item: dict[str, object], key: str, event: str, value: object) -> None:
+        if event == "start_map":
+            item[key] = {}
+        elif event == "start_array":
+            item[key] = []
+        elif event in {"string", "number", "boolean", "null"}:
+            item[key] = _document_probe_value(key, event, value)
+
+    def feed(self, prefix: str, event: str, value: object) -> None:
+        parts = prefix.split(".") if prefix else []
+        if len(parts) == 1:
+            self._set_root(parts[0], event, value)
+
+        if parts == ["session", "provider"] and event == "string":
+            session = self.payload.setdefault("session", {})
+            if isinstance(session, dict):
+                session["provider"] = str(value)
+
+        if len(parts) == 2 and parts[0] == "payload":
+            nested = self.payload.setdefault("payload", {})
+            if isinstance(nested, dict):
+                self._set_item_value(nested, parts[1], event, value)
+
+        if len(parts) == 2 and parts[0] == "mapping":
+            if event == "start_map":
+                self.mapping_seen = True
+                self.mapping_node_open = True
+                self.mapping_node_message = "absent"
+                self.mapping_node_author = False
+            elif event not in {"end_map", "map_key"}:
+                self.mapping_seen = True
+                self.mapping_valid = False
+        elif len(parts) == 3 and parts[0] == "mapping" and parts[2] == "message":
+            if event == "start_map":
+                self.mapping_node_message = "map"
+            elif event == "null":
+                self.mapping_node_message = "null"
+            elif event not in {"map_key", "end_map"}:
+                self.mapping_node_message = "invalid"
+        elif len(parts) == 4 and parts[0] == "mapping" and parts[2:] == ["message", "author"] and event == "start_map":
+            self.mapping_node_author = True
+
+        if len(parts) == 2 and parts == ["chat_messages", "item"] and event == "start_map":
+            self.chat_message_item = {}
+        elif len(parts) == 3 and parts[:2] == ["chat_messages", "item"]:
+            self._set_item_value(self.chat_message_item, parts[2], event, value)
+
+        if len(parts) == 2 and parts == ["messages", "item"] and event == "start_map":
+            if not self.first_message_complete:
+                self.first_message_item = {}
+        elif len(parts) == 3 and parts[:2] == ["messages", "item"] and not self.first_message_complete:
+            self._set_item_value(self.first_message_item, parts[2], event, value)
+
+        chunk_root = parts[:2] == ["chunks", "item"]
+        chunk_nested = parts[:3] == ["chunkedPrompt", "chunks", "item"]
+        if (chunk_root and len(parts) == 2 or chunk_nested and len(parts) == 3) and event == "start_map":
+            self.chunk_item = {}
+        elif chunk_root and len(parts) == 3:
+            self._set_item_value(self.chunk_item, parts[2], event, value)
+        elif chunk_nested and len(parts) == 4:
+            self._set_item_value(self.chunk_item, parts[3], event, value)
+
+        if parts == ["conversations", "item"] and event == "start_map":
+            self.conversation_item_has_conversation = False
+            self.conversation_item_has_responses = False
+        elif parts == ["conversations", "item", "conversation"] and event == "start_map":
+            self.conversation_item_has_conversation = True
+        elif parts == ["conversations", "item", "responses"] and event == "start_array":
+            self.conversation_item_has_responses = True
+
+        if event != "end_map":
+            return
+        if len(parts) == 2 and parts[0] == "mapping" and self.mapping_node_open:
+            if (
+                self.mapping_node_message == "map" and not self.mapping_node_author
+            ) or self.mapping_node_message == "invalid":
+                self.mapping_valid = False
+            self.mapping_node_open = False
+        elif parts == ["chat_messages", "item"]:
+            has_role = any(key in self.chat_message_item for key in ("sender", "role", "author"))
+            has_content = any(key in self.chat_message_item for key in ("text", "content"))
+            self.chat_message_matched |= has_role and has_content
+        elif parts == ["messages", "item"] and not self.first_message_complete:
+            self.first_message_complete = True
+        elif parts in (["chunks", "item"], ["chunkedPrompt", "chunks", "item"]):
+            role = self.chunk_item.get("role") or self.chunk_item.get("author")
+            self.chunk_matched |= isinstance(role, str) and any(
+                key in self.chunk_item for key in _DOCUMENT_PROBE_CHUNK_CONTENT_KEYS
+            )
+        elif parts == ["conversations", "item"]:
+            self.conversation_matched |= (
+                self.conversation_item_has_conversation and self.conversation_item_has_responses
+            )
+
+    def classify(self, *, sequence_item: bool = False) -> tuple[Provider, str]:
+        if self.mapping_seen and self.mapping_valid:
+            self.payload["mapping"] = {"bounded-node": {"id": "bounded-node", "message": None}}
+        if self.chat_message_matched:
+            self.payload["chat_messages"] = [{"role": "present", "text": "present"}]
+        if self.first_message_complete:
+            self.payload["messages"] = [self.first_message_item]
+        if self.chunk_matched:
+            chunk = {"role": "present", "text": "present"}
+            if isinstance(self.payload.get("chunkedPrompt"), dict):
+                self.payload["chunkedPrompt"] = {"chunks": [chunk]}
+            else:
+                self.payload["chunks"] = [chunk]
+        if self.conversation_matched:
+            self.payload["conversations"] = [{"conversation": {}, "responses": []}]
+        candidate: object = [self.payload] if sequence_item else self.payload
+        provider, evidence = detect_provider_evidence(candidate)
+        if provider is None:
+            return Provider.UNKNOWN, evidence
+        return provider, f"bounded streaming JSON structure: {evidence}"
+
+
+def _detect_provider_from_bounded_document(payload: _SeekableReadableBinary) -> tuple[Provider, str]:
+    """Scan every document object while retaining fixed structural evidence."""
+    payload.seek(0)
+    bounded_payload = _ScalarBoundedJSONReader(payload)
+    probe: _StreamingDocumentProviderProbe | None = None
+    root_is_array = False
+    last_evidence = "no bounded document structure identified a provider; used fallback_provider"
+    try:
+        for prefix, event, value in ijson.parse(bounded_payload, use_float=True):
+            if prefix == "" and event == "start_array":
+                root_is_array = True
+                continue
+            if root_is_array:
+                if prefix == "item" and event == "start_map":
+                    probe = _StreamingDocumentProviderProbe()
+                    continue
+                if probe is None:
+                    continue
+                if prefix == "item" and event == "end_map":
+                    provider, last_evidence = probe.classify(sequence_item=True)
+                    if provider is not Provider.UNKNOWN:
+                        return provider, last_evidence
+                    probe = None
+                    continue
+                if prefix.startswith("item."):
+                    probe.feed(prefix.removeprefix("item."), event, value)
+                continue
+
+            if prefix == "" and event == "start_map":
+                probe = _StreamingDocumentProviderProbe()
+                continue
+            if probe is None:
+                continue
+            if prefix == "" and event == "end_map":
+                return probe.classify()
+            probe.feed(prefix, event, value)
+    except ijson.JSONError:
+        return Provider.UNKNOWN, last_evidence
+    return Provider.UNKNOWN, last_evidence
+
+
+def _detect_provider_from_bounded_prefix(
+    prefix: bytes,
+    stream_name: str,
+    *,
+    record_stream: bool,
+) -> tuple[Provider, str]:
+    """Classify completed structure exposed by a bounded JSON prefix.
+
+    The ordinary raw-byte detector remains the first authority.  When the
+    prefix ends inside one oversized JSON value, ijson still emits every
+    completed key/value event before that truncated value.  Reconstructing
+    only those completed events preserves structural provider evidence (for
+    example a Codex ``session_meta`` envelope or a Claude ``sessionId``)
+    without retaining or completing the oversized record.
+    """
+    provider, evidence = detect_provider_from_raw_bytes_evidence(
+        prefix,
+        stream_name,
+        Provider.UNKNOWN,
+        truncated_tail_ok=True,
+    )
+    if provider is not Provider.UNKNOWN:
+        return provider, evidence
+
+    builder = ObjectBuilder()
+    try:
+        for event, value in ijson.basic_parse(BytesIO(prefix), use_float=True):
+            builder.event(event, value)
+    except ijson.JSONError:
+        # Premature EOF is expected for an oversized-record prefix.  The
+        # builder retains only values whose lexical token completed inside
+        # the bound; an unfinished string/object contributes no guessed data.
+        pass
+    partial = builder.value
+    candidate: object = [partial] if record_stream and isinstance(partial, dict) else partial
+    detected, partial_evidence = detect_provider_evidence(candidate)
+    if detected is None:
+        return Provider.UNKNOWN, evidence
+    return detected, f"bounded partial JSON structure: {partial_evidence}"
+
+
+def _detect_provider_from_bounded_record(
+    record: _BoundedJSONLRecordReader,
+) -> tuple[Provider, str]:
+    """Classify a streamed JSONL record from bounded structural evidence."""
+    bounded_record = _ScalarBoundedJSONReader(record)
+    probe = _StreamingDocumentProviderProbe()
+    last_evidence = "no bounded JSONL record structure identified a provider"
+    try:
+        for prefix, event, value in ijson.parse(bounded_record, use_float=True):
+            if prefix == "":
+                if event == "start_map":
+                    continue
+                if event == "end_map":
+                    provider, last_evidence = probe.classify(sequence_item=True)
+                    if provider is not Provider.UNKNOWN:
+                        return provider, last_evidence
+                    continue
+            elif prefix:
+                probe.feed(prefix, event, value)
+    except ijson.JSONError:
+        # A scan-budget cutoff or malformed JSON is expected for retained
+        # unknown bytes. Completed structural events are still valid evidence;
+        # an incomplete tail contributes nothing.
+        pass
+    provider, last_evidence = probe.classify(sequence_item=True)
+    return provider, last_evidence
+
+
+def _detect_unknown_retained_provider(
+    payload: _SeekableReadableBinary,
+    source_path: str,
+) -> tuple[Provider, str]:
+    """Detect retained UNKNOWN bytes without eagerly materializing JSONL.
+
+    A byte prefix can end inside the first physical JSONL record.  For an
+    oversized record stream that makes a prefix-only detector inconclusive
+    even when a later structural key in that record identifies a streaming
+    provider. Stream each record through the structural probe in bounded
+    chunks, stopping at positive evidence, the total scan envelope, or EOF.
+
+    Non-JSONL documents first use the same prefix evidence, then continue a
+    bounded structural event scan through every document object. Eager replay
+    remains gated on a positive provider result from one of those bounded
+    passes; an unresolved UNKNOWN document is never materialized wholesale.
+    """
+    stream_name = Path(source_path).name
+    if not is_jsonl_source_path(source_path):
+        provider, evidence = _detect_provider_from_bounded_prefix(
+            payload.read(_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES),
+            stream_name,
+            record_stream=False,
+        )
+        if provider is not Provider.UNKNOWN:
+            return provider, evidence
+        return _detect_provider_from_bounded_document(payload)
+
+    last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
+    scanned_bytes = 0
+
+    while scanned_bytes < _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES:
+        record = _BoundedJSONLRecordReader(
+            payload,
+            _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES - scanned_bytes,
+        )
+        provider, last_evidence = _detect_provider_from_bounded_record(record)
+        parsed_bytes = record.bytes_read
+        scanned_bytes += parsed_bytes
+        if provider is not Provider.UNKNOWN:
+            return provider, last_evidence
+        record.drain()
+        scanned_bytes += record.bytes_read - parsed_bytes
+        if record.bytes_read == 0:
+            break
+    return Provider.UNKNOWN, last_evidence
+
+
+def _require_bounded_provider(provider: Provider, source_path: str) -> None:
+    """Refuse eager UNKNOWN replay after bounded structural detection."""
+    if provider is Provider.UNKNOWN:
+        raise ValueError(f"retained UNKNOWN provider remained unresolved after bounded scan: {source_path}")
 
 
 def _canonical_authority_logical_key(logical_key: str) -> str:
@@ -200,6 +747,7 @@ class _RevisionCensusState:
     censused: set[str]
     membership_candidates: dict[str, set[str]]
     provisional_full_raw_ids: dict[str, set[str]]
+    transient_non_session_raw_ids: set[str]
 
 
 @dataclass(slots=True)
@@ -603,7 +1151,7 @@ def _census_historical_revision_evidence(
     replay) still independently re-derives byte-provenness from raw bytes for
     every raw.
     """
-    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set())
     batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
     batched = batch_size is not None
     pending_commits = 0
@@ -655,6 +1203,66 @@ def _census_historical_revision_evidence(
             commit_unit()
             return
         sessions, payload_bytes, revision_kind = outcome
+        stored_provider, _blob_hash, _source_path, _stored_kind, _stored_size = archive.raw_revision_descriptor(raw_id)
+        if stored_provider is Provider.UNKNOWN and sessions:
+            # Acquisition deliberately did not decode an UNKNOWN source-only
+            # member.  A successful replay now has durable shape evidence for
+            # its provider, so retain that result independently of the later
+            # index promotion outcome.
+            apply_source_raw_state_update(
+                archive._ensure_source_conn(),
+                raw_id,
+                state=RawSessionStateUpdate(payload_provider=Provider.from_string(sessions[0].source_name)),
+                manage_transaction=not batched,
+            )
+        if not sessions:
+            provider = _detected_provider_for_empty_replay(
+                archive,
+                raw_id,
+                stored_provider=stored_provider,
+                source_path=_source_path,
+            )
+            # A terminal artifact makes this raw ineligible for future census
+            # work. Its artifact carrier, parse state, and both census receipts
+            # must therefore become durable as one source-tier transaction.
+            # Batches retain that transaction until their existing commit
+            # boundary instead of forcing one SQLite commit per empty raw.
+            transaction = nullcontext() if batched else archive._ensure_source_conn()
+            with transaction:
+                if stored_provider is Provider.UNKNOWN and provider is not Provider.UNKNOWN:
+                    apply_source_raw_state_update(
+                        archive._ensure_source_conn(),
+                        raw_id,
+                        state=RawSessionStateUpdate(payload_provider=provider),
+                        manage_transaction=False,
+                    )
+                terminalized = _persist_terminal_non_session_artifact(
+                    archive,
+                    raw_id,
+                    provider=provider,
+                    source_path=_source_path,
+                    source_index=source_index,
+                    manage_transaction=False,
+                )
+                if provider is not Provider.UNKNOWN:
+                    archive.replace_raw_membership_census(
+                        raw_id,
+                        [],
+                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        censused_at_ms=0,
+                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                        manage_transaction=False,
+                    )
+                    if not terminalized:
+                        apply_source_raw_state_update(
+                            archive._ensure_source_conn(),
+                            raw_id,
+                            state=_raw_parse_success_state(provider),
+                            manage_transaction=False,
+                        )
+            if provider is not Provider.UNKNOWN:
+                commit_unit()
+                return
         state.classified += int(len(sessions) == 1)
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
         if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
@@ -729,19 +1337,14 @@ def _census_historical_revision_evidence(
             census_selection = initial_selection
             while True:
                 rows = archive.raw_membership_census_rows(census_selection)
-                terminal_raw_ids = {
-                    raw_id for raw_id, _source_index, terminal_non_session in rows if terminal_non_session
-                }
-                for raw_id in terminal_raw_ids - state.censused:
-                    state.scanned += 1
-                    state.censused.add(raw_id)
-                pending_rows = [
-                    (raw_id, source_index)
-                    for raw_id, source_index, terminal_non_session in rows
-                    if raw_id not in state.censused and not terminal_non_session
-                ]
                 if max_payload_bytes is not None:
-                    payload_sizes = archive.raw_payload_sizes([raw_id for raw_id, _index in pending_rows])
+                    payload_sizes = archive.raw_payload_sizes(
+                        [
+                            raw_id
+                            for raw_id, _source_index, terminal_non_session, _raw_rowid in rows
+                            if raw_id not in state.censused and not terminal_non_session
+                        ]
+                    )
                     total_payload_bytes = sum(payload_sizes.values())
                     oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
                     if oversized or total_payload_bytes > max_payload_bytes:
@@ -749,6 +1352,27 @@ def _census_historical_revision_evidence(
                         raise RawRevisionReplayResourceBlockedError(
                             sorted(blocked_ids), max_payload_bytes, total_payload_bytes
                         )
+                for raw_id, _source_index, _terminal_non_session, _raw_rowid in sorted(
+                    rows,
+                    key=lambda row: archive.raw_revision_observation_order(row[0]),
+                ):
+                    if raw_id in state.censused or not _replay_retained_codex_state_evidence(archive, raw_id):
+                        continue
+                    state.scanned += 1
+                    state.censused.add(raw_id)
+                    state.transient_non_session_raw_ids.add(raw_id)
+                    commit_unit()
+                terminal_raw_ids = {
+                    raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if terminal_non_session
+                }
+                for raw_id in terminal_raw_ids - state.censused:
+                    state.scanned += 1
+                    state.censused.add(raw_id)
+                pending_rows = [
+                    (raw_id, source_index)
+                    for raw_id, source_index, terminal_non_session, _raw_rowid in rows
+                    if raw_id not in state.censused and not terminal_non_session
+                ]
                 # Parse is read-only blob->ParsedSession decode and authority-neutral;
                 # spread it across a process pool when there is more than one raw to
                 # parse. Archive writes below stay in fixed `pending_rows` order
@@ -770,6 +1394,7 @@ def _census_historical_revision_evidence(
                         continue
                     apply_outcome(raw_id, source_index, parsed_outcomes)
                 if head_by_older:
+                    source_index_by_raw_id = dict(pending_rows)
                     head_to_key = {
                         raw_id: key for key, raw_ids in state.provisional_full_raw_ids.items() for raw_id in raw_ids
                     }
@@ -794,7 +1419,7 @@ def _census_historical_revision_evidence(
                         if resolved_key is not None:
                             bind_byte_proven_older_member(older_raw_id, resolved_key)
                         else:
-                            apply_outcome(older_raw_id, 0, fallback_outcomes)
+                            apply_outcome(older_raw_id, source_index_by_raw_id[older_raw_id], fallback_outcomes)
                 if census_selection is None:
                     break
                 expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
@@ -802,7 +1427,7 @@ def _census_historical_revision_evidence(
                     break
                 census_selection = expanded
     except BaseException:
-        if batched and pending_commits > 0:
+        if batched:
             archive.rollback()
         raise
     if batched and pending_commits > 0:
@@ -823,14 +1448,10 @@ def _load_frozen_revision_evidence(
     expanded_raw_ids, _logical_keys = archive.expand_raw_membership_selection(selected_raw_ids)
     if selected_raw_ids is not None:
         expanded_raw_ids = _expand_frozen_revision_link_selection(archive.archive_root, expanded_raw_ids)
-    recorded_logical_keys = require_current_parser_source_census(
-        archive.archive_root,
-        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
-    )
     rows = archive.raw_membership_census_rows(expanded_raw_ids if selected_raw_ids is not None else None)
     if max_payload_bytes is not None:
         payload_sizes = archive.raw_payload_sizes(
-            [raw_id for raw_id, _source_index, terminal_non_session in rows if not terminal_non_session]
+            [raw_id for raw_id, _source_index, terminal_non_session, _raw_rowid in rows if not terminal_non_session]
         )
         total_payload_bytes = sum(payload_sizes.values())
         oversized = [raw_id for raw_id, size in payload_sizes.items() if size > max_payload_bytes]
@@ -838,8 +1459,20 @@ def _load_frozen_revision_evidence(
             raise RawRevisionReplayResourceBlockedError(
                 sorted(oversized or payload_sizes), max_payload_bytes, total_payload_bytes
             )
+    frozen_codex_state_raw_ids = frozenset(
+        raw_id
+        for raw_id, _source_index, _terminal_non_session, _raw_rowid in rows
+        if _retained_codex_state_descriptor(archive, raw_id) is not None
+    )
+    recorded_logical_keys = require_current_parser_source_census(
+        archive.archive_root,
+        selected_raw_ids=expanded_raw_ids if selected_raw_ids is not None else None,
+        transient_non_session_raw_ids=frozen_codex_state_raw_ids,
+    )
     parseable_raw_ids = [
-        raw_id for raw_id, source_index, terminal_non_session in rows if source_index >= 0 and not terminal_non_session
+        raw_id
+        for raw_id, source_index, terminal_non_session, _raw_rowid in rows
+        if source_index >= 0 and not terminal_non_session and raw_id not in frozen_codex_state_raw_ids
     ]
     parsed_outcomes = _parse_retained_raws(
         archive,
@@ -847,11 +1480,11 @@ def _load_frozen_revision_evidence(
         ingest_workers=ingest_workers,
         prefetch_cache=prefetch_cache,
     )
-    state = _RevisionCensusState(0, 0, 0, set(), {}, {})
-    for raw_id, source_index, terminal_non_session in rows:
+    state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set(frozen_codex_state_raw_ids))
+    for raw_id, source_index, terminal_non_session, _raw_rowid in rows:
         state.scanned += 1
         state.censused.add(raw_id)
-        if terminal_non_session:
+        if terminal_non_session or raw_id in frozen_codex_state_raw_ids:
             continue
         if source_index < 0:
             state.quarantined += 1
@@ -892,6 +1525,7 @@ def require_current_parser_source_census(
     archive_root: Path,
     *,
     selected_raw_ids: Sequence[str] | None = None,
+    transient_non_session_raw_ids: Set[str] = frozenset(),
 ) -> dict[str, tuple[str, ...]]:
     """Require phase-2 parser receipts before allocating an index candidate."""
     stale_raw_ids: list[str] = []
@@ -919,6 +1553,9 @@ def require_current_parser_source_census(
             )
             for raw_id_value, fingerprint, status, logical_keys_json in rows:
                 raw_id = str(raw_id_value)
+                if raw_id in transient_non_session_raw_ids:
+                    recorded_logical_keys[raw_id] = ()
+                    continue
                 if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
                     stale_raw_ids.append(raw_id)
                     continue
@@ -954,6 +1591,7 @@ def require_current_parser_source_census(
             )
             for raw_id_value, typed_key, revision_kind, membership_key, typed_non_session in rows:
                 raw_id = str(raw_id_value)
+                typed_non_session = bool(typed_non_session) or raw_id in transient_non_session_raw_ids
                 existing_typed, existing_kind, memberships, existing_non_session = durable_bindings.get(
                     raw_id, (typed_key, revision_kind, [], bool(typed_non_session))
                 )
@@ -1128,6 +1766,7 @@ def require_current_parser_source_census(
                     """,
                     authority_params,
                 )
+                if str(row[0]) not in transient_non_session_raw_ids
             )
     if unresolved_raw_ids:
         sample = ", ".join(unresolved_raw_ids[:5])
@@ -1136,6 +1775,27 @@ def require_current_parser_source_census(
             f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
         )
     return recorded_logical_keys
+
+
+def _logical_keys_for_raw_ids(archive: ArchiveStore, raw_ids: Set[str]) -> set[str]:
+    """Read typed logical keys for an arbitrary-size raw selection."""
+    keys: set[str] = set()
+    ordered_raw_ids = sorted(raw_ids)
+    conn = archive._ensure_source_conn()
+    for offset in range(0, len(ordered_raw_ids), 500):
+        chunk = ordered_raw_ids[offset : offset + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        keys.update(
+            str(row[0])
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT logical_source_key FROM raw_sessions
+                WHERE raw_id IN ({placeholders}) AND logical_source_key IS NOT NULL
+                """,
+                chunk,
+            )
+        )
+    return keys
 
 
 def validate_frozen_source_authority(
@@ -1153,7 +1813,11 @@ def validate_frozen_source_authority(
             archive_root,
             active_index_path=active_index_path,
         ) as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+        _ParsedSessionSpill(
+            archive_root,
+            index_path=active_index_path,
+            max_cached_payload_bytes=max_payload_bytes,
+        ) as spill,
     ):
         census = _load_frozen_revision_evidence(
             archive,
@@ -1164,11 +1828,15 @@ def validate_frozen_source_authority(
             prefetch_cache=prefetch_cache,
         )
         _unclassified, logical_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        transient_non_session_keys = _logical_keys_for_raw_ids(
+            archive,
+            census.transient_non_session_raw_ids,
+        )
         _membership_raw_ids, persisted_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         membership_keys = {*persisted_membership_keys, *census.membership_candidates}
         byte_replayed_keys: set[str] = set()
 
-        for logical_key in sorted(logical_keys):
+        for logical_key in sorted(set(logical_keys) - transient_non_session_keys):
             plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
             if not plan.accepted_raw_ids:
                 convertible = archive.convertible_full_revision_raw_ids(logical_key)
@@ -1210,6 +1878,7 @@ def validate_frozen_source_authority(
 def census_historical_revision_evidence(
     archive_root: Path,
     *,
+    active_index_path: Path | None = None,
     selected_raw_ids: list[str] | None = None,
     max_payload_bytes: int | None = None,
     ingest_workers: int = 1,
@@ -1225,7 +1894,11 @@ def census_historical_revision_evidence(
     """
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=max_payload_bytes) as spill,
+        _ParsedSessionSpill(
+            archive_root,
+            index_path=active_index_path,
+            max_cached_payload_bytes=max_payload_bytes,
+        ) as spill,
     ):
         state = _census_historical_revision_evidence(
             archive,
@@ -1347,6 +2020,7 @@ def _lineage_aware_replay_order(
 def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
+    active_index_path: Path | None = None,
     selected_raw_ids: list[str] | None = None,
     owned_inactive_generation: tuple[str, str] | None = None,
     retention_observer: Callable[[int, int], None] | None = None,
@@ -1485,7 +2159,11 @@ def backfill_historical_revision_evidence(
     prepare_pool = ThreadPoolExecutor(max_workers=1) if parallel_threads_effective() else None
     with (
         archive_context as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=spill_cache_bytes) as spill,
+        _ParsedSessionSpill(
+            archive_root,
+            index_path=active_index_path,
+            max_cached_payload_bytes=spill_cache_bytes,
+        ) as spill,
         prepare_pool if prepare_pool is not None else nullcontext(),
     ):
         census_started = time.perf_counter()
@@ -1921,9 +2599,35 @@ def census_parse_worker(
     fallback_id_override = native_id if kind is RawRevisionKind.APPEND else None
     publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
     try:
+        if provider is Provider.UNKNOWN:
+            with publisher.open(blob_hash) as detection_payload:
+                provider, _evidence = _detect_unknown_retained_provider(detection_payload, source_path)
+            if is_stream_record_provider(source_path, str(provider)):
+                with publisher.open(blob_hash) as stream_payload:
+                    sessions = _parse_stream(
+                        provider, stream_payload, source_path, fallback_id_override=fallback_id_override
+                    )
+                return raw_id, sessions, None
+            _require_bounded_provider(provider, source_path)
+            payload = publisher.read_all(blob_hash)
+            payload_path = None
+            if provider is Provider.HERMES:
+                candidate_path = publisher.blob_path(blob_hash)
+                payload_path = candidate_path if candidate_path.exists() else None
+            sessions = _parse_one(
+                provider,
+                payload,
+                source_path,
+                payload_path=payload_path,
+                archive_root=Path(blob_root_str).parent,
+                fallback_id_override=fallback_id_override,
+            )
+            return raw_id, sessions, None
         if is_stream:
-            with publisher.open(blob_hash) as payload:
-                sessions = _parse_stream(provider, payload, source_path, fallback_id_override=fallback_id_override)
+            with publisher.open(blob_hash) as stream_payload:
+                sessions = _parse_stream(
+                    provider, stream_payload, source_path, fallback_id_override=fallback_id_override
+                )
         else:
             payload_path = None
             if provider is Provider.HERMES:
@@ -2120,6 +2824,8 @@ def _enrich_retained_parse_results(
             continue
         provider, _blob_hash, source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
         sessions, payload_bytes, kind = outcome
+        if sessions:
+            provider = Provider.from_string(sessions[0].source_name)
         results[raw_id] = (
             _replay_safe_enrich_sessions(
                 source_conn,
@@ -2325,6 +3031,27 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     # the unchanged stem-based fallback -- their stored bytes still carry
     # the synthetic session_meta line that made this unnecessary for them.
     fallback_id_override = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
+    if provider is Provider.UNKNOWN:
+        # Source-only acquisition deliberately retains unknown ZIP members
+        # without decoding them.  Recovery is the first lawful point to
+        # inspect the durable bytes and resolve their parser, before deciding
+        # whether their filename is a stream route.
+        with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, _stream_path, _stream_kind):
+            provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
+        if is_stream_record_provider(source_path, str(provider)):
+            with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
+                return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+        _require_bounded_provider(provider, source_path)
+        _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+        payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
+        return _parse_one(
+            provider,
+            eager_payload,
+            source_path,
+            payload_path=payload_path,
+            archive_root=archive.archive_root,
+            fallback_id_override=fallback_id_override,
+        )
     if is_stream_record_provider(source_path, str(provider)):
         with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
             return _parse_stream(stream_provider, payload, stream_path, fallback_id_override=fallback_id_override)
@@ -2338,6 +3065,51 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         archive_root=archive.archive_root,
         fallback_id_override=fallback_id_override,
     )
+
+
+def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tuple[Path, str, str] | None:
+    """Identify one immutable retained Codex state snapshot without mutating it."""
+    provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if provider is not Provider.CODEX:
+        return None
+    state_path = archive.blob_path_for_hash(blob_hash)
+    if state_path is None:
+        return None
+    state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
+    if state_kind not in codex_state.IN_SCOPE_KINDS:
+        return None
+    return state_path, source_path, state_kind
+
+
+def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) -> bool:
+    """Apply a retained, in-scope Codex state snapshot without minting a session.
+
+    Source-only acquisition snapshots named Codex databases before it can
+    inspect their schema.  Once recovery owns the derived tier, only a
+    recognized retained snapshot may become thread evidence.  The parser
+    reads the immutable blob path, never the original mutable state DB.
+    """
+    descriptor = _retained_codex_state_descriptor(archive, raw_id)
+    if descriptor is None:
+        return False
+    state_path, source_path, state_kind = descriptor
+    if state_kind == "thread_state":
+        write_codex_thread_state_evidence(
+            archive,
+            codex_state.parse_codex_state_db(state_path, immutable=True),
+            source_path=source_path,
+            acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
+        )
+    archive.replace_raw_membership_census(
+        raw_id,
+        [],
+        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+        censused_at_ms=0,
+        detail="retained Codex state evidence applied",
+        retire_full_revision_governance=True,
+    )
+    archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
+    return True
 
 
 #: Lever-A prefetch-buffer budget clamp (estimated tree bytes) -- same
@@ -2786,14 +3558,20 @@ class _ParsedSessionSpill:
     #: existing crash-recovery contract for the sqlite-backed spill.
     _WHALE_CACHE_MAX_TREE_BYTES: Final[int] = 8 * 1024 * 1024 * 1024
 
-    def __init__(self, archive_root: Path, *, max_cached_payload_bytes: int | None) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        index_path: Path | None = None,
+        max_cached_payload_bytes: int | None,
+    ) -> None:
         # Place the spill beside the RESOLVED index tier, not the archive
         # root: on deployments where the .db files are symlinks (e.g. root
         # SSD config dir -> NVMe data disk), a spill in archive_root would
         # put census churn on the wear-limited disk the symlinks exist to
         # protect.
-        index_path = archive_root / "index.db"
-        spill_dir = index_path.resolve().parent if index_path.exists() else archive_root
+        resolved_index_path = index_path or ArchiveLocation.resolve(archive_root).active_index_path
+        spill_dir = resolved_index_path.resolve().parent if resolved_index_path.exists() else archive_root
         fd, name = tempfile.mkstemp(prefix=".revision-census-", suffix=".sqlite", dir=spill_dir)
         os.close(fd)
         self.path = Path(name)
@@ -3017,9 +3795,11 @@ def _declared_non_session_artifact_classification(
     these; this replay engine (used by ``polylogue ops reset --index`` /
     ``devtools`` rebuild-index) is a SEPARATE parse chokepoint that did not,
     and would silently recreate exactly the ``<agent>.meta`` phantom sessions
-    that fix is meant to eliminate on every future rebuild. Same check, same
-    rule table, so a declared fact artifact can never become a session
-    through either entry point.
+    that fix is meant to eliminate on every future rebuild. A positive JSONL
+    session proof is the one deliberate exception, matching the live route:
+    a source-only outage may retain bytes before it can inspect a path that
+    normally carries fact evidence, and recovery must not make that filename
+    permanently override later decoded session authority.
 
     polylogue-9ykn: a path-declared rule is only half of the live path's
     gate. ``pipeline/services/ingest_worker.py`` also runs every sampled
@@ -3044,7 +3824,7 @@ def _declared_non_session_artifact_classification(
     from polylogue.archive.artifact_taxonomy import classify_artifact
 
     rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None and rule.parse_policy != "session":
+    if rule is not None and rule.parse_policy != "session" and not sample:
         classification = classify_artifact([], provider=provider, source_path=source_path)
         if not classification.parse_as_session:
             return classification
@@ -3070,6 +3850,76 @@ def _declared_non_session_artifact_classification(
     if classification.kind is ArtifactKind.UNKNOWN:
         return None
     return classification if not classification.parse_as_session else None
+
+
+def _detected_provider_for_empty_replay(
+    archive: ArchiveStore,
+    raw_id: str,
+    *,
+    stored_provider: Provider,
+    source_path: str,
+) -> Provider:
+    """Resolve a provider before terminalizing an empty retained replay."""
+    if stored_provider is not Provider.UNKNOWN:
+        return stored_provider
+    with archive.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
+        provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
+    if provider is not Provider.UNKNOWN:
+        return provider
+    return provider
+
+
+def _persist_terminal_non_session_artifact(
+    archive: ArchiveStore,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    manage_transaction: bool,
+) -> bool:
+    """Record replay-confirmed source-only artifact authority once.
+
+    Replay reaches this function only after the real parser has consumed the
+    complete stream and produced no conversational session. The terminal
+    receipt therefore follows that one authoritative parse result instead of
+    reclassifying the raw through a second, weaker JSONL shape scan.
+    """
+    if provider is Provider.UNKNOWN:
+        return False
+    classification = _declared_non_session_artifact_classification(provider, source_path)
+    if classification is None:
+        return False
+    origin = origin_from_provider(provider)
+    observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
+    upsert_raw_artifact(
+        archive._ensure_source_conn(),
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=origin.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=classification.cohort,
+            classification_reason=classification.reason,
+            parse_as_session=False,
+            schema_eligible=classification.schema_eligible,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+    apply_source_raw_state_update(
+        archive._ensure_source_conn(),
+        raw_id,
+        state=_raw_parse_success_state(provider),
+        manage_transaction=manage_transaction,
+    )
+    return True
 
 
 def _is_declared_non_session_artifact(
@@ -3137,18 +3987,6 @@ def _parse_one_raw(
         return sessions
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
-    if is_stream_record_provider(source_path, str(provider)):
-        records = list(_iter_json_stream(BytesIO(payload), source_name))
-        if _is_declared_non_session_artifact(provider, source_path, sample=records[:64]):
-            return []
-        return parse_stream_payload(
-            provider,
-            records,
-            fallback_id,
-            source_path=source_path,
-        )
-    if _is_declared_non_session_artifact(provider, source_path):
-        return []
     if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
@@ -3165,9 +4003,32 @@ def _parse_one_raw(
                     profile_root=Path(source_path).parent,
                     immutable=True,
                 )
+    rule = artifact_rule_for_path(provider, source_path)
+    declared_path_session_evidence = False
+    if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):
+        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+
+        declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
+    if is_stream_record_provider(source_path, str(provider)):
+        records = list(_iter_json_stream(BytesIO(payload), source_name))
+        if not declared_path_session_evidence and _is_declared_non_session_artifact(
+            provider, source_path, sample=records[:64]
+        ):
+            return []
+        return parse_stream_payload(
+            provider,
+            records,
+            fallback_id,
+            source_path=source_path,
+        )
+    records = list(_iter_json_stream(BytesIO(payload), source_name))
+    if not declared_path_session_evidence and _is_declared_non_session_artifact(
+        provider, source_path, sample=records[:64]
+    ):
+        return []
     return parse_payload(
         provider,
-        list(_iter_json_stream(BytesIO(payload), source_name)),
+        records,
         fallback_id,
         source_path=source_path,
     )
@@ -3222,22 +4083,12 @@ def _parse_stream_raw(
     *,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
-    if _is_declared_non_session_artifact(provider, source_path):
-        return []
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
     stream = _iter_json_stream(payload, source_name)
-    # Multi-GiB Claude Code JSONL must stay memory-bounded (module docstring:
-    # "a memory-bounded streaming path exists for multi-GiB Claude Code
-    # JSONL"), so only the first 64 records -- the same sample bound the live
-    # ingest gate uses -- are materialized for content classification; the
-    # rest of the stream is chained back on unread.
-    sample = list(islice(stream, 64))
-    if _is_declared_non_session_artifact(provider, source_path, sample=sample):
-        return []
     return parse_stream_payload(
         provider,
-        chain(sample, stream),
+        stream,
         fallback_id,
         source_path=source_path,
     )

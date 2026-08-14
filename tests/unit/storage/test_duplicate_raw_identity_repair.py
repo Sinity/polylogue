@@ -184,6 +184,26 @@ def test_unified_frontier_census_plans_duplicate_alias_with_stable_evidence(tmp_
     assert json.loads(persisted[3])["accepted_content_hash"]
 
 
+def test_duplicate_alias_census_uses_active_generation_not_shadow_index(tmp_path: Path) -> None:
+    stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
+    active_index = tmp_path / "generations" / "active" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    (tmp_path / "index.db").replace(active_index)
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    (tmp_path / "index.db").write_bytes(b"not a sqlite database")
+
+    config = Config(
+        archive_root=tmp_path,
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    census = inspect_raw_authority_frontier(config)
+
+    duplicate = next(item for item in census.items if item.raw_id == stale_raw_id)
+    assert duplicate.state is RawAuthorityFrontierState.DUPLICATE_ALIAS
+    assert duplicate.actuator is RawAuthorityActuator.FOLD_DUPLICATE_ALIAS
+
+
 def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(tmp_path: Path) -> None:
     stale_raw_id, _canonical_raw_id, _session_id, _logical_key = _seed_duplicate_raw_pair(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:

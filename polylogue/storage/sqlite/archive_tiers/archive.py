@@ -216,6 +216,8 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_descriptor,
     raw_revision_head_raw_id,
     raw_revision_material,
+    raw_revision_observation_order,
+    raw_revision_observed_at_ms,
     raw_revision_rebuild_selection,
     raw_revision_replay_adoptable,
     raw_revision_replay_plan,
@@ -240,6 +242,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
+    record_raw_container_coordinate,
     write_source_hook_event,
 )
 from polylogue.storage.sqlite.archive_tiers.types import (
@@ -1779,15 +1782,16 @@ class ArchiveStore:
 
                 self._active_writer_lease = ActiveWriterLease(archive_root)
                 self._active_writer_lease.acquire()
-                try:
-                    assert_writable_archive_identity(
-                        configured_root=configured_archive_root(),
-                        active_root=archive_root,
-                    )
-                except Exception:
-                    self._active_writer_lease.close()
-                    self._active_writer_lease = None
-                    raise
+                if not source_tier_acquisition:
+                    try:
+                        assert_writable_archive_identity(
+                            configured_root=configured_archive_root(),
+                            active_root=archive_root,
+                        )
+                    except Exception:
+                        self._active_writer_lease.close()
+                        self._active_writer_lease = None
+                        raise
             else:
                 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 
@@ -1867,7 +1871,6 @@ class ArchiveStore:
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
-        self.index_db_path = self._frozen_index_path or archive_root / "index.db"
         self.embeddings_db_path = archive_root / "embeddings.db"
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
@@ -1904,6 +1907,16 @@ class ArchiveStore:
             self._tags_relation = "session_tags"
             self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
             return
+        if self._frozen_index_path is not None:
+            self.index_db_path = self._frozen_index_path
+        else:
+            # The configured root owns the durable tiers, while an active
+            # generation can keep index.db elsewhere. A writable open must
+            # follow the same pointer as readiness and live ingest instead of
+            # silently mutating a stale conventional root/index.db shadow.
+            from polylogue.storage.archive_identity import resolve_active_index_path
+
+            self.index_db_path = resolve_active_index_path(archive_root)
         if self._frozen_source_validation:
             # Candidate admission derives every decision from source.db and
             # frozen blob bytes. Requiring an index handle here would make the
@@ -2111,6 +2124,10 @@ class ArchiveStore:
         publication receipts; bulk cadence applies to the derived index.
         """
         self._require_writable("commit archive writes")
+        if self._source_tier_acquisition:
+            if self._source_conn is not None:
+                self._source_conn.commit()
+            return
         self._conn.commit()
         self._consume_index_blob_receipts()
         self._flush_pending_raw_parse_states()
@@ -2123,6 +2140,10 @@ class ArchiveStore:
         Used by a bulk caller to discard an uncommitted, half-applied batch when
         a write raises, before propagating the error.
         """
+        if self._source_tier_acquisition:
+            if self._source_conn is not None:
+                self._source_conn.rollback()
+            return
         self._conn.rollback()
         self._pending_index_blob_receipts.clear()
         self._pending_raw_parse_states.clear()
@@ -2441,6 +2462,23 @@ class ArchiveStore:
             post_parse=post_parse,
         )
 
+    def record_raw_container_coordinate(
+        self,
+        raw_id: str,
+        *,
+        coordinate_format: Literal["zip-v2"],
+        entry_ordinal: int,
+        split_index: int,
+    ) -> None:
+        self._require_writable("record source.db container coordinate")
+        record_raw_container_coordinate(
+            self._ensure_source_conn(),
+            raw_id,
+            coordinate_format=coordinate_format,
+            entry_ordinal=entry_ordinal,
+            split_index=split_index,
+        )
+
     def admit_raw_artifact_payload(
         self,
         *,
@@ -2681,7 +2719,9 @@ class ArchiveStore:
     ) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
         return raw_revision_rebuild_selection(self, raw_ids)
 
-    def raw_membership_census_rows(self, raw_ids: Sequence[str] | None = None) -> tuple[tuple[str, int, bool], ...]:
+    def raw_membership_census_rows(
+        self, raw_ids: Sequence[str] | None = None
+    ) -> tuple[tuple[str, int, bool, int], ...]:
         return raw_membership_census_rows(self, raw_ids)
 
     def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
@@ -2743,6 +2783,12 @@ class ArchiveStore:
 
     def raw_revision_acquired_at_ms(self, raw_id: str) -> int:
         return raw_revision_acquired_at_ms(self, raw_id)
+
+    def raw_revision_observed_at_ms(self, raw_id: str) -> int:
+        return raw_revision_observed_at_ms(self, raw_id)
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]:
+        return raw_revision_observation_order(self, raw_id)
 
     def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
         return raw_membership_rebuild_raw_ids(self, logical_source_key)
