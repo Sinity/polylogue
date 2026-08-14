@@ -32,7 +32,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -286,6 +286,7 @@ def testmon_environment_digest(
     repo_root: Path,
     *,
     pytest_profile: str = "default",
+    pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
 ) -> str:
     """Return the native testmon environment name for collection semantics."""
@@ -306,7 +307,10 @@ def testmon_environment_digest(
             _environment_input_paths(root),
             deadline_monotonic=deadline_monotonic,
         ),
-        "pytest_environment": {key: os.environ.get(key) for key in _PYTEST_ENVIRONMENT_KEYS},
+        "pytest_environment": {
+            key: (os.environ.get(key) if pytest_environment is None else pytest_environment.get(key))
+            for key in _PYTEST_ENVIRONMENT_KEYS
+        },
         "pytest_profile": pytest_profile,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -749,6 +753,7 @@ def prepare_native_testmon_environment(
     *,
     required_executable_paths: Sequence[str] = (),
     pytest_profile: str = "default",
+    pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
 ) -> NativeTestmonPreparation:
     """Repair derived local state and optionally reuse a matching main graph."""
@@ -757,6 +762,7 @@ def prepare_native_testmon_environment(
     environment_name = testmon_environment_digest(
         root,
         pytest_profile=pytest_profile,
+        pytest_environment=pytest_environment,
         deadline_monotonic=deadline_monotonic,
     )
     local_data = root / TESTMON_DATA_RELPATH

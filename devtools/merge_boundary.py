@@ -37,8 +37,8 @@ which:
   6. Runs the actual ``gh pr merge --squash``.
   7. Appends a merge-train ledger entry (``.cache/verify/merge-gate/merge-train-ledger.json``)
      and, unless ``--with-verify`` was given, prints a reminder that the
-     ledger's terminal step -- one full-suite ``devtools verify --all`` (or
-     narrower agreed selection) since the last one -- has not yet been
+     ledger's terminal step -- one release-baseline ``devtools verify --all``
+     since the last one -- has not yet been
      recorded for this train.
 
 ``devtools workspace merge train-status`` inspects the ledger and reports
@@ -775,7 +775,8 @@ def cmd_train_status(as_json: bool) -> int:
         print(f"  PR #{entry['pr']} @ {entry['head_sha'][:8]}: {entry['title']}")
     print(
         'Run `devtools workspace merge record-full-verify --command "devtools verify --all"` '
-        "(or the narrower agreed selection) before declaring this merge-train session done -- "
+        "before declaring this merge-train session done. A narrower successful selection does not "
+        "grant the release-baseline authority this ledger requires. "
         "per-PR CI skips the heavy suite, so nothing else will catch a master-red class only "
         "visible on the merged whole."
     )

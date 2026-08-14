@@ -944,6 +944,20 @@ def test_train_status_blocks_when_pr_merged_after_last_full_verify(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
+def test_train_status_requires_release_baseline_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+    output = capsys.readouterr().out
+    assert "devtools verify --all" in output
+    assert "narrower agreed selection" not in output
+    assert "does not grant the release-baseline authority" in output
+
+
 def test_train_status_reads_historical_scope_without_granting_release_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

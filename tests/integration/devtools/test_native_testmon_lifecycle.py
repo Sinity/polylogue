@@ -474,6 +474,55 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
 
 
+@pytest.mark.parametrize(("verify_args", "selection_mode"), [((), "bootstrap"), (("--all",), "full")])
+def test_release_native_runs_override_a_reduced_hypothesis_profile(
+    tmp_path: Path,
+    verify_args: tuple[str, ...],
+    selection_mode: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(
+        repo,
+        conftest=(
+            "import os\n"
+            "from hypothesis import settings\n\n"
+            "settings.register_profile('default', max_examples=100)\n"
+            "settings.register_profile('verify', max_examples=10)\n"
+            "settings.load_profile(os.environ.get('HYPOTHESIS_PROFILE', 'default'))\n"
+        ),
+    )
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "tests" / "test_hypothesis_profile.py").write_text(
+        "import pytest\n"
+        "from hypothesis import settings\n\n"
+        "def test_parallel_release_profile_is_complete():\n"
+        "    assert settings().max_examples == 100\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_release_profile_is_complete():\n"
+        "    assert settings().max_examples == 100\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    completed, payload = _run_production_verify(
+        repo,
+        *verify_args,
+        environment_overrides={"HYPOTHESIS_PROFILE": "verify"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert payload["testmon_environment"]["selection_mode"] == selection_mode
+    assert payload["release_baseline_allowed"] is True
+
+
 @pytest.mark.parametrize(
     ("environment_addopts", "configured_addopts"),
     [

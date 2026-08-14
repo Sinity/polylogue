@@ -20,7 +20,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.checkout_guard import CheckoutImportMismatchError
-from devtools.testmon_bootstrap import NativeTestmonDeadlineError, executable_python_paths
+from devtools.testmon_bootstrap import NativeTestmonDeadlineError, NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
@@ -3124,6 +3124,20 @@ def test_native_testmon_lifecycle_lock_serializes_checkout_state(tmp_path: Path)
     assert contender_entered.is_set()
 
 
+def test_native_testmon_lifecycle_lock_refuses_symlink_without_touching_target(tmp_path: Path) -> None:
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    target = tmp_path / "outside-checkout-target"
+    target.write_text("preserve this file\n", encoding="utf-8")
+    (cache / "native-testmon-lifecycle.lock").symlink_to(target)
+
+    with pytest.raises(NativeTestmonRepairError, match="native testmon lifecycle lock"):
+        with verify._native_testmon_lifecycle_lock(tmp_path):
+            pytest.fail("symlinked lifecycle lock must not be acquired")
+
+    assert target.read_text(encoding="utf-8") == "preserve this file\n"
+
+
 def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
     stale_statistics = tmp_path / verify_runs.CURRENT_STATISTICS_PATH
     stale_statistics.parent.mkdir(parents=True)
@@ -4353,6 +4367,82 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
             checkout_stable=True,
             aggregate=broken,
         )
+
+
+def test_preparation_mutation_withholds_release_authority_after_restoration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observations = iter(
+        (
+            CheckoutMutationObservation(changed=False, unavailable=False),
+            CheckoutMutationObservation(changed=True, unavailable=False, observed_path="polylogue/module.py"),
+            CheckoutMutationObservation(changed=False, unavailable=False),
+        )
+    )
+
+    class _SequencedMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return next(observations)
+
+    preparation = SimpleNamespace(
+        environment_name="environment",
+        selection_mode="affected",
+        removed_paths=(),
+        copied_from=None,
+    )
+    native_state = SimpleNamespace(
+        valid=True,
+        status="valid",
+        reason="current",
+        environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
+        missing_executable_paths=(),
+    )
+    release_aggregate = {
+        "complete_corpus_covered": True,
+        "terminal_green": True,
+        "external_addopts_neutralized": True,
+        "external_plugins_neutralized": True,
+        "closed_world_collection": True,
+        "cleanup": {"complete": True},
+        "containment": {"complete": True},
+        "deadline": {"met": True},
+    }
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        verify,
+        "assert_polylogue_matches_checkout",
+        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+    )
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch("devtools.verify.prepare_native_testmon_environment", return_value=preparation),
+        patch("devtools.verify._open_owned_native_testmon_state", return_value=SimpleNamespace(close=lambda: None)),
+        patch("devtools.verify._native_environment_after_run", return_value=native_state),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify.aggregate_native_testmon_run", return_value=release_aggregate),
+        patch("devtools.verify.CheckoutMutationMonitor", _SequencedMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--all", "--json"]) == 125
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["release_baseline_allowed"] is False
+    stability = next(step for step in payload["steps"] if step["name"] == "checkout stability")
+    assert stability["diagnosis"] == "checkout_changed_during_verification"
+    assert stability["checkout_mutation_path"] == "polylogue/module.py"
 
 
 def test_collection_failure_still_persists_native_run_aggregate(

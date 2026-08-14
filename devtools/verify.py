@@ -215,24 +215,72 @@ def _native_testmon_lifecycle_lock(repo_root: Path) -> Iterator[None]:
     if not stat.S_ISDIR(mode):
         raise NativeTestmonRepairError(f"native testmon lock parent is not an owned directory: {cache}")
     lock_path = cache / "native-testmon-lifecycle.lock"
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            handle.seek(0)
-            holder = handle.read().strip() or "another verify invocation"
-            sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
-            sys.stderr.flush()
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"pid={os.getpid()}")
-        handle.flush()
-        try:
-            yield
-        finally:
+    directory_descriptor: int | None = None
+    lock_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            cache,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_directory = os.fstat(directory_descriptor)
+        current_directory = cache.lstat()
+        if not stat.S_ISDIR(opened_directory.st_mode) or (opened_directory.st_dev, opened_directory.st_ino) != (
+            current_directory.st_dev,
+            current_directory.st_ino,
+        ):
+            raise NativeTestmonRepairError(f"native testmon lock parent changed while binding: {cache}")
+        lock_descriptor = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        opened_lock = os.fstat(lock_descriptor)
+        current_lock = os.stat(lock_path.name, dir_fd=directory_descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened_lock.st_mode)
+            or not stat.S_ISREG(current_lock.st_mode)
+            or (opened_lock.st_dev, opened_lock.st_ino) != (current_lock.st_dev, current_lock.st_ino)
+        ):
+            raise NativeTestmonRepairError(f"native testmon lifecycle lock is not an owned regular file: {lock_path}")
+    except OSError as exc:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_descriptor)
+            lock_descriptor = None
+        if directory_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_descriptor)
+            directory_descriptor = None
+        raise NativeTestmonRepairError(f"cannot bind native testmon lifecycle lock {lock_path}: {exc}") from exc
+    try:
+        assert lock_descriptor is not None
+        with os.fdopen(lock_descriptor, "r+", encoding="utf-8") as handle:
+            lock_descriptor = None
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.seek(0)
+                holder = handle.read().strip() or "another verify invocation"
+                sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
+                sys.stderr.flush()
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             handle.seek(0)
             handle.truncate()
+            handle.write(f"pid={os.getpid()}")
+            handle.flush()
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                handle.truncate()
+    finally:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_descriptor)
+        if directory_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_descriptor)
 
 
 def _anchor_verification_paths() -> None:
@@ -1787,6 +1835,8 @@ def _run_step(
     external_plugins_neutralized = False
     if owns_pytest_environment:
         _normalize_managed_pytest_environment(env, disable_plugin_autoload=managed_native_lane)
+    if managed_native_lane and _pytest_uses_full_suite_basetemp(label):
+        env["HYPOTHESIS_PROFILE"] = "default"
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
@@ -2624,6 +2674,16 @@ def _pytest_profile() -> str:
     return "correctness=complete"
 
 
+def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str | None]:
+    environment = {
+        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE"),
+        "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
+    }
+    if force_release_profile:
+        environment["HYPOTHESIS_PROFILE"] = "default"
+    return environment
+
+
 def _remaining_invocation_budget(started_at: float) -> float:
     return max(0.0, VERIFY_INVOCATION_BUDGET_S - (time.monotonic() - started_at))
 
@@ -2907,6 +2967,8 @@ def _main(argv: list[str] | None = None) -> int:
     runtime_data_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
     testmon_mode: str | None = None
+    native_pytest_environment = _native_pytest_environment(force_release_profile=full_requested)
+    preparation_mutation_observation: CheckoutMutationObservation | None = None
     if pytest_enabled:
         assert base_commit is not None
         assert head is not None
@@ -2922,8 +2984,21 @@ def _main(argv: list[str] | None = None) -> int:
                 ROOT,
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
+                pytest_environment=native_pytest_environment,
                 deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
             )
+            if (
+                preparation.selection_mode == "bootstrap"
+                and native_pytest_environment["HYPOTHESIS_PROFILE"] != "default"
+            ):
+                native_pytest_environment = _native_pytest_environment(force_release_profile=True)
+                preparation = prepare_native_testmon_environment(
+                    ROOT,
+                    required_executable_paths=preparation_required_executable_paths,
+                    pytest_profile=_pytest_profile(),
+                    pytest_environment=native_pytest_environment,
+                    deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
+                )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
         except NativeTestmonDeadlineError as exc:
@@ -3005,9 +3080,10 @@ def _main(argv: list[str] | None = None) -> int:
         )
 
     # Git probes and native testmon preparation can refresh the index as part
-    # of their own read path. Discard that preflight interval and begin the
-    # authority interval immediately before the verification steps.
-    _finish_active_checkout_mutation_monitor(mutation_monitor)
+    # of their own read path. Retain that interval's observation: a tracked
+    # file can be edited and restored while the graph is prepared, which makes
+    # any resulting selection unsuitable as exact-head authority.
+    preparation_mutation_observation = _finish_active_checkout_mutation_monitor(mutation_monitor)
     mutation_monitor = CheckoutMutationMonitor(ROOT)
     _start_active_checkout_mutation_monitor(mutation_monitor)
     step_results: list[dict[str, Any]] = []
@@ -3061,14 +3137,23 @@ def _main(argv: list[str] | None = None) -> int:
             final_checkout_fingerprint,
         }
     )
-    if checkout_fingerprint_unavailable or mutation_observation.unavailable:
+    if (
+        checkout_fingerprint_unavailable
+        or mutation_observation.unavailable
+        or preparation_mutation_observation.unavailable
+    ):
         checkout_stable = False
         diagnosis = (
             "checkout_fingerprint_unavailable"
             if checkout_fingerprint_unavailable
             else "checkout_mutation_monitor_unavailable"
         )
-    elif final_head != head or mutation_observation.changed or final_checkout_fingerprint != checkout_fingerprint:
+    elif (
+        final_head != head
+        or preparation_mutation_observation.changed
+        or mutation_observation.changed
+        or final_checkout_fingerprint != checkout_fingerprint
+    ):
         checkout_stable = False
         diagnosis = "checkout_changed_during_verification"
     else:
@@ -3083,8 +3168,10 @@ def _main(argv: list[str] | None = None) -> int:
             "final_git_head": final_head,
             "initial_worktree_fingerprint": checkout_fingerprint,
             "final_worktree_fingerprint": final_checkout_fingerprint,
-            "transient_checkout_mutation": mutation_observation.changed,
-            "checkout_mutation_path": mutation_observation.observed_path,
+            "transient_checkout_mutation": (preparation_mutation_observation.changed or mutation_observation.changed),
+            "checkout_mutation_path": (
+                preparation_mutation_observation.observed_path or mutation_observation.observed_path
+            ),
         }
         step_results.append(stability_step)
         exit_code = 125
@@ -3246,7 +3333,7 @@ def _main(argv: list[str] | None = None) -> int:
         release_baseline_allowed=release_baseline_allowed,
         final_git_head=final_head,
         final_worktree_fingerprint=final_checkout_fingerprint,
-        checkout_mutation_path=mutation_observation.observed_path,
+        checkout_mutation_path=(preparation_mutation_observation.observed_path or mutation_observation.observed_path),
         checkout_diagnosis=checkout_diagnosis,
         pytest_aggregate=pytest_aggregate,
         invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
