@@ -14,7 +14,8 @@ The configured archive root contains these durable paths:
 | `index.db` | Parsed sessions, messages, FTS/search indexes, graph rows, and derived read models. | Rebuildable from `source.db`; include in full evidence backups for faster restore, but cache-exclude profiles may omit it. |
 | `embeddings.db` | Vector rows, embedding status, and catch-up metadata. | Back up when present. It is rebuildable, but expensive and may require provider cost. |
 | `user.db` | Human/user/agent overlays stored as assertions, immutable annotation schema definitions and batch provenance, settings, and context-delivery receipts. | Always back up. This tier is irreplaceable user state. |
-| `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable. Include only in diagnostics bundles or incident snapshots. |
+| `audit.db` | Append-only mutation authority, authorizations, attempts, receipts, and continuity heads. | Always back up. Relocation full-evidence backups require it. |
+| `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable for ordinary restore profiles, but required by the exact relocation full-evidence tier contract. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
 `polylogue ops maintenance archive-plan --output-format json` is the machine-readable
@@ -28,7 +29,7 @@ Use these profiles when choosing what to copy:
 
 | Profile | Include | Exclude | Use case |
 | --- | --- | --- | --- |
-| Full evidence | `source.db`, `index.db`, `embeddings.db`, `user.db`, referenced `blob/`, and optional `ops.db` snapshot. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | Fastest complete restore with raw evidence, read models, vectors, and overlays. |
+| Full evidence | All six archive tiers: `source.db`, `index.db`, `embeddings.db`, `user.db`, `ops.db`, and `audit.db`, plus referenced `blob/`. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | Complete relocation authority and the fastest restore with raw evidence, read models, vectors, overlays, audit authority, and operational state. |
 | User overlays | `user.db` and any assertion/note evidence blobs referenced by user-owned rows. | `index.db`, `ops.db`, rebuildable search/derived models. | Protect irreplaceable human/agent state before resets or schema rebuilds. |
 | Rebuildable-cache exclude | `source.db`, `user.db`, referenced `blob/`, optionally `embeddings.db`. | `index.db`, `ops.db`, derived/cache artifacts. | Small backup that can rebuild parsed/indexed data locally. |
 | Diagnostics bundle | `ops.db`, `archive-plan` JSON, `daemon-workload-probe` JSON, logs, and readonly status outputs. | Private raw blobs unless explicitly needed for the incident. | Bug reports and incident triage without over-sharing archive contents. |
@@ -50,7 +51,24 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
   --profile full_evidence --verify
 ```
 
-Use the `manifest.json` printed by that command to create the bound relocation plan. `--old-root` names the retired pre-move root only for the identity transition and active-index pointer mapping:
+For relocation, the profile name alone is insufficient. The moved root must already contain every `ArchiveTier`, and the new backup manifest must contain this exact set with no omitted tiers:
+
+```json
+{
+  "profile": "full_evidence",
+  "included_tiers": [
+    "source.db",
+    "index.db",
+    "embeddings.db",
+    "user.db",
+    "ops.db",
+    "audit.db"
+  ],
+  "omitted_tiers": []
+}
+```
+
+The relocation validator compares `included_tiers` as a set, so JSON list order is not significant. It rejects a missing `audit.db`, a missing `ops.db`, any extra tier, or any non-empty `omitted_tiers` value. Use the `manifest.json` printed by the backup command to create the bound relocation plan. `--old-root` names the retired pre-move root only for the identity transition and active-index pointer mapping:
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
