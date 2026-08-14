@@ -4175,6 +4175,15 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
     admission.assert_called_once_with(root)
     configure.assert_not_called()
 
+    watcher = Mock()
+    monkeypatch.setattr(daemon_cli, "run_live_watcher", watcher)
+    with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
+        CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+
+    assert admission.call_count == 2
+    admission.assert_called_with(root)
+    watcher.assert_not_called()
+
 
 def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     tmp_path: Path,

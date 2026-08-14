@@ -426,20 +426,41 @@ def _publish_conventional_index_symlink(root: Path, pointer: RelocationActiveInd
     if old_target is None or new_target is None or old_target == new_target:
         return
     conventional = Path(pointer.new_target)
-    if not conventional.is_symlink():
-        raise ArchiveRootRelocationError("archive-root relocation conventional index symlink disappeared")
-    current = os.readlink(conventional)
-    if current == new_target:
-        return
-    if current != old_target:
-        raise ArchiveRootRelocationError("archive-root relocation conventional index symlink changed")
+    try:
+        relative_parent = conventional.parent.relative_to(root)
+    except ValueError as exc:
+        raise ArchiveRootRelocationError(
+            "archive-root relocation conventional index symlink escapes the destination root"
+        ) from exc
     directory_fd = -1
-    temporary = f".index.db.relocation-{uuid.uuid4().hex}.tmp"
+    temporary = f".{conventional.name}.relocation-{uuid.uuid4().hex}.tmp"
     try:
         directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        for component in relative_parent.parts:
+            if component in {"", ".", ".."}:
+                raise ArchiveRootRelocationError(
+                    "archive-root relocation conventional index symlink has an unsafe parent"
+                )
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        metadata = os.stat(conventional.name, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(metadata.st_mode):
+            raise ArchiveRootRelocationError("archive-root relocation conventional index symlink disappeared")
+        current = os.readlink(conventional.name, dir_fd=directory_fd)
+        if current == new_target:
+            return
+        if current != old_target:
+            raise ArchiveRootRelocationError("archive-root relocation conventional index symlink changed")
         os.symlink(new_target, temporary, dir_fd=directory_fd)
-        os.replace(temporary, "index.db", src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.replace(temporary, conventional.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         os.fsync(directory_fd)
+    except ArchiveRootRelocationError:
+        raise
     except OSError as exc:
         raise ArchiveRootRelocationError("cannot atomically publish mapped conventional index symlink") from exc
     finally:

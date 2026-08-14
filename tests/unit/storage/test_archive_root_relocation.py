@@ -1548,6 +1548,45 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
 
 
+def test_active_index_publication_updates_the_bound_nested_conventional_symlink(tmp_path: Path) -> None:
+    """Pointer publication updates the exact conventional path sealed by the plan.
+
+    Anti-vacuity: ``_publish_active_index_pointer`` is the production apply
+    helper.  Replacing a hard-coded ``<root>/index.db`` leaves this nested
+    conventional symlink stale while publishing a pointer that selects it.
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    conventional = new_root / "nested" / "index.db"
+    resolved = new_root / ".index-generations" / "gen-1" / "index.db"
+    conventional.parent.mkdir(parents=True)
+    resolved.parent.mkdir(parents=True)
+    resolved.write_bytes(b"index generation")
+    old_resolved = old_root / resolved.relative_to(new_root)
+    conventional.symlink_to(old_resolved)
+    old_conventional = old_root / conventional.relative_to(new_root)
+    (new_root / ".index-active-pointer").write_text(str(old_conventional), encoding="utf-8")
+    metadata = resolved.stat()
+    pointer = RelocationActiveIndexPointer(
+        old_target=str(old_conventional),
+        new_target=str(conventional),
+        old_resolved_target=str(old_resolved),
+        new_resolved_target=str(resolved),
+        conventional_symlink_old_target=str(old_resolved),
+        conventional_symlink_new_target=str(resolved),
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+    )
+
+    relocation._publish_active_index_pointer(new_root, pointer)
+
+    assert os.readlink(conventional) == str(resolved)
+    assert not (new_root / "index.db").exists()
+    assert (new_root / ".index-active-pointer").read_text(encoding="utf-8").strip() == str(conventional)
+
+
 def test_relocation_accepts_a_modern_no_rebind_train_without_rewriting_it(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

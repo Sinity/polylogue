@@ -1183,30 +1183,33 @@ def _validate_source_continuity_refresh_receipt(
         predecessors[ref] = predecessor
         successor_by_authority[predecessor] = ref
 
-    resolving: set[_SourceContinuityAuthorityRef] = set()
-
-    def resolve(ref: _SourceContinuityAuthorityRef) -> _SourceContinuityAuthorityNode:
-        existing = nodes.get(ref)
-        if existing is not None:
-            return existing
-        payload = relocation_payloads.get(ref)
-        if payload is None:
-            raise DurableChangeTrainError("source continuity relocation transition lacks its retained predecessor")
-        if ref in resolving:
-            raise DurableChangeTrainError("source continuity relocation authority contains a cycle")
-        resolving.add(ref)
-        predecessor_node = resolve(predecessors[ref])
-        resolving.remove(ref)
-        if payload.get("source_before") != predecessor_node.source_after:
-            raise DurableChangeTrainError(
-                "source continuity relocation transition does not preserve predecessor authority"
-            )
-        node = _SourceContinuityAuthorityNode(ref=ref, source_after=payload.get("source_after"))
-        nodes[ref] = node
-        return node
-
     for ref in relocation_payloads:
-        resolve(ref)
+        if ref in nodes:
+            continue
+        trail: list[_SourceContinuityAuthorityRef] = []
+        trail_refs: set[_SourceContinuityAuthorityRef] = set()
+        current = ref
+        while current not in nodes:
+            if current in trail_refs:
+                raise DurableChangeTrainError("source continuity relocation authority contains a cycle")
+            if current not in relocation_payloads:
+                raise DurableChangeTrainError("source continuity relocation transition lacks its retained predecessor")
+            trail.append(current)
+            trail_refs.add(current)
+            current = predecessors[current]
+        predecessor_node = nodes[current]
+        for transition_ref in reversed(trail):
+            payload = relocation_payloads[transition_ref]
+            if payload.get("source_before") != predecessor_node.source_after:
+                raise DurableChangeTrainError(
+                    "source continuity relocation transition does not preserve predecessor authority"
+                )
+            node = _SourceContinuityAuthorityNode(
+                ref=transition_ref,
+                source_after=payload.get("source_after"),
+            )
+            nodes[transition_ref] = node
+            predecessor_node = node
     matching_authorities = [
         node.ref
         for node in nodes.values()
