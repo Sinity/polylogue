@@ -534,6 +534,66 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     assert "serial body executed" in completed.stderr
 
 
+@pytest.mark.parametrize("ambient_addopts", ["--collect-only", "--setup-only"])
+def test_production_affected_verify_neutralizes_execution_suppressing_addopts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ambient_addopts: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    tests = repo / "tests" / "test_affected.py"
+    tests.write_text(
+        "import pytest\n\n"
+        "def test_parallel_body():\n"
+        "    assert True\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_body():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+    monkeypatch.setenv("PYTEST_ADDOPTS", ambient_addopts)
+
+    seeded, bootstrap = _run_production_verify(repo)
+
+    assert seeded.returncode == 0, seeded.stderr
+    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+    tests.write_text(
+        "import pytest\n\n"
+        "def test_parallel_body():\n"
+        "    assert False, 'affected parallel body executed'\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_body():\n"
+        "    assert False, 'affected serial body executed'\n",
+        encoding="utf-8",
+    )
+
+    completed, payload = _run_production_verify(repo)
+
+    assert completed.returncode == 1
+    assert payload["testmon_environment"]["selection_mode"] == "affected"
+    assert payload["release_baseline_allowed"] is False
+    aggregate = payload["pytest_aggregate"]
+    assert aggregate["selected_union_count"] == 2
+    assert aggregate["terminal_union_count"] == 2
+    assert aggregate["outcomes"] == {"failed": 2}
+    lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
+    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True]
+    assert [step["closed_world_collection"] for step in lanes] == [True, True]
+    assert "affected parallel body executed" in completed.stderr
+    assert "affected serial body executed" in completed.stderr
+
+
 def test_production_verify_all_owns_complete_test_root_over_configured_testpaths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

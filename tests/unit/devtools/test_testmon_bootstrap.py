@@ -11,6 +11,7 @@ from devtools.testmon_bootstrap import (
     classify_native_testmon_changes,
     classify_source_ast,
     executable_python_paths,
+    prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
 )
 from devtools.testmon_bootstrap import (
@@ -173,8 +174,8 @@ def test_environment_digest_changes_with_collection_semantics(
     config_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
     monkeypatch.setattr("devtools.testmon_bootstrap._installed_distributions", lambda: (("pytest", "changed"),))
     distributions_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
-    monkeypatch.setenv("PYTEST_ADDOPTS", "--strict-markers")
-    environment_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    monkeypatch.setenv("POLYLOGUE_CI", "testmon-digest-contract")
+    managed_environment_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
     profile_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=exclude")
 
     assert (
@@ -183,7 +184,7 @@ def test_environment_digest_changes_with_collection_semantics(
                 initial,
                 config_changed,
                 distributions_changed,
-                environment_changed,
+                managed_environment_changed,
                 profile_changed,
             }
         )
@@ -226,7 +227,7 @@ def test_declared_local_fixture_plugin_changes_environment(tmp_path: Path) -> No
     assert _testmon_environment_digest(tmp_path) != initial
 
 
-def test_environment_digest_hashes_explicit_local_plugin_regardless_of_name(
+def test_environment_digest_ignores_neutralized_pytest_plugins(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,11 +238,11 @@ def test_environment_digest_hashes_explicit_local_plugin_regardless_of_name(
     initial = _testmon_environment_digest(tmp_path)
     plugin.write_text("VALUE = 'v2'\n", encoding="utf-8")
 
-    assert _testmon_environment_digest(tmp_path) != initial
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
 @pytest.mark.parametrize("addopts", ["-p local_plugin", "-p=local_plugin"])
-def test_environment_digest_hashes_local_plugin_from_pytest_addopts(
+def test_environment_digest_ignores_plugins_from_neutralized_pytest_addopts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     addopts: str,
@@ -253,7 +254,18 @@ def test_environment_digest_hashes_local_plugin_from_pytest_addopts(
     initial = _testmon_environment_digest(tmp_path)
     plugin.write_text("VALUE = 'v2'\n", encoding="utf-8")
 
-    assert _testmon_environment_digest(tmp_path) != initial
+    assert _testmon_environment_digest(tmp_path) == initial
+
+
+def test_environment_digest_ignores_neutralized_pytest_addopts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = _testmon_environment_digest(tmp_path)
+
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only --ignore-glob=tests/**")
+
+    assert _testmon_environment_digest(tmp_path) == initial
 
 
 def test_environment_digest_stops_at_invocation_deadline(tmp_path: Path) -> None:
@@ -280,3 +292,34 @@ def test_invalid_cleanup_refuses_directory_at_database_path(tmp_path: Path) -> N
 
     with pytest.raises(NativeTestmonRepairError, match="refusing to remove directory"):
         remove_invalid_native_testmon_state(tmp_path)
+
+
+@pytest.mark.parametrize("symlinked_parent", [".cache", ".cache/testmon"])
+def test_invalid_cleanup_refuses_symlinked_state_parents(
+    tmp_path: Path,
+    symlinked_parent: str,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "testmon" / "testmondata" if symlinked_parent == ".cache" else outside / "testmondata"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("external state", encoding="utf-8")
+    parent = tmp_path / symlinked_parent
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(NativeTestmonRepairError, match="symlinked owned testmon parent"):
+        remove_invalid_native_testmon_state(tmp_path)
+
+    assert sentinel.read_text(encoding="utf-8") == "external state"
+
+
+def test_native_preparation_rejects_symlinked_state_parent_before_inspection(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    (cache / "testmon").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(NativeTestmonRepairError, match="symlinked owned testmon parent"):
+        prepare_native_testmon_environment(tmp_path)

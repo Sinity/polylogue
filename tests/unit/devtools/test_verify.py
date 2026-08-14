@@ -140,39 +140,38 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
         assert selection_flag in command
         assert "--json-report" in command
         assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
-        assert (verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS in command) is (mode in {"bootstrap", "full"})
-        assert all(arg in command for arg in verify._PYTEST_CLOSED_WORLD_COLLECTION_ARGS) is (
-            mode in {"bootstrap", "full"}
-        )
-        assert all(arg in command for arg in verify._PYTEST_RELEASE_PLUGIN_ARGS) is (mode in {"bootstrap", "full"})
-        if mode in {"bootstrap", "full"}:
-            assert command.count("tests") == 1
-            assert "--override-ini=python_files=test_*.py *_test.py fuzz_*.py" in command
-            assert "--override-ini=python_classes=Test" in command
-            assert "--override-ini=python_functions=test" in command
-            assert "--override-ini=norecursedirs=" in command
+        assert verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS in command
+        assert all(arg in command for arg in verify._PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
+        assert all(arg in command for arg in verify._PYTEST_MANAGED_PLUGIN_ARGS)
+        assert command.count("tests") == 1
+        assert "--override-ini=python_files=test_*.py *_test.py fuzz_*.py" in command
+        assert "--override-ini=python_classes=Test" in command
+        assert "--override-ini=python_functions=test" in command
+        assert "--override-ini=norecursedirs=" in command
 
 
-def test_release_lane_command_contract_rejects_unowned_selectors(
+@pytest.mark.parametrize("mode", ["affected", "bootstrap", "full"])
+def test_native_lane_command_contract_rejects_unowned_selectors(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     monkeypatch.setattr("devtools.verify.adaptive_pytest_worker_count", lambda _env: 2)
     steps = build_verify_steps(
         quick=False,
         lab=False,
-        testmon_mode="full",
+        testmon_mode=mode,
         testmon_environment="env-digest",
     )
     label, command = next(step for step in steps if "parallel" in step[0])
 
-    assert verify._release_pytest_command_is_closed_world(label, command)
+    assert verify._native_pytest_command_is_closed_world(label, command)
     for narrowed in (
         [*command, "--ignore=tests/unit"],
         [*command, "tests/unit"],
         [*command, "--deselect=tests/test_failure.py::test_failure"],
         [*command, "--override-ini=python_files=test_owned.py"],
     ):
-        assert not verify._release_pytest_command_is_closed_world(label, narrowed)
+        assert not verify._native_pytest_command_is_closed_world(label, narrowed)
 
 
 def test_native_corpus_excludes_only_benchmark_directory() -> None:
@@ -3050,8 +3049,10 @@ def test_run_propagates_pytest_addopts_basetemp_to_resource_policy(
     assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
 
 
-def test_release_lane_removes_environment_addopts_before_pytest(
+@pytest.mark.parametrize("mode", ["affected", "bootstrap", "full"])
+def test_managed_native_lane_removes_environment_addopts_before_pytest(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     captured_command: list[str] = []
     captured_env: dict[str, str] = {}
@@ -3064,7 +3065,7 @@ def test_release_lane_removes_environment_addopts_before_pytest(
         for label, command in build_verify_steps(
             quick=False,
             lab=False,
-            testmon_mode="full",
+            testmon_mode=mode,
             testmon_environment="env-digest",
         )
         if "parallel" in label
@@ -3082,7 +3083,7 @@ def test_release_lane_removes_environment_addopts_before_pytest(
         patch("devtools.verify._read_pytest_report", return_value=None),
     ):
         rc, _elapsed, metadata = _run(
-            "pytest native parallel (full)",
+            f"pytest native parallel ({mode})",
             command,
         )
 
@@ -3094,6 +3095,33 @@ def test_release_lane_removes_environment_addopts_before_pytest(
     assert metadata["external_addopts_neutralized"] is True
     assert metadata["external_plugins_neutralized"] is True
     assert metadata["closed_world_collection"] is True
+
+
+@pytest.mark.uses_real_clock("coordinates two contenders for the checkout lifecycle lock")
+def test_native_testmon_lifecycle_lock_serializes_checkout_state(tmp_path: Path) -> None:
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    contender_entered = threading.Event()
+
+    def hold_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(tmp_path):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2)
+
+    def contend_for_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(tmp_path):
+            contender_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(hold_lock)
+        assert holder_entered.wait(timeout=2)
+        contender = pool.submit(contend_for_lock)
+        assert not contender_entered.wait(timeout=0.05)
+        release_holder.set()
+        holder.result(timeout=2)
+        contender.result(timeout=2)
+
+    assert contender_entered.is_set()
 
 
 def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
@@ -3832,6 +3860,45 @@ def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
     assert checkout_step["diagnosis"] == "checkout_changed_during_verification"
     assert checkout_step["initial_git_head"] == "start-head"
     assert checkout_step["final_git_head"] == "different-head"
+
+
+def test_verify_keeps_checkout_monitor_active_through_final_authority_samples(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+
+    class _OrderedMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("start")
+
+        def finish(self) -> CheckoutMutationObservation:
+            events.append("finish")
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    def git_head() -> str:
+        events.append("head")
+        return "stable-head"
+
+    def fingerprint(_root: Path) -> str:
+        events.append("fingerprint")
+        return "stable-fingerprint"
+
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", side_effect=git_head),
+        patch("devtools.verify.CheckoutMutationMonitor", _OrderedMonitor),
+        patch("devtools.verify.worktree_fingerprint", side_effect=fingerprint),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--quick", "--json"]) == 0
+
+    assert events[-3:] == ["head", "fingerprint", "finish"]
+    assert json.loads(capsys.readouterr().out)["exit_code"] == 0
 
 
 @pytest.mark.parametrize(

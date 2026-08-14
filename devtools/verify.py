@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -30,11 +31,12 @@ import selectors
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -118,7 +120,7 @@ from polylogue.scenarios.workload import (
 
 ROOT = Path(__file__).resolve().parents[1]
 _PYTEST_CLEAR_CONFIGURED_ADDOPTS = "--override-ini=addopts="
-_PYTEST_RELEASE_PLUGIN_NAMES = (
+_PYTEST_MANAGED_PLUGIN_NAMES = (
     "anyio",
     "asyncio",
     "hypothesispytest",
@@ -131,7 +133,7 @@ _PYTEST_RELEASE_PLUGIN_NAMES = (
     "xdist",
     "pytest-testmon",
 )
-_PYTEST_RELEASE_PLUGIN_ARGS = tuple(argument for name in _PYTEST_RELEASE_PLUGIN_NAMES for argument in ("-p", name))
+_PYTEST_MANAGED_PLUGIN_ARGS = tuple(argument for name in _PYTEST_MANAGED_PLUGIN_NAMES for argument in ("-p", name))
 _PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
     _PYTEST_CLEAR_CONFIGURED_ADDOPTS,
     "--override-ini=python_files=test_*.py *_test.py fuzz_*.py",
@@ -142,11 +144,45 @@ _PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
 )
 
 
-def _normalize_release_pytest_environment(env: dict[str, str]) -> None:
-    """Remove ambient pytest extensions from an authoritative child."""
+def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
+    """Remove ambient pytest options and extensions from a managed child."""
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+
+
+@contextlib.contextmanager
+def _native_testmon_lifecycle_lock(repo_root: Path) -> Iterator[None]:
+    """Serialize one checkout's native testmon preparation, lanes, and inspection."""
+    cache = repo_root.resolve() / ".cache"
+    try:
+        mode = cache.lstat().st_mode
+    except FileNotFoundError:
+        cache.mkdir(exist_ok=True)
+        mode = cache.lstat().st_mode
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot inspect native testmon lock parent {cache}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise NativeTestmonRepairError(f"native testmon lock parent is not an owned directory: {cache}")
+    lock_path = cache / "native-testmon-lifecycle.lock"
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.seek(0)
+            holder = handle.read().strip() or "another verify invocation"
+            sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
+            sys.stderr.flush()
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()}")
+        handle.flush()
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            handle.truncate()
 
 
 def _anchor_verification_paths() -> None:
@@ -1653,8 +1689,8 @@ def _run(
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
-    release_lane = _pytest_uses_full_suite_basetemp(label)
-    closed_world_command = _release_pytest_command_is_closed_world(label, cmd)
+    managed_native_lane = label.startswith("pytest native")
+    closed_world_command = _native_pytest_command_is_closed_world(label, cmd)
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
     has_managed_pytest_child = label == "bench slo"
@@ -1665,10 +1701,10 @@ def _run(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
-    release_addopts_neutralized = release_lane
-    external_plugins_neutralized = release_lane
-    if release_lane:
-        _normalize_release_pytest_environment(env)
+    external_addopts_neutralized = False
+    external_plugins_neutralized = False
+    if managed_native_lane:
+        _normalize_managed_pytest_environment(env)
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
@@ -1722,13 +1758,13 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
-        if release_lane:
-            _normalize_release_pytest_environment(env)
-            release_addopts_neutralized = _PYTEST_CLEAR_CONFIGURED_ADDOPTS in cmd
+        if managed_native_lane:
+            _normalize_managed_pytest_environment(env)
+            external_addopts_neutralized = _PYTEST_CLEAR_CONFIGURED_ADDOPTS in cmd
             external_plugins_neutralized = (
                 "PYTEST_PLUGINS" not in env and env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
             )
-    closed_world_collection = closed_world_command and release_addopts_neutralized and external_plugins_neutralized
+    closed_world_collection = closed_world_command and external_addopts_neutralized and external_plugins_neutralized
     interrupted = False
     pytest_containment_quiescent = True
     containment_error: str | None = None
@@ -1783,7 +1819,7 @@ def _run(
             metadata["diagnosis"] = "pytest_containment_unproven"
             metadata["termination_reason"] = f"pytest containment did not quiesce: {containment_error}"
         metadata.update(_pytest_command_metadata(cmd))
-        metadata["external_addopts_neutralized"] = release_addopts_neutralized
+        metadata["external_addopts_neutralized"] = external_addopts_neutralized
         metadata["external_plugins_neutralized"] = external_plugins_neutralized
         metadata["closed_world_collection"] = closed_world_collection
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
@@ -2153,9 +2189,8 @@ def _native_pytest_steps(
         "-p",
         "devtools.pytest_progress_plugin",
     ]
-    if testmon_mode in {"bootstrap", "full"}:
-        pytest_cmd.extend(_PYTEST_RELEASE_PLUGIN_ARGS)
-        pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
+    pytest_cmd.extend(_PYTEST_MANAGED_PLUGIN_ARGS)
+    pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
     native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
     if testmon_mode == "affected":
         native_args.append("--testmon-forceselect")
@@ -2195,9 +2230,9 @@ def _native_pytest_steps(
     ]
 
 
-def _release_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
-    """Accept only a command produced by the owned release-lane builder."""
-    match = re.fullmatch(r"pytest native (parallel|serial) \((bootstrap|full)\)", label)
+def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
+    """Accept only a command produced by the managed native-lane builder."""
+    match = re.fullmatch(r"pytest native (parallel|serial) \((affected|bootstrap|full)\)", label)
     if match is None:
         return False
     environment_args = [arg for arg in cmd if arg.startswith("--testmon-env=")]
@@ -2269,7 +2304,7 @@ def build_verify_steps(
             raise ValueError(f"unknown native testmon mode: {testmon_mode}")
         if not testmon_environment:
             raise ValueError("native testmon environment is required for pytest verification")
-        # The release command owns its complete collection and plugin surface;
+        # Every native command owns its collection, option, and plugin surface;
         # the benchmark root remains the one explicit non-correctness corpus.
         steps.extend(
             _native_pytest_steps(
@@ -2854,9 +2889,9 @@ def _main(argv: list[str] | None = None) -> int:
             break
 
     assert mutation_monitor is not None
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
     final_head = _git_head()
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
     checkout_stable = True
     checkout_fingerprint_unavailable = (
         head is None
@@ -3126,19 +3161,22 @@ def _finalize_verify_runner_exception(
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     _ACTIVE_VERIFY_RUN = None
-    try:
-        return _main(argv)
-    except Exception as exc:
-        if _ACTIVE_VERIFY_RUN is None:
-            raise
-        raw_argv = sys.argv[1:] if argv is None else argv
-        run, run_started, verification_scope = _ACTIVE_VERIFY_RUN
-        return _finalize_verify_runner_exception(
-            run,
-            exc,
-            run_started=run_started,
-            verification_scope=verification_scope,
-            use_json="--json" in raw_argv,
-        )
-    finally:
-        _ACTIVE_VERIFY_RUN = None
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
+    lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
+    with lock:
+        try:
+            return _main(argv)
+        except Exception as exc:
+            if _ACTIVE_VERIFY_RUN is None:
+                raise
+            run, run_started, verification_scope = _ACTIVE_VERIFY_RUN
+            return _finalize_verify_runner_exception(
+                run,
+                exc,
+                run_started=run_started,
+                verification_scope=verification_scope,
+                use_json="--json" in raw_argv,
+            )
+        finally:
+            _ACTIVE_VERIFY_RUN = None

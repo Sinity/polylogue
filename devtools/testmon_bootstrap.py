@@ -26,7 +26,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import shlex
 import sqlite3
 import stat
 import subprocess
@@ -63,9 +62,6 @@ _ENVIRONMENT_INPUTS = (
 _PYTEST_ENVIRONMENT_KEYS = (
     "HYPOTHESIS_PROFILE",
     "POLYLOGUE_CI",
-    "PYTEST_ADDOPTS",
-    "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
-    "PYTEST_PLUGINS",
 )
 
 
@@ -198,18 +194,6 @@ def _active_local_pytest_plugin_paths(root: Path) -> set[str]:
     """Resolve collection-active local pytest plugins regardless of filename."""
     paths: set[str] = set()
     plugin_names = _declared_pytest_plugin_names(root)
-    plugin_names.update(os.environ.get("PYTEST_PLUGINS", "").split(","))
-    try:
-        addopts = shlex.split(os.environ.get("PYTEST_ADDOPTS", ""))
-    except ValueError as exc:
-        raise NativeTestmonRepairError(f"cannot parse PYTEST_ADDOPTS for native environment: {exc}") from exc
-    for index, option in enumerate(addopts):
-        if option == "-p" and index + 1 < len(addopts):
-            plugin_names.add(addopts[index + 1])
-        elif option.startswith("-p="):
-            plugin_names.add(option.removeprefix("-p="))
-        elif option.startswith("-p") and len(option) > 2:
-            plugin_names.add(option.removeprefix("-p"))
     for raw_name in plugin_names:
         module_name = raw_name.strip()
         if not module_name or any(part in {"", ".", ".."} for part in module_name.split(".")):
@@ -546,8 +530,27 @@ def inspect_native_testmon_environment(
 
 
 def _owned_paths(repo_root: Path) -> tuple[Path, ...]:
-    data = repo_root.resolve() / TESTMON_DATA_RELPATH
+    root = repo_root.resolve()
+    _validate_owned_state_parents(root)
+    data = root / TESTMON_DATA_RELPATH
     return (data, *(Path(f"{data}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES))
+
+
+def _validate_owned_state_parents(repo_root: Path) -> None:
+    """Reject state paths that escape the checkout through a symlink parent."""
+    parent = repo_root.resolve()
+    for part in TESTMON_DATA_RELPATH.parent.parts:
+        parent /= part
+        try:
+            mode = parent.lstat().st_mode
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect owned testmon parent {parent}: {exc}") from exc
+        if stat.S_ISLNK(mode):
+            raise NativeTestmonRepairError(f"refusing symlinked owned testmon parent {parent}")
+        if not stat.S_ISDIR(mode):
+            raise NativeTestmonRepairError(f"owned testmon parent is not a directory: {parent}")
 
 
 def remove_invalid_native_testmon_state(repo_root: Path) -> tuple[Path, ...]:
@@ -678,6 +681,7 @@ def prepare_native_testmon_environment(
 ) -> NativeTestmonPreparation:
     """Repair derived local state and optionally reuse a matching main graph."""
     root = repo_root.resolve()
+    _validate_owned_state_parents(root)
     environment_name = testmon_environment_digest(
         root,
         pytest_profile=pytest_profile,
@@ -710,6 +714,7 @@ def prepare_native_testmon_environment(
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
+        _validate_owned_state_parents(main_checkout)
         main_data = main_checkout / TESTMON_DATA_RELPATH
         main = inspect_native_testmon_environment(
             main_data,
