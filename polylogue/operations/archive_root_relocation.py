@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import sqlite3
 import stat
 import tempfile
@@ -58,7 +59,7 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
-PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v2"] = "polylogue.archive-root-relocation-plan.v2"
+PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v3"] = "polylogue.archive-root-relocation-plan.v3"
 RECEIPT_FORMAT: Literal["polylogue.archive-root-relocation-receipt.v1"] = "polylogue.archive-root-relocation-receipt.v1"
 _TIER_NAMES = tuple(tier.value for tier in ArchiveTier)
 _DURABLE_TIER_NAMES = ("source", "user", "audit")
@@ -116,10 +117,36 @@ class RelocationActiveIndexPointer(BaseModel):
     inode: int
 
 
+class RelocationIndexGenerationSymlink(BaseModel):
+    """One generation-owned tier link whose absolute target moves with the root."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str
+    old_target: str
+    new_target: str
+
+
+class RelocationIndexGeneration(BaseModel):
+    """Exact before/after authority for retained index-generation metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    generation_id: str
+    metadata_path: str
+    before_sha256: str
+    after_sha256: str
+    before_archive_root: str
+    after_archive_root: str
+    before_index_path: str
+    after_index_path: str
+    tier_symlinks: tuple[RelocationIndexGenerationSymlink, ...]
+
+
 class ArchiveRootRelocationPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    format: Literal["polylogue.archive-root-relocation-plan.v2"] = PLAN_FORMAT
+    format: Literal["polylogue.archive-root-relocation-plan.v3"] = PLAN_FORMAT
     old_configured_root: str
     old_resolved_root: str
     backup_root_device: int
@@ -136,6 +163,7 @@ class ArchiveRootRelocationPlan(BaseModel):
     backup_tier_inventory: tuple[str, ...]
     tiers: tuple[RelocationTierEvidence, ...]
     active_index_pointer: RelocationActiveIndexPointer | None
+    index_generations: tuple[RelocationIndexGeneration, ...]
     durable_trains: tuple[RelocationDurableTrain, ...]
     stopped_daemon_evidence_ref: str
     single_writer_evidence_ref: str
@@ -379,6 +407,265 @@ def _active_index_pointer_evidence(*, old_root: Path, new_root: Path) -> Relocat
     )
 
 
+_INDEX_GENERATION_TIER_LINKS = ("source.db", "user.db", "embeddings.db", "ops.db", "blob")
+
+
+def _index_generation_metadata_bytes(payload: dict[str, object]) -> bytes:
+    """Match ``IndexGenerationStore._write``'s stable persisted representation."""
+    return json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+
+
+def _mapped_generation_path(value: object, *, old_root: Path, new_root: Path, label: str) -> tuple[str, str]:
+    if not isinstance(value, str):
+        raise ArchiveRootRelocationError(f"archive-root relocation index generation has invalid {label}")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ArchiveRootRelocationError(f"archive-root relocation index generation has non-absolute {label}")
+    if path.is_relative_to(old_root):
+        return value, str(new_root / path.relative_to(old_root))
+    if path.is_relative_to(new_root):
+        return value, value
+    raise ArchiveRootRelocationError(f"archive-root relocation index generation {label} is not root-owned")
+
+
+def _index_generations_root(
+    root: Path,
+    active_index_pointer: RelocationActiveIndexPointer | None,
+) -> Path:
+    """Return the generation store paired with the plan's canonical index path."""
+    canonical_index = Path(active_index_pointer.new_target) if active_index_pointer is not None else root / "index.db"
+    try:
+        canonical_index.relative_to(root)
+    except ValueError as exc:
+        raise ArchiveRootRelocationError(
+            "archive-root relocation canonical index path escapes the destination root"
+        ) from exc
+    return canonical_index.parent / ".index-generations"
+
+
+def _index_generation_evidence(
+    *,
+    old_root: Path,
+    new_root: Path,
+    active_index_pointer: RelocationActiveIndexPointer | None,
+) -> tuple[RelocationIndexGeneration, ...]:
+    """Seal every retained generation's absolute metadata and tier links."""
+    generations_root = _index_generations_root(new_root, active_index_pointer)
+    if not generations_root.exists() and not generations_root.is_symlink():
+        return ()
+    _real_directory(generations_root, label="index generations root")
+    rows: list[RelocationIndexGeneration] = []
+    for generation_root in sorted(generations_root.glob("gen-*")):
+        _real_directory(generation_root, label="index generation")
+        metadata_path = generation_root / "generation.json"
+        _real_file(metadata_path, label="index generation metadata")
+        try:
+            encoded = metadata_path.read_bytes()
+            raw = json.loads(encoded)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ArchiveRootRelocationError("cannot read index generation metadata") from exc
+        if not isinstance(raw, dict):
+            raise ArchiveRootRelocationError("index generation metadata is not an object")
+        payload = cast(dict[str, object], raw)
+        generation_id = payload.get("generation_id")
+        if generation_id != generation_root.name:
+            raise ArchiveRootRelocationError("index generation metadata does not bind its directory")
+        before_archive_root, after_archive_root = _mapped_generation_path(
+            payload.get("archive_root"), old_root=old_root, new_root=new_root, label="archive root"
+        )
+        if Path(after_archive_root) != new_root:
+            raise ArchiveRootRelocationError("index generation metadata archive root is not the destination root")
+        before_index_path, after_index_path = _mapped_generation_path(
+            payload.get("index_path"), old_root=old_root, new_root=new_root, label="index path"
+        )
+        if Path(after_index_path) != generation_root / "index.db":
+            raise ArchiveRootRelocationError("index generation metadata index path does not bind its generation")
+        after_payload = {
+            **payload,
+            "archive_root": after_archive_root,
+            "index_path": after_index_path,
+        }
+        links: list[RelocationIndexGenerationSymlink] = []
+        for filename in _INDEX_GENERATION_TIER_LINKS:
+            link = generation_root / filename
+            if not link.exists() and not link.is_symlink():
+                continue
+            try:
+                metadata = link.lstat()
+                if not stat.S_ISLNK(metadata.st_mode):
+                    raise ArchiveRootRelocationError("index generation tier member is not a symbolic link")
+                old_target = os.readlink(link)
+            except OSError as exc:
+                raise ArchiveRootRelocationError("cannot read index generation tier link") from exc
+            raw_target = Path(old_target)
+            if not raw_target.is_absolute():
+                raise ArchiveRootRelocationError("index generation tier link target is not absolute")
+            _before, new_target = _mapped_generation_path(
+                old_target,
+                old_root=old_root,
+                new_root=new_root,
+                label=f"{filename} link target",
+            )
+            if Path(new_target) != new_root / filename:
+                raise ArchiveRootRelocationError("index generation tier link does not bind its archive tier")
+            links.append(
+                RelocationIndexGenerationSymlink(
+                    path=str(link),
+                    old_target=old_target,
+                    new_target=new_target,
+                )
+            )
+        rows.append(
+            RelocationIndexGeneration(
+                generation_id=generation_id,
+                metadata_path=str(metadata_path),
+                before_sha256=hashlib.sha256(encoded).hexdigest(),
+                after_sha256=hashlib.sha256(_index_generation_metadata_bytes(after_payload)).hexdigest(),
+                before_archive_root=before_archive_root,
+                after_archive_root=after_archive_root,
+                before_index_path=before_index_path,
+                after_index_path=after_index_path,
+                tier_symlinks=tuple(links),
+            )
+        )
+    return tuple(rows)
+
+
+def _index_generation_payload_for_state(
+    item: RelocationIndexGeneration, *, after: bool, encoded: bytes
+) -> dict[str, object]:
+    try:
+        raw = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise ArchiveRootRelocationError("archive-root relocation index generation metadata is unreadable") from exc
+    if not isinstance(raw, dict):
+        raise ArchiveRootRelocationError("archive-root relocation index generation metadata is not an object")
+    payload = cast(dict[str, object], raw)
+    expected_root = item.after_archive_root if after else item.before_archive_root
+    expected_index = item.after_index_path if after else item.before_index_path
+    if (
+        payload.get("generation_id") != item.generation_id
+        or payload.get("archive_root") != expected_root
+        or payload.get("index_path") != expected_index
+    ):
+        raise ArchiveRootRelocationError("archive-root relocation index generation metadata binding changed")
+    return payload
+
+
+def _validate_index_generation_state(
+    root: Path,
+    items: tuple[RelocationIndexGeneration, ...],
+    active_index_pointer: RelocationActiveIndexPointer | None,
+) -> None:
+    generations_root = _index_generations_root(root, active_index_pointer)
+    if generations_root.exists() or generations_root.is_symlink():
+        _real_directory(generations_root, label="index generations root")
+    current_paths = (
+        {str(path / "generation.json") for path in generations_root.glob("gen-*")}
+        if generations_root.is_dir() and not generations_root.is_symlink()
+        else set()
+    )
+    expected_paths = {item.metadata_path for item in items}
+    if current_paths != expected_paths:
+        raise ArchiveRootRelocationError("archive-root relocation index generation inventory changed")
+    for item in items:
+        metadata_path = Path(item.metadata_path)
+        _real_directory(metadata_path.parent, label="index generation")
+        _real_file(metadata_path, label="index generation metadata")
+        encoded = metadata_path.read_bytes()
+        digest = hashlib.sha256(encoded).hexdigest()
+        if digest == item.before_sha256:
+            _index_generation_payload_for_state(item, after=False, encoded=encoded)
+        elif digest == item.after_sha256:
+            _index_generation_payload_for_state(item, after=True, encoded=encoded)
+        else:
+            raise ArchiveRootRelocationError("archive-root relocation index generation metadata changed")
+        expected_link_paths = {link.path for link in item.tier_symlinks}
+        current_link_paths = {
+            str(metadata_path.parent / filename)
+            for filename in _INDEX_GENERATION_TIER_LINKS
+            if (metadata_path.parent / filename).exists() or (metadata_path.parent / filename).is_symlink()
+        }
+        if current_link_paths != expected_link_paths:
+            raise ArchiveRootRelocationError("archive-root relocation index generation tier inventory changed")
+        for link in item.tier_symlinks:
+            path = Path(link.path)
+            try:
+                metadata = path.lstat()
+                if not stat.S_ISLNK(metadata.st_mode):
+                    raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
+                target = os.readlink(path)
+            except OSError as exc:
+                raise ArchiveRootRelocationError(
+                    "archive-root relocation index generation tier link is unreadable"
+                ) from exc
+            if target not in {link.old_target, link.new_target}:
+                raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
+
+
+def _publish_index_generation_state(
+    root: Path,
+    items: tuple[RelocationIndexGeneration, ...],
+    active_index_pointer: RelocationActiveIndexPointer | None,
+) -> None:
+    """CAS-publish mapped metadata and links; exact after states are idempotent."""
+    _validate_index_generation_state(root, items, active_index_pointer)
+    for item in items:
+        metadata_path = Path(item.metadata_path)
+        encoded = metadata_path.read_bytes()
+        digest = hashlib.sha256(encoded).hexdigest()
+        if digest == item.before_sha256 and item.before_sha256 != item.after_sha256:
+            payload = _index_generation_payload_for_state(item, after=False, encoded=encoded)
+            after_payload = {
+                **payload,
+                "archive_root": item.after_archive_root,
+                "index_path": item.after_index_path,
+            }
+            after_encoded = _index_generation_metadata_bytes(after_payload)
+            if hashlib.sha256(after_encoded).hexdigest() != item.after_sha256:
+                raise ArchiveRootRelocationError("archive-root relocation index generation after binding changed")
+            with tempfile.NamedTemporaryFile(
+                dir=metadata_path.parent,
+                prefix=f".{metadata_path.name}.relocation-",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(after_encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.replace(temporary, metadata_path)
+                directory_fd = os.open(metadata_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                temporary.unlink(missing_ok=True)
+        for link in item.tier_symlinks:
+            if link.old_target == link.new_target:
+                continue
+            path = Path(link.path)
+            current = os.readlink(path)
+            if current == link.new_target:
+                continue
+            if current != link.old_target:
+                raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
+            temporary = path.parent / f".{path.name}.relocation-{uuid.uuid4().hex}.tmp"
+            try:
+                os.symlink(link.new_target, temporary)
+                os.replace(temporary, path)
+                directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                temporary.unlink(missing_ok=True)
+    _validate_index_generation_state(root, items, active_index_pointer)
+
+
 def _validate_active_index_pointer(
     root: Path,
     pointer: RelocationActiveIndexPointer | None,
@@ -552,11 +839,19 @@ def _durable_trains(
         for item in snapshots
     )
     index_identity = next(item for item in tier_identities if item.name == "index")
-    legacy_identity = ArchiveIdentity(
+    legacy_active_identity = ArchiveIdentity(
         configured_root=old_root,
         tiers=tier_identities,
         active_generation=index_identity.stable_id,
     ).authority_identity_digest
+    configured_location = ArchiveLocation.resolve(root)
+    configured_index_identity = configured_location.configured_tier("index")
+    legacy_configured_identity = ArchiveIdentity(
+        configured_root=old_root,
+        tiers=configured_location.configured_tiers,
+        active_generation=configured_index_identity.stable_id,
+    ).authority_identity_digest
+    accepted_legacy_identities = {legacy_active_identity, legacy_configured_identity}
     snapshots_by_tier = {item.tier: item for item in snapshots}
     trains: list[RelocationDurableTrain] = []
     for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
@@ -608,7 +903,7 @@ def _durable_trains(
                         "archive-root relocation source continuity authority is invalid"
                     ) from exc
             before_identity = train.apply_evidence.post.archive_identity_digest
-            if before_identity not in {after_identity_digest, legacy_identity}:
+            if before_identity != after_identity_digest and before_identity not in accepted_legacy_identities:
                 raise ArchiveRootRelocationError(
                     f"archive-root relocation {tier.value} train does not authenticate the moved tier identity"
                 )
@@ -726,6 +1021,11 @@ def prepare_archive_root_relocation(
     )
     backup_tier_identities = _authenticated_backup_tier_identities(manifest)
     active_index_pointer = _active_index_pointer_evidence(old_root=old_resolved, new_root=new_resolved)
+    index_generations = _index_generation_evidence(
+        old_root=old_resolved,
+        new_root=new_resolved,
+        active_index_pointer=active_index_pointer,
+    )
     snapshots = tuple(
         _tier_snapshot(
             new_resolved,
@@ -767,6 +1067,7 @@ def prepare_archive_root_relocation(
         backup_tier_inventory=tuple(sorted(f"{tier}.db" for tier in _TIER_NAMES)),
         tiers=snapshots,
         active_index_pointer=active_index_pointer,
+        index_generations=index_generations,
         durable_trains=trains,
         stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
         single_writer_evidence_ref=single_writer_evidence_ref,
@@ -887,14 +1188,21 @@ def load_archive_root_relocation_receipt(path: Path) -> ArchiveRootRelocationRec
 
 def assert_no_prepared_archive_root_relocation(root: Path) -> None:
     try:
-        with existing_maintenance_receipt_directory(root, "archive-root-relocations") as directory_fd:
+        receipt_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise ArchiveRootRelocationError(f"cannot resolve archive-root relocation archive root: {root}") from exc
+    try:
+        with existing_maintenance_receipt_directory(receipt_root, "archive-root-relocations") as directory_fd:
             if directory_fd is None:
                 return
             receipts = tuple(iter_pinned_receipts(directory_fd))
     except MaintenanceReceiptPathError as exc:
         raise ArchiveRootRelocationError(f"unsafe archive-root relocation receipt directory: {exc}") from exc
     for filename, encoded in receipts:
-        receipt = _decode_receipt(encoded, path=root / ".maintenance-state" / "archive-root-relocations" / filename)
+        receipt = _decode_receipt(
+            encoded,
+            path=receipt_root / ".maintenance-state" / "archive-root-relocations" / filename,
+        )
         if receipt.state == "prepared":
             raise ArchiveRootRelocationError(
                 "archive-root relocation is prepared but incomplete; rerun " + receipt.resume_command
@@ -1053,6 +1361,7 @@ def _revalidate_plan_live_state(
         raise ArchiveRootRelocationError("archive-root relocation tier evidence changed")
     _check_backup_against_live(root, manifest=manifest, receipt=receipt, snapshots=snapshots)
     _validate_active_index_pointer(root, plan.active_index_pointer)
+    _validate_index_generation_state(root, plan.index_generations, plan.active_index_pointer)
     pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
     allowed_pending_relocation_receipt_sha256 = (
         (pending_receipt.prepared_receipt_sha256 or pending_receipt.receipt_sha256)
@@ -1162,8 +1471,9 @@ def _apply_archive_root_relocation_locked(
     receipt_path = _receipt_path(root, plan)
     retained_plan_path = _retain_plan(root, plan)
     command = (
-        f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance archive-root-relocation "
-        f"apply --plan {retained_plan_path} --authorize {plan.plan_sha256} --output-format json"
+        f"POLYLOGUE_ARCHIVE_ROOT={shlex.quote(plan.new_configured_root)} polylogue ops maintenance "
+        f"archive-root-relocation apply --plan {shlex.quote(str(retained_plan_path))} "
+        f"--authorize {plan.plan_sha256} --output-format json"
     )
     before_hashes = tuple(item.before_manifest_sha256 for item in plan.durable_trains)
     pointer_fields = _pointer_receipt_fields(plan.active_index_pointer)
@@ -1238,6 +1548,7 @@ def _apply_archive_root_relocation_locked(
         )
         _write_receipt(receipt_path, bound_prepared, expected=receipt.receipt_sha256)
         receipt = bound_prepared
+    _publish_index_generation_state(root, plan.index_generations, plan.active_index_pointer)
     _publish_active_index_pointer(root, plan.active_index_pointer)
     after_hashes: list[str] = []
     for index, item in enumerate(plan.durable_trains):

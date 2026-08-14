@@ -215,29 +215,62 @@ def _json_str_list(value: object) -> list[str]:
 
 def _all_archive_tiers(root: Path) -> dict[str, Path]:
     tiers = archive_tier_paths(root)
-    index = tiers["index"]
-    if index.is_symlink() and not index.exists():
-        target = Path(os.readlink(index))
-        pointer = root / ".index-active-pointer"
-        if not target.is_absolute() or pointer.is_symlink() or not pointer.is_file():
-            return tiers
-        try:
-            configured_target = Path(pointer.read_text(encoding="utf-8").strip())
-            relative = target.relative_to(configured_target.parent)
-        except (OSError, ValueError):
-            return tiers
-        if not configured_target.is_absolute() or configured_target.name != "index.db":
-            return tiers
-        mapped = root / relative
-        if (
-            len(relative.parts) < 3
-            or relative.parts[0] != ".index-generations"
-            or relative.parts[-1] != "index.db"
-            or not mapped.is_file()
-            or mapped.is_symlink()
+    pointer = root / ".index-active-pointer"
+    if pointer.is_symlink() or not pointer.is_file():
+        return tiers
+    try:
+        configured_target = Path(pointer.read_text(encoding="utf-8").strip())
+    except OSError:
+        return tiers
+    if not configured_target.is_absolute() or configured_target.name != "index.db":
+        return tiers
+    if (
+        configured_target.is_relative_to(root.absolute())
+        and configured_target.is_file()
+        and configured_target.resolve().is_relative_to(root.resolve())
+    ):
+        tiers["index"] = configured_target
+        return tiers
+
+    # An inode-preserving root move leaves the absolute pointer and the
+    # promoted conventional symlink carrying the retired root until the
+    # relocation operation publishes their mapped forms. Locate the unique
+    # conventional symlink paired with that pointer, including a canonical
+    # index below the archive root rather than assuming ``root/index.db``.
+    mapped_candidates: list[tuple[int, Path]] = []
+    for conventional in root.rglob("index.db"):
+        relative_conventional = conventional.relative_to(root)
+        if ".index-generations" in relative_conventional.parts:
+            continue
+        relative_parts = relative_conventional.parts
+        if len(relative_parts) > len(configured_target.parts) or configured_target.parts[-len(relative_parts) :] != (
+            relative_parts
         ):
-            return tiers
-        tiers["index"] = mapped
+            continue
+        if conventional.is_file() and not conventional.is_symlink():
+            mapped_candidates.append((len(relative_parts), conventional))
+            continue
+        if conventional.is_symlink():
+            target = Path(os.readlink(conventional))
+            if not target.is_absolute():
+                continue
+            try:
+                relative = target.relative_to(configured_target.parent)
+            except ValueError:
+                continue
+            mapped = conventional.parent / relative
+            if (
+                len(relative.parts) >= 3
+                and relative.parts[0] == ".index-generations"
+                and relative.parts[-1] == "index.db"
+                and mapped.is_file()
+                and not mapped.is_symlink()
+            ):
+                mapped_candidates.append((len(relative_parts), mapped))
+    longest_suffix = max((length for length, _path in mapped_candidates), default=0)
+    unique_candidates = tuple(dict.fromkeys(path for length, path in mapped_candidates if length == longest_suffix))
+    if len(unique_candidates) == 1:
+        tiers["index"] = unique_candidates[0]
     return tiers
 
 

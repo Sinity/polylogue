@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import sqlite3
 import stat
 import tempfile
@@ -1053,7 +1054,15 @@ def load_historical_source_continuity_recovery_receipt(path: Path) -> Historical
 
 def assert_no_prepared_historical_source_continuity_recovery(root: Path) -> None:
     try:
-        with existing_maintenance_receipt_directory(root, "historical-source-continuity-recoveries") as directory_fd:
+        receipt_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            f"cannot resolve historical continuity recovery archive root: {root}"
+        ) from exc
+    try:
+        with existing_maintenance_receipt_directory(
+            receipt_root, "historical-source-continuity-recoveries"
+        ) as directory_fd:
             if directory_fd is None:
                 return
             receipts = tuple(iter_pinned_receipts(directory_fd))
@@ -1124,10 +1133,14 @@ def _revalidate(
     if not _evidence_matches_plan(current, plan.source_after) or current.content_sha256 != post.content_sha256:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery current source changed")
     train = load_durable_change_train_manifest(Path(plan.source_train_path))
-    if _sha256(Path(plan.source_train_path)) != plan.source_train_sha256 and train.source_continuity_evidence is None:
-        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source train changed")
-    if train.source_continuity_evidence is None:
+    train_sha256 = _sha256(Path(plan.source_train_path))
+    if train_sha256 == plan.source_train_sha256:
         _assert_pre_train_authority(Path(plan.source_train_path), pre)
+    else:
+        if train.source_continuity_evidence is None:
+            raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source train changed")
+        _validate_source_continuity_refresh_receipt(root, train)
+        _validate_exact_refresh_binding(root, plan, train)
     if _census(root) != plan.census:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery liveness census changed")
     return current
@@ -1188,8 +1201,8 @@ def _apply_historical_source_continuity_recovery_locked(
     refresh_path = _refresh_path(resolved, refresh_digest)
     retained_plan_path = _retain_plan(resolved, plan)
     command = (
-        f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance "
-        f"source-continuity-recovery apply --plan {retained_plan_path} "
+        f"POLYLOGUE_ARCHIVE_ROOT={shlex.quote(plan.new_configured_root)} polylogue ops maintenance "
+        f"source-continuity-recovery apply --plan {shlex.quote(str(retained_plan_path))} "
         f"--authorize {plan.plan_sha256} --output-format json"
     )
     receipt_path = _receipt_path(resolved, plan)

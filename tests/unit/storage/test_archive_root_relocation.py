@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 from collections.abc import Iterator
@@ -74,8 +75,10 @@ from polylogue.storage.sqlite.durable_change_train import (
     load_durable_change_train_manifest,
     rebind_released_durable_train_archive_identity,
     recover_released_source_train_continuity,
+    refresh_released_source_train_continuity,
 )
 from polylogue.storage.sqlite.migration_runner import (
+    DurableDatabaseEvidence,
     _canonical_json_sha256,
     apply_durable_change_train,
     capture_durable_database_evidence,
@@ -525,6 +528,97 @@ def _attach_retained_source_continuity(root: Path, manifest: Path) -> None:
         proof_refs=(*train.proof_refs, f"proof:source-continuity-refresh:{digest}"),
     )
     write_durable_change_train_manifest(manifest, recovered, expected_revision=train.revision)
+
+
+def _refresh_source_continuity_without_content_change(root: Path, evidence_root: Path) -> Path:
+    """Exercise the ordinary authenticated refresh route after a relocation."""
+    evidence_root.mkdir(parents=True)
+    with sqlite3.connect(root / "source.db") as connection:
+        before = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    backup_manifest = evidence_root / "refresh-backup-manifest.json"
+    backup_manifest.write_text("{}\n", encoding="utf-8")
+    operation_id = BlobRefLivenessCandidateDigest().hexdigest()
+    mutation_receipt = evidence_root / "refresh-mutation-receipt.jsonl"
+    mutation_receipt.write_text(
+        json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "prepared",
+                "source_db": str(root / "source.db"),
+                "backup_manifest": str(backup_manifest),
+                "candidate_count": 0,
+                "candidate_digest": operation_id,
+                "backup_manifest_sha256": hashlib.sha256(backup_manifest.read_bytes()).hexdigest(),
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "kind": "blob_ref_liveness_reconciliation",
+                "phase": "committed",
+                "deleted_count": 0,
+                "post_orphaned_count": 0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return refresh_released_source_train_continuity(
+        root,
+        mutation_receipt=mutation_receipt,
+        backup_manifest=backup_manifest,
+        pre_mutation_evidence=before,
+        operation_id=operation_id,
+        evidence_ref="proof:post-relocation-source-maintenance",
+    )
+
+
+def _substitute_foreign_historical_refresh(
+    root: Path,
+    *,
+    plan: dict[str, object],
+    mutation_receipt: Path,
+    backup_manifest: Path,
+) -> Path:
+    """Install a valid but non-plan-owned continuity revision for rejection tests."""
+    train_path = Path(str(plan["source_train_path"]))
+    train = load_durable_change_train_manifest(train_path)
+    source_before = plan["source_before"]
+    source_after = plan["source_after"]
+    assert isinstance(source_before, dict) and isinstance(source_after, dict)
+    observed_at_ms = source_after.get("observed_at_ms")
+    assert type(observed_at_ms) is int
+    payload = {
+        "format": "polylogue.source-continuity-refresh.v1",
+        "operation_id": "foreign",
+        "evidence_ref": "proof:foreign-continuity",
+        "backup_manifest": str(backup_manifest),
+        "backup_manifest_sha256": _sha256(backup_manifest),
+        "mutation_receipt": str(mutation_receipt),
+        "mutation_receipt_sha256": _sha256(mutation_receipt),
+        "train_id": train.train_id,
+        "source_before": source_before,
+        "source_after": source_after,
+        "refreshed_at_ms": observed_at_ms,
+    }
+    digest = _canonical_json_sha256(payload)
+    _write_refresh_receipt(
+        root / ".maintenance-state" / "source-continuity-refreshes" / f"{digest}.json",
+        {**payload, "refresh_sha256": digest},
+    )
+    substituted = recover_released_source_train_continuity(
+        train,
+        current_evidence=_evidence_from_payload(source_after),
+        proof_ref=f"proof:source-continuity-refresh:{digest}",
+    )
+    write_durable_change_train_manifest(train_path, substituted, expected_revision=train.revision)
+    return train_path
+
+
+def _evidence_from_payload(payload: dict[str, object]) -> DurableDatabaseEvidence:
+    from polylogue.operations.historical_source_continuity_recovery import _evidence_from_plan
+
+    return _evidence_from_plan(payload)
 
 
 def _evidence_payload(evidence: object) -> dict[str, object]:
@@ -1172,6 +1266,9 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
     new_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
         workspace_env, tmp_path, monkeypatch
     )
+    shell_sensitive_root = tmp_path / "moved root;still-one-argument"
+    os.rename(new_root, shell_sensitive_root)
+    new_root = shell_sensitive_root
     command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(new_root)}
     plan_path = tmp_path / "continuity-plan.json"
     with _test_historical_operation_evidence_resource(evidence):
@@ -1238,7 +1335,8 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                 new_root / ".maintenance-state" / "historical-source-continuity-recoveries" / f"{plan_sha256}.json"
             ).read_text(encoding="utf-8")
         )
-        assert f"--plan {retained_plan}" in prepared_receipt["resume_command"]
+        assert f"POLYLOGUE_ARCHIVE_ROOT={shlex.quote(str(new_root))}" in prepared_receipt["resume_command"]
+        assert f"--plan {shlex.quote(str(retained_plan))}" in prepared_receipt["resume_command"]
         plan_path.unlink()
         with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
             assert_no_prepared_historical_source_continuity_recovery(new_root)
@@ -1569,6 +1667,9 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     old_root = workspace_env["archive_root"]
     manifest = _released_moved_source_train(old_root, monkeypatch)
     old_active_target = _activate_movable_index_generation(old_root)
+    active_generation_id = old_active_target.parent.name
+    old_store = IndexGenerationStore.for_archive_root(old_root)
+    inactive_generation = old_store.create(owner_id="relocation-paused", source_snapshot="paused-snapshot")
     _attach_retained_source_continuity(old_root, manifest)
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
@@ -1591,6 +1692,10 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     assert pointer.old_resolved_target == str(old_active_target)
     assert pointer.conventional_symlink_old_target == str(old_active_target)
     assert pointer.conventional_symlink_new_target == str(new_root / old_active_target.relative_to(old_root))
+    assert {item.generation_id for item in plan.index_generations} == {
+        active_generation_id,
+        inactive_generation.generation_id,
+    }
     real_publish = relocation._publish_active_index_pointer
     real_write = os.write
     short_pointer_write = False
@@ -1615,6 +1720,16 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
         apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
     assert short_pointer_write
     assert (new_root / ".index-active-pointer").read_text(encoding="utf-8").strip() == pointer.new_target
+    crashed_store = IndexGenerationStore.for_archive_root(new_root)
+    for generation_id in (active_generation_id, inactive_generation.generation_id):
+        generation = crashed_store.load(generation_id)
+        assert generation.archive_root == str(new_root)
+        assert generation.index_path == str(new_root / ".index-generations" / generation_id / "index.db")
+        generation_root = new_root / ".index-generations" / generation_id
+        for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+            link = generation_root / filename
+            if link.is_symlink():
+                assert os.readlink(link) == str(new_root / filename)
     with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
         assert_no_prepared_archive_root_relocation(new_root)
 
@@ -1625,6 +1740,115 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     assert relocated_location.active_index_path == Path(pointer.new_target)
     assert relocated_location.active_index.resolved_path == Path(pointer.new_resolved_target)
     assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
+    relocated_store = IndexGenerationStore.for_archive_root(new_root)
+    promoted = relocated_store.promote(relocated_store.load(inactive_generation.generation_id))
+    assert promoted.state == "active"
+    assert (new_root / "index.db").resolve(strict=True) == Path(promoted.index_path)
+
+
+def test_relocation_remaps_generations_beside_a_nested_active_index(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relocation follows the canonical index parent to its generation store.
+
+    Anti-vacuity: the production ``IndexGenerationStore`` derives its retained
+    generation directory from the active pointer's parent.  Root-only
+    inventory leaves both generation metadata and tier links carrying the
+    retired root after this public plan/apply sequence.
+    """
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    nested_index = old_root / "nested" / "index.db"
+    nested_index.parent.mkdir()
+    (old_root / ".index-active-pointer").write_text(str(nested_index), encoding="utf-8")
+    store = IndexGenerationStore.for_archive_root(old_root)
+    active = store.create(owner_id="nested-active", source_snapshot="active-snapshot")
+    store.promote(active)
+    inactive = store.create(owner_id="nested-inactive", source_snapshot="inactive-snapshot")
+    _attach_retained_source_continuity(old_root, manifest)
+
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+
+    expected_root = new_root / "nested" / ".index-generations"
+    assert {Path(item.metadata_path).parent.parent for item in plan.index_generations} == {expected_root}
+    assert {item.generation_id for item in plan.index_generations} == {
+        active.generation_id,
+        inactive.generation_id,
+    }
+    result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+    assert result.state == "committed"
+    relocated_store = IndexGenerationStore.for_archive_root(new_root)
+    assert relocated_store.generations_root == expected_root
+    for generation_id in (active.generation_id, inactive.generation_id):
+        generation = relocated_store.load(generation_id)
+        assert generation.archive_root == str(new_root)
+        assert generation.index_path == str(expected_root / generation_id / "index.db")
+        generation_root = expected_root / generation_id
+        for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+            link = generation_root / filename
+            if link.is_symlink():
+                assert os.readlink(link) == str(new_root / filename)
+    promoted = relocated_store.promote(relocated_store.load(inactive.generation_id))
+    assert promoted.state == "active"
+    assert (new_root / "nested" / "index.db").resolve(strict=True) == Path(promoted.index_path)
+
+
+def test_relocation_backup_maps_a_nested_regular_active_index(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The moved-root backup follows a stale pointer to a regular in-root index.
+
+    Anti-vacuity: the production backup must fingerprint the nested active
+    inode, not the regular shadow at ``root/index.db``.  Relocation's real
+    backup identity comparison rejects the shadow inode before planning.
+    """
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    nested_index = old_root / "nested" / "index.db"
+    nested_index.parent.mkdir()
+    shutil.copy2(old_root / "index.db", nested_index)
+    (old_root / ".index-active-pointer").write_text(str(nested_index), encoding="utf-8")
+    _attach_retained_source_continuity(old_root, manifest)
+
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    backup_manifest = Path(backup.output_path) / "manifest.json"
+    backup_payload = json.loads(backup_manifest.read_text(encoding="utf-8"))
+    index_fingerprint = backup_payload["tier_source_fingerprints"]["index.db"]
+    moved_nested_index = new_root / "nested" / "index.db"
+    assert (index_fingerprint["device"], index_fingerprint["inode"]) == (
+        moved_nested_index.stat().st_dev,
+        moved_nested_index.stat().st_ino,
+    )
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=backup_manifest,
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+
+    result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+    assert result.state == "committed"
+    assert plan.active_index_pointer is not None
+    assert plan.active_index_pointer.new_target == str(moved_nested_index)
+    assert ArchiveLocation.resolve(new_root).active_index.resolved_path == moved_nested_index
 
 
 def test_active_index_publication_updates_the_bound_nested_conventional_symlink(tmp_path: Path) -> None:
@@ -1714,7 +1938,7 @@ def test_relocation_resume_rejects_a_same_revision_manifest_substituted_after_ca
 
     old_root = workspace_env["archive_root"]
     _released_moved_source_train(old_root, monkeypatch)
-    new_root = tmp_path / "moved"
+    new_root = tmp_path / "moved root;still-one-argument"
     os.rename(old_root, new_root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
     backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
@@ -1743,7 +1967,8 @@ def test_relocation_resume_rejects_a_same_revision_manifest_substituted_after_ca
             encoding="utf-8"
         )
     )
-    assert f"--plan {retained_plan}" in prepared_receipt["resume_command"]
+    assert f"POLYLOGUE_ARCHIVE_ROOT={shlex.quote(str(new_root))}" in prepared_receipt["resume_command"]
+    assert f"--plan {shlex.quote(str(retained_plan))}" in prepared_receipt["resume_command"]
     train_path = Path(plan.durable_trains[0].path)
     relocated = load_durable_change_train_manifest(train_path)
     substituted = replace(relocated, proof_refs=(*relocated.proof_refs, "proof:foreign-substitution"))
@@ -2148,6 +2373,27 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
     assert len(relocation_refs) == 1
     assert len(transition_refs) == 1
 
+    refresh_path = _refresh_source_continuity_without_content_change(moved_root, tmp_path / "post-relocation-refresh")
+    refresh_payload = json.loads(refresh_path.read_text(encoding="utf-8"))
+    assert refresh_payload["format"] == "polylogue.source-continuity-refresh.v2"
+    refreshed_train = load_durable_change_train_manifest(Path(source_trains[0]["path"]))
+    from polylogue.storage.sqlite import durable_change_train as trains
+
+    with sqlite3.connect(moved_root / "source.db") as connection:
+        assert trains._verify_released_train_live_tier(moved_root, connection, refreshed_train) is None
+    exact_refresh_bytes = refresh_path.read_bytes()
+    substituted_refresh = json.loads(exact_refresh_bytes)
+    intent_payload = substituted_refresh["train_after_without_receipt"]
+    assert isinstance(intent_payload, dict)
+    intent_refs = intent_payload["proof_refs"]
+    assert isinstance(intent_refs, list)
+    intent_refs.append("proof:foreign-same-evidence-substitution")
+    refresh_path.write_text(json.dumps(substituted_refresh, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with sqlite3.connect(moved_root / "source.db") as connection:
+        with pytest.raises(DurableChangeTrainError, match="refresh receipt checksum mismatch"):
+            trains._verify_released_train_live_tier(moved_root, connection, refreshed_train)
+    refresh_path.write_bytes(exact_refresh_bytes)
+
     second_root = tmp_path / "moved-again"
     os.rename(moved_root, second_root)
     second_env = {"POLYLOGUE_ARCHIVE_ROOT": str(second_root)}
@@ -2212,10 +2458,9 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
         ).read_text(encoding="utf-8")
     )
     assert latest_transition["predecessor_authority"] == {
-        "kind": "relocation",
-        "sha256": second_transition_refs[-2].rsplit(":", 1)[-1],
+        "kind": "refresh",
+        "sha256": refresh_path.stem,
     }
-    from polylogue.storage.sqlite import durable_change_train as trains
 
     with sqlite3.connect(second_root / "source.db") as connection:
         assert trains._verify_released_train_live_tier(second_root, connection, second_train) is None
@@ -2336,3 +2581,75 @@ def test_historical_continuity_recovery_resume_rejects_a_foreign_same_evidence_r
 
     assert resumed.exit_code != 0
     assert "exact refresh proof" in resumed.output
+
+
+def test_historical_recovery_rejects_foreign_train_authority_before_preparing(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign valid refresh cannot make this recovery operation prepared."""
+    moved_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(moved_root)}
+    plan_path = tmp_path / "foreign-pre-prepare-plan.json"
+    with _test_historical_operation_evidence_resource(evidence):
+        planned = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(plan_path),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert planned.exit_code == 0, planned.output
+        plan = _maintenance_json_output(planned.output)
+        _substitute_foreign_historical_refresh(
+            moved_root,
+            plan=plan,
+            mutation_receipt=mutation_receipt,
+            backup_manifest=pre_manifest,
+        )
+        applied = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                str(plan["plan_sha256"]),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+
+    assert applied.exit_code != 0
+    assert "exact refresh proof" in applied.output
+    plan_sha256 = str(plan["plan_sha256"])
+    assert not (
+        moved_root / ".maintenance-state" / "historical-source-continuity-recoveries" / f"{plan_sha256}.json"
+    ).exists()
+    assert not (
+        moved_root / ".maintenance-state" / "historical-source-continuity-recovery-plans" / f"{plan_sha256}.json"
+    ).exists()

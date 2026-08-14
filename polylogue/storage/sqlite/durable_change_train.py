@@ -83,6 +83,9 @@ _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
 _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
+_SOURCE_CONTINUITY_REFRESH_V1_FORMAT = "polylogue.source-continuity-refresh.v1"
+_SOURCE_CONTINUITY_REFRESH_V2_FORMAT = "polylogue.source-continuity-refresh.v2"
+_SOURCE_CONTINUITY_REFRESH_INTENT_REF = "proof:source-continuity-refresh:pending-receipt"
 _SOURCE_CONTINUITY_RELOCATION_FORMAT = "polylogue.source-continuity-relocation.v2"
 _SourceContinuityMutationKind = Literal["blob_ref_liveness", "raw_authority_recovery"]
 _SourceContinuityAuthorityKind = Literal["refresh", "relocation"]
@@ -117,6 +120,47 @@ class _SourceContinuityAuthorityRef:
 class _SourceContinuityAuthorityNode:
     ref: _SourceContinuityAuthorityRef
     source_after: object
+
+
+def _durable_train_manifest_sha256(train: DurableChangeTrain) -> str:
+    payload = durable_change_train_to_payload(train)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _finalize_source_continuity_refresh_intent(
+    intent: DurableChangeTrain, *, refresh_digest: str
+) -> DurableChangeTrain:
+    refresh_ref = f"proof:source-continuity-refresh:{refresh_digest}"
+    if intent.proof_refs.count(_SOURCE_CONTINUITY_REFRESH_INTENT_REF) != 1:
+        raise DurableChangeTrainError("source continuity refresh intent has invalid receipt placeholder")
+    finalized = replace(
+        intent,
+        proof_refs=tuple(
+            refresh_ref if ref == _SOURCE_CONTINUITY_REFRESH_INTENT_REF else ref for ref in intent.proof_refs
+        ),
+    )
+    validate_durable_change_train_manifest(finalized)
+    return finalized
+
+
+def _source_continuity_refresh_intent(payload: dict[str, object], *, train_id: str) -> DurableChangeTrain:
+    raw_intent = payload.get("train_after_without_receipt")
+    if not isinstance(raw_intent, dict):
+        raise DurableChangeTrainError("source continuity refresh lacks exact train transition authority")
+    try:
+        intent = durable_change_train_from_payload(cast(dict[str, object], raw_intent))
+        validate_durable_change_train_manifest(intent)
+    except (DurableChangeTrainError, TypeError, ValueError) as exc:
+        raise DurableChangeTrainError("source continuity refresh has invalid train transition authority") from exc
+    if (
+        intent.train_id != train_id
+        or intent.source_continuity_evidence is None
+        or _migration_runner._manifest_json_value(intent.source_continuity_evidence) != payload.get("source_after")
+        or intent.proof_refs.count(_SOURCE_CONTINUITY_REFRESH_INTENT_REF) != 1
+    ):
+        raise DurableChangeTrainError("source continuity refresh train transition authority changed")
+    return intent
 
 
 @dataclass(frozen=True, slots=True)
@@ -1169,41 +1213,59 @@ def _validate_source_continuity_refresh_receipt(
 
     predecessors: dict[_SourceContinuityAuthorityRef, _SourceContinuityAuthorityRef] = {}
     successor_by_authority: dict[_SourceContinuityAuthorityRef, _SourceContinuityAuthorityRef] = {}
-    for ref, payload in relocation_payloads.items():
+
+    def register_predecessor(ref: _SourceContinuityAuthorityRef, payload: dict[str, object], *, required: bool) -> None:
         raw_predecessor = payload.get("predecessor_authority")
+        if raw_predecessor is None and not required:
+            return
         if not isinstance(raw_predecessor, dict) or set(raw_predecessor) != {"kind", "sha256"}:
-            raise DurableChangeTrainError("source continuity relocation transition lacks typed predecessor authority")
+            raise DurableChangeTrainError("source continuity transition lacks typed predecessor authority")
         kind = raw_predecessor.get("kind")
         predecessor_digest = raw_predecessor.get("sha256")
         if kind not in {"refresh", "relocation"} or not isinstance(predecessor_digest, str):
-            raise DurableChangeTrainError("source continuity relocation transition has invalid predecessor authority")
+            raise DurableChangeTrainError("source continuity transition has invalid predecessor authority")
         predecessor = _SourceContinuityAuthorityRef(cast(_SourceContinuityAuthorityKind, kind), predecessor_digest)
         if predecessor in successor_by_authority:
-            raise DurableChangeTrainError("source continuity relocation authority branches ambiguously")
+            raise DurableChangeTrainError("source continuity authority branches ambiguously")
         predecessors[ref] = predecessor
         successor_by_authority[predecessor] = ref
 
-    for ref in relocation_payloads:
+    for digest, payload in refresh_payloads.items():
+        if payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:
+            register_predecessor(_SourceContinuityAuthorityRef("refresh", digest), payload, required=False)
+    for ref, payload in relocation_payloads.items():
+        register_predecessor(ref, payload, required=True)
+
+    transition_payloads = {
+        **{
+            _SourceContinuityAuthorityRef("refresh", digest): payload
+            for digest, payload in refresh_payloads.items()
+            if payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT
+            and payload.get("predecessor_authority") is not None
+        },
+        **relocation_payloads,
+    }
+    for ref in transition_payloads:
         if ref in nodes:
-            continue
+            if ref not in predecessors:
+                continue
+            nodes.pop(ref)
         trail: list[_SourceContinuityAuthorityRef] = []
         trail_refs: set[_SourceContinuityAuthorityRef] = set()
         current = ref
         while current not in nodes:
             if current in trail_refs:
-                raise DurableChangeTrainError("source continuity relocation authority contains a cycle")
-            if current not in relocation_payloads:
-                raise DurableChangeTrainError("source continuity relocation transition lacks its retained predecessor")
+                raise DurableChangeTrainError("source continuity authority contains a cycle")
+            if current not in transition_payloads or current not in predecessors:
+                raise DurableChangeTrainError("source continuity transition lacks its retained predecessor")
             trail.append(current)
             trail_refs.add(current)
             current = predecessors[current]
         predecessor_node = nodes[current]
         for transition_ref in reversed(trail):
-            payload = relocation_payloads[transition_ref]
+            payload = transition_payloads[transition_ref]
             if payload.get("source_before") != predecessor_node.source_after:
-                raise DurableChangeTrainError(
-                    "source continuity relocation transition does not preserve predecessor authority"
-                )
+                raise DurableChangeTrainError("source continuity transition does not preserve predecessor authority")
             node = _SourceContinuityAuthorityNode(
                 ref=transition_ref,
                 source_after=payload.get("source_after"),
@@ -1217,7 +1279,17 @@ def _validate_source_continuity_refresh_receipt(
     ]
     if len(matching_authorities) != 1:
         raise DurableChangeTrainError("source continuity evidence does not identify exactly one terminal authority")
-    return matching_authorities[0]
+    terminal = matching_authorities[0]
+    if terminal.kind == "refresh":
+        terminal_payload = refresh_payloads[terminal.sha256]
+        if terminal_payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:
+            intent = _source_continuity_refresh_intent(terminal_payload, train_id=train.train_id)
+            expected = _finalize_source_continuity_refresh_intent(intent, refresh_digest=terminal.sha256)
+            if durable_change_train_to_payload(expected) != durable_change_train_to_payload(train):
+                raise DurableChangeTrainError(
+                    "source continuity refresh does not bind the exact current train manifest"
+                )
+    return terminal
 
 
 def _read_source_continuity_refresh_receipt(
@@ -1243,12 +1315,25 @@ def _read_source_continuity_refresh_receipt(
         raise DurableChangeTrainError(f"source continuity refresh receipt is not an object: {receipt_path}")
     payload = cast(dict[str, object], raw)
     refresh_sha256 = payload.pop("refresh_sha256", None)
-    if refresh_sha256 != digest or _canonical_json_sha256(payload) != digest:
+    receipt_format = payload.get("format")
+    if receipt_format == _SOURCE_CONTINUITY_REFRESH_V1_FORMAT:
+        valid_checksum = _canonical_json_sha256(payload) == digest
+    elif receipt_format == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:
+        valid_checksum = (
+            _canonical_json_sha256(payload) == digest
+            and isinstance(payload.get("train_before_sha256"), str)
+            and isinstance(payload.get("train_after_without_receipt"), dict)
+        )
+    else:
+        valid_checksum = False
+    if refresh_sha256 != digest or not valid_checksum:
         raise DurableChangeTrainError(f"source continuity refresh receipt checksum mismatch: {receipt_path}")
-    if payload.get("format") != "polylogue.source-continuity-refresh.v1":
+    if receipt_format not in {_SOURCE_CONTINUITY_REFRESH_V1_FORMAT, _SOURCE_CONTINUITY_REFRESH_V2_FORMAT}:
         raise DurableChangeTrainError(f"source continuity refresh receipt format mismatch: {receipt_path}")
     if payload.get("train_id") != train.train_id:
         raise DurableChangeTrainError(f"source continuity refresh receipt train mismatch: {receipt_path}")
+    if receipt_format == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:
+        _source_continuity_refresh_intent(payload, train_id=train.train_id)
     return payload
 
 
@@ -1386,25 +1471,47 @@ def _validate_archive_root_relocation_receipts(
                 item.after_archive_identity_digest,
             )
         )
+    for ref in train.proof_refs:
+        if not ref.startswith("proof:source-continuity-refresh:"):
+            continue
+        digest = ref.removeprefix("proof:source-continuity-refresh:")
+        payload = _read_source_continuity_refresh_receipt(archive_root, digest=digest, train=train)
+        if payload.get("format") != _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:
+            continue
+        before = payload.get("train_before_sha256")
+        intent_payload = payload.get("train_after_without_receipt")
+        source_after = payload.get("source_after")
+        identity = source_after.get("archive_identity_digest") if isinstance(source_after, dict) else None
+        if not isinstance(before, str) or not isinstance(intent_payload, dict) or not isinstance(identity, str):
+            raise DurableChangeTrainError("source continuity refresh lacks exact train transition authority")
+        intent = _source_continuity_refresh_intent(payload, train_id=train.train_id)
+        after = _durable_train_manifest_sha256(
+            _finalize_source_continuity_refresh_intent(intent, refresh_digest=digest)
+        )
+        _migration_runner._validate_sha256(before, label="source continuity refresh before manifest")
+        _migration_runner._validate_sha256(identity, label="source continuity refresh archive identity")
+        transitions.append((before, after, identity))
     by_before = {before: (after, identity) for before, after, identity in transitions}
     if len(by_before) != len(transitions):
-        raise DurableChangeTrainError("archive-root relocation proof chain branches ambiguously")
+        raise DurableChangeTrainError("archive-root relocation and refresh proof chain branches ambiguously")
     after_hashes = {after for _before, after, _identity in transitions}
     roots = [before for before in by_before if before not in after_hashes]
     if len(roots) != 1:
-        raise DurableChangeTrainError("archive-root relocation proof chain has no unique predecessor")
+        raise DurableChangeTrainError("archive-root relocation and refresh proof chain has no unique predecessor")
     visited: set[str] = set()
     current_hash = roots[0]
     latest_identity: str | None = None
     while current_hash in by_before:
         if current_hash in visited:
-            raise DurableChangeTrainError("archive-root relocation proof chain contains a cycle")
+            raise DurableChangeTrainError("archive-root relocation and refresh proof chain contains a cycle")
         visited.add(current_hash)
         current_hash, latest_identity = by_before[current_hash]
     current_payload = durable_change_train_to_payload(train)
     current_encoded = (json.dumps(current_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
     if len(visited) != len(transitions) or hashlib.sha256(current_encoded).hexdigest() != current_hash:
-        raise DurableChangeTrainError("archive-root relocation proof chain does not bind the exact current manifest")
+        raise DurableChangeTrainError(
+            "archive-root relocation and refresh proof chain does not bind the exact current manifest"
+        )
     if train.apply_evidence is None or latest_identity != train.apply_evidence.post.archive_identity_digest:
         raise DurableChangeTrainError("archive-root relocation proof does not bind the latest durable identity")
 
@@ -1613,7 +1720,7 @@ def _refresh_released_source_train_continuity_locked(
             # evidence, authenticates this idempotent completion.
             if (
                 current_matches_retained
-                and existing.get("source_before") == serialized_before
+                and existing.get("observed_source_before", existing.get("source_before")) == serialized_before
                 and existing.get("source_after") == serialized_retained_current
             ):
                 _validate_source_continuity_refresh_receipt(archive_root, train)
@@ -1657,8 +1764,40 @@ def _refresh_released_source_train_continuity_locked(
                 "source continuity refresh requires successful quick_check evidence"
             )
 
+        predecessor = (
+            _validate_source_continuity_refresh_receipt(archive_root, train)
+            if train.source_continuity_evidence is not None
+            else None
+        )
+        retained_apply_evidence = train.apply_evidence
+        legacy_archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
+        if (
+            retained_apply_evidence.post.archive_identity_digest == legacy_archive_identity_digest
+            and current.archive_identity_digest != retained_apply_evidence.post.archive_identity_digest
+        ):
+            retained_apply_evidence = replace(
+                retained_apply_evidence,
+                post=replace(
+                    retained_apply_evidence.post,
+                    archive_identity_digest=current.archive_identity_digest,
+                ),
+            )
+        if _SOURCE_CONTINUITY_REFRESH_INTENT_REF in train.proof_refs:
+            raise DurableChangeTrainError("source continuity refresh train retains an unfinished receipt intent")
+        references_without_receipt = _migration_runner._append_proof_refs(
+            train.proof_refs, evidence_ref, _SOURCE_CONTINUITY_REFRESH_INTENT_REF
+        )
+        if train.proof is None:
+            raise DurableChangeTrainError("source continuity refresh requires train proof")
+        intent = replace(
+            train,
+            revision=train.revision + 1,
+            apply_evidence=retained_apply_evidence,
+            source_continuity_evidence=current,
+            proof_refs=references_without_receipt,
+        )
         payload = {
-            "format": "polylogue.source-continuity-refresh.v1",
+            "format": _SOURCE_CONTINUITY_REFRESH_V2_FORMAT,
             "operation_id": operation_id,
             "evidence_ref": evidence_ref,
             "backup_manifest": str(backup_manifest),
@@ -1666,11 +1805,18 @@ def _refresh_released_source_train_continuity_locked(
             "mutation_receipt": str(mutation_receipt),
             "mutation_receipt_sha256": mutation_digest,
             "train_id": train.train_id,
-            "source_before": serialized_before,
+            "predecessor_authority": (
+                None if predecessor is None else {"kind": predecessor.kind, "sha256": predecessor.sha256}
+            ),
+            "source_before": _migration_runner._manifest_json_value(baseline),
+            "observed_source_before": serialized_before,
             "source_after": serialized_current,
             "refreshed_at_ms": current.observed_at_ms,
+            "train_before_sha256": _durable_train_manifest_sha256(train),
+            "train_after_without_receipt": durable_change_train_to_payload(intent),
         }
         refresh_digest = _canonical_json_sha256(payload)
+        updated = _finalize_source_continuity_refresh_intent(intent, refresh_digest=refresh_digest)
         refresh_root_existed = refresh_root.is_dir()
         refresh_root.mkdir(parents=True, exist_ok=True)
         if not refresh_root_existed:
@@ -1706,30 +1852,6 @@ def _refresh_released_source_train_continuity_locked(
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
-        refresh_ref = f"proof:source-continuity-refresh:{refresh_digest}"
-        references = _migration_runner._append_proof_refs(train.proof_refs, evidence_ref, refresh_ref)
-        if train.proof is None:
-            raise DurableChangeTrainError("source continuity refresh requires train proof")
-        retained_apply_evidence = train.apply_evidence
-        legacy_archive_identity_digest = ArchiveIdentity.resolve(archive_root).authority_identity_digest
-        if (
-            retained_apply_evidence.post.archive_identity_digest == legacy_archive_identity_digest
-            and current.archive_identity_digest != retained_apply_evidence.post.archive_identity_digest
-        ):
-            retained_apply_evidence = replace(
-                retained_apply_evidence,
-                post=replace(
-                    retained_apply_evidence.post,
-                    archive_identity_digest=current.archive_identity_digest,
-                ),
-            )
-        updated = replace(
-            train,
-            revision=train.revision + 1,
-            apply_evidence=retained_apply_evidence,
-            source_continuity_evidence=current,
-            proof_refs=references,
-        )
         write_durable_change_train_manifest(manifest_path, updated, expected_revision=train.revision)
     return refresh_path
 

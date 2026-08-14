@@ -4150,9 +4150,11 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
         )
         with pytest.raises(RuntimeError, match="leave prepared relocation receipt"):
             apply_archive_root_relocation(root=root, plan=plan, authorization=plan.plan_sha256)
+    configured_alias = tmp_path / "configured-archive-alias"
+    configured_alias.symlink_to(root, target_is_directory=True)
     configure = Mock()
     admission = Mock(wraps=assert_no_prepared_archive_root_relocation)
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: root)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: configured_alias)
     monkeypatch.setattr(
         "polylogue.operations.archive_root_relocation.assert_no_prepared_archive_root_relocation",
         admission,
@@ -4172,7 +4174,7 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
             )
         )
 
-    admission.assert_called_once_with(root)
+    admission.assert_called_once_with(configured_alias)
     configure.assert_not_called()
 
     watcher = Mock()
@@ -4181,7 +4183,7 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
         CliRunner().invoke(main, ["watch"], catch_exceptions=False)
 
     assert admission.call_count == 2
-    admission.assert_called_with(root)
+    admission.assert_called_with(configured_alias)
     watcher.assert_not_called()
 
 
