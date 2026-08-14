@@ -84,6 +84,7 @@ from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, pr
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
 _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
+_REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES: Final[int] = 64 * 1024
 
 _DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -521,7 +522,19 @@ def _detect_unknown_retained_provider(
 
     last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
     read_size = _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 1
-    while raw_line := payload.readline(read_size):
+
+    scanned_bytes = 0
+
+    def read_bounded_line() -> bytes:
+        nonlocal scanned_bytes
+        remaining_bytes = _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES - scanned_bytes
+        if remaining_bytes <= 0:
+            return b""
+        raw_line = payload.readline(min(read_size, remaining_bytes))
+        scanned_bytes += len(raw_line)
+        return raw_line
+
+    while raw_line := read_bounded_line():
         has_newline = raw_line.endswith(b"\n")
         oversized = not has_newline and len(raw_line) > _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
         bounded_record = raw_line[:_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
@@ -532,7 +545,9 @@ def _detect_unknown_retained_provider(
                 record_stream=True,
             )
             while raw_line and not raw_line.endswith(b"\n"):
-                raw_line = payload.readline(read_size)
+                raw_line = read_bounded_line()
+            if not raw_line:
+                return Provider.UNKNOWN, "bounded JSONL provider scan exhausted; used fallback_provider"
         else:
             provider, last_evidence = detect_provider_from_raw_bytes_evidence(
                 bounded_record,
@@ -1394,8 +1409,8 @@ def _load_frozen_revision_evidence(
             )
     frozen_codex_state_raw_ids = frozenset(
         raw_id
-        for raw_id, _source_index, terminal_non_session, _raw_rowid in rows
-        if not terminal_non_session and _retained_codex_state_descriptor(archive, raw_id) is not None
+        for raw_id, _source_index, _terminal_non_session, _raw_rowid in rows
+        if _retained_codex_state_descriptor(archive, raw_id) is not None
     )
     recorded_logical_keys = require_current_parser_source_census(
         archive.archive_root,

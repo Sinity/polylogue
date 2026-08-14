@@ -28,13 +28,14 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationStatus
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.daemon.convergence import DaemonConverger, StageState
 from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import archive_file_set_root
+from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -342,6 +343,35 @@ def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_pa
         )
         assert conn.total_changes == 1
         conn.commit()
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.check(path) is True
+    assert stage.execute(path) is True
+    assert stage.check(path) is False
+    assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
+
+
+def test_raw_parse_recovery_uses_monotonic_parse_state_after_failed_validation(tmp_path: Path) -> None:
+    """The probe and repair route agree when a later parse supersedes validation."""
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "monotonic-validation-recovery.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.finalize_raw_parse_state(
+            raw_id,
+            state=RawSessionStateUpdate(
+                parsed_at="1970-01-01T00:00:00.001Z",
+                validation_status=ValidationStatus.FAILED,
+                validation_error="older validation failure",
+            ),
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CHATGPT,
+            error=RawCASFrontierError("retry after the later parser state"),
+        )
 
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
 

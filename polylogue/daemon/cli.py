@@ -1331,26 +1331,29 @@ def _drain_raw_materialization_once(
                 )
             finally:
                 _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
+    if generation_pin_refused:
+        _emit_raw_materialization_pass(result)
+        if not result.success:
+            logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+        return _raw_materialization_counts(result)
     _emit_raw_materialization_pass(result)
     if not result.success:
         logger.warning("raw materialization: bounded convergence incomplete: %s", result.detail)
+    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
+    return _raw_materialization_counts(result, executed_plans=frontier_repaired)
+
+
+def _raw_materialization_counts(result: Any, *, executed_plans: int = 0) -> RawMaterializationCounts:
+    """Project one typed raw-materialization result into daemon scheduling counts."""
+    from polylogue.product import raw_authority
+
     metrics = dict(getattr(result, "metrics", {}))
     remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
     if remaining == 0:
         remaining = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
-    if generation_pin_refused:
-        return raw_authority.RawMaterializationCounts(
-            repaired_sessions=result.repaired_count,
-            executed_plans=0,
-            remaining_candidates=remaining,
-            censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
-            candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),
-            pending_blob_bytes=int(metrics.get("raw_materialization_total_blob_bytes", 0)),
-        )
-    frontier_repaired = _converge_raw_authority_frontier(config, limit=min(limit, 8))
     return raw_authority.RawMaterializationCounts(
         repaired_sessions=result.repaired_count,
-        executed_plans=frontier_repaired,
+        executed_plans=executed_plans,
         remaining_candidates=remaining,
         censused_components=int(metrics.get("raw_materialization_census_components_attempted", 0)),
         candidate_count=int(metrics.get("raw_materialization_candidate_count", 0)),

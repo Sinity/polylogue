@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import ijson
 import pytest
@@ -21,6 +23,7 @@ from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
+from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     RawParsePrefetchCache,
@@ -29,6 +32,7 @@ from polylogue.sources.revision_backfill import (
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
+    validate_frozen_source_authority,
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -220,6 +224,109 @@ def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
         sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
 
     assert [session.provider_session_id for session in sessions] == ["oversized-only-provider-record"]
+
+
+def test_unknown_retained_jsonl_detection_caps_total_scan_before_typed_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unidentifiable retained JSONL blob stops at the detection envelope."""
+    initialize_active_archive_root(tmp_path)
+    payload = (b'{"opaque":"' + b"x" * 9_000 + b'"}\n') * 32
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="opaque.jsonl",
+            acquired_at_ms=1,
+        )
+        read_bytes = 0
+        original_open = archive.open_raw_revision_material
+
+        class CountingReader:
+            def __init__(self, wrapped: BinaryIO) -> None:
+                self._wrapped = wrapped
+
+            def read(self, size: int = -1) -> bytes:
+                nonlocal read_bytes
+                chunk = self._wrapped.read(size)
+                read_bytes += len(chunk)
+                return chunk
+
+            def readline(self, size: int = -1) -> bytes:
+                nonlocal read_bytes
+                chunk = self._wrapped.readline(size)
+                read_bytes += len(chunk)
+                return chunk
+
+        @contextmanager
+        def tracked_open(requested_raw_id: str) -> Iterator[tuple[Provider, CountingReader, str, RawRevisionKind]]:
+            with original_open(requested_raw_id) as (provider, stream, source_path, kind):
+                yield provider, CountingReader(stream), source_path, kind
+
+        monkeypatch.setattr(archive, "open_raw_revision_material", tracked_open)
+        monkeypatch.setattr(
+            archive,
+            "raw_revision_material",
+            lambda *_args, **_kwargs: pytest.fail("unidentified JSONL must not fall through to eager blob loading"),
+        )
+
+        with pytest.raises(ValueError, match="retained UNKNOWN provider remained unresolved"):
+            revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+
+    assert read_bytes <= revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES
+
+
+def test_frozen_source_validation_treats_codex_state_as_non_session_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Frozen validation must route Codex state SQLite past the JSON parser."""
+    initialize_active_archive_root(tmp_path)
+    payload = _codex_thread_state_snapshot_bytes(tmp_path, "frozen state")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path)
+    parsed_raw_ids: list[str] = []
+
+    def record_parse_dispatch(_archive: ArchiveStore, raw_ids: list[str], **_kwargs: object) -> dict[object, object]:
+        parsed_raw_ids.extend(raw_ids)
+        return {}
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raws", record_parse_dispatch)
+
+    validate_frozen_source_authority(tmp_path)
+    assert parsed_raw_ids == []
+
+
+def test_frozen_codex_state_budget_blocks_before_sqlite_classification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Frozen-source validation rejects an oversized state snapshot before opening it."""
+    initialize_active_archive_root(tmp_path)
+    payload = _codex_thread_state_snapshot_bytes(tmp_path, "frozen oversized state")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
+            acquired_at_ms=1,
+        )
+
+    monkeypatch.setattr(
+        codex_state,
+        "classify_codex_sqlite_path",
+        lambda *_args, **_kwargs: pytest.fail("payload budget must block before Codex SQLite classification"),
+    )
+
+    with pytest.raises(revision_backfill.RawRevisionReplayResourceBlockedError) as blocked:
+        validate_frozen_source_authority(tmp_path, max_payload_bytes=1)
+
+    assert blocked.value.raw_ids == (raw_id,)
 
 
 def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record(

@@ -3956,6 +3956,45 @@ def test_periodic_catch_up_adds_configured_nested_root_created_after_start(
     asyncio.run(_drive())
 
 
+def test_watcher_run_periodically_rediscovers_nested_root_created_after_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The daemon route refreshes configured roots after its initial watch snapshot."""
+    outer = tmp_path / "sources"
+    nested = outer / "late-codex"
+    outer.mkdir()
+    watcher, parse_sources = _make_watcher(
+        tmp_path,
+        outer,
+        sources=(
+            WatchSource(name="outer", root=outer, suffixes=(".jsonl",)),
+            WatchSource(name="nested", root=nested, suffixes=(".jsonl",)),
+        ),
+    )
+    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.02)
+
+    async def wait_for_stop(_roots: list[Path]) -> None:
+        await watcher._stop.wait()
+
+    monkeypatch.setattr(watcher, "_watch_changes", wait_for_stop)
+
+    async def _drive() -> None:
+        task = asyncio.create_task(watcher.run())
+        await asyncio.wait_for(watcher.catch_up_complete.wait(), timeout=1.0)
+        nested.mkdir()
+        (nested / "missed.jsonl").write_text('{"type":"session_meta","payload":{"id":"late"}}\n')
+        for _ in range(60):
+            if parse_sources.await_count >= 1:
+                break
+            await asyncio.sleep(0.05)
+        watcher.stop()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert parse_sources.await_count >= 1
+
+    asyncio.run(_drive())
+
+
 def test_periodic_catch_up_backs_off_after_each_reconciliation_pass(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
