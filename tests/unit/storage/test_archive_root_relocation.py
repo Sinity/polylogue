@@ -1394,16 +1394,14 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     with pytest.raises(RuntimeError, match="crash after active pointer publication"):
         apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
     assert short_pointer_write
-    assert (new_root / ".index-active-pointer").read_text(
-        encoding="utf-8"
-    ).strip() == plan.active_index_pointer.new_target
+    assert (new_root / ".index-active-pointer").read_text(encoding="utf-8").strip() == pointer.new_target
     with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
         assert_no_prepared_archive_root_relocation(new_root)
 
     monkeypatch.setattr(relocation, "_publish_active_index_pointer", real_publish)
     result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
     assert result.state == "committed"
-    assert ArchiveLocation.resolve(new_root).active_index_path == Path(plan.active_index_pointer.new_resolved_target)
+    assert ArchiveLocation.resolve(new_root).active_index_path == Path(pointer.new_resolved_target)
     assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
 
 
