@@ -725,7 +725,8 @@ class CheckoutMutationMonitor:
         nested_authorities = [
             (authority_path, label)
             for authority_path, label in self._git_authority_paths.items()
-            if candidate != authority_path and authority_path.is_relative_to(candidate)
+            if candidate != authority_path
+            and authority_path.is_relative_to(candidate)
             and not (label == ".git/packed-refs" and self._git_current_ref_was_loose is True)
         ]
         if nested_authorities:
