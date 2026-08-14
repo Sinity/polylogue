@@ -1277,18 +1277,6 @@ def _drain_raw_materialization_once(
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
     archive = archive_root()
-    restored = restore_direct_blob_reference_debt(
-        archive / "source.db",
-        dry_run=False,
-        max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
-        sample_size=0,
-    )
-    if restored.restored_count:
-        logger.info(
-            "blob references: restored %d direct source blob(s) before raw materialization",
-            restored.restored_count,
-        )
-
     config = Config(
         archive_root=archive,
         render_root=render_root(),
@@ -1306,6 +1294,17 @@ def _drain_raw_materialization_once(
             result = refused_result
             generation_pin_refused = True
         else:
+            restored = restore_direct_blob_reference_debt(
+                archive / "source.db",
+                dry_run=False,
+                max_count=_BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT,
+                sample_size=0,
+            )
+            if restored.restored_count:
+                logger.info(
+                    "blob references: restored %d direct source blob(s) before raw materialization",
+                    restored.restored_count,
+                )
             if recover:
                 raw_authority.recover_interrupted_frontier(config)
             # polylogue-d7im: a stale-plan blocker requires no operator

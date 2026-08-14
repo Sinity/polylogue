@@ -1119,6 +1119,11 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
     class FakeRestoreResult:
         restored_count = 0
 
+    def restore_debt(*_args: object, **_kwargs: object) -> FakeRestoreResult:
+        assert held == 1
+        lease_events.append("restore")
+        return FakeRestoreResult()
+
     result = SimpleNamespace(
         success=True,
         repaired_count=1,
@@ -1132,7 +1137,7 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
     monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        lambda *_args, **_kwargs: FakeRestoreResult(),
+        restore_debt,
     )
 
     def recover_frontier(_config: Config) -> tuple[()]:
@@ -1175,7 +1180,7 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
 
     assert closed == [(active_index, archive / "ops.db")]
     expected_events = (
-        ["acquire", "fts", "close"] if whale else ["acquire", "recover", "stale", "fts", "frontier", "close"]
+        ["acquire", "fts", "close"] if whale else ["acquire", "restore", "recover", "stale", "fts", "frontier", "close"]
     )
     assert lease_events == expected_events
     assert held == 0
@@ -1196,11 +1201,11 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
     archive.mkdir()
     emitted: list[RepairResult] = []
 
-    class FakeRestoreResult:
-        restored_count = 0
-
     def refuse_outer_lease(_lease: ActiveWriterLease) -> None:
         raise RebuildLeaseUnavailableError("offline rebuild is active")
+
+    def reject_restore(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("blob-reference restoration requires an acquired generation pin")
 
     def reject_repair(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("repair must not run when the outer generation pin is refused")
@@ -1210,7 +1215,7 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
     monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
-        lambda *_args, **_kwargs: FakeRestoreResult(),
+        reject_restore,
     )
     monkeypatch.setattr(
         "polylogue.product.raw_authority.recover_interrupted_frontier",
