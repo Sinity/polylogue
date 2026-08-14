@@ -388,6 +388,42 @@ def test_v2_check_rejects_an_unlisted_bead_mutation_via_the_production_command(
     assert "legacy v1 carrier cannot omit Bead mutations" in capsys.readouterr().out
 
 
+def test_validation_uses_the_immutable_head_beads_when_the_worktree_diverges(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    beads_path = repository / ".beads" / "issues.jsonl"
+    beads_path.parent.mkdir(parents=True)
+    beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    base_sha = _commit(repository, "base Bead state")
+
+    beads_path.write_text("")
+    head_sha = _commit(repository, "candidate deletes assigned Bead")
+
+    carrier = _v2_input()
+    carrier["version"] = 2
+    carrier["mutated_beads"] = [ASSIGNED]
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+
+    # Simulate a concurrent/live Beads checkout that no longer matches the
+    # candidate commit. Revision-bound validation must follow the Git object,
+    # not allow this mutable path to resurrect the deleted record.
+    beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
+    monkeypatch.chdir(repository)
+
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=head_sha,
+        is_draft=False,
+        beads_path=beads_path,
+        base_sha=base_sha,
+    )
+
+    assert not verdict.ok
+    assert f"assigned Bead record(s) missing: {ASSIGNED}" in verdict.reasons
+
+
 def test_v2_self_contained_scope_rejects_a_real_bead_mutation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

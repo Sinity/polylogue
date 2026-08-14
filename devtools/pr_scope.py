@@ -223,15 +223,15 @@ def _bead_ids(value: object, *, label: str, allow_empty: bool, reasons: list[str
     return value
 
 
-def _bead_records_at(base_sha: str) -> dict[str, dict[str, Any]]:
-    if not _GIT_OBJECT_PATTERN.fullmatch(base_sha):
-        raise ValueError("base revision must be a hexadecimal Git object name")
+def _bead_records_at(revision: str) -> dict[str, dict[str, Any]]:
+    if not _GIT_OBJECT_PATTERN.fullmatch(revision):
+        raise ValueError("Beads revision must be a hexadecimal Git object name")
     result = subprocess.run(
-        ["git", "show", f"{base_sha}:.beads/issues.jsonl"], capture_output=True, text=True, check=False
+        ["git", "show", f"{revision}:.beads/issues.jsonl"], capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
-        raise ValueError(f"cannot read .beads/issues.jsonl at base revision {base_sha[:8]}")
-    return _parse_bead_records(result.stdout.splitlines(), line_label="base line")
+        raise ValueError(f"cannot read .beads/issues.jsonl at revision {revision[:8]}")
+    return _parse_bead_records(result.stdout.splitlines(), line_label=f"revision {revision[:8]} line")
 
 
 def _ensure_local_commit(revision: str) -> None:
@@ -435,8 +435,8 @@ def validate_carrier(
 
     candidate_records: dict[str, dict[str, Any]] = {}
     try:
-        candidate_records = load_bead_records(beads_path)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        candidate_records = _bead_records_at(head_sha) if base_sha is not None else load_bead_records(beads_path)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         reasons.append(f"cannot resolve candidate Bead records: {exc}")
 
     actual_mutations: list[str] = []
@@ -882,7 +882,7 @@ def check_ci_metadata(
 
     base_source = fetch_base_validator_source(repository=repository, base_sha=metadata.base_sha)
     if base_source is not None:
-        print(f"pr-scope CI authority: base revision {metadata.base_sha[:8]}")
+        print(f"pr-scope CI base validator: revision {metadata.base_sha[:8]}")
         return _run_validator_source(base_source, metadata=metadata, beads_path=beads_path)
 
     print(
@@ -919,7 +919,7 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
     check.add_argument("--json", action="store_true", dest="as_json")
 
-    check_ci = sub.add_parser("check-ci", help="validate with the PR base revision's authoritative checker")
+    check_ci = sub.add_parser("check-ci", help="run advisory CI validation with the PR base revision's checker")
     check_ci.add_argument("--pr", type=int, help="GitHub PR number (default: resolve from --expected-head-sha)")
     check_ci.add_argument("--repo", required=True, help="GitHub OWNER/REPO from CI metadata")
     check_ci.add_argument("--expected-head-sha", default=os.environ.get("CIRCLE_SHA1"))
