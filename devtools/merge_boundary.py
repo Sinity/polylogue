@@ -207,8 +207,8 @@ def _validate_ledger(data: object) -> dict[str, Any]:
     ):
         raise LedgerStateError("merge-train terminal receipt has malformed status fields")
     scope = receipt.get("verification_scope")
-    if scope is not None and scope not in {item.value for item in VerificationScope}:
-        raise LedgerStateError("merge-train terminal receipt has an invalid verification scope")
+    if scope is not None and not isinstance(scope, str):
+        raise LedgerStateError("merge-train terminal receipt has a malformed verification scope")
     permission = receipt.get("release_baseline_allowed")
     if permission is not None and not isinstance(permission, bool):
         raise LedgerStateError("merge-train terminal receipt has malformed release permission")

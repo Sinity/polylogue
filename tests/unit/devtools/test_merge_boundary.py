@@ -944,6 +944,34 @@ def test_train_status_blocks_when_pr_merged_after_last_full_verify(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
+def test_train_status_reads_historical_scope_without_granting_release_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rejecting unknown historical scopes would make old ledgers unreadable."""
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._write_ledger(
+        {
+            "merges": [],
+            "last_full_verify": {
+                "at": 1000.0,
+                "verification_started_at": 1000.0,
+                "duration_s": 1.0,
+                "command": "devtools verify --affected",
+                "exit_code": 0,
+                "verification_scope": "narrow-terminal",
+                "release_baseline_allowed": True,
+                "merge_sequence": 0,
+                "accepted": True,
+            },
+        }
+    )
+    merge_boundary._append_merge_entry(1, "sha1", "some title")
+
+    assert merge_boundary._read_ledger()["last_full_verify"]["verification_scope"] == "narrow-terminal"
+    assert merge_boundary._pending_prs_since_last_full_verify(merge_boundary._read_ledger())
+    assert merge_boundary.cmd_train_status(as_json=False) == 1
+
+
 def test_train_status_rejects_untyped_accepted_terminal_ledger(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     merge_boundary._write_ledger(

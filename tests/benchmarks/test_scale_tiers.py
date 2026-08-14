@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.benchmarks.helpers import open_bench_store
+from tests.benchmarks.helpers import BenchmarkFixture, open_bench_store
 
 
 def _fts_query(db_path: Path, term: str, *, limit: int = 20) -> int:
@@ -69,11 +69,11 @@ def test_bench_10k_list_sessions(bench_db_10k: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_bench_50k_fts_search_returns_results(bench_db_50k: Path) -> None:
-    hits = _fts_query(bench_db_50k, "analysis", limit=50)
+def test_bench_50k_fts_search_returns_results(benchmark: BenchmarkFixture, bench_db_50k: Path) -> None:
+    hits = benchmark(lambda: _fts_query(bench_db_50k, "analysis", limit=50))
     assert 0 <= hits <= 50
 
 
-def test_bench_50k_list_sessions(bench_db_50k: Path) -> None:
-    rows = _list_query(bench_db_50k, limit=50)
+def test_bench_50k_list_sessions(benchmark: BenchmarkFixture, bench_db_50k: Path) -> None:
+    rows = benchmark(lambda: _list_query(bench_db_50k, limit=50))
     assert 0 < rows <= 50

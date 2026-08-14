@@ -47,6 +47,7 @@ jobs:
           HYPOTHESIS_PROFILE: ci
         run: |
           uv run pytest -q --tb=short -p no:randomly -n 0 \
+            --benchmark-enable \
             --benchmark-json=nightly-results.json \
             --benchmark-group-by=group \
             'tests/benchmarks/test_daemon_convergence.py::test_convergence_scale_tier[xxl-mega-session]' \

@@ -7,6 +7,7 @@ import pytest
 from devtools.testmon_bootstrap import (
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
+    _testmon_schema_version,
     classify_native_testmon_changes,
     classify_source_ast,
     executable_python_paths,
@@ -47,6 +48,14 @@ def test_ast_classification_treats_type_checking_guards_as_declarations(tmp_path
     declarations.write_text(declarations.read_text(encoding="utf-8") + "\nVALUE = build_runtime_value()\n")
 
     assert classify_source_ast(declarations) == "executable"
+
+
+def test_ast_classification_treats_ordinary_imports_as_executable(tmp_path: Path) -> None:
+    """Removing ordinary-import execution from the classifier makes this fail."""
+    module = tmp_path / "runtime.py"
+    module.write_text("from package.runtime import value\n", encoding="utf-8")
+
+    assert classify_source_ast(module) == "executable"
 
 
 def test_executable_paths_require_current_runtime_modules_and_deleted_modules(tmp_path: Path) -> None:
@@ -110,6 +119,47 @@ def test_test_runtime_data_changes_force_full_native_selection(tmp_path: Path) -
         "tests/data/deleted.json",
         "tests/data/payload.json",
     )
+
+
+def test_benchmarks_are_not_required_graph_paths_and_packaging_is_untraceable(tmp_path: Path) -> None:
+    """Restoring benchmark graph edges or dropping packaging inputs makes this fail."""
+    benchmark = tmp_path / "tests" / "benchmarks" / "test_scale.py"
+    benchmark.parent.mkdir(parents=True)
+    benchmark.write_text("def test_scale(): pass\n", encoding="utf-8")
+
+    impact = classify_native_testmon_changes(
+        tmp_path,
+        (
+            "tests/benchmarks/test_scale.py",
+            "tests/benchmarks/deleted.py",
+            "packaging/polylogue.nix",
+            "docs/release.md",
+        ),
+    )
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == ("packaging/polylogue.nix",)
+
+
+def test_testmon_schema_matches_the_tested_dependency_contract(tmp_path: Path) -> None:
+    """Changing the pinned testmon schema or required columns makes this fail."""
+    import testmon.db
+
+    database = tmp_path / "testmondata"
+    db = testmon.db.DB(str(database))
+    try:
+        assert _testmon_schema_version() == 14
+        assert tuple(db.con.execute("PRAGMA user_version").fetchone()) == (14,)
+        for table, expected in {
+            "environment": {"id", "environment_name", "system_packages", "python_version"},
+            "file_fp": {"id", "filename", "method_checksums", "mtime", "fsha"},
+            "test_execution": {"id", "environment_id", "test_name", "duration", "failed", "forced"},
+            "test_execution_file_fp": {"test_execution_id", "fingerprint_id"},
+        }.items():
+            columns = {row[1] for row in db.con.execute(f"PRAGMA table_info({table})")}
+            assert expected <= columns
+    finally:
+        db.con.close()
 
 
 def test_environment_digest_changes_with_collection_semantics(

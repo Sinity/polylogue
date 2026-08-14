@@ -180,7 +180,7 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     no_pytest = not pytest_steps
-    corpus_digest = hashlib.sha256(b"").hexdigest()
+    corpus_digest: str | None = None
     exit_code = entry.get("exit_code")
     raw_budget = entry.get("invocation_budget_s")
     invocation_budget = float(raw_budget) if isinstance(raw_budget, int | float) else None
@@ -208,7 +208,7 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         "outcomes": outcomes,
         "missing_terminal_count": 0,
         "missing_terminal_sample": [],
-        "non_green_count": sum(count for outcome, count in outcomes.items() if outcome not in {"passed", "skipped"}),
+        "non_green_count": sum(count for outcome, count in outcomes.items() if outcome not in _GREEN_TERMINAL_OUTCOMES),
         "non_green_sample": [],
         "complete_corpus_covered": False,
         "terminal_green": bool(pytest_steps) and exit_code == 0,
@@ -747,8 +747,10 @@ class CheckoutMutationMonitor:
                 # its authority file.
                 return
             if candidate.name == authority_path.name:
-                if self._authority_signature(authority_path) == self._git_authority_signatures.get(authority_path):
-                    return
+                # The watch event is itself evidence that Git replaced the
+                # authority file. The bytes may already have been restored by
+                # the time the coalesced event reaches this thread, so a
+                # signature comparison here would discard a real mutation.
                 with self._state_lock:
                     self._changed = True
                     self._observed_path = label
@@ -945,6 +947,50 @@ def _distribution(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def _counter_delta(resources: list[dict[str, Any]], key: str) -> int:
+    """Return the observed delta for one monotonically increasing resource counter."""
+    values = [int(row[key]) for row in resources if isinstance(row.get(key), int)]
+    return max(values) - min(values) if values else 0
+
+
+def _phase_outcome(phases: Mapping[str, object], name: str) -> str | None:
+    value = phases.get(name)
+    if isinstance(value, Mapping):
+        outcome = value.get("outcome")
+        return outcome if isinstance(outcome, str) else None
+    return value if isinstance(value, str) else None
+
+
+def _collapse_terminal_outcome(phases: Mapping[str, object]) -> str:
+    """Collapse setup, call, and teardown evidence to one terminal outcome."""
+    setup = _phase_outcome(phases, "setup")
+    call = _phase_outcome(phases, "call")
+    teardown = _phase_outcome(phases, "teardown")
+    if setup == "failed" or teardown == "failed":
+        return "error"
+    if call is not None:
+        return call
+    if setup in {"skipped", "xfailed", "xpassed"}:
+        return setup
+    if teardown in {"skipped", "xfailed", "xpassed"}:
+        return teardown
+    return "interrupted"
+
+
+def _merge_terminal_outcomes(
+    canonical: Mapping[str, str],
+    phase_reports: Mapping[str, Mapping[str, object]],
+    *,
+    nodeids: Sequence[str] = (),
+) -> dict[str, str]:
+    """Prefer canonical outcomes and fill omitted nodes from phase evidence."""
+    all_nodeids = set(nodeids) | set(canonical) | set(phase_reports)
+    return {
+        nodeid: canonical[nodeid] if nodeid in canonical else _collapse_terminal_outcome(phase_reports.get(nodeid, {}))
+        for nodeid in all_nodeids
+    }
+
+
 def aggregate_pytest_statistics(
     step_dir: Path,
     *,
@@ -1036,27 +1082,8 @@ def aggregate_pytest_statistics(
             bucket = phase_outcomes[when]
             bucket[outcome] = bucket.get(outcome, 0) + 1
 
-    for nodeid in nodes:
-        node_reports = reports_by_node.get(nodeid, {})
-        setup = node_reports.get("setup", {}).get("outcome")
-        call = node_reports.get("call", {}).get("outcome")
-        teardown = node_reports.get("teardown", {}).get("outcome")
-        canonical_outcome = canonical_outcomes.get(nodeid)
-        if canonical_outcome is not None:
-            terminal = canonical_outcome
-        elif setup == "failed" or teardown == "failed":
-            terminal = "error"
-        elif isinstance(call, str):
-            terminal = call
-        elif setup in {"skipped", "xfailed", "xpassed"}:
-            terminal = str(setup)
-        elif teardown in {"skipped", "xfailed", "xpassed"}:
-            terminal = str(teardown)
-        else:
-            # A test may have emitted its start event just before an interrupt
-            # or forced containment cleanup. Keep that missing terminal phase
-            # visible so outcome totals still account for every started node.
-            terminal = "interrupted"
+    terminal_outcomes = _merge_terminal_outcomes(canonical_outcomes, reports_by_node, nodeids=tuple(nodes))
+    for terminal in terminal_outcomes.values():
         outcomes[terminal] = outcomes.get(terminal, 0) + 1
 
     resources: list[dict[str, Any]] = []
@@ -1134,26 +1161,8 @@ def aggregate_pytest_statistics(
                 (int(row["tree_swap_pss_kb"]) for row in resources if isinstance(row.get("tree_swap_pss_kb"), int)),
                 default=None,
             ),
-            "tree_read_bytes_delta": (
-                max(
-                    (int(row["tree_read_bytes"]) for row in resources if isinstance(row.get("tree_read_bytes"), int)),
-                    default=0,
-                )
-                - min(
-                    (int(row["tree_read_bytes"]) for row in resources if isinstance(row.get("tree_read_bytes"), int)),
-                    default=0,
-                )
-            ),
-            "tree_write_bytes_delta": (
-                max(
-                    (int(row["tree_write_bytes"]) for row in resources if isinstance(row.get("tree_write_bytes"), int)),
-                    default=0,
-                )
-                - min(
-                    (int(row["tree_write_bytes"]) for row in resources if isinstance(row.get("tree_write_bytes"), int)),
-                    default=0,
-                )
-            ),
+            "tree_read_bytes_delta": _counter_delta(resources, "tree_read_bytes"),
+            "tree_write_bytes_delta": _counter_delta(resources, "tree_write_bytes"),
         },
         "cleanup": {
             "complete": True
@@ -1194,16 +1203,15 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
 def _terminal_outcomes_by_node(step_dir: Path) -> dict[str, str]:
     canonical = _read_json_object(step_dir / PYTEST_CANONICAL_REPORT_NAME)
     raw_tests = canonical.get("tests") if canonical is not None else None
+    canonical_outcomes: dict[str, str] = {}
     if isinstance(raw_tests, list):
-        outcomes = {
+        canonical_outcomes = {
             str(test["nodeid"]): str(test["outcome"])
             for test in raw_tests
             if isinstance(test, dict) and isinstance(test.get("nodeid"), str) and isinstance(test.get("outcome"), str)
         }
-        if outcomes:
-            return outcomes
 
-    reports: dict[str, dict[str, str]] = {}
+    reports: dict[str, dict[str, object]] = {}
     events_path = step_dir / "events.jsonl"
     if events_path.exists():
         for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -1216,22 +1224,7 @@ def _terminal_outcomes_by_node(step_dir: Path) -> dict[str, str]:
                 outcome = row.get("outcome")
                 if isinstance(nodeid, str) and when in {"setup", "call", "teardown"} and isinstance(outcome, str):
                     reports.setdefault(nodeid, {})[str(when)] = outcome
-    fallback_outcomes: dict[str, str] = {}
-    for nodeid, phases in reports.items():
-        setup = phases.get("setup")
-        call = phases.get("call")
-        teardown = phases.get("teardown")
-        if setup == "failed" or teardown == "failed":
-            fallback_outcomes[nodeid] = "error"
-        elif call is not None:
-            fallback_outcomes[nodeid] = call
-        elif setup in {"skipped", "xfailed", "xpassed"}:
-            fallback_outcomes[nodeid] = setup
-        elif teardown in {"skipped", "xfailed", "xpassed"}:
-            fallback_outcomes[nodeid] = teardown
-        else:
-            fallback_outcomes[nodeid] = "interrupted"
-    return fallback_outcomes
+    return _merge_terminal_outcomes(canonical_outcomes, reports)
 
 
 def aggregate_native_testmon_run(
@@ -1245,6 +1238,7 @@ def aggregate_native_testmon_run(
     selection_mode: str,
     invocation_duration_s: float,
     budget_s: float,
+    external_collection_selector: bool = False,
 ) -> dict[str, Any]:
     """Build one compact, durable aggregate for the two semantic pytest lanes."""
     lanes: list[dict[str, Any]] = []
@@ -1331,17 +1325,15 @@ def aggregate_native_testmon_run(
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
     native_corpus = tuple(sorted(set(corpus_nodeids)))
     complete_mode = selection_mode in {"bootstrap", "full"}
-    # testmon synchronizes every collected node before pytest applies markers.
-    # The correctness corpus for this invocation is therefore the complete
-    # selection union from the two complementary semantic lanes, while the
-    # native database corpus remains useful environment evidence of its own.
-    corpus = tuple(sorted(selected_union)) if complete_mode else native_corpus
+    corpus = native_corpus
     corpus_set = set(corpus)
     lane_names = [lane["lane"] for lane in lanes]
     complete_corpus_covered = (
         complete_mode
         and selection_complete
         and bool(corpus)
+        and not external_collection_selector
+        and selected_union == corpus_set
         and set(outcome_by_node) == corpus_set
         and not duplicate_outcomes
         and len(lane_names) == 2
@@ -1350,7 +1342,7 @@ def aggregate_native_testmon_run(
     )
     missing_terminal = tuple(sorted(corpus_set - set(outcome_by_node))) if complete_mode else ()
     non_green = tuple(
-        sorted(nodeid for nodeid in corpus if outcome_by_node.get(nodeid) not in _GREEN_TERMINAL_OUTCOMES)
+        sorted(nodeid for nodeid, outcome in outcome_by_node.items() if outcome not in _GREEN_TERMINAL_OUTCOMES)
     )
     terminal_green = complete_corpus_covered and not missing_terminal and not non_green
     cleanup_complete = bool(lanes) and cleanup_complete
@@ -1370,6 +1362,7 @@ def aggregate_native_testmon_run(
             "digest": hashlib.sha256("\n".join(corpus).encode()).hexdigest(),
         },
         "selection_mode": selection_mode,
+        "external_collection_selector": external_collection_selector,
         "lanes": lanes,
         "outcomes": outcomes,
         "selected_union_count": len(selected_union),

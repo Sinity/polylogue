@@ -19,12 +19,14 @@ hosts and CI shapes.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+import pytest
 
 from polylogue.storage.insights.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
 from polylogue.storage.sqlite.queries.sessions_search import search_session_hits
@@ -32,6 +34,14 @@ from polylogue.storage.sqlite.queries.stats import get_origin_metrics_rows
 from tests.benchmarks.helpers import open_bench_store
 
 pytest_plugins = ("tests.benchmarks.conftest",)
+
+
+@pytest.fixture
+def isolated_bench_db_1k(tmp_path: Path, bench_db_1k: Path) -> Path:
+    """Give each test a private copy of the session-scoped benchmark input."""
+    index_db = tmp_path / "index.db"
+    shutil.copy2(bench_db_1k.parent / "index.db", index_db)
+    return index_db
 
 
 @contextmanager
@@ -74,11 +84,11 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_search_session_hits_uses_freshness_ledger_before_match(bench_db_1k: Path) -> None:
+def test_search_session_hits_uses_freshness_ledger_before_match(isolated_bench_db_1k: Path) -> None:
     """Search should not pay archive-scale COUNT(*) probes after daemon readiness."""
     from polylogue.storage.fts.freshness import READY, record_fts_surface_state_async
 
-    with open_bench_store(bench_db_1k) as store:
+    with open_bench_store(isolated_bench_db_1k) as store:
         backend = store.backend
 
         async def _run(statements: list[str]) -> None:
@@ -102,9 +112,9 @@ def test_search_session_hits_uses_freshness_ledger_before_match(bench_db_1k: Pat
         assert all("count(*) from messages where text is not null" not in sql for sql in lowered[:match_index])
 
 
-def test_search_session_hits_falls_back_to_exact_freshness(bench_db_1k: Path) -> None:
+def test_search_session_hits_falls_back_to_exact_freshness(isolated_bench_db_1k: Path) -> None:
     """Absent ledger rows fall back to exact FTS verification before MATCH."""
-    with open_bench_store(bench_db_1k) as store:
+    with open_bench_store(isolated_bench_db_1k) as store:
         backend = store.backend
 
         async def _run(statements: list[str]) -> None:
@@ -131,11 +141,11 @@ def test_search_session_hits_falls_back_to_exact_freshness(bench_db_1k: Path) ->
 # ---------------------------------------------------------------------------
 
 
-def test_origin_metrics_reads_sessions_aggregates(bench_db_1k: Path) -> None:
+def test_origin_metrics_reads_sessions_aggregates(isolated_bench_db_1k: Path) -> None:
     """Origin metrics must source the per-session pre-aggregates from
     ``sessions`` rather than scanning ``messages``.
     """
-    with open_bench_store(bench_db_1k) as store:
+    with open_bench_store(isolated_bench_db_1k) as store:
         backend = store.backend
 
         async def _run() -> list[dict[str, object]]:
@@ -175,7 +185,7 @@ def test_origin_metrics_reads_sessions_aggregates(bench_db_1k: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_messages_hydration_does_not_call_model_copy(bench_db_1k: Path) -> None:
+def test_get_messages_hydration_does_not_call_model_copy(isolated_bench_db_1k: Path) -> None:
     """``get_messages`` must mutate the freshly-constructed MessageRecord
     instances in place rather than calling pydantic's ``model_copy``.
 
@@ -194,7 +204,7 @@ def test_get_messages_hydration_does_not_call_model_copy(bench_db_1k: Path) -> N
 
     MessageRecord.model_copy = _spy  # type: ignore[method-assign]
     try:
-        with open_bench_store(bench_db_1k) as store:
+        with open_bench_store(isolated_bench_db_1k) as store:
 
             async def _run() -> int:
                 summaries = await store.repository.list_summaries(limit=5)

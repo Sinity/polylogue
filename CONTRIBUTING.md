@@ -305,10 +305,12 @@ repairs missing or invalid native testmon state and automatically builds a new
 environment when collection semantics change.
 
 `devtools verify` does not replay a prior verify result. It always runs the
-static gates and then invokes pytest-testmon for affected-test selection from
-the current source, dependency, and Python-version state. The pytest step
-covers unit, property, fuzz, and integration tests while excluding the
-separately operated `tests/benchmarks` performance surface. It uses
+static gates. With a valid native environment, it invokes pytest-testmon for
+affected-test selection from the current source, dependency, and Python-version
+state. When it bootstraps a missing or invalid native environment, it runs the
+complete correctness corpus. The pytest step covers unit, property, fuzz, and
+integration tests while excluding the separately operated `tests/benchmarks`
+performance surface. It uses
 `--testmon-forceselect` for affected selection, with one parallel `not
 load_sensitive` lane and one serial `load_sensitive` lane over the same native
 environment. `tui` is a category marker and remains parallel unless a test is

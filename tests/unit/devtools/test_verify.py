@@ -54,6 +54,7 @@ from devtools.verify_runs import (
     VerifyRun,
     adaptive_pytest_runtime_policy,
     adaptive_pytest_worker_count,
+    aggregate_native_testmon_run,
     aggregate_pytest_statistics,
     append_verify_history,
     apply_managed_pytest_runtime_policy,
@@ -153,6 +154,24 @@ def test_native_corpus_excludes_only_benchmark_directory() -> None:
     assert complete_expr == "not load_sensitive"
     assert "--ignore=tests/benchmarks" in complete_command
     assert "--ignore=tests/integration" not in complete_command
+
+
+@pytest.mark.parametrize("selector", ["-k smoke", "--keyword=smoke", "--ignore=tests/benchmarks"])
+def test_inherited_collection_selectors_are_not_release_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+) -> None:
+    """Removing selector detection would incorrectly authorize the narrowed corpus."""
+    monkeypatch.setenv("PYTEST_ADDOPTS", selector)
+
+    assert verify._has_inherited_collection_selector() is True
+
+
+def test_unrelated_inherited_pytest_options_do_not_disable_release_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treating every ambient option as a selector would reject harmless options."""
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-ra --strict-markers")
+
+    assert verify._has_inherited_collection_selector() is False
 
 
 def test_lab_verify_delegates_to_lab_smoke() -> None:
@@ -400,6 +419,94 @@ def test_aggregate_pytest_statistics_recognizes_completed_empty_report(tmp_path:
     assert result["canonical_report_status"] == "present"
     assert result["node_count"] == 0
     assert result["outcomes"] == {}
+
+
+def test_aggregate_pytest_statistics_merges_partial_canonical_and_event_outcomes(tmp_path: Path) -> None:
+    """Returning early on a partial canonical report drops the event-only node."""
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "test_report",
+                "nodeid": "event-only",
+                "when": "call",
+                "outcome": "passed",
+                "duration_s": 0.1,
+            }
+        )
+        + "\n"
+    )
+    (step / "pytest-report.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "canonical-only",
+                        "outcome": "xfailed",
+                        "call": {"outcome": "skipped", "duration": 0.1},
+                    }
+                ]
+            }
+        )
+    )
+
+    result = aggregate_pytest_statistics(step)
+
+    assert result["node_count"] == 2
+    assert result["outcomes"] == {"passed": 1, "xfailed": 1}
+
+
+def test_native_aggregate_rejects_inherited_selector_without_counting_missing_nodes(tmp_path: Path) -> None:
+    """Using the selected union as corpus authority would mark this narrowed run green."""
+    for lane, nodeid, outcome in (("parallel", "a", "passed"), ("serial", "b", "skipped")):
+        step = tmp_path / lane
+        step.mkdir()
+        (step / "selection.json").write_text(json.dumps({"selected_nodeids": [nodeid], "selected_nodeids_omitted": 0}))
+        (step / "events.jsonl").write_text(
+            json.dumps({"event": "test_report", "nodeid": nodeid, "when": "call", "outcome": outcome}) + "\n"
+        )
+        (step / "containment.json").write_text(
+            json.dumps(
+                {
+                    "status": "finished",
+                    "controller_group_alive": False,
+                    "termination_reason": None,
+                    "escalated_to_sigkill": False,
+                }
+            )
+        )
+
+    result = aggregate_native_testmon_run(
+        tmp_path,
+        steps=[
+            {
+                "semantic_lane": "parallel",
+                "artifact_dir": "parallel",
+                "exit": 0,
+                "statistics": {"cleanup": {"complete": True}},
+            },
+            {
+                "semantic_lane": "serial",
+                "artifact_dir": "serial",
+                "exit": 0,
+                "statistics": {"cleanup": {"complete": True}},
+            },
+        ],
+        environment_name="polylogue-test",
+        corpus_nodeids=("a", "b"),
+        selection_mode="bootstrap",
+        invocation_duration_s=0.1,
+        budget_s=10.0,
+        external_collection_selector=True,
+    )
+
+    assert result["external_collection_selector"] is True
+    assert result["selected_union_count"] == 2
+    assert result["terminal_union_count"] == 2
+    assert result["non_green_count"] == 0
+    assert result["complete_corpus_covered"] is False
+    assert result["terminal_green"] is False
 
 
 def test_verify_run_statistics_only_cover_pytest_steps(tmp_path: Path) -> None:
@@ -1324,6 +1431,40 @@ def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
+@pytest.mark.uses_real_clock("coordinates a deliberately coalesced Git index watcher event")
+def test_checkout_mutation_monitor_keeps_coalesced_index_authority_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restoring signature comparison would miss the delayed authority event."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    index = tmp_path / ".git" / "index"
+    baseline = index.read_bytes()
+    release_event = threading.Event()
+
+    def delayed_watch(*_paths: Path, **kwargs: object) -> object:
+        yield set()
+        assert release_event.wait(timeout=1)
+        yield {(watchfiles.Change.modified, str(index))}
+        stop_event = kwargs["stop_event"]
+        assert isinstance(stop_event, threading.Event)
+        stop_event.wait(timeout=1)
+
+    monkeypatch.setattr(watchfiles, "watch", delayed_watch)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    index.write_bytes(baseline)
+    release_event.set()
+    observation = monitor.finish()
+
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
+
+
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a branch-ref replacement")
 def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -1503,7 +1644,7 @@ def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
-def test_checkout_mutation_monitor_ignores_semantically_unchanged_index_replacement(
+def test_checkout_mutation_monitor_records_semantically_unchanged_index_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1527,7 +1668,7 @@ def test_checkout_mutation_monitor_ignores_semantically_unchanged_index_replacem
     monitor.start()
     observation = monitor.finish()
 
-    assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
+    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
 def test_checkout_mutation_monitor_rejects_partial_git_enumeration(

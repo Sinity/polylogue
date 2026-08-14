@@ -305,7 +305,16 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
     for index, node in enumerate(body):
         if _is_docstring(node, first=index == 0):
             continue
-        if isinstance(node, (ast.Pass, ast.Import, ast.ImportFrom)):
+        if isinstance(node, ast.Pass):
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "typing"
+            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
+        ):
+            # Importing the sentinel only enables a declaration-only guard.
+            # Imports elsewhere execute at module import time and therefore
+            # remain executable graph inputs.
             continue
         if (
             isinstance(node, ast.Expr)
@@ -390,13 +399,19 @@ def classify_native_testmon_changes(repo_root: Path, paths: Iterable[str]) -> Na
     without a filename registry.
     """
     normalized = tuple(relative for raw in sorted(set(paths)) if (relative := _safe_relative_path(raw)) is not None)
-    runtime_data = tuple(
+    native_paths = tuple(
         relative
         for relative in normalized
-        if not relative.endswith(".py") and relative.startswith(("polylogue/", "tests/"))
+        if relative != "tests/benchmarks" and not relative.startswith("tests/benchmarks/")
+    )
+    runtime_data = tuple(
+        relative
+        for relative in native_paths
+        if (not relative.endswith(".py") and relative.startswith(("polylogue/", "tests/")))
+        or relative.startswith("packaging/")
     )
     return NativeTestmonChangeImpact(
-        executable_paths=executable_python_paths(repo_root, normalized),
+        executable_paths=executable_python_paths(repo_root, native_paths),
         runtime_data_paths=runtime_data,
     )
 
@@ -438,11 +453,16 @@ def inspect_native_testmon_environment(
     if not stat.S_ISREG(mode):
         return NativeTestmonState("invalid", "native testmon database is not a regular file")
     try:
-        with sqlite3.connect(
-            _readonly_uri(data_path),
-            uri=True,
-            timeout=_remaining_timeout(deadline_monotonic, 10),
-        ) as connection:
+        with (
+            contextlib.closing(
+                sqlite3.connect(
+                    _readonly_uri(data_path),
+                    uri=True,
+                    timeout=_remaining_timeout(deadline_monotonic, 10),
+                )
+            ) as connection,
+            connection,
+        ):
             if deadline_monotonic is not None:
                 connection.set_progress_handler(lambda: int(time.monotonic() >= deadline_monotonic), 1_000)
             quick_check = connection.execute("PRAGMA quick_check").fetchone()
@@ -571,12 +591,18 @@ def _atomic_copy_sqlite_database(
     temporary = destination.with_name(f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp")
     try:
         with (
-            sqlite3.connect(
-                _readonly_uri(source),
-                uri=True,
-                timeout=_remaining_timeout(deadline_monotonic, 60),
+            contextlib.closing(
+                sqlite3.connect(
+                    _readonly_uri(source),
+                    uri=True,
+                    timeout=_remaining_timeout(deadline_monotonic, 60),
+                )
             ) as source_connection,
-            sqlite3.connect(temporary, timeout=_remaining_timeout(deadline_monotonic, 60)) as destination_connection,
+            contextlib.closing(
+                sqlite3.connect(temporary, timeout=_remaining_timeout(deadline_monotonic, 60))
+            ) as destination_connection,
+            source_connection,
+            destination_connection,
         ):
             source_connection.backup(
                 destination_connection,

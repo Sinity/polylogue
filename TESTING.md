@@ -57,8 +57,9 @@ receipt or resume command: pytest-testmon keeps failed, unfinished, and new
 tests selected on the next plain invocation.
 
 The native environment key includes Python, active distributions, lock and
-project metadata, pytest configuration, every `conftest.py`, and collection-active
-local pytest plugins. Ordinary `tests/infra` helpers stay incremental: import
+project metadata, pytest configuration, the repository-root and `tests/**`
+`conftest.py` files, and collection-active local pytest plugins. Ordinary
+`tests/infra` helpers stay incremental: import
 them from an executing fixture or test when their module initialization is
 dependency-bearing, so pytest-testmon observes that initialization and helper
 execution instead of forcing a complete-corpus bootstrap for every helper edit.

@@ -27,7 +27,7 @@ from devtools.verify_runs import PYTEST_CANONICAL_REPORT_NAME
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 pytestmark = [
     pytest.mark.uses_real_clock("coordinates real pytest subprocesses and an interrupt deadline"),
-    pytest.mark.timeout(90),
+    pytest.mark.timeout(300),
 ]
 
 
@@ -131,7 +131,13 @@ def _run_lane(
         str(workers),
     ]
     completed = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
-    selection_payload = json.loads((artifact_dir / "selection.json").read_text(encoding="utf-8"))
+    selection_path = artifact_dir / "selection.json"
+    if not selection_path.is_file():
+        raise AssertionError(
+            f"native pytest lane produced no selection artifact (returncode={completed.returncode})\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    selection_payload = json.loads(selection_path.read_text(encoding="utf-8"))
     return LaneResult(completed, artifact_dir, selection_payload)
 
 
@@ -173,6 +179,7 @@ def _run_production_verify(repo: Path, *args: str) -> tuple[subprocess.Completed
     invocation_id = uuid.uuid4().hex
     driver = """
 import os
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -181,12 +188,21 @@ import devtools.verify as verify
 
 root = Path(sys.argv[1]).resolve()
 real_build = verify.build_verify_steps
+real_env_for_pytest_step = verify.env_for_pytest_step
+pytest_index = root / ".git" / "pytest-index"
+shutil.copy2(root / ".git" / "index", pytest_index)
 
 def native_steps_only(**kwargs):
     return [step for step in real_build(**kwargs) if step[0].startswith("pytest native")]
 
+def fixture_env_for_pytest_step(env, **kwargs):
+    child_env = real_env_for_pytest_step(env, **kwargs)
+    child_env["GIT_INDEX_FILE"] = str(pytest_index)
+    return child_env
+
 verify.ROOT = root
 verify.build_verify_steps = native_steps_only
+verify.env_for_pytest_step = fixture_env_for_pytest_step
 verify.assert_polylogue_matches_checkout = lambda *_args, **_kwargs: SimpleNamespace(
     polylogue_import_path=root / "polylogue" / "__init__.py",
     as_dict=lambda: {"checkout_root": str(root), "test_fixture": True},
@@ -237,6 +253,10 @@ raise SystemExit(verify.main(sys.argv[2:]))
             f"production verify wrote no invocation receipt\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
     payload = json.loads(completed.stdout)
+    if completed.returncode == 125:
+        pytest.fail(
+            f"production verify rejected the fixture checkout\npayload:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
     persisted = json.loads(receipt.read_text(encoding="utf-8"))
     assert persisted["invocation_id"] == invocation_id
     assert persisted["pytest_aggregate"] == payload["pytest_aggregate"]
@@ -559,7 +579,8 @@ def test_production_verify_deleted_module_rebuilds_and_fails_dependents(tmp_path
 
     assert completed.returncode == 1
     assert mutated["testmon_environment"]["selection_mode"] == "bootstrap"
-    assert mutated["testmon_environment"]["required_executable_paths"] == ["polylogue/app.py"]
+    assert mutated["testmon_environment"]["required_executable_paths"] == []
+    assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == ["polylogue/app.py"]
     assert mutated["pytest_aggregate"]["selected_union_count"] == 1
     assert mutated["pytest_aggregate"]["terminal_union_count"] == 1
     assert "ModuleNotFoundError" in completed.stderr
@@ -594,13 +615,94 @@ def test_production_verify_moved_module_rebuilds_and_fails_dependents(tmp_path: 
 
     assert completed.returncode == 1
     assert mutated["testmon_environment"]["selection_mode"] == "bootstrap"
-    assert mutated["testmon_environment"]["required_executable_paths"] == [
+    assert mutated["testmon_environment"]["required_executable_paths"] == ["polylogue/renamed.py"]
+    assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == [
         "polylogue/app.py",
         "polylogue/renamed.py",
     ]
     assert mutated["pytest_aggregate"]["selected_union_count"] == 1
     assert mutated["pytest_aggregate"]["terminal_union_count"] == 1
     assert "ModuleNotFoundError" in completed.stderr
+
+
+def test_production_verify_deleted_module_with_updated_imports_rebuilds_successfully(tmp_path: Path) -> None:
+    """Keeping the deleted path in post-run requirements makes the updated import fail."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "old.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (package / "app.py").write_text("from polylogue.old import answer\n", encoding="utf-8")
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_answer():\n    from polylogue.app import answer\n    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    seeded, _bootstrap = _run_production_verify(repo)
+    assert seeded.returncode == 0, seeded.stderr
+
+    _git(repo, "rm", "polylogue/old.py")
+    (package / "app.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    _commit_all(repo, "delete module and update imports")
+    completed, rebuilt = _run_production_verify(repo)
+
+    assert completed.returncode == 0, completed.stderr
+    environment = rebuilt["testmon_environment"]
+    assert environment["selection_mode"] == "bootstrap"
+    assert environment["required_executable_paths"] == ["polylogue/app.py"]
+    assert environment["bootstrap_trigger_paths"] == ["polylogue/app.py", "polylogue/old.py"]
+    assert rebuilt["pytest_aggregate"]["terminal_green"] is True
+
+
+def test_production_verify_moved_module_with_updated_imports_rebuilds_successfully(tmp_path: Path) -> None:
+    """Keeping the old path as a graph requirement makes the updated move fail."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "old.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_answer():\n    from polylogue.old import answer\n    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    seeded, _bootstrap = _run_production_verify(repo)
+    assert seeded.returncode == 0, seeded.stderr
+
+    _git(repo, "mv", "polylogue/old.py", "polylogue/renamed.py")
+    (repo / "tests" / "test_app.py").write_text(
+        "def test_answer():\n    from polylogue.renamed import answer\n    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "move module and update imports")
+    completed, rebuilt = _run_production_verify(repo)
+
+    assert completed.returncode == 0, completed.stderr
+    environment = rebuilt["testmon_environment"]
+    assert environment["selection_mode"] == "bootstrap"
+    assert environment["required_executable_paths"] == ["polylogue/renamed.py", "tests/test_app.py"]
+    assert environment["bootstrap_trigger_paths"] == [
+        "polylogue/old.py",
+        "polylogue/renamed.py",
+        "tests/test_app.py",
+    ]
+    assert rebuilt["pytest_aggregate"]["terminal_green"] is True
 
 
 def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -> None:
@@ -700,7 +802,10 @@ def test_unfinished():
     deadline = time.monotonic() + 10
     while not started.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert started.exists(), process.communicate(timeout=1)
+    if not started.exists():
+        process.send_signal(signal.SIGINT)
+        stdout, stderr = process.communicate(timeout=10)
+        raise AssertionError(f"interrupted fixture never started\nstdout:\n{stdout}\nstderr:\n{stderr}")
     process.send_signal(signal.SIGINT)
     process.communicate(timeout=10)
 

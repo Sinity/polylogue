@@ -2368,6 +2368,22 @@ def _changed_test_relevant_paths(base_commit: str, head_commit: str) -> tuple[st
     )
 
 
+def _has_inherited_collection_selector() -> bool:
+    """Return whether ambient pytest options narrow the collected corpus."""
+    raw = os.environ.get("PYTEST_ADDOPTS", "")
+    if not raw.strip():
+        return False
+    try:
+        tokens = shlex.split(raw)
+    except ValueError:
+        return True
+    selectors = {"-k", "-m", "--keyword", "--markexpr", "--deselect", "--ignore", "--ignore-glob"}
+    return any(
+        token in selectors or token.startswith(("--keyword=", "--markexpr=", "--deselect=", "--ignore="))
+        for token in tokens
+    )
+
+
 _ACTIVE_VERIFY_RUN: tuple[VerifyRun, float, VerificationScope] | None = None
 
 
@@ -2446,11 +2462,11 @@ def _finalize_preflight_failure(
 ) -> int:
     """Persist one normalized failed invocation before pytest can start."""
     final_head = _git_head()
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
     try:
         final_worktree_fingerprint = worktree_fingerprint(ROOT) if mutation_monitor is not None else "unavailable"
     except Exception:
         final_worktree_fingerprint = "unavailable"
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
     checkout_diagnosis: str | None = None
     if mutation_monitor is None:
         checkout_diagnosis = "preflight_failed_before_checkout_monitor"
@@ -2604,6 +2620,9 @@ def _main(argv: list[str] | None = None) -> int:
     mutation_monitor = CheckoutMutationMonitor(ROOT)
     start_checkout_mutation_monitor(mutation_monitor)
     checkout_fingerprint = worktree_fingerprint(ROOT)
+    finish_checkout_mutation_monitor(mutation_monitor)
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    start_checkout_mutation_monitor(mutation_monitor)
     verify_run.update_checkout_provenance(worktree_fingerprint=checkout_fingerprint)
 
     base_commit = _git_commit("origin/master") if pytest_enabled else None
@@ -2624,6 +2643,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     relevant_paths: tuple[str, ...] = ()
     required_executable_paths: tuple[str, ...] = ()
+    preparation_required_executable_paths: tuple[str, ...] = ()
     runtime_data_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
     testmon_mode: str | None = None
@@ -2633,11 +2653,14 @@ def _main(argv: list[str] | None = None) -> int:
         try:
             relevant_paths = _changed_test_relevant_paths(base_commit, head)
             change_impact = classify_native_testmon_changes(ROOT, relevant_paths)
-            required_executable_paths = change_impact.executable_paths
+            preparation_required_executable_paths = change_impact.executable_paths
+            required_executable_paths = tuple(
+                path for path in preparation_required_executable_paths if (ROOT / path).is_file()
+            )
             runtime_data_paths = change_impact.runtime_data_paths
             preparation = prepare_native_testmon_environment(
                 ROOT,
-                required_executable_paths=required_executable_paths,
+                required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
             )
@@ -2718,6 +2741,12 @@ def _main(argv: list[str] | None = None) -> int:
             initial_worktree_fingerprint=checkout_fingerprint,
         )
 
+    # Git probes and native testmon preparation can refresh the index as part
+    # of their own read path. Discard that preflight interval and begin the
+    # authority interval immediately before the verification steps.
+    finish_checkout_mutation_monitor(mutation_monitor)
+    mutation_monitor = CheckoutMutationMonitor(ROOT)
+    start_checkout_mutation_monitor(mutation_monitor)
     step_results: list[dict[str, Any]] = []
     exit_code = 0
     native_graph_touched = False
@@ -2755,9 +2784,10 @@ def _main(argv: list[str] | None = None) -> int:
         if label.startswith("pytest") or rc == 130 or _stop_after_failed_step(label):
             break
 
+    assert mutation_monitor is not None
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
     final_head = _git_head()
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
     checkout_stable = True
     checkout_fingerprint_unavailable = (
         head is None
@@ -2856,6 +2886,7 @@ def _main(argv: list[str] | None = None) -> int:
             selection_mode=testmon_mode or "affected",
             invocation_duration_s=total_duration,
             budget_s=VERIFY_INVOCATION_BUDGET_S,
+            external_collection_selector=_has_inherited_collection_selector(),
         )
 
     # Aggregation and final graph inspection are part of the same invocation
@@ -2936,6 +2967,7 @@ def _main(argv: list[str] | None = None) -> int:
             "selection_mode": testmon_mode,
             "copied_from": str(preparation.copied_from) if preparation.copied_from is not None else None,
             "required_executable_paths": list(required_executable_paths),
+            "bootstrap_trigger_paths": list(preparation_required_executable_paths),
             "runtime_data_paths": list(runtime_data_paths),
         }
     if pytest_aggregate is not None:
