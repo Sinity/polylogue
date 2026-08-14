@@ -1475,6 +1475,48 @@ def _has_matching_prepared_publication_receipt(
     return receipt.prepared_receipt_sha256 == preparation.receipt_sha256
 
 
+def _has_matching_initial_preparation_receipt(
+    plan: ArchiveRootRelocationPlan, receipt: ArchiveRootRelocationReceipt | None
+) -> bool:
+    """Return whether a retained V3 preparation can safely resume pre-publication.
+
+    V3 has no sealed generation-leaf identities. Its initial receipt proves an
+    interrupted apply only while every leaf is still checked as a before-state;
+    it never authorizes a post-state leaf or a fresh V3 publication.
+    """
+    if receipt is None or receipt.state != "prepared" or receipt.revision != 0:
+        return False
+    before_hashes = tuple(item.before_manifest_sha256 for item in plan.durable_trains)
+    pointer_fields = _pointer_receipt_fields(plan.active_index_pointer)
+    if (
+        receipt.plan_sha256 != plan.plan_sha256
+        or receipt.authorization != plan.plan_sha256
+        or receipt.manifest_before_sha256 != before_hashes
+        or receipt.manifest_after_sha256
+        or (
+            receipt.active_index_pointer_old_target,
+            receipt.active_index_pointer_new_target,
+            receipt.active_index_pointer_new_resolved_target,
+        )
+        != pointer_fields
+        or receipt.prepared_receipt_sha256 is not None
+    ):
+        return False
+    preparation = _sealed_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256=plan.plan_sha256,
+        authorization=plan.plan_sha256,
+        manifest_before_sha256=before_hashes,
+        manifest_after_sha256=(),
+        active_index_pointer_old_target=pointer_fields[0],
+        active_index_pointer_new_target=pointer_fields[1],
+        active_index_pointer_new_resolved_target=pointer_fields[2],
+        resume_command=receipt.resume_command,
+    )
+    return receipt.receipt_sha256 == preparation.receipt_sha256
+
+
 def _relocated_train(
     root: Path,
     *,
@@ -1602,7 +1644,8 @@ def _revalidate_plan_live_state(
         raise ArchiveRootRelocationError("archive-root relocation plan tier evidence is incomplete")
     pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
     prepared_publication = _has_matching_prepared_publication_receipt(plan, pending_receipt)
-    if plan.format == _LEGACY_PLAN_FORMAT and not prepared_publication:
+    prepared_resume = prepared_publication or _has_matching_initial_preparation_receipt(plan, pending_receipt)
+    if plan.format == _LEGACY_PLAN_FORMAT and not prepared_resume:
         raise ArchiveRootRelocationError(
             "archive-root relocation v3 plan lacks sealed leaf identities before publication; create a v4 plan"
         )

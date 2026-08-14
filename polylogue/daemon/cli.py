@@ -3405,7 +3405,7 @@ def run_command(
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
-    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+    from polylogue.operations.durable_change_train import ArchiveOwnershipError, acquire_durable_archive_ownership
     from polylogue.operations.historical_source_continuity_recovery import (
         assert_no_prepared_historical_source_continuity_recovery,
     )
@@ -3418,15 +3418,18 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
         beads_roots=runtime_source_paths.beads,
     )
 
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        archive_owner = acquire_durable_archive_ownership(
+            archive_root_path,
+            owner_id=f"watch:{os.getpid()}",
+        )
+    except ArchiveOwnershipError as exc:
+        raise click.ClickException(f"watch could not acquire exclusive archive ownership: {exc}") from exc
     click.echo(
         f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
         err=True,
-    )
-    archive_root_path = Path(archive_root())
-    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    archive_owner = acquire_durable_archive_ownership(
-        archive_root_path,
-        owner_id=f"watch:{os.getpid()}",
     )
     writer_drained = False
     watcher_started = False

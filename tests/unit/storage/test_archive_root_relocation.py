@@ -43,6 +43,7 @@ from polylogue.operations.archive_root_relocation import (
 )
 from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
+    HistoricalSourceContinuityRecoveryReceipt,
     _assert_complete_source_semantic_delta,
     _assert_exact_liveness_delta,
     _current_evidence,
@@ -50,7 +51,11 @@ from polylogue.operations.historical_source_continuity_recovery import (
     _table_content_digest,
     _verify_historical_operation_evidence,
     _write_refresh_receipt,
+    apply_historical_source_continuity_recovery,
     assert_no_prepared_historical_source_continuity_recovery,
+    load_historical_source_continuity_recovery_plan,
+    load_historical_source_continuity_recovery_receipt,
+    prepare_historical_source_continuity_recovery,
 )
 from polylogue.operations.historical_source_continuity_recovery import (
     _legacy_liveness_receipt as _validate_legacy_liveness_receipt,
@@ -986,8 +991,6 @@ def test_historical_recovery_consumes_verified_pre_inode_backup_manifests(
     this PR. Requiring the new fields makes an already-completed historical
     mutation impossible to recover.
     """
-    from polylogue.operations.historical_source_continuity_recovery import prepare_historical_source_continuity_recovery
-
     new_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
         workspace_env, tmp_path, monkeypatch
     )
@@ -1014,9 +1017,95 @@ def test_historical_recovery_consumes_verified_pre_inode_backup_manifests(
             stopped_daemon_evidence_ref="proof:daemon-stopped",
             single_writer_evidence_ref="proof:archive-ownership-lock",
         )
+        result = apply_historical_source_continuity_recovery(
+            root=new_root,
+            plan=plan,
+            authorization=plan.plan_sha256,
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
 
     assert plan.pre_backup_source_device is None
     assert plan.post_backup_source_inode is None
+    assert result.state == "committed"
+
+
+def test_historical_recovery_loads_non_ascii_legacy_v2_artifacts(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """V2 plan and receipt checksums retain the original ASCII-escaped JSON identity.
+
+    Anti-vacuity: paths and the resume command contain non-ASCII text and the
+    sealed checksums are computed with the historical ``ensure_ascii=True``
+    encoding. Using the migration-runner canonicalizer rejects both retained
+    artifacts before an interrupted recovery can resume.
+    """
+    new_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    old_root = workspace_env["archive_root"]
+    with sqlite3.connect(f"file:{pre_manifest.parent / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
+        candidates = classify_blob_ref_liveness(connection).candidates
+    _pinned_historical_operation_evidence(
+        evidence,
+        mutation_receipt=mutation_receipt,
+        candidates=candidates,
+        pre_manifest=pre_manifest,
+        post_manifest=post_manifest,
+    )
+    with _test_historical_operation_evidence_resource(evidence):
+        plan = prepare_historical_source_continuity_recovery(
+            old_root=old_root,
+            new_root=new_root,
+            mutation_receipt=mutation_receipt,
+            pre_backup_manifest=pre_manifest,
+            post_backup_manifest=post_manifest,
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+    legacy_payload = plan.model_dump(mode="json", exclude={"plan_sha256"})
+    legacy_payload["old_configured_root"] = str(tmp_path / "źródło")
+    plan_sha256 = hashlib.sha256(
+        json.dumps(legacy_payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    retained_plan = tmp_path / "plan-źródło.json"
+    retained_plan.write_text(
+        json.dumps({**legacy_payload, "plan_sha256": plan_sha256}, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    loaded_plan = load_historical_source_continuity_recovery_plan(retained_plan)
+    assert loaded_plan.plan_sha256 == plan_sha256
+
+    receipt_payload = {
+        "state": "prepared",
+        "revision": 0,
+        "plan_sha256": plan_sha256,
+        "authorization": plan_sha256,
+        "train_before_sha256": plan.source_train_sha256,
+        "train_after_sha256": plan.source_train_after_sha256,
+        "refresh_receipt_sha256": plan.refresh_receipt_sha256,
+        "resume_command": "polylogue ops maintenance source-continuity-recovery apply --plan /tmp/źródło.json",
+    }
+    receipt_sha256 = hashlib.sha256(
+        json.dumps(
+            {"format": "polylogue.historical-source-continuity-recovery-receipt.v1", **receipt_payload},
+            separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    receipt = HistoricalSourceContinuityRecoveryReceipt.model_validate(
+        {
+            "format": "polylogue.historical-source-continuity-recovery-receipt.v1",
+            **receipt_payload,
+            "receipt_sha256": receipt_sha256,
+        }
+    )
+    receipt_path = new_root / ".maintenance-state" / "historical-source-continuity-recoveries" / f"{plan_sha256}.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps(receipt.model_dump(mode="json"), ensure_ascii=False), encoding="utf-8")
+    assert load_historical_source_continuity_recovery_receipt(receipt_path) == receipt
 
 
 def _maintenance_json_output(output: str) -> dict[str, object]:
@@ -1224,7 +1313,7 @@ def test_source_continuity_admits_connected_multi_refresh_v1_history(
     assert first.source_continuity_evidence is not None
     with sqlite3.connect(root / "source.db") as connection:
         observed = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
-    terminal = replace(
+    second = replace(
         observed,
         archive_identity_digest=first.source_continuity_evidence.archive_identity_digest,
         observed_at_ms=first.source_continuity_evidence.observed_at_ms + 3,
@@ -1243,8 +1332,8 @@ def test_source_continuity_admits_connected_multi_refresh_v1_history(
                 first.source_continuity_evidence, observed_at_ms=first.source_continuity_evidence.observed_at_ms + 2
             )
         ),
-        "source_after": _evidence_payload(terminal),
-        "refreshed_at_ms": terminal.observed_at_ms,
+        "source_after": _evidence_payload(second),
+        "refreshed_at_ms": second.observed_at_ms,
     }
     second_digest = _canonical_json_sha256(second_payload)
     _write_refresh_receipt(
@@ -1254,10 +1343,32 @@ def test_source_continuity_admits_connected_multi_refresh_v1_history(
     updated = replace(
         first,
         revision=first.revision + 1,
-        source_continuity_evidence=terminal,
+        source_continuity_evidence=second,
         proof_refs=(*first.proof_refs, f"proof:source-continuity-refresh:{second_digest}"),
     )
     write_durable_change_train_manifest(manifest, updated, expected_revision=first.revision)
+
+    third = replace(second, observed_at_ms=second.observed_at_ms + 3)
+    third_payload = {
+        **second_payload,
+        "operation_id": "legacy-third-refresh",
+        "evidence_ref": "proof:legacy-third-refresh",
+        "source_before": _evidence_payload(replace(second, observed_at_ms=second.observed_at_ms + 2)),
+        "source_after": _evidence_payload(third),
+        "refreshed_at_ms": third.observed_at_ms,
+    }
+    third_digest = _canonical_json_sha256(third_payload)
+    _write_refresh_receipt(
+        root / ".maintenance-state" / "source-continuity-refreshes" / f"{third_digest}.json",
+        {**third_payload, "refresh_sha256": third_digest},
+    )
+    terminal = replace(
+        updated,
+        revision=updated.revision + 1,
+        source_continuity_evidence=third,
+        proof_refs=(*updated.proof_refs, f"proof:source-continuity-refresh:{third_digest}"),
+    )
+    write_durable_change_train_manifest(manifest, terminal, expected_revision=updated.revision)
 
     assert_source_continuity_apply_allowed(root)
 
@@ -2205,7 +2316,7 @@ def test_relocation_apply_rejects_equivalent_generation_tier_symlink_substitutio
     assert not (new_root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json").exists()
 
 
-def test_relocation_apply_rejects_generation_metadata_post_state_before_publication_begins(
+def test_relocation_v3_prepared_resume_rejects_generation_metadata_post_state(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A first apply cannot treat an after-state leaf as proof of publication.
@@ -2217,7 +2328,17 @@ def test_relocation_apply_rejects_generation_metadata_post_state_before_publicat
     """
     from polylogue.operations import archive_root_relocation as relocation
 
-    new_root, plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    new_root, current_plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    legacy_payload = current_plan.model_dump(mode="json")
+    legacy_payload["format"] = "polylogue.archive-root-relocation-plan.v3"
+    legacy_payload.pop("plan_sha256")
+    for generation_payload in legacy_payload["index_generations"]:
+        generation_payload.pop("metadata_before_device")
+        generation_payload.pop("metadata_before_inode")
+        for link_payload in generation_payload["tier_symlinks"]:
+            link_payload.pop("before_device")
+            link_payload.pop("before_inode")
+    plan = _sealed_relocation_plan(**legacy_payload)
     generation = plan.index_generations[0]
     metadata_path = Path(generation.metadata_path)
     before = metadata_path.read_bytes()
@@ -2306,35 +2427,7 @@ def test_relocation_v3_plan_decodes_but_requires_a_prepared_resume_receipt(
         active_index_pointer_new_resolved_target=pointer_fields[2],
         resume_command="polylogue ops maintenance archive-root-relocation apply",
     )
-    expected_after = []
-    for item in loaded.durable_trains:
-        train = load_durable_change_train_manifest(Path(item.path))
-        expected = (
-            relocation._relocated_train(
-                new_root,
-                plan=loaded,
-                item=item,
-                train=train,
-                relocation_receipt_sha256=initial.receipt_sha256,
-            )
-            if relocation._requires_train_update(item)
-            else train
-        )
-        expected_after.append(relocation._train_manifest_sha256(expected))
-    prepared = _sealed_relocation_receipt(
-        state="prepared",
-        revision=1,
-        plan_sha256=loaded.plan_sha256,
-        authorization=loaded.plan_sha256,
-        manifest_before_sha256=tuple(item.before_manifest_sha256 for item in loaded.durable_trains),
-        manifest_after_sha256=tuple(expected_after),
-        active_index_pointer_old_target=pointer_fields[0],
-        active_index_pointer_new_target=pointer_fields[1],
-        active_index_pointer_new_resolved_target=pointer_fields[2],
-        resume_command="polylogue ops maintenance archive-root-relocation apply",
-        prepared_receipt_sha256=initial.receipt_sha256,
-    )
-    _write_relocation_receipt(relocation._receipt_path(new_root, loaded), prepared, expected=None)
+    _write_relocation_receipt(relocation._receipt_path(new_root, loaded), initial, expected=None)
 
     resumed = apply_archive_root_relocation(root=new_root, plan=loaded, authorization=loaded.plan_sha256)
     assert resumed.state == "committed"

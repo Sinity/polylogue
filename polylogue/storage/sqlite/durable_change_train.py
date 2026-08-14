@@ -1284,17 +1284,22 @@ def _validate_source_continuity_refresh_receipt(
         source_before = payload.get("source_before")
         refreshed_at_ms = _legacy_source_continuity_refresh_timestamp(payload)
         candidates = [
-            _SourceContinuityAuthorityRef("refresh", candidate_digest)
+            (
+                _legacy_source_continuity_refresh_timestamp(candidate_payload),
+                _SourceContinuityAuthorityRef("refresh", candidate_digest),
+            )
             for candidate_digest, candidate_payload in refresh_payloads.items()
             if candidate_digest != digest
             and candidate_payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V1_FORMAT
             and _legacy_source_continuity_refresh_timestamp(candidate_payload) < refreshed_at_ms
             and _legacy_source_continuity_evidence_matches(candidate_payload.get("source_after"), source_before)
         ]
-        if len(candidates) > 1:
-            raise DurableChangeTrainError("legacy source continuity authority has ambiguous predecessor evidence")
         if candidates:
-            predecessor = candidates[0]
+            latest_timestamp = max(timestamp for timestamp, _ref in candidates)
+            latest = [ref for timestamp, ref in candidates if timestamp == latest_timestamp]
+            if len(latest) != 1:
+                raise DurableChangeTrainError("legacy source continuity authority has ambiguous predecessor evidence")
+            predecessor = latest[0]
             if predecessor in successor_by_authority:
                 raise DurableChangeTrainError("source continuity authority branches ambiguously")
             predecessors[ref] = predecessor

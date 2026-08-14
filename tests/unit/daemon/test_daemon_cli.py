@@ -2258,6 +2258,21 @@ def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -
     assert "Watching 1 source(s); debounce=0.25s" in result.stderr
 
 
+def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A competing daemon or maintenance owner must not escape the Click boundary."""
+    root = workspace_env["archive_root"]
+    with OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root), owner_id="competing-writer"):
+        result = CliRunner().invoke(main, ["watch"])
+
+    assert result.exit_code == 1
+    assert "Error: watch could not acquire exclusive archive ownership:" in result.output
+    assert "archive location already owned" in result.output
+    assert "Watching" not in result.output
+    assert "Traceback" not in result.output
+
+
 def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     root_a = tmp_path / "claude-code"
     root_b = tmp_path / "codex"

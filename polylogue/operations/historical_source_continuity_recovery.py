@@ -63,7 +63,6 @@ from polylogue.storage.sqlite.durable_change_train import (
 )
 from polylogue.storage.sqlite.migration_runner import (
     DurableDatabaseEvidence,
-    _canonical_json_sha256,
     capture_durable_database_evidence,
     capture_durable_schema_inventory,
 )
@@ -172,6 +171,12 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _canonical_json_sha256(payload: object) -> str:
+    """Keep the V2 recovery artifact checksum byte-identical to its original form."""
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _real_file(path: Path, *, label: str) -> None:
@@ -362,6 +367,11 @@ def _sealed_optional_source_identity(device: int | None, inode: int | None) -> t
     return device, inode
 
 
+def _optional_source_identity_payload(device: int | None, inode: int | None) -> list[int] | None:
+    identity = _sealed_optional_source_identity(device, inode)
+    return None if identity is None else list(identity)
+
+
 def _refresh_proof_id(
     *,
     old_root: Path,
@@ -407,8 +417,12 @@ def _refresh_payload(plan: HistoricalSourceContinuityRecoveryPlan, *, train_id: 
         "historical_bridge": {
             "pre_backup": plan.pre_backup_manifest_sha256,
             "post_backup": plan.post_backup_manifest_sha256,
-            "pre_backup_source_identity": [plan.pre_backup_source_device, plan.pre_backup_source_inode],
-            "post_backup_source_identity": [plan.post_backup_source_device, plan.post_backup_source_inode],
+            "pre_backup_source_identity": _optional_source_identity_payload(
+                plan.pre_backup_source_device, plan.pre_backup_source_inode
+            ),
+            "post_backup_source_identity": _optional_source_identity_payload(
+                plan.post_backup_source_device, plan.post_backup_source_inode
+            ),
             "new_source_identity": [plan.new_source_device, plan.new_source_inode],
             "legacy_candidate_count": plan.legacy_candidate_count,
             "legacy_candidate_digest": plan.legacy_candidate_digest,
