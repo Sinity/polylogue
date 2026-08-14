@@ -4008,6 +4008,22 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
 ) -> None:
     events: list[str] = []
     history: dict[str, Any] = {}
+    head_calls = iter(("initial-head", "final-head"))
+    fingerprint_calls = 0
+
+    def _git_head() -> str:
+        head = next(head_calls)
+        events.append(head)
+        return head
+
+    def _worktree_fingerprint(_root: Path) -> str:
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        if fingerprint_calls == 1:
+            events.append("startup-fingerprint")
+            raise RuntimeError("fingerprint failed")
+        events.append("final-fingerprint")
+        return "final-fingerprint"
 
     class _ExceptionalExitMonitor:
         def __init__(self, _root: Path) -> None:
@@ -4022,16 +4038,28 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
 
     with (
         patch("devtools.verify.CheckoutMutationMonitor", _ExceptionalExitMonitor),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify.worktree_fingerprint", side_effect=RuntimeError("fingerprint failed")),
+        patch("devtools.verify._git_head", side_effect=_git_head),
+        patch("devtools.verify.worktree_fingerprint", side_effect=_worktree_fingerprint),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
         patch("devtools.verify._notify"),
     ):
         assert main(["--quick", "--json"]) == 125
 
-    assert events == ["monitor-started", "monitor-finished"]
+    assert events == [
+        "initial-head",
+        "monitor-started",
+        "startup-fingerprint",
+        "final-head",
+        "final-fingerprint",
+        "monitor-finished",
+    ]
     assert history["diagnosis"] == "verify_runner_exception"
-    assert json.loads(capsys.readouterr().out)["diagnosis"] == "verify_runner_exception"
+    assert history["final_git_head"] == "final-head"
+    assert history["final_worktree_fingerprint"] == "final-fingerprint"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["diagnosis"] == "verify_runner_exception"
+    assert payload["final_git_head"] == "final-head"
+    assert payload["final_worktree_fingerprint"] == "final-fingerprint"
 
 
 def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(

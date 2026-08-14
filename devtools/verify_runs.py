@@ -1646,6 +1646,7 @@ class VerifyRun:
         diagnosis: str | None = None,
         verification_scope: str | None = None,
         release_baseline_allowed: bool | None = None,
+        final_git_head: str | None = None,
         final_worktree_fingerprint: str | None = None,
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
@@ -1658,6 +1659,7 @@ class VerifyRun:
         self._payload["status"] = "success" if exit_code == 0 else "failed"
         if diagnosis:
             self._payload["diagnosis"] = diagnosis
+        self._payload["final_git_head"] = final_git_head
         if final_worktree_fingerprint is not None:
             self._payload["final_worktree_fingerprint"] = final_worktree_fingerprint
         if checkout_mutation_path is not None:

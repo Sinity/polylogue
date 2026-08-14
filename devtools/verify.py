@@ -37,6 +37,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,7 @@ from devtools.verify_runs import (
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
     CheckoutMutationMonitor,
+    CheckoutMutationObservation,
     PytestResourceError,
     PytestStepArtifacts,
     ResourceSampler,
@@ -2485,7 +2487,31 @@ def _changed_test_relevant_paths(base_commit: str, head_commit: str) -> tuple[st
     )
 
 
-_ACTIVE_VERIFY_RUN: tuple[VerifyRun, float, VerificationScope] | None = None
+@dataclass(slots=True)
+class _ActiveVerifyRun:
+    run: VerifyRun
+    started_at: float
+    verification_scope: VerificationScope
+    head: str | None
+    mutation_monitor: CheckoutMutationMonitor | None = None
+    initial_worktree_fingerprint: str | None = None
+
+
+_ACTIVE_VERIFY_RUN: _ActiveVerifyRun | None = None
+
+
+def _start_active_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> None:
+    start_checkout_mutation_monitor(monitor)
+    if _ACTIVE_VERIFY_RUN is not None:
+        _ACTIVE_VERIFY_RUN.mutation_monitor = monitor
+
+
+def _finish_active_checkout_mutation_monitor(monitor: CheckoutMutationMonitor) -> CheckoutMutationObservation:
+    try:
+        return finish_checkout_mutation_monitor(monitor)
+    finally:
+        if _ACTIVE_VERIFY_RUN is not None and _ACTIVE_VERIFY_RUN.mutation_monitor is monitor:
+            _ACTIVE_VERIFY_RUN.mutation_monitor = None
 
 
 def _planned_verification_scope(
@@ -2570,7 +2596,9 @@ def _finalize_preflight_failure(
         final_worktree_fingerprint = worktree_fingerprint(ROOT) if mutation_monitor is not None else "unavailable"
     except Exception:
         final_worktree_fingerprint = "unavailable"
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
+    mutation_observation = (
+        _finish_active_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
+    )
     checkout_diagnosis: str | None = None
     if mutation_monitor is None:
         checkout_diagnosis = "preflight_failed_before_checkout_monitor"
@@ -2606,6 +2634,7 @@ def _finalize_preflight_failure(
         diagnosis=diagnosis,
         verification_scope=verification_scope.value,
         release_baseline_allowed=False,
+        final_git_head=final_head,
         final_worktree_fingerprint=final_worktree_fingerprint,
         checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
         checkout_diagnosis=checkout_diagnosis,
@@ -2697,7 +2726,12 @@ def _main(argv: list[str] | None = None) -> int:
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
     )
-    _ACTIVE_VERIFY_RUN = (verify_run, started_at, planned_scope)
+    _ACTIVE_VERIFY_RUN = _ActiveVerifyRun(
+        run=verify_run,
+        started_at=started_at,
+        verification_scope=planned_scope,
+        head=head,
+    )
 
     try:
         fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
@@ -2722,11 +2756,13 @@ def _main(argv: list[str] | None = None) -> int:
     sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
 
     mutation_monitor = CheckoutMutationMonitor(ROOT)
-    start_checkout_mutation_monitor(mutation_monitor)
+    _start_active_checkout_mutation_monitor(mutation_monitor)
     checkout_fingerprint = worktree_fingerprint(ROOT)
-    finish_checkout_mutation_monitor(mutation_monitor)
+    _finish_active_checkout_mutation_monitor(mutation_monitor)
     mutation_monitor = CheckoutMutationMonitor(ROOT)
-    start_checkout_mutation_monitor(mutation_monitor)
+    _start_active_checkout_mutation_monitor(mutation_monitor)
+    assert _ACTIVE_VERIFY_RUN is not None
+    _ACTIVE_VERIFY_RUN.initial_worktree_fingerprint = checkout_fingerprint
     verify_run.update_checkout_provenance(worktree_fingerprint=checkout_fingerprint)
 
     base_commit = _git_commit("origin/master") if pytest_enabled else None
@@ -2815,7 +2851,8 @@ def _main(argv: list[str] | None = None) -> int:
             )
 
     planned_scope = _planned_verification_scope(args, testmon_mode=testmon_mode)
-    _ACTIVE_VERIFY_RUN = (verify_run, started_at, planned_scope)
+    assert _ACTIVE_VERIFY_RUN is not None
+    _ACTIVE_VERIFY_RUN.verification_scope = planned_scope
 
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
@@ -2848,9 +2885,9 @@ def _main(argv: list[str] | None = None) -> int:
     # Git probes and native testmon preparation can refresh the index as part
     # of their own read path. Discard that preflight interval and begin the
     # authority interval immediately before the verification steps.
-    finish_checkout_mutation_monitor(mutation_monitor)
+    _finish_active_checkout_mutation_monitor(mutation_monitor)
     mutation_monitor = CheckoutMutationMonitor(ROOT)
-    start_checkout_mutation_monitor(mutation_monitor)
+    _start_active_checkout_mutation_monitor(mutation_monitor)
     step_results: list[dict[str, Any]] = []
     exit_code = 0
     native_graph_touched = False
@@ -2891,7 +2928,7 @@ def _main(argv: list[str] | None = None) -> int:
     assert mutation_monitor is not None
     final_head = _git_head()
     final_checkout_fingerprint = worktree_fingerprint(ROOT)
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
+    mutation_observation = _finish_active_checkout_mutation_monitor(mutation_monitor)
     checkout_stable = True
     checkout_fingerprint_unavailable = (
         head is None
@@ -3084,6 +3121,7 @@ def _main(argv: list[str] | None = None) -> int:
         diagnosis=run_diagnosis,
         verification_scope=verification_scope.value,
         release_baseline_allowed=release_baseline_allowed,
+        final_git_head=final_head,
         final_worktree_fingerprint=final_checkout_fingerprint,
         checkout_mutation_path=mutation_observation.observed_path,
         checkout_diagnosis=checkout_diagnosis,
@@ -3121,31 +3159,60 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def _finalize_verify_runner_exception(
-    run: VerifyRun,
+    active: _ActiveVerifyRun,
     exc: Exception,
     *,
-    run_started: float,
-    verification_scope: VerificationScope,
     use_json: bool,
 ) -> int:
     """Leave typed, durable failed evidence when verification orchestration raises."""
     diagnosis = "verify_runner_exception"
+    run = active.run
+    try:
+        final_head = _git_head()
+    except Exception:
+        final_head = None
+    try:
+        final_worktree_fingerprint = worktree_fingerprint(ROOT)
+    except Exception:
+        final_worktree_fingerprint = "unavailable"
+    mutation_observation = None
+    if active.mutation_monitor is not None:
+        try:
+            mutation_observation = _finish_active_checkout_mutation_monitor(active.mutation_monitor)
+        except Exception:
+            mutation_observation = None
     run.finish_interrupted_steps(
         exit_code=125,
         diagnosis=diagnosis,
         termination_reason="runner_exception",
     )
-    try:
-        final_worktree_fingerprint = worktree_fingerprint(ROOT)
-    except Exception:
-        final_worktree_fingerprint = "unavailable"
+    if (
+        active.head is None
+        or final_head is None
+        or active.initial_worktree_fingerprint in {None, "unavailable"}
+        or final_worktree_fingerprint == "unavailable"
+        or mutation_observation is None
+        or mutation_observation.unavailable
+    ):
+        checkout_diagnosis = "checkout_fingerprint_unavailable"
+    elif (
+        final_head != active.head
+        or mutation_observation.changed
+        or final_worktree_fingerprint != active.initial_worktree_fingerprint
+    ):
+        checkout_diagnosis = "checkout_changed_during_verification"
+    else:
+        checkout_diagnosis = None
     payload = run.finish(
         exit_code=125,
-        duration_s=time.monotonic() - run_started,
+        duration_s=time.monotonic() - active.started_at,
         diagnosis=diagnosis,
-        verification_scope=verification_scope.value,
+        verification_scope=active.verification_scope.value,
         release_baseline_allowed=False,
+        final_git_head=final_head,
         final_worktree_fingerprint=final_worktree_fingerprint,
+        checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
+        checkout_diagnosis=checkout_diagnosis,
         invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     payload["exception_type"] = type(exc).__name__
@@ -3170,12 +3237,9 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             if _ACTIVE_VERIFY_RUN is None:
                 raise
-            run, run_started, verification_scope = _ACTIVE_VERIFY_RUN
             return _finalize_verify_runner_exception(
-                run,
+                _ACTIVE_VERIFY_RUN,
                 exc,
-                run_started=run_started,
-                verification_scope=verification_scope,
                 use_json="--json" in raw_argv,
             )
         finally:
