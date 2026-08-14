@@ -62,7 +62,10 @@ from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v4"] = "polylogue.archive-root-relocation-plan.v4"
 _LEGACY_PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v3"] = "polylogue.archive-root-relocation-plan.v3"
-RECEIPT_FORMAT: Literal["polylogue.archive-root-relocation-receipt.v1"] = "polylogue.archive-root-relocation-receipt.v1"
+RECEIPT_FORMAT: Literal["polylogue.archive-root-relocation-receipt.v2"] = "polylogue.archive-root-relocation-receipt.v2"
+_LEGACY_RECEIPT_FORMAT: Literal["polylogue.archive-root-relocation-receipt.v1"] = (
+    "polylogue.archive-root-relocation-receipt.v1"
+)
 _TIER_NAMES = tuple(tier.value for tier in ArchiveTier)
 _DURABLE_TIER_NAMES = ("source", "user", "audit")
 _SIDECARS = ("-wal", "-shm", "-journal")
@@ -185,7 +188,10 @@ class ArchiveRootRelocationPlan(BaseModel):
 class ArchiveRootRelocationReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    format: Literal["polylogue.archive-root-relocation-receipt.v1"] = RECEIPT_FORMAT
+    format: Literal[
+        "polylogue.archive-root-relocation-receipt.v1",
+        "polylogue.archive-root-relocation-receipt.v2",
+    ] = RECEIPT_FORMAT
     state: Literal["prepared", "committed"]
     revision: int
     plan_sha256: str
@@ -216,6 +222,26 @@ def _canonical_sha256(payload: object) -> str:
     ).hexdigest()
 
 
+def _receipt_checksum_payload(receipt: ArchiveRootRelocationReceipt) -> dict[str, object]:
+    """Render the exact field set that the receipt format originally sealed."""
+    payload = receipt.model_dump(exclude={"receipt_sha256"}, mode="json")
+    if receipt.format == _LEGACY_RECEIPT_FORMAT:
+        return {
+            field: payload[field]
+            for field in (
+                "format",
+                "state",
+                "revision",
+                "plan_sha256",
+                "authorization",
+                "manifest_before_sha256",
+                "manifest_after_sha256",
+                "resume_command",
+            )
+        }
+    return payload
+
+
 def _sealed_plan(**values: object) -> ArchiveRootRelocationPlan:
     plan = ArchiveRootRelocationPlan.model_validate({"format": PLAN_FORMAT, **values, "plan_sha256": ""})
     payload = plan.model_dump(
@@ -228,8 +254,7 @@ def _sealed_plan(**values: object) -> ArchiveRootRelocationPlan:
 
 def _sealed_receipt(**values: object) -> ArchiveRootRelocationReceipt:
     receipt = ArchiveRootRelocationReceipt.model_validate({"format": RECEIPT_FORMAT, **values, "receipt_sha256": ""})
-    payload = receipt.model_dump(mode="json", exclude={"receipt_sha256"})
-    return receipt.model_copy(update={"receipt_sha256": _canonical_sha256(payload)})
+    return receipt.model_copy(update={"receipt_sha256": _canonical_sha256(_receipt_checksum_payload(receipt))})
 
 
 def _verify_plan(plan: ArchiveRootRelocationPlan) -> None:
@@ -251,7 +276,7 @@ def _verify_plan(plan: ArchiveRootRelocationPlan) -> None:
 
 
 def _verify_receipt(receipt: ArchiveRootRelocationReceipt) -> None:
-    expected = _canonical_sha256(receipt.model_dump(exclude={"receipt_sha256"}, mode="json"))
+    expected = _canonical_sha256(_receipt_checksum_payload(receipt))
     if receipt.receipt_sha256 != expected:
         raise ArchiveRootRelocationError("archive-root relocation receipt checksum mismatch")
 
@@ -1433,6 +1458,22 @@ def _pointer_receipt_fields(
     return (pointer.old_target, pointer.new_target, pointer.new_resolved_target)
 
 
+def _receipt_pointer_fields_match(
+    receipt: ArchiveRootRelocationReceipt, pointer_fields: tuple[str | None, str | None, str | None]
+) -> bool:
+    """Accept V1's original field set while binding V2 to active-index authority."""
+    receipt_fields = (
+        receipt.active_index_pointer_old_target,
+        receipt.active_index_pointer_new_target,
+        receipt.active_index_pointer_new_resolved_target,
+    )
+    return (
+        receipt_fields == (None, None, None)
+        if receipt.format == _LEGACY_RECEIPT_FORMAT
+        else receipt_fields == pointer_fields
+    )
+
+
 def _has_matching_prepared_publication_receipt(
     plan: ArchiveRootRelocationPlan, receipt: ArchiveRootRelocationReceipt | None
 ) -> bool:
@@ -1461,6 +1502,7 @@ def _has_matching_prepared_publication_receipt(
     ):
         return False
     preparation = _sealed_receipt(
+        format=receipt.format,
         state="prepared",
         revision=0,
         plan_sha256=plan.plan_sha256,
@@ -1493,16 +1535,12 @@ def _has_matching_initial_preparation_receipt(
         or receipt.authorization != plan.plan_sha256
         or receipt.manifest_before_sha256 != before_hashes
         or receipt.manifest_after_sha256
-        or (
-            receipt.active_index_pointer_old_target,
-            receipt.active_index_pointer_new_target,
-            receipt.active_index_pointer_new_resolved_target,
-        )
-        != pointer_fields
+        or not _receipt_pointer_fields_match(receipt, pointer_fields)
         or receipt.prepared_receipt_sha256 is not None
     ):
         return False
     preparation = _sealed_receipt(
+        format=receipt.format,
         state="prepared",
         revision=0,
         plan_sha256=plan.plan_sha256,
@@ -1800,11 +1838,7 @@ def _apply_archive_root_relocation_locked(
         receipt = existing_receipt
         if receipt.plan_sha256 != plan.plan_sha256 or receipt.authorization != authorization:
             raise ArchiveRootRelocationError("archive-root relocation receipt belongs to another plan")
-        if (
-            receipt.active_index_pointer_old_target,
-            receipt.active_index_pointer_new_target,
-            receipt.active_index_pointer_new_resolved_target,
-        ) != pointer_fields:
+        if not _receipt_pointer_fields_match(receipt, pointer_fields):
             raise ArchiveRootRelocationError("archive-root relocation receipt active index pointer binding changed")
         if receipt.state == "committed":
             if tuple(_sha256_file(Path(item.path)) for item in plan.durable_trains) != receipt.manifest_after_sha256:
@@ -1813,7 +1847,7 @@ def _apply_archive_root_relocation_locked(
                 state="committed",
                 plan_sha256=plan.plan_sha256,
                 receipt_path=str(receipt_path),
-                changed_manifests=tuple(item.path for item in plan.durable_trains),
+                changed_manifests=tuple(item.path for item in plan.durable_trains if _requires_train_update(item)),
             )
     else:
         _write_receipt(receipt_path, receipt, expected=None)
@@ -1895,5 +1929,5 @@ def _apply_archive_root_relocation_locked(
         state="committed",
         plan_sha256=plan.plan_sha256,
         receipt_path=str(receipt_path),
-        changed_manifests=tuple(item.path for item in plan.durable_trains),
+        changed_manifests=tuple(item.path for item in plan.durable_trains if _requires_train_update(item)),
     )

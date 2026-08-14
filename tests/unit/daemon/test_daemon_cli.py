@@ -4195,8 +4195,10 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
 
     watcher = Mock()
     monkeypatch.setattr(daemon_cli, "run_live_watcher", watcher)
-    with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
-        CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+    watch_result = CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+    assert watch_result.exit_code == 1
+    assert "prepared but incomplete" in watch_result.output
+    assert "Watching " not in watch_result.output
 
     assert admission.call_count == 2
     admission.assert_called_with(configured_alias)
@@ -4230,8 +4232,10 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
                 browser_capture_spool_path=None,
             )
         )
-    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
-        CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+    watch_result = CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+    assert watch_result.exit_code == 1
+    assert "prepared but incomplete" in watch_result.output
+    assert "Watching " not in watch_result.output
 
     assert continuity_admission.call_count == 2
 

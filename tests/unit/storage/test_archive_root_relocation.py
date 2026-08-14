@@ -1628,6 +1628,51 @@ def test_historical_startup_reader_rejects_receipt_swapped_after_enumeration(
     assert swapped
 
 
+def test_source_mutation_admission_fences_each_prepared_maintenance_operation(workspace_env: dict[str, Path]) -> None:
+    """The shared source-mutation boundary cannot invalidate either resume path.
+
+    Anti-vacuity: both receipts are production-sealed files under the archive's
+    maintenance root. Calling the shared admission function proves the same
+    guard used by offline source mutations rejects them before SQLite work.
+    """
+    root = workspace_env["archive_root"]
+    relocation_path = root / ".maintenance-state" / "archive-root-relocations" / ("a" * 64 + ".json")
+    _write_relocation_receipt(
+        relocation_path,
+        _sealed_relocation_receipt(
+            state="prepared",
+            revision=0,
+            plan_sha256="a" * 64,
+            authorization="a" * 64,
+            manifest_before_sha256=(),
+            manifest_after_sha256=(),
+            resume_command="resume relocation",
+        ),
+        expected=None,
+    )
+    with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
+        assert_source_continuity_apply_allowed(root)
+
+    relocation_path.unlink()
+    recovery_path = root / ".maintenance-state" / "historical-source-continuity-recoveries" / ("b" * 64 + ".json")
+    _write_continuity_receipt(
+        recovery_path,
+        _sealed_continuity_receipt(
+            state="prepared",
+            revision=0,
+            plan_sha256="b" * 64,
+            authorization="b" * 64,
+            train_before_sha256="c" * 64,
+            train_after_sha256="d" * 64,
+            refresh_receipt_sha256="e" * 64,
+            resume_command="resume continuity",
+        ),
+        expected=None,
+    )
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+        assert_source_continuity_apply_allowed(root)
+
+
 def test_historical_continuity_recovery_cli_rejects_an_unbound_synthetic_operation(
     workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2414,20 +2459,22 @@ def test_relocation_v3_plan_decodes_but_requires_a_prepared_resume_receipt(
 
     from polylogue.operations import archive_root_relocation as relocation
 
-    pointer_fields = relocation._pointer_receipt_fields(loaded.active_index_pointer)
-    initial = _sealed_relocation_receipt(
-        state="prepared",
-        revision=0,
-        plan_sha256=loaded.plan_sha256,
-        authorization=loaded.plan_sha256,
-        manifest_before_sha256=tuple(item.before_manifest_sha256 for item in loaded.durable_trains),
-        manifest_after_sha256=(),
-        active_index_pointer_old_target=pointer_fields[0],
-        active_index_pointer_new_target=pointer_fields[1],
-        active_index_pointer_new_resolved_target=pointer_fields[2],
-        resume_command="polylogue ops maintenance archive-root-relocation apply",
-    )
-    _write_relocation_receipt(relocation._receipt_path(new_root, loaded), initial, expected=None)
+    legacy_receipt = {
+        "format": "polylogue.archive-root-relocation-receipt.v1",
+        "state": "prepared",
+        "revision": 0,
+        "plan_sha256": loaded.plan_sha256,
+        "authorization": loaded.plan_sha256,
+        "manifest_before_sha256": [item.before_manifest_sha256 for item in loaded.durable_trains],
+        "manifest_after_sha256": [],
+        "resume_command": "polylogue ops maintenance archive-root-relocation apply",
+    }
+    legacy_receipt["receipt_sha256"] = hashlib.sha256(
+        json.dumps(legacy_receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    receipt_path = relocation._receipt_path(new_root, loaded)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(json.dumps(legacy_receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     resumed = apply_archive_root_relocation(root=new_root, plan=loaded, authorization=loaded.plan_sha256)
     assert resumed.state == "committed"
@@ -2692,8 +2739,12 @@ def test_relocation_accepts_a_modern_no_rebind_train_without_rewriting_it(
     assert plan.durable_trains[0].requires_rebind is False
     moved_manifest = Path(plan.durable_trains[0].path)
     before = moved_manifest.read_bytes()
-    assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
+    result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert result.state == "committed"
+    assert result.changed_manifests == ()
     assert moved_manifest.read_bytes() == before
+    repeated = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert repeated.changed_manifests == ()
 
 
 def test_relocation_resume_rejects_a_same_revision_manifest_substituted_after_cas(
@@ -2925,6 +2976,47 @@ def test_historical_continuity_recovery_cli_rejects_a_byte_identical_copied_arch
 
     assert result.exit_code != 0
     assert "device/inode continuity" in result.output
+
+
+def test_historical_recovery_rejects_a_copied_legacy_backup_destination(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy tier fingerprints still bind the moved source-file identity.
+
+    Anti-vacuity: the two authentic backup packages omit only their original
+    source-file device/inode fields, then a byte-identical archive copy is
+    presented to the real planning API. Accepting a self-observed destination
+    identity would let that copy receive fresh continuity authority.
+    """
+    moved_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    old_root = workspace_env["archive_root"]
+    _downgrade_historical_backup_source_identity(pre_manifest, old_root=old_root)
+    _downgrade_historical_backup_source_identity(post_manifest, old_root=old_root)
+    with sqlite3.connect(f"file:{pre_manifest.parent / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
+        candidates = classify_blob_ref_liveness(connection).candidates
+    _pinned_historical_operation_evidence(
+        evidence,
+        mutation_receipt=mutation_receipt,
+        candidates=candidates,
+        pre_manifest=pre_manifest,
+        post_manifest=post_manifest,
+    )
+    copied_root = tmp_path / "copied-legacy"
+    shutil.copytree(moved_root, copied_root, symlinks=True)
+
+    with _test_historical_operation_evidence_resource(evidence):
+        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="source.db device/inode continuity"):
+            prepare_historical_source_continuity_recovery(
+                old_root=old_root,
+                new_root=copied_root,
+                mutation_receipt=mutation_receipt,
+                pre_backup_manifest=pre_manifest,
+                post_backup_manifest=post_manifest,
+                stopped_daemon_evidence_ref="proof:daemon-stopped",
+                single_writer_evidence_ref="proof:archive-ownership-lock",
+            )
 
 
 def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_relocation(

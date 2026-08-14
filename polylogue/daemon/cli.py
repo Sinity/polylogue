@@ -3404,9 +3404,13 @@ def run_command(
 )
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
     from polylogue.config import resolve_runtime_config
-    from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
+    from polylogue.operations.archive_root_relocation import (
+        ArchiveRootRelocationError,
+        assert_no_prepared_archive_root_relocation,
+    )
     from polylogue.operations.durable_change_train import ArchiveOwnershipError, acquire_durable_archive_ownership
     from polylogue.operations.historical_source_continuity_recovery import (
+        HistoricalSourceContinuityRecoveryError,
         assert_no_prepared_historical_source_continuity_recovery,
     )
     from polylogue.paths import archive_root
@@ -3427,15 +3431,18 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
         )
     except ArchiveOwnershipError as exc:
         raise click.ClickException(f"watch could not acquire exclusive archive ownership: {exc}") from exc
-    click.echo(
-        f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
-        err=True,
-    )
     writer_drained = False
     watcher_started = False
     try:
-        assert_no_prepared_archive_root_relocation(archive_root_path)
-        assert_no_prepared_historical_source_continuity_recovery(archive_root_path)
+        try:
+            assert_no_prepared_archive_root_relocation(archive_root_path)
+            assert_no_prepared_historical_source_continuity_recovery(archive_root_path)
+        except (ArchiveRootRelocationError, HistoricalSourceContinuityRecoveryError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(
+            f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
+            err=True,
+        )
         watcher_started = True
         writer_drained = asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
     finally:

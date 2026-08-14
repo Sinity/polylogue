@@ -35,6 +35,7 @@ from polylogue.maintenance.receipt_fs import (
 )
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import (
+    ArchiveIdentity,
     ArchiveLocation,
     ArchiveOwnershipError,
     OwnedArchiveLocation,
@@ -354,6 +355,32 @@ def _require_source_identity(root: Path, *, device: int, inode: int, label: str)
             "a copied archive is not accepted"
         )
     return identity
+
+
+def _require_legacy_destination_train_identity(
+    train: DurableChangeTrain, identity: TierFileIdentity, *, old_configured_root: Path
+) -> None:
+    """Use the pre-existing released train to distinguish a move from a copy."""
+    if train.apply_evidence is None:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery requires released source authority"
+        )
+    live_archive_identity = ArchiveIdentity.resolve(identity.configured_path.parent)
+    relocated_legacy_identity = ArchiveIdentity(
+        configured_root=old_configured_root,
+        tiers=live_archive_identity.tiers,
+        active_generation=live_archive_identity.active_generation,
+    )
+    actual_identities = {
+        hashlib.sha256(identity.stable_id.encode("utf-8")).hexdigest(),
+        live_archive_identity.authority_identity_digest,
+        relocated_legacy_identity.authority_identity_digest,
+    }
+    if train.apply_evidence.post.archive_identity_digest not in actual_identities:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery requires source.db device/inode continuity from the released train; "
+            "a copied archive is not accepted"
+        )
 
 
 def _sealed_optional_source_identity(device: int | None, inode: int | None) -> tuple[int, int] | None:
@@ -905,6 +932,8 @@ def prepare_historical_source_continuity_recovery(
     train_path = manifest_root / f"source-{train.slot:03d}.json"
     _real_file(train_path, label="current released source train")
     _, source_before = _assert_pre_train_authority(train_path, pre)
+    if pre_identity is None:
+        _require_legacy_destination_train_identity(train, new_source_identity, old_configured_root=old_configured)
     if train.source_continuity_evidence is not None:
         raise HistoricalSourceContinuityRecoveryError("current released source train already has continuity authority")
     census = _census(root)
@@ -1192,6 +1221,10 @@ def _revalidate(
     if not _evidence_matches_plan(current, plan.source_after) or current.content_sha256 != post.content_sha256:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery current source changed")
     train = load_durable_change_train_manifest(Path(plan.source_train_path))
+    if expected_pre_identity is None:
+        _require_legacy_destination_train_identity(
+            train, new_identity, old_configured_root=Path(plan.old_configured_root)
+        )
     train_sha256 = _sha256(Path(plan.source_train_path))
     if train_sha256 == plan.source_train_sha256:
         _assert_pre_train_authority(Path(plan.source_train_path), pre)

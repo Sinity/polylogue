@@ -857,6 +857,13 @@ def assert_source_continuity_apply_allowed(
 ) -> None:
     """Reject a new source mutation that could invalidate continuity recovery."""
     archive_root = archive_root.resolve()
+    from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
+    from polylogue.operations.historical_source_continuity_recovery import (
+        assert_no_prepared_historical_source_continuity_recovery,
+    )
+
+    assert_no_prepared_archive_root_relocation(archive_root)
+    assert_no_prepared_historical_source_continuity_recovery(archive_root)
     pending_root = archive_root / ".maintenance-state" / "source-continuity-pending"
     pending_intents = tuple(sorted(pending_root.glob("*.json"))) if pending_root.is_dir() else ()
     if allowed_pending_operation_id is not None:
