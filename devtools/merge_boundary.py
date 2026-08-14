@@ -443,6 +443,8 @@ def _receipt_is_fresh_for_scope(
     valid_scopes = {scope.value for scope in VerificationScope}
     if verification_scope not in valid_scopes:
         return False
+    if verification_scope not in merge_gate._MERGE_AUTHORIZING_VERIFICATION_SCOPES:
+        return False
     release_allowed = receipt.get("release_baseline_allowed")
     if not isinstance(release_allowed, bool):
         return False
@@ -898,6 +900,10 @@ def cmd_record_full_verify(
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0].isdigit():
+        raw_argv.insert(0, "merge")
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
 
@@ -927,7 +933,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     record_p.add_argument("--command", default="devtools verify --all")
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
 
     if args.action == "merge":
         return cmd_merge(

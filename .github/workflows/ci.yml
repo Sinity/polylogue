@@ -30,7 +30,6 @@ jobs:
           python-version: "3.14"
       - run: uv sync --extra dev --frozen
       - run: uv run devtools render all --check
-      - run: uv run devtools verify public-claims --json
       # An index schema bump merged without its lifecycle.py delta declaration
       # downgrades every live generation to a full raw replay (polylogue-9rw0).
       - run: uv run devtools lab policy schema-versioning
@@ -57,12 +56,8 @@ jobs:
           POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
 
   test:
-    # The full non-integration suite runs single-process under coverage
-    # instrumentation across three Python versions; 45 min was on the edge and
-    # legs were being cut mid-run (reported as "cancelled"), so the test gate
-    # could never go green. 90 min gives headroom; passing runs cost their
-    # actual ~45-50 min regardless of the ceiling.
-    #
+    # The full suite runs under coverage instrumentation. Keep a generous job
+    # ceiling so pytest's per-test timeout can report the actual stalled node.
     # This heavy gate is intentionally OFF the per-PR path (operator decision):
     # the ~18 min wait on every PR was not worth it. It still runs post-merge on
     # master (regression net) and on demand via workflow_dispatch, but no longer

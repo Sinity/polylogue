@@ -22,7 +22,7 @@ probe functions that inspect file structure.
 
 Provider detection and transcript parsing do not imply exact usage accounting.
 Polylogue declares usage coverage by origin and reports the observed state in
-`polylogue diagnostics usage`. Exact provider telemetry, transcript-derived
+`polylogue analyze usage`. Exact provider telemetry, transcript-derived
 estimates, unsupported origins, source acquisition debt, and stale rollups are
 separate states.
 

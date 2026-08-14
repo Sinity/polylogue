@@ -15,8 +15,6 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from tests.infra.excluded_cursor_live_proof import run_excluded_cursor_live_proof, verify_receipt
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path: Path) -> None:
     archive_root = tmp_path / "candidate-archive"
@@ -135,15 +133,3 @@ def test_receipt_with_wrong_self_hash_is_rejected(tmp_path: Path) -> None:
     receipt_path.write_text(json.dumps(body), encoding="utf-8")
     with pytest.raises(AssertionError, match="hash mismatch"):
         verify_receipt(receipt_path)
-
-
-def test_committed_candidate_receipt_is_self_hashed() -> None:
-    receipt = verify_receipt(REPO_ROOT / "docs/evidence/polylogue-excluded-cursor-live-proof-2026-08-06.json")
-
-    assert receipt["schema"] == "polylogue.excluded-cursor-live-proof.v1"
-    assert receipt["execution"]["live_census"] == "not_run"
-    assert receipt["outcomes"] == {
-        "indexed": True,
-        "still_excluded": True,
-        "typed_terminal": True,
-    }

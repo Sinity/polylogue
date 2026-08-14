@@ -10,7 +10,6 @@ This module contains tests for:
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import aiosqlite
@@ -28,8 +27,6 @@ from polylogue.storage.sqlite.queries.raw_reads import get_capture_mode_resoluti
 from polylogue.storage.sqlite.queries.raw_reads import get_raw_session as get_query_raw_session
 from polylogue.storage.sqlite.queries.raw_writes import save_raw_session as save_query_raw_session
 from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
-
-_REPO_ROOT = Path(__file__).parent.parent.parent.parent
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -434,8 +431,8 @@ class TestRawSessionStorage:
         assert [record.raw_id for record in records] == ["raw-c", "raw-a", "raw-b"]
 
 
-class TestRawSessionWriterSingleSource:
-    """polylogue-vwia: the async and sync-core raw writers must not diverge.
+class TestRawSessionWriterParity:
+    """The async backend and canonical raw writer must persist identical evidence.
 
     ``SQLiteRawMixin.save_raw_session`` (async_sqlite_raw.py) used to hand-roll
     its own 18-column ``INSERT OR REPLACE``, while the durable-tier writer
@@ -452,32 +449,59 @@ class TestRawSessionWriterSingleSource:
         db_path = tmp_path / "test.db"
         return SQLiteBackend(db_path=db_path)
 
-    async def test_writer_insert_covers_every_live_raw_sessions_column(self, tmp_path: Path) -> None:
-        """The canonical writer's INSERT must name every column the live DDL defines."""
-        source_db = tmp_path / "source.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
-        async with aiosqlite.connect(source_db) as conn:
-            cursor = await conn.execute("PRAGMA table_info(raw_sessions)")
-            live_columns = {row[1] for row in await cursor.fetchall()}
-
-        writer_source = (_REPO_ROOT / "polylogue/storage/sqlite/queries/raw_writes.py").read_text()
-        match = re.search(r"INSERT OR IGNORE INTO raw_sessions \(([^)]+)\)", writer_source)
-        assert match is not None, "expected exactly one canonical raw_sessions INSERT in raw_writes.py"
-        writer_columns = {c.strip() for c in match.group(1).split(",")}
-
-        assert writer_columns == live_columns, (
-            "queries/raw_writes.py's INSERT column list has drifted from the live raw_sessions "
-            f"DDL: missing from writer={live_columns - writer_columns} "
-            f"extra in writer={writer_columns - live_columns}"
+    async def test_async_backend_matches_canonical_writer_for_revision_evidence(self, tmp_path: Path) -> None:
+        """Both production entry points persist the same complete durable row."""
+        direct_db = tmp_path / "direct" / "source.db"
+        backend_root = tmp_path / "backend"
+        backend_db = backend_root / "source.db"
+        initialize_archive_database(direct_db, ArchiveTier.SOURCE)
+        initialize_active_archive_root(backend_root)
+        record = make_raw_session(
+            raw_id="revision-parity",
+            source_name="codex",
+            source_path="/tmp/rollout.jsonl",
+            source_index=7,
+            blob_size=41,
+            acquired_at="2026-02-02T12:00:00+00:00",
+            revision=RawRevisionEnvelope(
+                logical_source_key="codex:session-1",
+                kind=RawRevisionKind.APPEND,
+                source_revision="revision-2",
+                predecessor_source_revision="revision-1",
+                predecessor_raw_id="raw-1",
+                baseline_raw_id="raw-0",
+                append_start_offset=10,
+                append_end_offset=51,
+                acquisition_generation=2,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
         )
 
-    async def test_async_backend_has_no_second_raw_sessions_insert(self) -> None:
-        """The async mixin must delegate, not hand-roll a competing INSERT/REPLACE."""
-        mixin_source = (_REPO_ROOT / "polylogue/storage/sqlite/async_sqlite_raw.py").read_text()
-        assert "INTO raw_sessions" not in mixin_source, (
-            "async_sqlite_raw.py should delegate save_raw_session to "
-            "queries/raw_writes.py, not embed its own INSERT statement (polylogue-vwia)"
-        )
+        async with aiosqlite.connect(direct_db) as conn:
+            assert await save_query_raw_session(conn, record, 0) is True
+
+        backend = SQLiteBackend(db_path=backend_root / "index.db")
+        try:
+            assert await backend.save_raw_session(record) is True
+        finally:
+            await backend.close()
+
+        async def persisted_rows(path: Path) -> tuple[tuple[object, ...], tuple[object, ...]]:
+            async with aiosqlite.connect(path) as conn:
+                raw = await (
+                    await conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
+                ).fetchone()
+                blob_ref = await (
+                    await conn.execute(
+                        "SELECT * FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?",
+                        (record.raw_id,),
+                    )
+                ).fetchone()
+            assert raw is not None
+            assert blob_ref is not None
+            return tuple(raw), tuple(blob_ref)
+
+        assert await persisted_rows(backend_db) == await persisted_rows(direct_db)
 
     async def test_resave_never_alters_revision_evidence(self, backend: SQLiteBackend) -> None:
         """Re-saving an existing raw_id must never reset durable revision authority."""

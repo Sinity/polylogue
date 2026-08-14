@@ -246,7 +246,7 @@
   "title": "Query Unit Aggregate Envelope",
   "type": "object",
   "x-polylogue-cli-surfaces": [
-    "polylogue --format json messages where ... | group by role | count",
+    "polylogue --format json find \"messages where ... | group by role | count\"",
     "Polylogue.query_units(...)",
     "MCP query_units",
     "GET /api/query-units?expression=..."

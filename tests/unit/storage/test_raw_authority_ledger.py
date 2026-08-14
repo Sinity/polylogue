@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import inspect
 import json
-import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -1784,24 +1782,6 @@ def test_frontier_item_construction_rejects_unreachable_actuator_state_pairs() -
         reason="needs an operator disposition",
     )
     assert judgment_item.executable is False
-
-
-def test_apply_dispatched_actuators_match_apply_branches() -> None:
-    """polylogue-w32w: keep ``_APPLY_DISPATCHED_ACTUATORS`` from drifting out
-    of sync with ``apply_raw_authority_frontier``'s actual dispatch
-    branches. If a future actuator gets a real ``if item.actuator is
-    RawAuthorityActuator.<X>:`` handler without also being added to
-    ``_APPLY_DISPATCHED_ACTUATORS``, the new handler is silently exempt
-    from the ``RawAuthorityFrontierItem.__post_init__`` reachability
-    invariant -- exactly the kind of drift that let polylogue-u19l happen
-    undetected. Parses the actual dispatch branches out of the module
-    source rather than hand-duplicating the list, so this fails the moment
-    the two go out of sync in either direction.
-    """
-    source = inspect.getsource(raw_reconciler_mod)
-    member_names = re.findall(r"item\.actuator is RawAuthorityActuator\.(\w+)", source)
-    dispatched_in_source = {raw_reconciler_mod.RawAuthorityActuator[member_name] for member_name in member_names}
-    assert dispatched_in_source == raw_reconciler_mod._APPLY_DISPATCHED_ACTUATORS
 
 
 def _census_row_counts(root: Path) -> tuple[int, int, int]:

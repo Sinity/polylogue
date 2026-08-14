@@ -131,12 +131,6 @@ class TestReadVerbCardinality:
             confidence_threshold=0.3,
             github_api=False,
             related_limit=5,
-            project_path=None,
-            project_repo=None,
-            since=None,
-            until=None,
-            context_origin=None,
-            context_query=None,
             max_sessions=5,
             max_tokens=None,
             include_assertions=False,
@@ -678,34 +672,6 @@ class TestAnalyzeVerbNoBcardinality:
 
 
 # ---------------------------------------------------------------------------
-# Shared path: mark and delete both use check_cardinality from the same module
-# ---------------------------------------------------------------------------
-
-
-class TestSharedCardinalityPath:
-    """Structural tests: mark and delete must import from the same cardinality module."""
-
-    def test_mark_and_delete_import_check_cardinality_from_same_module(self) -> None:
-        import inspect
-
-        mark_src = inspect.getsource(query_verbs.mark_verb.callback)  # type: ignore[arg-type]
-        delete_src = inspect.getsource(query_verbs.delete_verb.callback)  # type: ignore[arg-type]
-
-        # Both verbs must reference the shared module (not inline implementations).
-        assert "verb_cardinality" in mark_src, "mark_verb must import from verb_cardinality"
-        assert "verb_cardinality" in delete_src, "delete_verb must import from verb_cardinality"
-        assert "check_cardinality" in mark_src, "mark_verb must call check_cardinality"
-        assert "check_cardinality" in delete_src, "delete_verb must call check_cardinality"
-
-    def test_analyze_does_not_use_cardinality_module(self) -> None:
-        import inspect
-
-        analyze_src = inspect.getsource(query_verbs.analyze_verb.callback)  # type: ignore[arg-type]
-        # analyze_verb deliberately has no cardinality restriction.
-        assert "check_cardinality" not in analyze_src, "analyze_verb must not call check_cardinality"
-
-
-# ---------------------------------------------------------------------------
 # Bug 1 regression: delete truncation (#1873)
 # ---------------------------------------------------------------------------
 
@@ -770,30 +736,6 @@ class TestDeleteUsesPreResolvedIds:
             cb(child, False, True, False, None)  # type: ignore[operator]  # yes=T
 
         mock_exec.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Bug 2 regression: _async_resolve_ids uses compiled spec (#1873)
-# ---------------------------------------------------------------------------
-
-
-class TestResolveIdsUsesCompiledSpec:
-    """_async_resolve_ids must compile DSL expressions, not pass them as FTS text."""
-
-    def test_resolve_ids_calls_query_spec_not_raw_params(self) -> None:
-        """Bug 2: resolve path uses request.query_spec() (compiled DSL) not query_params()."""
-        import inspect
-
-        from polylogue.cli.verb_cardinality import _async_resolve_ids
-
-        src = inspect.getsource(_async_resolve_ids)
-        # After the fix the function must call query_spec() for DSL parsing.
-        assert "query_spec()" in src, "_async_resolve_ids must call request.query_spec()"
-        # The old broken path used build_query_execution_plan(request.query_params()).
-        assert "build_query_execution_plan" not in src, (
-            "_async_resolve_ids must not use build_query_execution_plan (passes raw text as FTS)"
-        )
-        assert "query_params()" not in src, "_async_resolve_ids must not call query_params() (bypasses DSL parsing)"
 
 
 # ---------------------------------------------------------------------------

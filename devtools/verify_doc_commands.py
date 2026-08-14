@@ -10,24 +10,19 @@ inline references to three command surfaces:
 For ``polylogued`` and ``devtools`` the lint extracts the first non-flag
 token after the surface name and verifies it is a real subcommand.
 
-The ``polylogue`` CLI is query-first — any bare token after ``polylogue``
-is normally a valid FTS query, not a typo — so it is validated *by command
-recognition* (#2438): a documented invocation is only checked when its
-leading token resolves to a known command path or a removed command name.
-A recognized command path then has its long-flags validated against the
-union of root and full-path options (lazy subcommands are materialized via
-``get_params`` so ``analyze insights profiles --tier`` resolves correctly),
-while a leading token that resolves to neither a known nor a removed command
-is left alone so ``polylogue rate limiting retries`` stays legal.
+The ``polylogue`` CLI is query-first but requires explicit query intent. Its
+examples are parsed through the live root parser, so ``find``, shell-quoted
+free text, and field syntax remain valid while an unknown bare root is rejected.
+Recognized command paths also have their long flags checked against the live
+Click tree.
 
 The lint only reads tokens that appear inside Markdown code surfaces
 (inline ``` `code` ``` spans and fenced ``` ```bash/sh/shell/console``` `` blocks);
 plain prose is ignored to avoid false positives from sentences such as
 "polylogue and devtools share a workflow".
 
-It exists to keep #1262 / #869 / #2438 closed: doc drift away from the
-live command surface should fail a CI gate, not survive in master until a
-user files a bug.
+The validator derives authority from the current command implementations. It
+does not grep for historical spellings or require prose to preserve old names.
 """
 
 from __future__ import annotations
@@ -35,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -96,8 +92,8 @@ def _polylogue_root_value_flags(root: click.Command) -> frozenset[str]:
     return frozenset(out)
 
 
-def _polylogue_path_flags(root: click.Command) -> dict[tuple[str, ...], frozenset[str]]:
-    """Long-flags declared on every command path in the ``polylogue`` tree.
+def _click_path_flags(root: click.Command) -> dict[tuple[str, ...], frozenset[str]]:
+    """Long flags declared on every command path in a Click tree.
 
     ``iter_command_paths`` descends the full tree, so leaf subcommands such as
     ``analyze insights profiles`` expose their real options here even though the
@@ -106,23 +102,12 @@ def _polylogue_path_flags(root: click.Command) -> dict[tuple[str, ...], frozense
     return {cp.path: _long_opts(cp.command) for cp in iter_command_paths(root, include_root=False) if cp.path}
 
 
-# ``polylogue`` subcommands that were removed/renamed. The root command is
-# query-first — any bare token after ``polylogue`` is normally a valid FTS
-# query, not a typo — so a removed command name (``polylogue list``) is
-# indistinguishable from a search ("find sessions matching 'list'") without
-# remembering it once *was* a command. This intentionally small, documented set
-# replaces the previous hand-maintained per-flag denylist for the cases where
-# command recognition alone cannot fire.
-REMOVED_POLYLOGUE_COMMANDS: dict[str, str] = {
-    "list": "polylogue: the 'list' verb was removed; use 'read --all' (optionally with --format).",
-    "show": "polylogue: the 'show' verb was removed; use 'read --view transcript' for one session.",
-}
-
-
 # Dated point-in-time records under these trees assert the command surface *as
 # of their date*, not the current one. Holding them to live-command accuracy
 # would force rewriting history, so they are excluded from the drift lint.
-_EXCLUDED_DOC_DIRS: tuple[str, ...] = ("docs/audits",)
+# Audits record past state and designs may describe proposed interfaces. Neither
+# is a contract for the currently installed command tree.
+_EXCLUDED_DOC_DIRS: tuple[str, ...] = ("docs/audits", "docs/design")
 
 
 def _doc_files(root: Path) -> list[Path]:
@@ -141,43 +126,8 @@ def _doc_files(root: Path) -> list[Path]:
 # neighbours such as ``polylogued.service`` (systemd unit) or
 # ``polylogue-mcp`` (sibling executable). The preceding ``(?<![\w-])``
 # rejects mid-word matches so ``run-polylogued-helper`` doesn't trip.
-_SURFACE_RE = re.compile(r"(?<![\w-])(polylogued|polylogue|devtools)(?![.\w-])([^\n`]*)")
+_SURFACE_RE = re.compile(r"(?<![\w-])(polylogued|polylogue|devtools)(?=\s|$)([^\n`]*)")
 _TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-
-# Stale invocation patterns flagged across all three surfaces, including
-# ``polylogue``. These are exact substring matches (after stripping
-# Markdown link bodies); they exist independently of subcommand lookups
-# so that drift across the daemon-first transition cannot creep back in.
-STALE_INVOCATIONS: tuple[tuple[str, str], ...] = (
-    (
-        "polylogued run --api ",
-        "polylogued: '--api' is a stale boolean; the HTTP API is on by default — use '--no-api' to disable.",
-    ),
-    (
-        "polylogued run --watch ",
-        "polylogued: '--watch' is a stale boolean; the watcher is on by default — use '--no-watch' to disable.",
-    ),
-    (
-        "polylogued run --enable-api",
-        "polylogued: '--enable-api' was removed; the HTTP API is on by default — use '--no-api' to disable.",
-    ),
-    (
-        "polylogue run --input",
-        "polylogue: 'polylogue run --input' was removed; use 'polylogue ingest PATH' against a running daemon.",
-    ),
-    (
-        "polylogue run site",
-        "polylogue: 'polylogue run site' was removed; site rendering lives in 'devtools render pages'.",
-    ),
-    (
-        "polylogue run --source",
-        "polylogue: 'polylogue run --source' was removed; ask the running daemon via 'polylogue ingest PATH'.",
-    ),
-    (
-        "polylogue run --watch",
-        "polylogue: 'polylogue run --watch' was removed; the daemon owns the watcher (run 'polylogued run').",
-    ),
-)
 
 
 @dataclass(frozen=True)
@@ -233,39 +183,76 @@ def _real_tokens(rest: str) -> tuple[str, ...]:
 
 
 def _invocation_tokens(rest: str) -> list[str]:
-    """Ordered raw tokens (flags kept) up to a shell/pipeline boundary."""
+    """Shell tokens (flags kept) up to a shell/pipeline boundary."""
     stripped = rest.lstrip()
-    for stop in ("&&", "||", "|", ";", "#", "$(", "`"):
-        idx = stripped.find(stop)
-        if idx >= 0:
-            stripped = stripped[:idx]
+    if stripped.endswith("\\"):
+        stripped = stripped[:-1].rstrip()
+    lexer = shlex.shlex(stripped, posix=True, punctuation_chars="|;&")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
     tokens: list[str] = []
-    for part in stripped.split():
-        cleaned = part.strip(".,:;\"'`()[]<>")
+    for part in lexer:
+        if part in {"&&", "||", "|", ";"} or part.startswith(("$(", "`")):
+            break
+        cleaned = part.strip(".,:;`()[]<>")
         if cleaned:
             tokens.append(cleaned)
     return tokens
 
 
-def _polylogue_invocation_errors(
+def _polylogue_query_intent_errors(
+    rel: str,
+    line: int,
+    tokens: list[str],
+    *,
+    ctx: _ClickContext,
+) -> list[str]:
+    """Apply the product CLI's strict query-intent floor without executing it."""
+
+    from polylogue.cli.query_group import _split_query_mode_args, has_signalled_query_intent
+
+    if not isinstance(ctx.root, click.Group):
+        return []
+    try:
+        _, query_terms, has_subcommand, explicit_query = _split_query_mode_args(ctx.root, list(tokens))
+    except click.ClickException as exc:
+        return [f"{rel}:{line}: invalid 'polylogue' invocation: {exc.format_message()}"]
+
+    if has_subcommand:
+        return []
+    if has_signalled_query_intent(query_terms, explicit_query=explicit_query):
+        return []
+    invocation = " ".join(("polylogue", *tokens))
+    return [
+        f"{rel}:{line}: '{invocation}' does not signal query intent; "
+        "use `polylogue find ...`, quote the free-text expression, or use field syntax"
+    ]
+
+
+def _click_invocation_errors(
     rel: str,
     line: int,
     rest: str,
     *,
-    ctx: _PolylogueContext,
+    surface: str,
+    ctx: _ClickContext,
 ) -> list[str]:
-    """Validate a single ``polylogue ...`` invocation.
+    """Validate flags for a command path derived from the live Click tree.
 
-    Opt-in by command recognition: a removed command name fails; a recognized
-    command path has its long-flags validated against ``root ∪ path ∪ direct``
-    options; a leading token that resolves to neither is left alone so
-    query-first FTS examples (``polylogue rate limiting retries``) stay legal.
+    Validation opts in only after command recognition. This preserves
+    query-first free text for ``polylogue`` while still checking strict daemon
+    invocations after their command has been identified.
     """
-    tokens = _invocation_tokens(rest)
+    try:
+        tokens = _invocation_tokens(rest)
+    except ValueError as exc:
+        return [f"{rel}:{line}: invalid shell quoting after '{surface}': {exc}"]
     if not tokens:
         return []
 
-    # 1. Command detection: the first bare token that is a known/removed command.
+    errors = _polylogue_query_intent_errors(rel, line, tokens, ctx=ctx) if surface == "polylogue" else []
+
+    # Command detection: the first bare token that is a known command.
     #    A token consumed as the value of a root value-flag (``--add-tag export``)
     #    is skipped so a flag value is never read as a subcommand.
     start: int | None = None
@@ -279,8 +266,6 @@ def _polylogue_invocation_errors(
             if "=" not in tok and tok in ctx.value_flags:
                 skip_next = True
             continue
-        if tok in REMOVED_POLYLOGUE_COMMANDS:
-            return [f"{rel}:{line}: '{tok}' — {REMOVED_POLYLOGUE_COMMANDS[tok]}"]
         if (tok,) in ctx.path_flags:
             start, verb = idx, tok
             break
@@ -289,7 +274,7 @@ def _polylogue_invocation_errors(
     if verb is None or start is None or "then" in tokens:
         # Unrecognized leading token (query-first) or a ``then`` chain whose
         # flags attribute to different verbs — leave it alone.
-        return []
+        return errors
 
     # 2. Resolve the full command path by descending on consecutive bare tokens
     #    that are children of the current path. Flags are skipped; the first bare
@@ -310,8 +295,7 @@ def _polylogue_invocation_errors(
     for depth in range(1, len(path) + 1):
         valid |= ctx.path_flags.get(path[:depth], frozenset())
 
-    errors: list[str] = []
-    label = "polylogue " + " ".join(path)
+    label = surface + " " + " ".join(path)
     for tok in tokens:
         if tok == "--":  # end-of-options; remainder is positional
             break
@@ -379,39 +363,35 @@ def _code_segments(text: str) -> list[tuple[int, str]]:
 
 
 @dataclass(frozen=True)
-class _PolylogueContext:
+class _ClickContext:
+    root: click.Command
     root_flags: frozenset[str]
     value_flags: frozenset[str]
     path_flags: dict[tuple[str, ...], frozenset[str]]
 
 
-def _build_polylogue_context() -> _PolylogueContext:
-    cli = _polylogue_cli()
-    return _PolylogueContext(
-        root_flags=_long_opts(cli),
-        value_flags=_polylogue_root_value_flags(cli),
-        path_flags=_polylogue_path_flags(cli),
+def _build_click_context(root: click.Command) -> _ClickContext:
+    return _ClickContext(
+        root=root,
+        root_flags=_long_opts(root),
+        value_flags=_polylogue_root_value_flags(root),
+        path_flags=_click_path_flags(root),
     )
 
 
 def _scan_file(
-    path: Path, root: Path, polylogue_ctx: _PolylogueContext | None = None
+    path: Path,
+    root: Path,
+    polylogue_ctx: _ClickContext | None = None,
+    polylogued_ctx: _ClickContext | None = None,
 ) -> tuple[list[DocCommandRef], list[str]]:
     rel = path.relative_to(root).as_posix()
     refs: list[DocCommandRef] = []
-    stale_hits: list[str] = []
+    command_errors: list[str] = []
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return refs, [f"{rel}: read error: {exc}"]
-
-    # Stale-substring check runs against full lines so it catches the
-    # token sequence regardless of code-fence wrapping.
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        sanitized = re.sub(r"\]\([^)]+\)", "]()", line)
-        for needle, hint in STALE_INVOCATIONS:
-            if needle in sanitized:
-                stale_hits.append(f"{rel}:{line_no}: stale invocation '{needle.rstrip()}' — {hint}")
 
     # Subcommand validity is checked only inside code segments, and only
     # when the surface name appears in a command-start position. Prose
@@ -440,13 +420,17 @@ def _scan_file(
             rest = match.group(2)
             if surface == "polylogue":
                 if polylogue_ctx is not None:
-                    stale_hits.extend(_polylogue_invocation_errors(rel, line_no, rest, ctx=polylogue_ctx))
+                    command_errors.extend(
+                        _click_invocation_errors(rel, line_no, rest, surface=surface, ctx=polylogue_ctx)
+                    )
                 continue
+            if surface == "polylogued" and polylogued_ctx is not None:
+                command_errors.extend(_click_invocation_errors(rel, line_no, rest, surface=surface, ctx=polylogued_ctx))
             token = _surface_subcommand(surface, rest)
             if token is None:
                 continue
             refs.append(DocCommandRef(surface=surface, subcommand=token, file=path, line=line_no))
-    return refs, stale_hits
+    return refs, command_errors
 
 
 def check_docs(root: Path | None = None) -> tuple[list[str], int]:
@@ -457,12 +441,13 @@ def check_docs(root: Path | None = None) -> tuple[list[str], int]:
         "polylogued": _polylogued_subcommands(),
         "devtools": _devtools_subcommands(),
     }
-    polylogue_ctx = _build_polylogue_context()
+    polylogue_ctx = _build_click_context(_polylogue_cli())
+    polylogued_ctx = _build_click_context(polylogued_root)
 
     errors: list[str] = []
     for path in files:
-        refs, stale = _scan_file(path, target_root, polylogue_ctx)
-        errors.extend(stale)
+        refs, command_errors = _scan_file(path, target_root, polylogue_ctx, polylogued_ctx)
+        errors.extend(command_errors)
         rel = path.relative_to(target_root).as_posix()
         for ref in refs:
             known = surface_names[ref.surface]

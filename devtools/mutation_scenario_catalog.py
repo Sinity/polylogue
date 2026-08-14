@@ -128,7 +128,6 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         paths_to_mutate=(
             "polylogue/cli/query.py",
             "polylogue/archive/query/plan.py",
-            "polylogue/cli/query_actions.py",
             "polylogue/cli/query_output.py",
         ),
         tests=(

@@ -28,9 +28,8 @@ webui/package-lock.json
 webui/src/api/generated.ts
 webui/src/generated/
 
-# Generated/rendered doc surfaces and demo artifacts.
+# Generated/rendered doc surfaces.
 docs/cli-reference.md
-docs/examples/demo-tour/report.json
 
 # Rendered byte-identical copy of polylogue/agent_integration/data/deep-reference.md;
 # the source copy stays counted, this duplicate does not.

@@ -37,10 +37,15 @@ class DifferenceClassification(StrEnum):
     UNEXPECTED = "unexpected"
 
 
+def _canonical_identity(identity: tuple[tuple[str, object], ...]) -> tuple[tuple[str, object], ...]:
+    """Make JSON object key order irrelevant to a difference identity."""
+
+    return tuple(sorted(identity, key=lambda item: item[0]))
+
+
 class CanaryAuthorityKind(StrEnum):
     """Structured authority attached to one reviewed difference."""
 
-    BEAD = "bead"
     DELTA = "delta"
     SUCCESSOR = "successor"
 
@@ -90,7 +95,7 @@ class ExpectedDifference:
             return False
         if operation is not self.operations[0]:
             return False
-        if identity != self.identity:
+        if _canonical_identity(identity) != _canonical_identity(self.identity):
             return False
         return tuple(changed_columns) == self.columns
 
@@ -600,27 +605,28 @@ class CanaryDifferenceReview:
             raise UnclassifiedCanaryDiffError("canary review authority must provide both kind and id")
         if kind is None or authority_id is None:
             prefix, separator, value = self.reference.partition(":")
-            if separator and prefix in {item.value for item in CanaryAuthorityKind}:
-                kind = CanaryAuthorityKind(prefix)
+            if separator:
+                try:
+                    kind = CanaryAuthorityKind(prefix)
+                except ValueError as exc:
+                    raise UnclassifiedCanaryDiffError("canary review reference has an invalid authority kind") from exc
                 authority_id = value
-            elif self.classification is DifferenceClassification.EXPECTED:
+            elif self.classification is DifferenceClassification.UNEXPECTED:
                 # Preserve compatibility for in-process callers. The durable
                 # representation below is always structured.
-                kind = CanaryAuthorityKind.BEAD
-                authority_id = self.reference
-            else:
                 kind = CanaryAuthorityKind.SUCCESSOR
                 authority_id = self.reference
+            else:
+                raise UnclassifiedCanaryDiffError(
+                    "expected canary differences require an explicit declared delta authority"
+                )
         if not str(authority_id).strip() or any(character.isspace() for character in str(authority_id)):
             raise UnclassifiedCanaryDiffError("canary review authority must have a structured non-empty id")
         canonical_reference = f"{kind.value}:{authority_id}"
         if has_explicit_authority and self.reference != canonical_reference:
             raise UnclassifiedCanaryDiffError("canary review reference disagrees with its structured authority")
-        if self.classification is DifferenceClassification.EXPECTED and kind not in {
-            CanaryAuthorityKind.BEAD,
-            CanaryAuthorityKind.DELTA,
-        }:
-            raise UnclassifiedCanaryDiffError("expected canary differences require a Bead or delta authority")
+        if self.classification is DifferenceClassification.EXPECTED and kind is not CanaryAuthorityKind.DELTA:
+            raise UnclassifiedCanaryDiffError("expected canary differences require a declared delta authority")
         if self.classification is DifferenceClassification.UNEXPECTED and kind is not CanaryAuthorityKind.SUCCESSOR:
             raise UnclassifiedCanaryDiffError("unexpected canary differences require a structured successor id")
         object.__setattr__(self, "authority_kind", kind)
@@ -648,7 +654,7 @@ class CanaryDifferenceReview:
 
     @property
     def key(self) -> tuple[str, DifferenceOperation, tuple[tuple[str, object], ...], tuple[str, ...]]:
-        return self.table, self.operation, self.identity, self.changed_columns
+        return self.table, self.operation, _canonical_identity(self.identity), self.changed_columns
 
     def to_dict(self) -> dict[str, object]:
         authority_kind = self.authority_kind
@@ -730,15 +736,7 @@ def write_canary_report(
             duplicate_keys.append(review.key)
         review_by_key[review.key] = review
     _validate_expected_review_authorities(review_list)
-    difference_keys = {
-        (
-            difference.table,
-            difference.operation,
-            difference.identity,
-            difference.changed_columns,
-        )
-        for difference in comparison.differences
-    }
+    difference_keys = {_difference_key(difference) for difference in comparison.differences}
     missing_keys = difference_keys.difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_keys)
     incomplete = bool(duplicate_keys or missing_keys or extra_keys)
@@ -756,14 +754,8 @@ def write_canary_report(
         reviewed_differences = tuple(
             replace(
                 difference,
-                classification=review_by_key[
-                    (difference.table, difference.operation, difference.identity, difference.changed_columns)
-                ].classification,
-                rationale=_reviewed_difference_rationale(
-                    review_by_key[
-                        (difference.table, difference.operation, difference.identity, difference.changed_columns)
-                    ]
-                ),
+                classification=review_by_key[_difference_key(difference)].classification,
+                rationale=_reviewed_difference_rationale(review_by_key[_difference_key(difference)]),
             )
             for difference in comparison.differences
         )
@@ -1658,7 +1650,7 @@ def _validate_approved_canary_report(path: Path, archive_root: Path) -> dict[str
 def _difference_key(
     difference: RowDifference,
 ) -> tuple[str, DifferenceOperation, tuple[tuple[str, object], ...], tuple[str, ...]]:
-    return difference.table, difference.operation, difference.identity, difference.changed_columns
+    return difference.table, difference.operation, _canonical_identity(difference.identity), difference.changed_columns
 
 
 def _difference_from_dict(value: object) -> RowDifference:
@@ -1774,42 +1766,86 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
 
 
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
-    """Resolve expected-difference authorities from packaged and typed catalogs."""
-    from polylogue.maintenance.canary_authorities import BEAD_AUTHORITY_IDS, OPEN_BEAD_AUTHORITY_IDS
+    """Resolve approval-capable authorities from packaged product declarations.
+
+    An expected semantic difference can approve a canary, so it must name an
+    executable index delta shipped in the same package.  A Bead is planning
+    state, not semantic evidence.  Unexpected differences may name a successor
+    for human follow-up, but approval rejects them regardless of that label.
+    """
     from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
 
-    expected_beads: set[str] = {
-        review.authority_id
-        for review in reviews
-        if review.classification is DifferenceClassification.EXPECTED
-        and review.authority_kind is CanaryAuthorityKind.BEAD
-        and review.authority_id is not None
-    }
-    expected_deltas = {
-        review.authority_id
+    expected_reviews = tuple(
+        review
         for review in reviews
         if review.classification is DifferenceClassification.EXPECTED
         and review.authority_kind is CanaryAuthorityKind.DELTA
         and review.authority_id is not None
-    }
-    unknown_beads = sorted(bead for bead in expected_beads if bead not in BEAD_AUTHORITY_IDS)
-    successor_beads = {
-        review.authority_id
-        for review in reviews
-        if review.authority_kind is CanaryAuthorityKind.SUCCESSOR and review.authority_id is not None
-    }
-    unknown_successors = sorted(bead for bead in successor_beads if bead not in OPEN_BEAD_AUTHORITY_IDS)
-    declared_deltas = {str(declaration.version) for declaration in INDEX_DELTA_DECLARATIONS}
-    unknown_deltas = sorted(delta for delta in expected_deltas if delta not in declared_deltas)
-    if unknown_beads or unknown_successors or unknown_deltas:
-        detail = ", ".join(
-            [
-                *(f"unknown Bead {bead}" for bead in unknown_beads),
-                *(f"unknown successor Bead {bead}" for bead in unknown_successors),
-                *(f"unknown index delta {delta}" for delta in unknown_deltas),
-            ]
-        )
+    )
+    declarations_by_id = {str(declaration.version): declaration for declaration in INDEX_DELTA_DECLARATIONS}
+    unknown_deltas = sorted(
+        {
+            authority_id
+            for review in expected_reviews
+            if (authority_id := review.authority_id) is not None and authority_id not in declarations_by_id
+        }
+    )
+    if unknown_deltas:
+        detail = ", ".join(f"unknown index delta {delta}" for delta in unknown_deltas)
         raise UnclassifiedCanaryDiffError(f"expected canary authority is not declared in packaged evidence: {detail}")
+    unrelated_reviews: list[str] = []
+    for review in expected_reviews:
+        authority_id = review.authority_id
+        assert authority_id is not None
+        declaration = declarations_by_id[authority_id]
+        if not (declaration.requires_semantic_reparse or declaration.requires_targeted_reprocess):
+            unrelated_reviews.append(f"delta {authority_id} does not declare a semantic reparse")
+            continue
+        declared_tables = {
+            object_name
+            for operation in declaration.operations
+            for object_kind, object_name in operation.objects
+            if object_kind == "table"
+        }
+        if not declared_tables:
+            unrelated_reviews.append(f"delta {authority_id} does not declare comparable table scope")
+        elif review.table not in declared_tables:
+            unrelated_reviews.append(f"delta {authority_id} does not declare table {review.table}")
+            continue
+        else:
+            matching_changes = tuple(
+                change
+                for change in declaration.expected_canary_changes
+                if change.table == review.table and review.operation.value in change.operations
+            )
+            if not matching_changes:
+                unrelated_reviews.append(
+                    f"delta {authority_id} does not declare {review.operation.value} canary changes for "
+                    f"table {review.table}"
+                )
+                continue
+            if not any(set(review.changed_columns) <= set(change.columns) for change in matching_changes):
+                unrelated_reviews.append(
+                    f"delta {authority_id} does not declare changed columns {review.changed_columns!r} "
+                    f"for table {review.table}"
+                )
+                continue
+            scope = declaration.reprocess_scope
+            if scope is not None:
+                identity = dict(review.identity)
+                session_id = identity.get("session_id")
+                if not isinstance(session_id, str):
+                    unrelated_reviews.append(f"delta {authority_id} requires a session_id row identity")
+                elif scope.origin is not None and not session_id.startswith(f"{scope.origin}:"):
+                    unrelated_reviews.append(
+                        f"delta {authority_id} does not declare session {session_id} outside origin {scope.origin}"
+                    )
+                elif scope.session_ids and session_id not in scope.session_ids:
+                    unrelated_reviews.append(f"delta {authority_id} does not declare session {session_id}")
+    if unrelated_reviews:
+        raise UnclassifiedCanaryDiffError(
+            "expected canary authority does not cover the reviewed difference: " + "; ".join(unrelated_reviews)
+        )
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -1851,6 +1887,13 @@ _VOLATILE_COLUMNS = frozenset(
         "refreshed_at_ms",
     }
 )
+_VOLATILE_COLUMNS_BY_TABLE = {
+    # Rebuild attempts mint a fresh receipt id and timestamp.  Their semantic
+    # decision tuple remains compared below under the table's unique logical
+    # identity, so accepted/superseded/rejected authority drift stays visible.
+    "raw_revision_applications": frozenset({"decision_id", "decided_at_ms"}),
+    "raw_revision_heads": frozenset({"decided_at_ms"}),
+}
 
 
 def compare_reindex_generations(
@@ -2002,6 +2045,14 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...
 def _table_primary_key(connection: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
     if table == "actions" and "tool_use_block_id" in columns:
         return ("tool_use_block_id",)
+    if table == "raw_revision_applications":
+        return (
+            "raw_id",
+            "session_id",
+            "decision",
+            "source_revision",
+            "accepted_source_revision",
+        )
     rows = connection.execute(f"PRAGMA table_xinfo({_quote_identifier(table)})").fetchall()
     primary_key = [(int(row[5]), str(row[1])) for row in rows if int(row[5]) > 0 and int(row[6]) not in (1, 2)]
     if primary_key:
@@ -2125,7 +2176,8 @@ def _table_rows(
     scope_columns: tuple[str, ...],
     session_ids: tuple[str, ...],
 ) -> dict[tuple[object, ...], dict[str, object]]:
-    selected_columns = tuple(column for column in columns if column not in _VOLATILE_COLUMNS)
+    volatile_columns = _VOLATILE_COLUMNS.union(_VOLATILE_COLUMNS_BY_TABLE.get(table, ()))
+    selected_columns = tuple(column for column in columns if column not in volatile_columns)
     quoted_columns = ", ".join(_quote_identifier(column) for column in columns)
     query = f"SELECT {quoted_columns} FROM {_quote_identifier(table)}"
     parameters: tuple[str, ...] = ()

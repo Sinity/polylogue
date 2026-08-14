@@ -99,7 +99,9 @@ class SessionDeleteActuator:
         )
 
     def apply(self, plan: MutationPlan, args: SessionDeleteArgs) -> MutationReceipt:
-        session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
+        if any(not target_ref.startswith("session:") for target_ref in plan.target_refs):
+            raise ValueError("session delete plan contains a non-session target")
+        session_ids = tuple(target_ref.removeprefix("session:") for target_ref in plan.target_refs)
         deleted = args.archive.delete_sessions(session_ids) if session_ids else 0
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
         return MutationReceipt(

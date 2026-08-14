@@ -2186,7 +2186,7 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
     repair_hint = None
     if state is not CapabilityReadinessState.READY:
         if storage.schema_mismatches == ["index"]:
-            repair_hint = "polylogue ops reset --index && polylogued run"
+            repair_hint = "polylogue ops maintenance rebuild-index"
         elif storage.missing_tiers:
             repair_hint = "polylogue ops maintenance archive-init --yes"
         else:

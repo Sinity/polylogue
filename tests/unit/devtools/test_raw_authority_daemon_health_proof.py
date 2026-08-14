@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from devtools.command_catalog import COMMANDS
 from devtools.raw_authority_daemon_health_proof import (
     ProbeSample,
     RawAuthorityDaemonHealthProofError,
@@ -156,7 +155,7 @@ def test_summarize_endpoint_ignores_other_endpoints_samples() -> None:
     assert summary.max_ms == 20.0
 
 
-def test_cli_forwards_arguments_and_catalog_entry_matches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_cli_forwards_arguments(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     def record_call(workdir: Path, **kwargs: object) -> dict[str, object]:
@@ -178,11 +177,6 @@ def test_cli_forwards_arguments_and_catalog_entry_matches(monkeypatch: pytest.Mo
     assert captured["raws"] == 8
     assert captured["max_io_full_avg10"] == 2.0
     assert captured["max_memory_full_avg10"] == 2.0
-
-    command = COMMANDS["workspace raw-authority-daemon-health-proof"]
-    assert command.module == "devtools.raw_authority_daemon_health_proof"
-    assert command.use_when is not None
-    assert "daemon-health responsiveness" in command.use_when
 
 
 def test_cli_allow_contended_host_disables_pressure_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

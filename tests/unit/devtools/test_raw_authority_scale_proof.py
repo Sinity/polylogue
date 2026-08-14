@@ -7,13 +7,14 @@ from typing import Any, cast
 
 import pytest
 
-from devtools.command_catalog import COMMANDS
 from devtools.raw_authority_scale_proof import (
     JULY_15_COMPONENTS,
     JULY_15_DIRECT_CANDIDATES,
     JULY_15_EXPANDED_MEMBERS,
     ProcessSample,
     RawAuthorityScaleScenario,
+    _ExpectedExceptionalComponent,
+    _outcome_matches_expected_exception,
     main,
     run_raw_authority_scale_proof,
 )
@@ -21,6 +22,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.storage import repair
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -162,6 +164,37 @@ def test_raw_authority_scale_proof_rejects_every_unsuccessful_production_pass(
         run_raw_authority_scale_proof(
             tmp_path, components=1, raws=1, max_io_full_avg10=None, max_memory_full_avg10=None
         )
+
+
+def test_exceptional_outcome_rejects_a_swapped_component_receipt() -> None:
+    expected = _ExpectedExceptionalComponent(
+        status=RawReplayPlanStatus.TERMINAL,
+        application_decision="ambiguous",
+        exceptional_raw_ids=frozenset({"raw-a-terminal"}),
+    )
+    swapped = RawReplayPlanOutcome(
+        plan_id="plan-a",
+        input_raw_ids=("raw-a-direct", "raw-a-terminal"),
+        status=RawReplayPlanStatus.TERMINAL,
+        reason="synthetic terminal",
+        next_action="none",
+        application_receipt={
+            "application_rows": [{"raw_id": "raw-b-terminal", "decision": "ambiguous"}],
+        },
+    )
+    exact = RawReplayPlanOutcome(
+        plan_id="plan-a",
+        input_raw_ids=("raw-a-direct", "raw-a-terminal"),
+        status=RawReplayPlanStatus.TERMINAL,
+        reason="synthetic terminal",
+        next_action="none",
+        application_receipt={
+            "application_rows": [{"raw_id": "raw-a-terminal", "decision": "ambiguous"}],
+        },
+    )
+
+    assert _outcome_matches_expected_exception(swapped, expected) is False
+    assert _outcome_matches_expected_exception(exact, expected) is True
 
 
 def test_raw_authority_scale_proof_consumes_reservations_and_has_stable_corpus_identity(tmp_path: Path) -> None:
@@ -428,6 +461,7 @@ def test_raw_authority_scale_proof_preserves_exact_private_free_component_cohort
     ]
     passes = cast(list[dict[str, object]], payload["passes"])
     assert sum(cast(dict[str, int], item["plan_status_counts"])["terminal"] for item in passes) == 1
+    assert sum(item["production_success"] is False for item in passes) == 1
 
 
 def test_raw_authority_scale_proof_converges_with_explicit_deferred_cohort(tmp_path: Path) -> None:
@@ -527,6 +561,8 @@ def test_raw_authority_scale_proof_preserves_private_free_joint_byte_cohorts(tmp
         largest_blob = conn.execute("SELECT MAX(blob_size) FROM raw_sessions").fetchone()
     assert largest_blob is not None
     assert int(largest_blob[0]) < 4_096
+    passes = cast(list[dict[str, object]], payload["passes"])
+    assert sum(item["production_success"] is False for item in passes) == 1
 
 
 def test_explicit_cohorts_stream_bounded_payloads_without_allocating_full_bytes(
@@ -604,7 +640,7 @@ def test_raw_authority_scale_proof_rejects_an_undersized_generated_workload(
         )
 
 
-def test_raw_authority_scale_proof_cli_and_catalog_default_to_july_topology(
+def test_raw_authority_scale_proof_cli_defaults_to_july_topology(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict[str, object] = {}
@@ -621,11 +657,3 @@ def test_raw_authority_scale_proof_cli_and_catalog_default_to_july_topology(
     assert captured["raws"] == JULY_15_DIRECT_CANDIDATES == 15_264
     assert captured["expanded_raws"] == JULY_15_EXPANDED_MEMBERS == 21_398
     assert captured["pass_limit"] == JULY_15_DIRECT_CANDIDATES
-    command = COMMANDS["workspace raw-authority-scale-proof"]
-    assert command.use_when is not None
-    assert "15,264 direct candidates" in command.use_when
-    assert "21,398 expanded memberships" in command.use_when
-    assert command.examples[-1] == (
-        "devtools workspace raw-authority-scale-proof --components 10163 --raws 15264 "
-        "--expanded-raws 21398 --pass-limit 15264 --keep --json"
-    )

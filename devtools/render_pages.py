@@ -71,14 +71,12 @@ def _run_render_commands(verbose: bool = False) -> None:
         render_cli_reference,
         render_devtools_reference,
         render_docs_surface,
-        render_quality_reference,
     )
 
     renderers = [
         ("render cli-reference", render_cli_reference.main),
         ("render devtools-reference", render_devtools_reference.main),
         ("render docs-surface", render_docs_surface.main),
-        ("render quality-reference", render_quality_reference.main),
     ]
     for name, render in renderers:
         if verbose:

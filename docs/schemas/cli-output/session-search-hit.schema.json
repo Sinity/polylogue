@@ -441,8 +441,8 @@
   "title": "Session Search Hit",
   "type": "object",
   "x-polylogue-cli-surfaces": [
-    "polylogue --format json <query>",
-    "polylogue --format ndjson <query>"
+    "polylogue --format json find <query>",
+    "polylogue --format ndjson find <query>"
   ],
   "x-polylogue-source-model": "SessionSearchHitPayload"
 }

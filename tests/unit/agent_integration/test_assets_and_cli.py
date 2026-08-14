@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from devtools.render_agent_manual import expected_outputs
-from devtools.render_agent_manual import main as render_main
 from polylogue.agent_integration.assets import ALL_ASSETS, agent_asset_metadata, read_agent_asset, read_agent_json
 from polylogue.agent_integration.installer import claude_session_start_payload
 from polylogue.agent_integration.manifest import target_surface_is_registered, target_tool_names
@@ -112,13 +109,3 @@ def test_names_only_cutover_cannot_activate_parameterized_guidance() -> None:
         return_value=target_tool_names(),
     ):
         assert target_surface_is_registered() is False
-
-
-def test_generated_document_mirrors_match_packaged_assets_and_check_mode() -> None:
-    """Mutation: editing a generated manual without the renderer makes --check fail."""
-    root = Path(__file__).resolve().parents[3]
-
-    assert (root / "docs" / "agent-manual.md").read_text() == read_agent_asset("standing-manual.md")
-    assert (root / "docs" / "agent-integration-reference.md").read_text() == read_agent_asset("deep-reference.md")
-    assert all(path.exists() and path.read_text() == expected for path, expected in expected_outputs().items())
-    assert render_main(["--check"]) == 0

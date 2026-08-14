@@ -1,8 +1,6 @@
 """Concurrency contracts for the two-phase validation executor.
 
-Closes the ``pipeline.ingest`` known gap from
-``docs/plans/test-closure-matrix.yaml`` (#1295). ``evaluate_raw_artifacts``
-in ``polylogue/pipeline/services/validation_flow.py`` runs CPU-bound
+``evaluate_raw_artifacts`` in ``polylogue/pipeline/services/validation_flow.py`` runs CPU-bound
 schema validation across a ``ProcessPoolExecutor`` (Phase 1) and then
 performs sequential async ``mark_raw_validated`` / ``mark_raw_parsed``
 writes (Phase 2). These tests pin the load-bearing contracts:

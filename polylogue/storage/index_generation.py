@@ -281,17 +281,11 @@ def _pid_is_alive(pid: int) -> bool:
 def _open_lock_fd(path: Path, lock_type: int, *, unavailable_message: str) -> int:
     """Open ``path`` and acquire ``lock_type`` (``LOCK_EX``/``LOCK_SH``), non-blocking.
 
-    ``flock`` is scoped to the open file description's *inode*, so a holder
-    that died without releasing it -- a crashed rebuild, or a forked worker
-    that inherited the fd and outlived a since-reaped parent -- cannot be
-    un-blocked by simply re-opening the same path; whatever still references
-    the old inode keeps it locked. When the lock file's recorded pid is no
-    longer a running process, the stale lock is reclaimed instead: a fresh
-    file is written at the same path and swapped in atomically, handing out
-    a brand-new, guaranteed-unlocked inode while any surviving reference to
-    the old one is left orphaned (polylogue-k8kj finding: a dead-pid lock
-    was blocking nothing in particular while confusing operators who read
-    its stale content as an active rebuild).
+    The kernel lock is authoritative.  Owner text is diagnostic only: a
+    forked worker can legitimately outlive the pid recorded by its parent,
+    and an active shared writer can hold an inode whose text was left by an
+    earlier exclusive owner.  Replacing that still-locked inode would create
+    a second lock domain and permit concurrent archive writers.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -300,29 +294,9 @@ def _open_lock_fd(path: Path, lock_type: int, *, unavailable_message: str) -> in
         return fd
     except BlockingIOError as exc:
         os.close(fd)
-        blocking_error = exc
-
-    holder_pid = _lock_holder_pid(path)
-    if holder_pid is None or _pid_is_alive(holder_pid):
-        suffix = f" (pid={holder_pid})" if holder_pid is not None else ""
-        raise RebuildLeaseUnavailableError(unavailable_message + suffix) from blocking_error
-
-    logger.warning(
-        "reclaiming stale index rebuild lease %s: recorded holder pid=%d is no longer running",
-        path,
-        holder_pid,
-    )
-    temporary = path.with_name(f".{path.name}.reclaim-{uuid.uuid4().hex}")
-    reclaimed_fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        fcntl.flock(reclaimed_fd, lock_type | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(reclaimed_fd)
-        temporary.unlink(missing_ok=True)
-        raise RebuildLeaseUnavailableError(unavailable_message) from blocking_error
-    os.replace(temporary, path)
-    _fsync_directory(path.parent)
-    return reclaimed_fd
+        holder_pid = _lock_holder_pid(path)
+        suffix = f" (recorded pid={holder_pid})" if holder_pid is not None else ""
+        raise RebuildLeaseUnavailableError(unavailable_message + suffix) from exc
 
 
 class RebuildLease:
@@ -395,10 +369,9 @@ class RebuildLeaseStatus:
     #: ``None`` when ``held`` is False (nothing to check liveness against) or
     #: when no pid could be parsed from the lock file at all.
     holder_alive: bool | None
-    #: True when the lease is held but its recorded pid is provably dead --
-    #: exactly the ``RebuildLease.__enter__`` reclaim condition
-    #: (``_open_lock_fd``), surfaced here for operator visibility before a
-    #: fresh acquisition would silently reclaim it.
+    #: True when the lease is held but its diagnostic owner pid is provably
+    #: dead.  The kernel lock remains authoritative and is never bypassed;
+    #: this flag tells an operator to locate the surviving fd holder.
     stale: bool
 
     def to_dict(self) -> dict[str, object]:

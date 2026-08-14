@@ -20,6 +20,8 @@ _Exact commands run and any manual validation performed._
 
 ## Bead disposition matrix
 
+_Required for Bead-scoped PRs. Delete this section when the carrier uses `scope_kind=self_contained`._
+
 | Assigned Bead | Whole-Bead disposition | Evidence refs | Named successor for residual work |
 | --- | --- | --- | --- |
 | `polylogue-...` | satisfied / partial / deferred / superseded | `test:...`, `command:...` | `polylogue-...` or n/a |

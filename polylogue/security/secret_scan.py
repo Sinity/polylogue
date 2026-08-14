@@ -10,9 +10,8 @@ a leak-prevention boundary in its own right -- see the "Raw artifacts are not
 content-redacted" decision in ``docs/security.md``, which this detector does
 not change: it surfaces candidates, it does not gate reads.
 
-``devtools test -k secret_candidate`` is the coverage anchor cited by
-``docs/plans/security-privacy-coverage.yaml``'s
-``security.captured-content-secret-detection`` gap.
+The focused ``secret_candidate`` behavior tests exercise the scanner through
+its production single-session, archive-wide, and daemon catch-up routes.
 
 The production caller is ``scan_session_for_secret_candidates`` below, wired
 to the CLI as ``polylogue ops scan-secrets --session <id>``

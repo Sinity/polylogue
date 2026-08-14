@@ -61,6 +61,7 @@ from polylogue.archive.models import Session
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.timeout_policy import timeout_marker_error
 
 pytest_plugins = (
     "tests.infra.corpus_fixtures",
@@ -252,6 +253,17 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         _ACTIVE_PYTEST_BASETEMPS.discard(active_basetemp)
     _restore_nested_pytest_scratch(config)
     _set_managed_pytest_identity(_ACTIVE_PYTEST_SCOPES[-1] if _ACTIVE_PYTEST_SCOPES else None)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Reject unbounded or effectively disabled per-test timeout markers."""
+    for item in items:
+        marker = item.get_closest_marker("timeout")
+        if marker is None:
+            continue
+        issue = timeout_marker_error(marker)
+        if issue is not None:
+            raise pytest.UsageError(f"{item.nodeid}: {issue}")
 
 
 # Per-run basetemps are freed on sessionfinish. A run killed before
@@ -583,6 +595,7 @@ _MANAGED_VERIFY_ENV = frozenset(
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
         "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",
         "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
+        "POLYLOGUE_VISUAL_EVIDENCE_DIR",
     }
 )
 

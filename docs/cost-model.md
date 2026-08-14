@@ -438,6 +438,7 @@ candidates.
 * [Data model](data-model.md) — typed payloads and storage shape.
 * [CLI reference](cli-reference.md) — `polylogue analyze --cost-outlook` flags
   and JSON schema.
-* [MCP reference](mcp-reference.md) — `cost_outlook` tool contract.
+* [MCP reference](mcp-reference.md) — MCP setup; cost outlook is resolved with
+  `get(ref="cost-outlook:<plan_name>")`.
 * [Configuration](configuration.md) — `[[cost.subscription.plans]]` in
   `polylogue.toml`.

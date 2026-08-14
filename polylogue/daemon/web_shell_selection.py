@@ -9,10 +9,9 @@ the per-session status envelope rather than appearing to mutate
 state. This keeps the AC contract (preview gate + typed envelope) honest
 while the substrate routes catch up.
 
-Kept as a standalone module so ``web_shell.py`` stays under the
-file-size budget defined in ``docs/plans/file-size-budgets.yaml``; the
-same split pattern is used for the workspace mode in
-``web_shell_workspace.py``.
+Kept as a standalone module because the selection surface has its own
+state machine and endpoint contract; the workspace mode follows the same
+ownership split in ``web_shell_workspace.py``.
 """
 
 from __future__ import annotations

@@ -79,9 +79,6 @@ title = "Project"
 label = "Roadmap"
 path = "/beads/"
 [[nav.items]]
-label = "Proof Artifacts"
-path = "/proof/"
-[[nav.items]]
 label = "Verification"
 path = "/verifiability/coverage/"
 [[nav.items]]
@@ -90,9 +87,6 @@ path = "/docs/maintenance/"
 [[nav.items]]
 label = "Contributing"
 path = "/architecture/contributing/"
-[[nav.items]]
-label = "Historical Records"
-path = "/docs/audits/"
 
 [[pages]]
 path = "/index.html"
@@ -113,11 +107,6 @@ source = "docs/demos.md"
 path = "/findings/claim-vs-evidence/"
 title = "Finding: Structured Failure Follow-Up"
 source = "docs/findings/claim-vs-evidence.md"
-
-[[pages]]
-path = "/proof/"
-title = "Proof Artifacts"
-source = "docs/proof-artifacts.md"
 
 [[pages]]
 path = "/architecture/sinex/"
@@ -178,11 +167,6 @@ source = "docs/browser-capture.md"
 path = "/docs/maintenance/"
 title = "Maintenance"
 source = "docs/maintenance.md"
-
-[[pages]]
-path = "/docs/audits/"
-title = "Audit Records"
-source = "docs/audits/README.md"
 
 [[pages]]
 path = "/docs/retrospectives/"

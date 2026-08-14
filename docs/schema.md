@@ -281,8 +281,10 @@ tier constant:
 - **Derived mismatch or newer durable tier**: reject and require rebuild or a
   newer runtime as appropriate.
 
-Derived tiers (`index.db`, `embeddings.db`) have no migration chain. For an
-index-tier schema bump, the operator rebuilds from durable evidence:
+Derived tiers (`index.db`, `embeddings.db`) have no ad hoc migration chain.
+Every index-tier bump declares its delta class in `storage/sqlite/lifecycle.py`.
+A non-semantic delta may fast-forward a clone-validated generation; a semantic
+reparse delta rebuilds from durable evidence:
 
 ```bash
 polylogue ops reset --index && polylogued run

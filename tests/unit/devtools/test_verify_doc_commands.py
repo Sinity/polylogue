@@ -1,9 +1,7 @@
 """Tests for devtools/verify_doc_commands.py.
 
-Covers the doc-command lint that closes #1262: every command mentioned
-in shipped documentation must resolve against the live ``polylogued``
-or ``devtools`` subcommand inventory, and the explicit stale-command
-denylist must trip when re-introduced.
+Covers the doc-command lint: executable examples resolve against the live
+``polylogue``, ``polylogued``, or ``devtools`` command inventories.
 """
 
 from __future__ import annotations
@@ -12,11 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.verify_doc_commands import (
-    STALE_INVOCATIONS,
-    check_docs,
-    main,
-)
+from devtools.verify_doc_commands import check_docs, main
 
 
 def _write_docs(root: Path, files: dict[str, str]) -> None:
@@ -98,16 +92,6 @@ class TestCheckDocsTmpFixtures:
         errors, _ = check_docs(root=tmp_path)
         assert any("--enable-api" in e for e in errors)
 
-    def test_stale_polylogue_run_source_blocks(self, tmp_path: Path) -> None:
-        _write_docs(
-            tmp_path,
-            {
-                "README.md": "```bash\npolylogue run --source claude-code\n```\n",
-            },
-        )
-        errors, _ = check_docs(root=tmp_path)
-        assert any("polylogue run --source" in e for e in errors)
-
     def test_prose_mention_not_flagged(self, tmp_path: Path) -> None:
         """Prose ('polylogue and devtools share a flow') must be ignored."""
         _write_docs(
@@ -154,21 +138,6 @@ class TestCheckDocsTmpFixtures:
         assert errors == []
 
 
-class TestStaleInvocationCoverage:
-    @pytest.mark.parametrize("needle,_hint", STALE_INVOCATIONS)
-    def test_each_stale_invocation_blocks(self, tmp_path: Path, needle: str, _hint: str) -> None:
-        _write_docs(
-            tmp_path,
-            {
-                "README.md": f"```bash\n{needle.rstrip()} extra-arg\n```\n",
-            },
-        )
-        errors, _ = check_docs(root=tmp_path)
-        # Both the substring-match denylist and the subcommand check may
-        # surface the issue; the denylist message is the targeted one.
-        assert any(needle.rstrip() in e for e in errors), errors
-
-
 class TestMainEntrypoint:
     def test_exit_zero_on_clean_tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Run against the real repo: must currently be clean.
@@ -183,22 +152,7 @@ class TestMainEntrypoint:
 
 
 class TestPolylogueCommandRecognition:
-    """#2438: query-first ``polylogue`` invocations are validated by command
-    recognition — removed commands and bad flags on recognized commands fail,
-    while free-text FTS queries stay legal."""
-
-    def test_removed_list_verb_fails(self, tmp_path: Path) -> None:
-        _write_docs(
-            tmp_path,
-            {"README.md": "```bash\npolylogue --since yesterday list\n```\n"},
-        )
-        errors, _ = check_docs(root=tmp_path)
-        assert any("'list'" in e for e in errors), errors
-
-    def test_removed_show_verb_fails(self, tmp_path: Path) -> None:
-        _write_docs(tmp_path, {"README.md": "```bash\npolylogue show abc123\n```\n"})
-        errors, _ = check_docs(root=tmp_path)
-        assert any("'show'" in e for e in errors), errors
+    """Query-first examples validate live commands without a stale-name registry."""
 
     def test_recognized_verb_with_valid_flag_passes(self, tmp_path: Path) -> None:
         _write_docs(
@@ -213,10 +167,35 @@ class TestPolylogueCommandRecognition:
         errors, _ = check_docs(root=tmp_path)
         assert any("--bogus-flag" in e for e in errors), errors
 
-    def test_free_text_query_passes(self, tmp_path: Path) -> None:
-        _write_docs(tmp_path, {"README.md": "```bash\npolylogue rate limiting retries\n```\n"})
+    def test_quoted_free_text_query_passes(self, tmp_path: Path) -> None:
+        _write_docs(tmp_path, {"README.md": '```bash\npolylogue "rate limiting retries"\n```\n'})
         errors, _ = check_docs(root=tmp_path)
         assert errors == [], errors
+
+    @pytest.mark.parametrize(
+        "invocation",
+        (
+            "polylogue find rate limiting retries",
+            "polylogue repo:polylogue",
+        ),
+    )
+    def test_explicit_query_intent_passes(self, tmp_path: Path, invocation: str) -> None:
+        _write_docs(tmp_path, {"README.md": f"```bash\n{invocation}\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert errors == [], errors
+
+    @pytest.mark.parametrize(
+        "invocation",
+        (
+            "polylogue rate limiting retries",
+            "polylogue list",
+            "polylogue show abc",
+        ),
+    )
+    def test_unsignalled_query_root_fails(self, tmp_path: Path, invocation: str) -> None:
+        _write_docs(tmp_path, {"README.md": f"```bash\n{invocation}\n```\n"})
+        errors, _ = check_docs(root=tmp_path)
+        assert any("does not signal query intent" in error for error in errors), errors
 
     def test_leaf_subcommand_flag_resolves(self, tmp_path: Path) -> None:
         # The flag lives on the ``analyze insights profiles`` leaf, not the

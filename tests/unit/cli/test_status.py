@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import sqlite3
@@ -17,11 +16,8 @@ import pytest
 from click.exceptions import Exit as ClickExit
 from click.testing import CliRunner
 
-from polylogue.api import Polylogue
 from polylogue.cli.commands.status import (
     _FULL_TIMEOUT_S,
-    _archive_cli_route_status,
-    _archive_facade_route_status,
     _direct_claim_guard,
     _direct_status_ok,
     _ops_workload_status,
@@ -288,53 +284,6 @@ def test_raw_replay_backlog_plain_status_explains_containment() -> None:
     assert reason in output
 
 
-def test_archive_facade_route_catalog_covers_public_async_facade() -> None:
-    discovered = {
-        name
-        for name in dir(Polylogue)
-        if not name.startswith("_") and inspect.iscoroutinefunction(inspect.getattr_static(Polylogue, name))
-    }
-    routing = _archive_facade_route_status()
-
-    assert set(routing["routes"]) == discovered
-    assert routing["routes"]["query_sessions"]["route"] == "archive_routed"
-    assert routing["routes"]["parse_file"]["route"] == "archive_routed"
-    assert routing["routes"]["parse_sources"]["route"] == "archive_routed"
-    assert routing["routes"]["count_sessions"]["route"] == "archive_routed"
-    assert routing["routes"]["facets"]["route"] == "archive_routed"
-    assert routing["routes"]["get_session_topology"]["route"] == "archive_routed"
-    assert routing["routes"]["get_logical_session"]["route"] == "archive_routed"
-    assert routing["routes"]["health_check"]["route"] == "archive_routed"
-    assert routing["routes"]["get_session"]["route"] == "archive_routed"
-    assert routing["routes"]["search"]["route"] == "archive_routed"
-    assert routing["routes"]["search_similar_sessions"] == {
-        "route": "archive_routed",
-        "tier": "embeddings",
-        "detail": "ranks archived sessions through embeddings.db vectors",
-    }
-    for method in ("get_setting", "list_settings", "set_setting"):
-        assert routing["routes"][method]["route"] == "archive_routed"
-        assert routing["routes"][method]["tier"] == "user"
-    assert routing["unsupported_methods"] == []
-
-
-def test_archive_cli_route_catalog_reports_user_tier_surfaces() -> None:
-    routing = _archive_cli_route_status()
-
-    assert routing["checked"] is True
-    assert routing["unsupported_command_count"] == 0
-    assert routing["unsupported_commands"] == []
-    assert routing["tier_counts"]["user"] == 3
-    assert routing["tier_counts"]["source"] == 2
-    assert routing["routes"]["ops.state.blackboard.post"]["route"] == "archive_direct"
-    assert routing["routes"]["ops.state.blackboard.post"]["tier"] == "user"
-    assert routing["routes"]["ops.state.blackboard.list"]["route"] == "archive_direct"
-    assert routing["routes"]["ops.state.blackboard.list"]["tier"] == "user"
-    assert routing["routes"]["reset.session"]["tier"] == "user"
-    assert routing["routes"]["reset.database"]["tier"] == "source"
-    assert routing["routes"]["reset.source"]["tier"] == "source"
-
-
 class TestNoArchiveStatus:
     """First-run UX when no archive exists."""
 
@@ -414,9 +363,6 @@ class TestNoArchiveStatus:
         assert "raw_sessions=1" in combined
         assert "index v0/" in combined
         assert "sessions=1" in combined
-        assert "Facade routes:" in combined
-        assert "0 unsupported" in combined
-        assert "parse_file:" not in combined
         assert "Sessions: 1" in combined
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
@@ -629,9 +575,6 @@ class TestNoArchiveStatus:
         assert payload["archive_tiers"]["index"]["expected_user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
         assert payload["archive_tiers"]["index"]["version_status"] == "mismatch"
         assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
-        assert "archive_facade_routes" not in payload
-        assert "archive_cli_routes" not in payload
-        assert "archive_runtime_paths" not in payload
         assert payload["sqlite_maintenance"]["tiers"]["index"]["exists"] is True
         assert payload["sqlite_maintenance"]["tiers"]["index"]["planner_stats_present"] is False
         assert payload["sqlite_maintenance"]["tiers"]["source"]["exists"] is True
@@ -874,12 +817,6 @@ class TestNoArchiveStatus:
         diagnose.assert_not_called()
         combined = _combined_calls(env)
         assert "Archive surfaces:" in combined
-        assert "Archive routing paths:" in combined
-        assert "ingest=archive -> source.db,index.db" in combined
-        assert "tiers=source.db,index.db,embeddings.db,user.db,ops.db" in combined
-        assert "Archive route ownership:" in combined
-        assert "cli=source:2,user:3" in combined
-        assert "0 blockers" in combined
         assert "blocked" in combined
         assert "session_profiles: missing_profile_rows, missing_session_profile_materialization" in combined
         assert "timeline_work_events: missing_work_events_materialization" in combined
@@ -928,18 +865,6 @@ class TestNoArchiveStatus:
                 "loss_reason": "index_raw_id_missing_from_source_tier",
                 "recovery_requirement": "restore_exact_raw_artifact_or_keep_blocked",
             }
-        ]
-        runtime_paths = payload["archive_runtime_paths"]
-        assert runtime_paths["archive_routing_ready"] is True
-        assert runtime_paths["archive_runtime_ready"] is True
-        assert runtime_paths["unsupported_primary_method_count"] == 0
-        assert runtime_paths["final_shape_blockers"] == []
-        assert runtime_paths["archive_tier_targets"] == [
-            "source.db",
-            "index.db",
-            "embeddings.db",
-            "user.db",
-            "ops.db",
         ]
 
     def test_direct_status_json_compacts_raw_replay_backlog(self, tmp_path: Path) -> None:

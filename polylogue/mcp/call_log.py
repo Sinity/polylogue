@@ -389,7 +389,10 @@ def start_mcp_call_log() -> None:
     """Start restart-recovery scanning before the first MCP invocation."""
     from polylogue.config import load_polylogue_config
 
-    _DISPATCHER.register(load_polylogue_config())
+    config = load_polylogue_config()
+    if config.no_daemon or config.daemon_client_mode == "off":
+        return
+    _DISPATCHER.register(config)
 
 
 def mcp_call_outbox_status() -> McpCallOutboxStatus:

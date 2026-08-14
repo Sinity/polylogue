@@ -267,7 +267,7 @@
   "type": "object",
   "x-polylogue-cli-surfaces": [
     "polylogue analyze --format json (rows)",
-    "polylogue --format json <query> (hits[].session)"
+    "polylogue --format json find <query> (hits[].session)"
   ],
   "x-polylogue-source-model": "SessionSummaryEnvelope"
 }

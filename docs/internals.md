@@ -193,28 +193,19 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   batched before a live rebuild so the active archive is not reset repeatedly.
 - `devtools lab policy schema-versioning` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
-  derived-tier upgrade helpers remain forbidden. **This check is keyed to
-  `INDEX_SCHEMA_VERSION` and cannot see parser/classifier drift** -- a
-  `looks_like*`/`classify_artifact*` function under `polylogue/sources/` or
-  `polylogue/archive/artifact_taxonomy/` can change what it accepts for
-  identical input bytes with no version bump at all, running this lint green
-  while already-indexed rows silently go stale (polylogue-gucv; PR #3428 is
-  the confirmed case). The same blindness applies to a purely declarative
-  admission table: `origin_specs.py`'s `OriginSpec.artifact_rules` sets a
-  `parse_policy` (`session`/`fact`/`raw-only`) per native path family with no
-  function body at all, and PR #3088 changed `parse_as_session` for four
-  Claude Workflow artifact kinds by editing that table with no version bump
-  (retroactively declared as the missing v48 delta by polylogue-lzh8;
-  polylogue-qs4b). `devtools lab policy classifier-fingerprints`
-  (`devtools/verify_classifier_fingerprints.py`) closes both gaps: it
-  fingerprints every in-scope `looks_like*`/`classify_artifact*` function
-  (AST hash, docstring excluded) **and** every `OriginArtifactRule` in
-  `ORIGIN_SPECS` (hash of `path_pattern`/`parse_policy`/`parser_path`/
-  `coverage_role`/`path_suffixes`, `fidelity_note` excluded) against a
-  committed manifest (`docs/plans/classifier-fingerprints.json`) and fails on
-  undeclared drift, requiring either a `SEMANTIC_REPARSE`-declared version
-  bump or an explicit `acknowledged_safe` justification recorded in the
-  manifest.
+  derived changes must use declared lifecycle deltas and clone-validated
+  fast-forward plans or rebuild. The gate validates those structured carriers
+  and SQL shapes rather than guessing intent from Python helper names.
+  Parser/classifier meaning is
+  governed separately by production fingerprints from
+  `polylogue.sources.origin_specs`: declared parser and assembly sources feed an
+  origin-scoped parser fingerprint, while shared lowering, replay routing, and
+  materialization have their own fingerprints. Archive rows and candidate/live
+  proof metadata carry these values; archive verification rejects stale or mixed
+  fingerprints. Behavioral tests prove that changing a declared parser,
+  assembly helper, or lowering source changes the corresponding fingerprint.
+  This makes semantic drift part of runtime archive authority instead of a
+  source-AST manifest that also fired on behavior-preserving refactors.
 
 - User schema version 7 adds durable content-addressed `queries`, mutable
   `query_names`, promoted `result_sets`/`result_set_members`, and planner
@@ -700,8 +691,10 @@ copy-forward design and explicit operator consent, never a routine migration.
 `storage/sqlite/archive_tiers/bootstrap.py`
 (ingest-cursor runtime fields, cursor-lag rollups). The
 `devtools lab policy schema-versioning` lint enforces the whole boundary:
-numbered durable-tier migrations are allowed; derived-tier upgrade helpers are
-forbidden.
+numbered durable-tier migrations are allowed; derived-tier lifecycle deltas and
+same-version DDL are validated structurally. Ad hoc open-path upgrades are not a
+supported runtime route, but the lint does not pretend to detect them from
+function names.
 
 ## Archive Activation
 
@@ -801,15 +794,12 @@ the reconciled graph back through `SessionRepository.replace_work_evidence_graph
 
 `reconcile-work-effects` reconciles an *existing* work-evidence graph against
 independent repository effects; it never builds one. `polylogue/insights/
-incident_evidence_materialization.py` is the source-to-graph half: it adapts
+incident_evidence_materialization.py` materializes the source graph: it adapts
 real per-session `ProjectedRun`/`ObservedEvent` evidence (one run node per
 session run, `invoked`-linked parent→subagent; one session-segment node per
 run; one `claim` node per subagent's own self-reported result; one
 unresolved/inferred `effect` node per commit/PR/issue an in-session tool call
-mentioned) into a `WorkEvidenceGraph`, as opposed to
-`devtools/mandate_continuity_replay.py`'s `build_repository_claim_graph`,
-which builds claim nodes purely from the external `.beads/interactions.jsonl`
-ledger and never reads archived session/message/action content at all.
+mentioned) into a `WorkEvidenceGraph` from archived session evidence.
 `polylogue/operations/incident_evidence_materialization.py`'s
 `materialize_incident_work_evidence` is the production entry point — it
 loads each selected session in full and compiles it through
@@ -1039,9 +1029,8 @@ implemented and unit-tested but **never reachable in production**: the only
 call site that could have populated the lease payload keys
 (`commit_archive_write_effects`'s `_blob_hashes`/`_operation_id`) was never
 given them by any real ingest caller (`_commit_sync_ingest_side_effects`
-built its payload without them). A race-window audit
-(`docs/audits/2026-07-09-race-window-audit.md`, rows 1a/1b) confirmed zero
-production callers across the whole write path, so `has_lease` was always
+built its payload without them). Source-history review and the production-route
+tests confirmed zero production callers across the whole write path, so `has_lease` was always
 `False` and the acquire/release calls never ran. The mechanism was removed
 rather than left as dead code implying a protection that did not exist
 (polylogue-v7e0). A deterministic provider-shaped measurement later proved

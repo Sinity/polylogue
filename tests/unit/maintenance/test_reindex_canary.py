@@ -804,8 +804,33 @@ def test_live_materializer_fingerprint_rejects_changed_running_code(monkeypatch:
         reindex_canary_module._validate_live_materializer_fingerprint("recorded-materializer")
 
 
-def test_expected_delta_and_packaged_bead_authorities_resolve_without_tracker_files() -> None:
-    """Installed canaries use typed deltas and packaged Bead evidence, not .beads."""
+def test_expected_delta_authority_resolves_outside_a_git_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Installed canaries resolve semantic authority from packaged declarations."""
+    monkeypatch.chdir(tmp_path)
+    difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:sample"),),
+        before={"title_ref": None},
+        after={"title_ref": "message:codex-session:sample:user"},
+        changed_columns=("title_ref",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    delta = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="declared targeted title reprocess",
+    )
+    reindex_canary_module._validate_expected_review_authorities((delta,))
+
+
+def test_expected_delta_authority_rejects_unrelated_table() -> None:
+    """A historical delta number cannot bless an arbitrary semantic change."""
+
     difference = RowDifference(
         table="blocks",
         operation=DifferenceOperation.CHANGED,
@@ -816,20 +841,111 @@ def test_expected_delta_and_packaged_bead_authorities_resolve_without_tracker_fi
         classification=DifferenceClassification.UNEXPECTED,
         rationale="unreviewed",
     )
-    delta = CanaryDifferenceReview.for_difference(
+    unrelated = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="unrelated packaged index delta",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare table blocks"):
+        reindex_canary_module._validate_expected_review_authorities((unrelated,))
+
+
+def test_expected_delta_authority_rejects_session_outside_declared_origin() -> None:
+    """A table declaration cannot authorize rows outside its reprocess scope."""
+
+    difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "chatgpt-export:sample"),),
+        before={"title_ref": None},
+        after={"title_ref": "message:chatgpt-export:sample:user"},
+        changed_columns=("title_ref",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    outside_scope = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="unrelated origin",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="outside origin codex-session"):
+        reindex_canary_module._validate_expected_review_authorities((outside_scope,))
+
+
+def test_expected_delta_authority_rejects_undeclared_changed_column() -> None:
+    """A semantic delta authorizes named values, not every column in its table."""
+
+    difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:sample"),),
+        before={"content_hash": "before"},
+        after={"content_hash": "after"},
+        changed_columns=("content_hash",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    undeclared_column = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="unrelated column",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare changed columns"):
+        reindex_canary_module._validate_expected_review_authorities((undeclared_column,))
+
+
+def test_expected_delta_authority_rejects_nonsemantic_delta() -> None:
+    """A DDL-only delta cannot authorize a changed row value."""
+
+    difference = RowDifference(
+        table="insight_materialization",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "session"), ("insight_type", "session_profile")),
+        before={"materializer_version": 1},
+        after={"materializer_version": 2},
+        changed_columns=("materializer_version",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    constraint_only = CanaryDifferenceReview.for_difference(
         difference,
         classification=DifferenceClassification.EXPECTED,
         reference="delta:33",
-        rationale="declared index delta",
-    )
-    bead = CanaryDifferenceReview.for_difference(
-        difference,
-        classification=DifferenceClassification.EXPECTED,
-        reference="bead:polylogue-0x7nh",
-        rationale="packaged Bead authority",
+        rationale="constraint-only delta",
     )
 
-    reindex_canary_module._validate_expected_review_authorities((delta, bead))
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare a semantic reparse"):
+        reindex_canary_module._validate_expected_review_authorities((constraint_only,))
+
+
+def test_expected_delta_authority_rejects_unscoped_semantic_delta() -> None:
+    """A semantic label without comparable objects cannot bless every table."""
+
+    difference = RowDifference(
+        table="session_events",
+        operation=DifferenceOperation.REMOVED,
+        identity=(("event_id", "event"),),
+        before={"event_type": "agent_message"},
+        after=None,
+        changed_columns=("event_type",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    unscoped = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:42",
+        rationale="unscoped writer-materialization delta",
+    )
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not declare comparable table scope"):
+        reindex_canary_module._validate_expected_review_authorities((unscoped,))
 
 
 def test_unknown_expected_delta_authority_fails_closed() -> None:
@@ -865,6 +981,70 @@ def test_canary_comparison_is_read_only(tmp_path: Path) -> None:
 
     after = current.stat().st_ino, current.stat().st_size, candidate.stat().st_ino, candidate.stat().st_size
     assert after == before
+
+
+def test_revision_receipt_run_identity_is_not_a_semantic_canary_difference(tmp_path: Path) -> None:
+    """Rebuild-local ids/times normalize while revision authority stays compared."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    session_id = "codex-session:alpha"
+    raw_id = "raw-alpha"
+    content_hash = hashlib.sha256(b"alpha").digest()
+    for path, decision_id, decided_at_ms in ((current, "decision-current", 1), (candidate, "decision-candidate", 2)):
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                """
+                INSERT INTO raw_revision_applications(
+                    decision_id, raw_id, session_id, logical_source_key, source_revision,
+                    acquisition_generation, decision, accepted_raw_id,
+                    accepted_source_revision, accepted_content_hash, detail, decided_at_ms
+                ) VALUES (?, ?, ?, 'codex:alpha', '1', 0, 'selected_baseline', ?, '1', ?, 'selected', ?)
+                """,
+                (decision_id, raw_id, session_id, raw_id, content_hash, decided_at_ms),
+            )
+            connection.execute(
+                """
+                INSERT INTO raw_revision_heads(
+                    logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                    accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                    acquisition_generation, decided_at_ms
+                ) VALUES ('codex:alpha', ?, ?, '1', ?, 'semantic', 1, 0, ?)
+                """,
+                (session_id, raw_id, content_hash, decided_at_ms),
+            )
+
+    report = compare_reindex_generations(current, candidate)
+
+    assert report.differences == ()
+
+
+def test_revision_receipt_semantic_decision_remains_a_canary_difference(tmp_path: Path) -> None:
+    """Normalizing attempt identity must not hide a changed authority decision."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    session_id = "codex-session:alpha"
+    for path, decision in ((current, "selected_baseline"), (candidate, "superseded")):
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                """
+                INSERT INTO raw_revision_applications(
+                    decision_id, raw_id, session_id, logical_source_key, source_revision,
+                    acquisition_generation, decision, accepted_raw_id,
+                    accepted_source_revision, accepted_content_hash, detail, decided_at_ms
+                ) VALUES (?, 'raw-alpha', ?, 'codex:alpha', '1', 0, ?, NULL, NULL, NULL, 'decision', 1)
+                """,
+                (f"decision-{decision}", session_id, decision),
+            )
+
+    report = compare_reindex_generations(current, candidate)
+
+    assert {difference.table for difference in report.differences} == {"raw_revision_applications"}
 
 
 def test_selector_samples_each_origin_and_keeps_explicit_inputs(tmp_path: Path) -> None:
@@ -1702,7 +1882,7 @@ def test_review_authority_kind_is_bound_to_classification() -> None:
         CanaryDifferenceReview.for_difference(
             difference,
             classification=DifferenceClassification.UNEXPECTED,
-            reference="bead:polylogue-0x7nh",
+            reference="delta:33",
             rationale="wrong authority kind",
         )
 
@@ -1721,8 +1901,8 @@ def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_pat
                         "identity": {"block_id": "block"},
                         "changed_columns": ["text"],
                         "classification": "expected",
-                        "reference": "bead:claimed-authority",
-                        "authority": {"kind": "bead", "id": "different-authority"},
+                        "reference": "delta:33",
+                        "authority": {"kind": "delta", "id": "34"},
                         "rationale": "contradictory manifest audit fields",
                     }
                 ]
@@ -1735,34 +1915,10 @@ def test_review_manifest_rejects_reference_that_disagrees_with_authority(tmp_pat
         load_canary_review_manifest(manifest)
 
 
-def test_review_manifest_rejects_unregistered_expected_bead_authority(tmp_path: Path) -> None:
-    manifest = tmp_path / "reviews.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "reviews": [
-                    {
-                        "table": "blocks",
-                        "operation": "changed",
-                        "identity": {"block_id": "block"},
-                        "changed_columns": ["text"],
-                        "classification": "expected",
-                        "reference": "bead:not-a-real-issue",
-                        "authority": {"kind": "bead", "id": "not-a-real-issue"},
-                        "rationale": "this must resolve through the committed tracker registry",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(UnclassifiedCanaryDiffError, match="not declared in packaged evidence"):
-        load_canary_review_manifest(manifest)
-
-
-def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_path: Path) -> None:
-    """Authority resolution uses the packaged full catalog, while successors stay actionable."""
+def test_review_manifest_accepts_packaged_delta_and_nonapproving_successor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review loading works outside Git and keeps unresolved differences red."""
 
     manifest = tmp_path / "reviews.json"
     manifest.write_text(
@@ -1770,14 +1926,14 @@ def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_pat
             {
                 "reviews": [
                     {
-                        "table": "blocks",
+                        "table": "sessions",
                         "operation": "changed",
-                        "identity": {"block_id": "closed"},
-                        "changed_columns": ["text"],
+                        "identity": {"session_id": "codex-session:expected"},
+                        "changed_columns": ["title_ref"],
                         "classification": "expected",
-                        "reference": "bead:polylogue-010x",
-                        "authority": {"kind": "bead", "id": "polylogue-010x"},
-                        "rationale": "completed repair declared this difference",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "the packaged title-reprocess delta declares this expected difference",
                     },
                     {
                         "table": "blocks",
@@ -1795,10 +1951,17 @@ def test_review_manifest_accepts_closed_expected_bead_and_open_successor(tmp_pat
         encoding="utf-8",
     )
 
-    assert len(load_canary_review_manifest(manifest)) == 2
+    monkeypatch.chdir(tmp_path)
+    reviews = load_canary_review_manifest(manifest)
+    assert [review.classification for review in reviews] == [
+        DifferenceClassification.EXPECTED,
+        DifferenceClassification.UNEXPECTED,
+    ]
 
 
-def test_review_manifest_rejects_unresolved_successor_authority(tmp_path: Path) -> None:
+def test_review_manifest_rejects_bead_as_semantic_authority(tmp_path: Path) -> None:
+    """Planning state cannot authorize a candidate's semantic difference."""
+
     manifest = tmp_path / "reviews.json"
     manifest.write_text(
         json.dumps(
@@ -1807,12 +1970,12 @@ def test_review_manifest_rejects_unresolved_successor_authority(tmp_path: Path) 
                     {
                         "table": "blocks",
                         "operation": "changed",
-                        "identity": {"block_id": "successor"},
+                        "identity": {"block_id": "unknown"},
                         "changed_columns": ["text"],
-                        "classification": "unexpected",
-                        "reference": "successor:not-a-real-issue",
-                        "authority": {"kind": "successor", "id": "not-a-real-issue"},
-                        "rationale": "this must resolve through packaged actionable evidence",
+                        "classification": "expected",
+                        "reference": "bead:polylogue-does-not-exist",
+                        "authority": {"kind": "bead", "id": "polylogue-does-not-exist"},
+                        "rationale": "fabricated expected-difference authority",
                     }
                 ]
             }
@@ -1820,7 +1983,7 @@ def test_review_manifest_rejects_unresolved_successor_authority(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    with pytest.raises(UnclassifiedCanaryDiffError, match="not declared in packaged evidence"):
+    with pytest.raises(UnclassifiedCanaryDiffError, match="invalid structured authority"):
         load_canary_review_manifest(manifest)
 
 

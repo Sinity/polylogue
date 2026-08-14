@@ -1,7 +1,7 @@
-"""Real CLI coverage for the private-data-free basic-usage demo archive.
+"""Real CLI coverage over the private-data-free seeded demo archive.
 
-These tests keep the captured basic-usage walkthroughs executable without a
-second devtools command layer.  The CLI assertions cross the subprocess
+These tests exercise the basic product routes without a second devtools
+command layer. The CLI assertions cross the subprocess
 boundary through ``tests.infra.cli_subprocess.run_cli``; the MCP assertion
 uses the production stdio route.
 """

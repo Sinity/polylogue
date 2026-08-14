@@ -9,15 +9,13 @@
   <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
 </p>
 
-<!-- public-claim:category.local-evidence-system -->
 Polylogue archives AI conversations and coding-agent runs from multiple tools in
 one searchable local archive. It imports supported histories from ChatGPT,
 Claude and Claude Code, Codex, Gemini, Hermes, and other sources, then exposes
 sessions, messages, tool calls and results, branches, subagents, usage, and costs
 through a CLI, Python API, local HTTP reader, and MCP server.
 
-By default, the archive stays on your machine. The author's archive contains
-more than **18,000 sessions and 4.7 million messages**.
+By default, the archive stays on your machine.
 
 [Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
 
@@ -222,7 +220,6 @@ Start with the task-oriented guides below. The complete documentation map is in 
 | [Getting Started](docs/getting-started.md) | Install Polylogue, create an archive, and run a first query. |
 | [Installation](docs/installation.md) | Package, source-checkout, Nix, and managed deployment options. |
 | [Demos and Proofs](docs/demos.md) | Run the private-data-free tour and see what each demo establishes. |
-| [Proof Artifacts](docs/proof-artifacts.md) | Links between public claims and reproducible checks. |
 | [Architecture](docs/architecture.md) | Storage, data flow, and component responsibilities. |
 | [Code Navigation](docs/code-navigation.md) | Find the owning package, runtime path, and verification for a code change. |
 | [Search & Query](docs/search.md) | Search syntax, filters, action queries, ranking, and output formats. |

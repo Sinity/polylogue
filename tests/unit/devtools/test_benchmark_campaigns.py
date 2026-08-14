@@ -9,52 +9,31 @@ from typing import Literal
 import pytest
 
 from devtools import synthetic_benchmark_runtime as synthetic_runtime
-from devtools.benchmark_campaigns import (
-    SYNTHETIC_CAMPAIGNS,
-    run_full_campaign,
-    run_synthetic_benchmark_campaign,
-)
 from devtools.daemon_live_benchmark import append_daemon_live_workload, generate_daemon_live_workload
 from devtools.large_archive_generator import ArchiveMetrics
-from devtools.synthetic_benchmark_catalog import (
-    SYNTHETIC_BENCHMARK_REGISTRY,
-    SYNTHETIC_BENCHMARK_SCENARIOS,
-)
 from devtools.synthetic_benchmark_runtime import (
+    SYNTHETIC_BENCHMARK_RUNNERS,
     CampaignResult,
     resolve_synthetic_benchmark_runner,
     run_daemon_live_convergence_campaign,
     run_session_insight_materialization_campaign,
 )
 from polylogue.core.enums import Provider
-from polylogue.scenarios import ExecutionKind
 from polylogue.sources.dispatch import detect_provider
 from polylogue.storage.insights.session.runtime import SessionInsightCounts
 
 
-def test_synthetic_benchmark_registry_is_compiled_from_authored_scenarios() -> None:
-    assert set(SYNTHETIC_CAMPAIGNS) == {scenario.name for scenario in SYNTHETIC_BENCHMARK_SCENARIOS}
-    assert set(SYNTHETIC_BENCHMARK_REGISTRY) == set(SYNTHETIC_CAMPAIGNS)
-    assert SYNTHETIC_CAMPAIGNS["incremental-index"].execution is not None
-    assert SYNTHETIC_CAMPAIGNS["incremental-index"].execution.kind is ExecutionKind.RUNNER
-    assert SYNTHETIC_CAMPAIGNS["incremental-index"].execution.runner == "incremental-index"
-    assert SYNTHETIC_CAMPAIGNS["incremental-index"].scale_targets == ("small", "medium", "large", "stretch")
-    assert SYNTHETIC_BENCHMARK_REGISTRY["fts-rebuild"].description == "Benchmark full FTS5 index rebuild"
-    assert (
-        SYNTHETIC_BENCHMARK_REGISTRY["session-insight-materialization"].description
-        == "Benchmark durable session-insight rebuild over synthetic archive sessions"
-    )
-    assert (
-        SYNTHETIC_BENCHMARK_REGISTRY["daemon-live-convergence"].description
-        == "Benchmark daemon live batch convergence over generated JSONL source workloads"
-    )
-
-
-def test_all_authored_synthetic_benchmark_runners_resolve() -> None:
-    for campaign in SYNTHETIC_CAMPAIGNS.values():
-        assert campaign.execution is not None
-        assert campaign.execution.runner
-        assert callable(resolve_synthetic_benchmark_runner(campaign.execution.runner))
+def test_all_executable_synthetic_benchmark_runners_resolve() -> None:
+    assert set(SYNTHETIC_BENCHMARK_RUNNERS) == {
+        "fts-rebuild",
+        "incremental-index",
+        "filter-scan",
+        "startup-readiness",
+        "session-insight-materialization",
+        "daemon-live-convergence",
+    }
+    for name, runner in SYNTHETIC_BENCHMARK_RUNNERS.items():
+        assert resolve_synthetic_benchmark_runner(name) is runner
 
 
 def test_daemon_live_workload_uses_synthetic_provider_wire_formats(tmp_path: Path) -> None:
@@ -133,8 +112,8 @@ def test_daemon_live_workload_generation_replaces_stale_jsonl(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_run_benchmark_campaigns_skips_seed_archive_for_daemon_live(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_run_campaign_skips_seed_archive_for_daemon_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from devtools import run_campaign
 
@@ -145,23 +124,20 @@ async def test_run_benchmark_campaigns_skips_seed_archive_for_daemon_live(
     async def fail_generate_archive(*_args: object, **_kwargs: object) -> ArchiveMetrics:
         raise AssertionError("daemon-live-convergence should generate its own live workload")
 
-    async def fake_run_campaign(name: str, db_path: Path) -> CampaignResult:
-        assert name == "daemon-live-convergence"
+    async def fake_run_campaign(db_path: Path) -> CampaignResult:
         # The real generated archive's active index, not an invented
         # "benchmark.db" sentinel (polylogue-ovme.3 phantom-database fix).
         assert db_path == tmp_path / "archive-large" / "index.db"
         assert not stale_file.exists()
-        return CampaignResult(campaign_name=name, scale_level="", metrics={"total_wall_s": 1.0}, db_stats={})
-
-    saved_results: list[CampaignResult] = []
-
-    def fake_save_campaign_reports(results: list[CampaignResult], output_dir: Path) -> list[Path]:
-        saved_results.extend(results)
-        return [output_dir / "report.json"]
+        return CampaignResult(
+            campaign_name="daemon-live-convergence",
+            scale_level="",
+            metrics={"rebuild_wall_s": 1.25, "profiles_rebuilt": 2},
+            db_stats={},
+        )
 
     monkeypatch.setattr("devtools.large_archive_generator.generate_archive", fail_generate_archive)
-    monkeypatch.setattr("devtools.benchmark_campaigns.run_synthetic_benchmark_campaign", fake_run_campaign)
-    monkeypatch.setattr("devtools.campaign_report.save_campaign_reports", fake_save_campaign_reports)
+    monkeypatch.setitem(synthetic_runtime.SYNTHETIC_BENCHMARK_RUNNERS, "daemon-live-convergence", fake_run_campaign)
 
     result = await run_campaign._run(
         Namespace(
@@ -175,35 +151,7 @@ async def test_run_benchmark_campaigns_skips_seed_archive_for_daemon_live(
     )
 
     assert result == 0
-    assert [item.campaign_name for item in saved_results] == ["daemon-live-convergence"]
-
-
-@pytest.mark.asyncio
-async def test_run_synthetic_benchmark_campaign_preserves_scenario_metadata(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    async def fake_incremental(_db_path: Path) -> CampaignResult:
-        return CampaignResult(
-            campaign_name="incremental-index",
-            scale_level="",
-            metrics={"total_wall_s": 1.5},
-            db_stats={},
-            timestamp="2026-04-13T00:00:00+00:00",
-        )
-
-    monkeypatch.setitem(
-        synthetic_runtime.SYNTHETIC_BENCHMARK_RUNNERS,
-        "incremental-index",
-        fake_incremental,
-    )
-
-    result = await run_synthetic_benchmark_campaign("incremental-index", tmp_path / "benchmark.db")
-
-    assert result.origin == "authored.synthetic-benchmark"
-    assert result.path_targets == []
-    assert result.artifact_targets == ["message_source_rows", "message_fts"]
-    assert result.operation_targets == ["index-message-fts", "index.message-fts-incremental"]
-    assert result.tags == ["benchmark", "synthetic", "fts"]
+    assert 'daemon-live-convergence: {"profiles_rebuilt": 2, "rebuild_wall_s": 1.25}' in capsys.readouterr().out
 
 
 @pytest.mark.asyncio
@@ -277,57 +225,6 @@ async def test_run_daemon_live_convergence_campaign_reports_workload_metrics(
         "codex_files": 1,
         "session_profiles_count": 2,
     }
-
-
-@pytest.mark.asyncio
-async def test_run_full_campaign_skips_scenarios_outside_scale_targets(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    async def fake_generate_archive(
-        _spec: object,
-        archive_dir: Path,
-        *,
-        corpus_source: object = None,
-        location: object = None,
-    ) -> ArchiveMetrics:
-        from devtools.large_archive_generator import ArchiveMetrics
-
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        (archive_dir / "index.db").write_bytes(b"")
-        return ArchiveMetrics(
-            wall_time_s=0.5,
-            db_size_bytes=0,
-            message_count=10,
-            session_count=2,
-        )
-
-    async def fake_run_campaign(name: str, _db_path: Path) -> CampaignResult:
-        return CampaignResult(
-            campaign_name=name,
-            scale_level="",
-            metrics={"rebuild_wall_s": 1.0, "total_wall_s": 1.0, "list_50_wall_s": 1.0, "total_readiness_s": 1.0},
-            db_stats={},
-        )
-
-    skipped = SYNTHETIC_CAMPAIGNS["startup-readiness"]
-    limited = SYNTHETIC_CAMPAIGNS["incremental-index"]
-    monkeypatch.setitem(
-        SYNTHETIC_CAMPAIGNS,
-        skipped.name,
-        type(skipped)(**{**skipped.__dict__, "scale_targets": ("large", "stretch")}),
-    )
-    monkeypatch.setitem(
-        SYNTHETIC_CAMPAIGNS,
-        limited.name,
-        type(limited)(**{**limited.__dict__, "scale_targets": ("small",)}),
-    )
-    monkeypatch.setattr("devtools.large_archive_generator.generate_archive", fake_generate_archive)
-    monkeypatch.setattr("devtools.benchmark_campaigns.run_synthetic_benchmark_campaign", fake_run_campaign)
-
-    results = await run_full_campaign("small", tmp_path)
-
-    assert "incremental-index" in {result.campaign_name for result in results}
-    assert "startup-readiness" not in {result.campaign_name for result in results}
 
 
 def test_session_insight_materialization_campaign_reports_rebuild_counts(

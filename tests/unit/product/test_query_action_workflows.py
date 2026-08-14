@@ -9,16 +9,11 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from devtools.render_product_workflows import build_document
 from polylogue.cli.click_app import cli
 from polylogue.core.json import loads
 from polylogue.operations.action_contracts import ACTION_CONTRACT_BY_PATH, action_affordance_payloads
 from polylogue.product.workflows import (
     EXECUTABLE_WORKFLOW_GOLDEN_PATHS,
-    PRODUCT_VERB_MATRIX_EXTRA_ROWS,
-    QUERY_ACTION_WORKFLOW_BY_ID,
-    QUERY_ACTION_WORKFLOWS,
-    REQUIRED_WORKFLOW_IDS,
     ExecutableWorkflowGoldenPath,
     JsonExpectation,
 )
@@ -85,18 +80,6 @@ def _assert_json_expectation(payload: Any, expectation: JsonExpectation) -> None
             assert value is None
 
 
-def test_registry_contains_required_issue_2305_workflows() -> None:
-    assert set(QUERY_ACTION_WORKFLOW_BY_ID) >= REQUIRED_WORKFLOW_IDS
-    assert {workflow.id for workflow in QUERY_ACTION_WORKFLOWS} == set(QUERY_ACTION_WORKFLOW_BY_ID)
-
-
-def test_workflows_reference_executable_action_contracts() -> None:
-    virtual_paths = {("find",)}
-    for workflow in QUERY_ACTION_WORKFLOWS:
-        for action_path in workflow.action_paths:
-            assert action_path in ACTION_CONTRACT_BY_PATH or action_path in virtual_paths, workflow.id
-
-
 def test_action_affordance_payload_has_no_flat_compatibility_aliases() -> None:
     stale_aliases = {
         "input_unit",
@@ -137,46 +120,6 @@ def test_shared_action_affordance_payload_uses_grouped_contract_fields() -> None
     assert delete.safety.safety_level == "destructive"
     assert delete.safety.confirmation_command == "polylogue find QUERY then delete --dry-run"
     assert delete.availability.next_actions == ("find",)
-
-
-def test_product_workflow_doc_is_registry_backed() -> None:
-    document = build_document()
-    for workflow in QUERY_ACTION_WORKFLOWS:
-        assert f"`{workflow.id}`" in document
-        assert workflow.title in document
-    required_verbs = {"select", "read", "continue", "analyze", "mark", "judge", "delete"}
-    assert PRODUCT_VERB_MATRIX_EXTRA_ROWS == ()
-    for action_id in required_verbs:
-        assert f"| `{action_id}` |" in document
-    for golden in EXECUTABLE_WORKFLOW_GOLDEN_PATHS:
-        assert f"`{golden.id}`" in document
-        assert golden.command_text in document
-    for field in ("target", "input", "execution", "output", "safety", "availability"):
-        assert f"`{field}`" in document
-
-
-def test_issue_2317_registry_spells_out_exact_refs_facets_and_mark_ownership() -> None:
-    read = QUERY_ACTION_WORKFLOW_BY_ID["find-then-read-messages"]
-    resolve = QUERY_ACTION_WORKFLOW_BY_ID["resolve-ref-drilldown"]
-    facets = QUERY_ACTION_WORKFLOW_BY_ID["find-then-analyze-facets"]
-    mark = QUERY_ACTION_WORKFLOW_BY_ID["find-then-mark-session"]
-    candidates = QUERY_ACTION_WORKFLOW_BY_ID["candidate-assertion-review"]
-    document = build_document()
-
-    assert "Zero matches" in read.cardinality_policy
-    assert "one exact match" in read.cardinality_policy
-    assert "many ranked matches" in read.cardinality_policy
-    assert "exact ref plus extra text" in resolve.selector_policy
-    assert "role_counts" in facets.evidence_policy
-    assert "material_origins" in facets.evidence_policy
-    assert "omitted counts" in facets.evidence_policy
-    assert "session overlays" in mark.selector_policy
-    assert "candidate assertions" in mark.selector_policy
-    assert "ordinary `mark` owns session overlays" in candidates.selector_policy
-    assert "Facet Family Contract" in document
-    assert "role_counts" in document
-    assert "material_origins" in document
-    assert "Incidental archive paths" in document
 
 
 @pytest.mark.parametrize("golden", EXECUTABLE_WORKFLOW_GOLDEN_PATHS, ids=lambda entry: entry.id)

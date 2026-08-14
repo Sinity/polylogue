@@ -97,6 +97,12 @@ def _looks_like_query_expression(query_terms: tuple[str, ...]) -> bool:
     return any(":" in term for term in query_terms)
 
 
+def has_signalled_query_intent(query_terms: tuple[str, ...], *, explicit_query: bool) -> bool:
+    """Return whether the root invocation carries the CLI's query-intent signal."""
+
+    return not query_terms or explicit_query or _looks_like_query_expression(query_terms)
+
+
 def _bare_root_error_message(group: click.Group, query_terms: tuple[str, ...]) -> str:
     """Build the strict-floor hint for an unsignalled bare root (#1842).
 
@@ -277,7 +283,7 @@ class QueryFirstGroupBase(click.Group):
         # `find`, `--` escape) and structurally-clear expressions still run.
         query_terms: tuple[str, ...] = ctx.meta.get("polylogue_query_terms", ()) or ()
         explicit_query = bool(ctx.meta.get("polylogue_explicit_query", False))
-        if query_terms and not explicit_query and not _looks_like_query_expression(query_terms):
+        if not has_signalled_query_intent(query_terms, explicit_query=explicit_query):
             raise click.UsageError(_bare_root_error_message(self, query_terms))
 
         assert self.callback is not None, "QueryFirstGroup requires a callback"
@@ -308,9 +314,7 @@ class QueryFirstGroupBase(click.Group):
             query_terms=query_terms,
             verb=ctx.meta.get("polylogue_dispatch_verb"),
             registered_commands=sorted(self.commands.keys()),
-            strict_floor_refusal=bool(query_terms)
-            and not explicit_query
-            and not _looks_like_query_expression(query_terms),
+            strict_floor_refusal=not has_signalled_query_intent(query_terms, explicit_query=explicit_query),
         )
 
     def handle_default_mode(self, ctx: click.Context) -> None:

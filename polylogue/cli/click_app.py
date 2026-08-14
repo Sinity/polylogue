@@ -430,7 +430,7 @@ def cli(
         Quoted query text is also accepted when followed by an action:
         `polylogue 'QUERY' then read`.
         Run `polylogue --help` to see the full subcommand list, or
-        `polylogue --diagnose <args>` to have the parser explain how it
+        `polylogue --diagnose find "migration"` to have the parser explain how it
         routed your invocation.
 
     \b
@@ -479,7 +479,7 @@ def cli(
         polylogue tutorial                # first-run setup checklist
         polylogue find --help             # query workflow help
         polylogue <subcommand> --help     # per-subcommand help
-        polylogue --diagnose <args>       # explain parser decisions
+        polylogue --diagnose find "migration" # explain parser decisions
     """
     # Click invokes the root callback before nested command help. Help is a
     # static command contract and must not resolve user config or inspect an

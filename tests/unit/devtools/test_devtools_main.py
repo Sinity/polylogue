@@ -6,38 +6,24 @@ from types import ModuleType
 import pytest
 
 import devtools.__main__ as devtools_main
-from devtools.command_catalog import COMMANDS, VERIFICATION_LAB_COMMAND_NAMES, CommandSpec
+from devtools.command_catalog import COMMAND_SPECS, COMMANDS, CommandSpec, verification_lab_command_specs
 
 
 def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     commands = {entry["name"] for entry in payload["commands"]}
-    assert payload["surfaces"]["verification_lab"] == list(VERIFICATION_LAB_COMMAND_NAMES)
-    assert "lab graph" in commands
-    assert "lab probe capture-regression" in commands
-    assert "lab probe cost-reconciliation" in commands
-    assert "lab projections" in commands
-    assert "render devtools-reference" in commands
-    assert "release readiness" in commands
-    assert "workspace tasks" in commands
-    assert "status" in commands
+    assert payload["surfaces"]["verification_lab"] == [spec.name for spec in verification_lab_command_specs()]
+    assert commands == {spec.name for spec in COMMAND_SPECS}
 
 
 def test_list_commands_human_output(capsys: pytest.CaptureFixture[str]) -> None:
     assert devtools_main.main(["--list-commands"]) == 0
     captured = capsys.readouterr()
     assert "lab check surface:" in captured.out
-    assert "lab smoke" in captured.out
-    assert "lab schema generate" in captured.out
-    assert "lab schema promote" in captured.out
-    assert "lab schema audit" in captured.out
     assert "generated surfaces:" in captured.out
-    assert "lab graph" in captured.out
-    assert "lab probe capture-regression" in captured.out
-    assert "lab probe cost-reconciliation" in captured.out
-    assert "lab projections" in captured.out
-    assert "render devtools-reference" in captured.out
+    for spec in COMMAND_SPECS:
+        assert spec.name in captured.out
 
 
 def test_global_json_flag_is_forwarded_to_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,12 +123,12 @@ def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytes
 
     monkeypatch.setitem(
         COMMANDS,
-        "workspace tasks",
-        CommandSpec("workspace tasks", "workspace", "fake workspace tasks", fake_module.__name__),
+        "workspace failure-context",
+        CommandSpec("workspace failure-context", "workspace", "fake workspace command", fake_module.__name__),
     )
 
-    assert devtools_main.main(["workspace", "tasks", "recent", "--json"]) == 0
-    assert captured == [["recent", "--json"]]
+    assert devtools_main.main(["workspace", "failure-context", "node-id", "--json"]) == 0
+    assert captured == [["node-id", "--json"]]
 
 
 def test_help_output_includes_devtools_prog_name(capsys: pytest.CaptureFixture[str]) -> None:

@@ -13,6 +13,7 @@ import pytest
 
 from devtools import merge_boundary, merge_gate, pr_scope
 from devtools.checkout_guard import checkout_environment_fingerprint
+from tests.infra.frozen_clock import FrozenClock
 
 _SCOPE_BEAD = {
     "_type": "issue",
@@ -77,17 +78,46 @@ def _fake_run(
     local_head_sha = local_head_sha if local_head_sha is not None else str(pr_view["headRefOid"])
 
     def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
-        joined = " ".join(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return MagicMock(returncode=merge_exit, stdout="merged\n", stderr="" if merge_exit == 0 else "merge failed")
-        if "/issues/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/reviews" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
-        if "/pulls/" in joined and "/comments" in joined:
-            return MagicMock(returncode=0, stdout=json.dumps([comments]), stderr="")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            threads = [
+                {
+                    "id": f"thread-{comment.get('id', index)}",
+                    "isResolved": False,
+                    "isOutdated": False,
+                    "comments": {
+                        "nodes": [
+                            {
+                                "databaseId": comment.get("id"),
+                                "createdAt": comment.get("created_at"),
+                                "path": comment.get("path"),
+                                "line": comment.get("line"),
+                                "body": comment.get("body", ""),
+                            }
+                        ]
+                    },
+                }
+                for index, comment in enumerate(comments)
+            ]
+            payload = [
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "reviewDecision": None,
+                                "reviewThreads": {
+                                    "nodes": threads,
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                },
+                            }
+                        }
+                    }
+                }
+            ]
+            return MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
         if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
             return MagicMock(returncode=0, stdout=str(Path.cwd()) + "\n", stderr="")
         if cmd[:2] == ["git", "rev-parse"]:
@@ -161,6 +191,19 @@ def test_clean_merge_title_leaves_correct_title_untouched() -> None:
 
 def test_clean_merge_title_appends_missing_suffix() -> None:
     assert merge_boundary.clean_merge_title("fix: thing", 42) == "fix: thing (#42)"
+
+
+def test_main_accepts_documented_direct_pr_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[int] = []
+
+    def merge(pr: int, **_kwargs: object) -> int:
+        captured.append(pr)
+        return 0
+
+    monkeypatch.setattr(merge_boundary, "cmd_merge", merge)
+
+    assert merge_boundary.main(["3948", "--dry-run"]) == 0
+    assert captured == [3948]
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +422,7 @@ def test_merge_refuses_when_pr_scope_carrier_is_missing(
     assert "no fresh merge-gate receipt" not in stderr
 
 
-def test_merge_refuses_when_late_unacked_review_comment_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_merge_refuses_when_unresolved_review_thread_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
     late_comment = {
@@ -468,6 +511,44 @@ def test_merge_replaces_a_recent_failed_receipt_instead_of_reusing_it(
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
     assert receipt["exit_code"] == 0
     assert receipt["verification_scope"] == "affected"
+
+
+def test_cached_non_test_receipt_is_not_fresh_merge_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """The wrapper reruns tests instead of reusing a successful quick gate."""
+    monkeypatch.chdir(tmp_path)
+    scope = pr_scope.ScopeVerdict(
+        ok=True,
+        scope_digest="scope-digest",
+        beads_digest="beads-digest",
+        assigned_beads=[],
+        mutated_beads=[],
+    )
+    head_sha = "a" * 40
+    base_sha = "b" * 40
+    attestation = pr_scope.attestation_payload(scope, head_sha=head_sha, base_sha=base_sha)
+    merge_gate._receipt_path(42).parent.mkdir(parents=True, exist_ok=True)
+    merge_gate._receipt_path(42).write_text(
+        json.dumps(
+            {
+                "head_sha": head_sha,
+                "pr_scope_attestation_digest": attestation["attestation_digest"],
+                "exit_code": 0,
+                "verification_scope": "non-test",
+                "release_baseline_allowed": False,
+                "recorded_at": frozen_clock.time(),
+            }
+        )
+    )
+
+    assert not merge_boundary._receipt_is_fresh_for_scope(
+        42,
+        head_sha=head_sha,
+        scope=scope,
+        base_sha=base_sha,
+        max_age_s=3600,
+    )
 
 
 def test_merge_dry_run_never_calls_gh_pr_merge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

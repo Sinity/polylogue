@@ -19,7 +19,9 @@ from polylogue.core.enums import (
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
+    FTS_MESSAGES_TABLE_SQL,
     FTS_TRIGGER_DDL,
+    FTS_UNICODE_TOKENIZER,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
@@ -869,16 +871,7 @@ CREATE TABLE IF NOT EXISTS session_refs (
 CREATE INDEX IF NOT EXISTS idx_session_refs_kind
 ON session_refs(kind, repo, ref_number);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    block_id UNINDEXED,
-    message_id UNINDEXED,
-    session_id UNINDEXED,
-    block_type UNINDEXED,
-    text,
-    content='',
-    contentless_delete=1,
-    tokenize='unicode61 remove_diacritics 2'
-);
+{FTS_MESSAGES_TABLE_SQL}
 
 -- polylogue-1xc.12: rowid-to-block_id identity ledger for the contentless
 -- messages_fts table above -- see FTS_MESSAGES_IDENTITY_TABLE_SQL in
@@ -1541,7 +1534,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
     session_id UNINDEXED,
     work_event_type UNINDEXED,
     text,
-    tokenize='unicode61 remove_diacritics 2'
+    tokenize='{FTS_UNICODE_TOKENIZER}'
 );
 
 -- FTS triggers for session_work_events_fts table are now dynamically composed from sql.py

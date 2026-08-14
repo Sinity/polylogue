@@ -9,43 +9,6 @@ from dataclasses import asdict, dataclass
 
 CommandMain = Callable[[list[str] | None], int]
 CONTROL_PLANE = "devtools"
-VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
-    "lab graph",
-    "lab lanes",
-    "lab policy backlog-hygiene",
-    "lab policy bead-graph",
-    "lab policy acceptance-contracts",
-    "lab policy acceptance-contract-reconcile",
-    "lab policy campaign-archive-boundaries",
-    "lab policy demo-packet-registry",
-    "lab policy demo-tour-freshness",
-    "lab policy docs-drift",
-    "lab policy insight-honesty",
-    "lab policy schema-versioning",
-    "lab policy timestamp-doctrine",
-    "lab provider completeness",
-    "lab probe capture-regression",
-    "lab probe cost-reconciliation",
-    "lab probe pipeline",
-    "lab probe turso",
-    "lab projections",
-    "lab run",
-    "lab smoke",
-    "lab schema audit",
-    "lab schema commit",
-    "lab schema compare",
-    "lab schema explain",
-    "lab schema generate",
-    "lab schema list",
-    "lab schema parser-diff",
-    "lab schema promote",
-    "lab schema roundtrip",
-    "lab seed-receipt-compare",
-    "lab snapshot read-surface",
-    "lab test-economics",
-    "lab testmon-blind-spots",
-    "lab testmon-proof",
-)
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
@@ -100,26 +63,6 @@ class CommandSpec:
         data["invocation"] = self.invocation
         data["argv"] = list(self.argv)
         return data
-
-
-@dataclass(frozen=True, slots=True)
-class WorkspaceCommandDisposition:
-    name: str
-    disposition: str
-    evidence: str
-    replacement: str
-    replacement_command: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CatalogBypassSite:
-    path: str
-    marker: str
-    command_name: str | None
-    disposition: str
-    reason: str
-    occurrence_line: int | None = None
-    expected_occurrences: int = 0
 
 
 COMMAND_SPECS: tuple[CommandSpec, ...] = (
@@ -218,27 +161,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.render_devtools_reference",
     ),
     CommandSpec(
-        "render demo-corpus-datasheet",
-        "generated surfaces",
-        "Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive.",
-        "devtools.render_demo_corpus_datasheet",
-        use_when="Refresh or verify the deterministic demo corpus construct datasheet after changing demo families, constructs, or seed semantics.",
-        examples=(
-            "devtools render demo-corpus-datasheet",
-            "devtools render demo-corpus-datasheet --check",
-        ),
-    ),
-    CommandSpec(
         "render docs-surface",
         "generated surfaces",
         "Render docs/README.md and the README documentation table.",
         "devtools.render_docs_surface",
-    ),
-    CommandSpec(
-        "render quality-reference",
-        "generated surfaces",
-        "Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries.",
-        "devtools.render_quality_reference",
     ),
     CommandSpec(
         "render query-discovery",
@@ -250,69 +176,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "result-semantics vocabulary, completions, or MCP cookbook recipes."
         ),
         examples=("devtools render query-discovery", "devtools render query-discovery --check"),
-    ),
-    CommandSpec(
-        "render api-operation-parity",
-        "generated surfaces",
-        "Render the committed semantic-operation parity matrix and Python facade reference.",
-        "devtools.render_api_operation_parity",
-        use_when=(
-            "Refresh or verify stable Python API operation IDs, cross-surface bindings, intentional exclusions, "
-            "and the signature-aware generated section in docs/library-api.md."
-        ),
-        examples=("devtools render api-operation-parity", "devtools render api-operation-parity --check"),
-    ),
-    CommandSpec(
-        "render mcp-equivalence",
-        "generated surfaces",
-        "Render docs/generated/mcp-equivalence.json from executable MCP declarations.",
-        "devtools.render_mcp_equivalence",
-        use_when=(
-            "Refresh or verify MCP discovery names, input/output contracts, role gates, operation owners, "
-            "Python parity expectations, and disjoint migration ownership after changing the compatibility surface."
-        ),
-        examples=("devtools render mcp-equivalence", "devtools render mcp-equivalence --check"),
-    ),
-    CommandSpec(
-        "render mcp-tool-index",
-        "generated surfaces",
-        "Render the generated exhaustive tool-name appendix into docs/mcp-reference.md.",
-        "devtools.render_mcp_tool_index",
-        use_when=(
-            "Keep every registered MCP tool name individually reachable from the docs tree "
-            "(tests/infra/mcp.py:EXPECTED_TOOL_NAMES) after adding or removing a tool, so "
-            "`devtools verify docs-coverage` stays clean without hand-duplicating the list."
-        ),
-        examples=("devtools render mcp-tool-index", "devtools render mcp-tool-index --check"),
-    ),
-    CommandSpec(
-        "render product-workflows",
-        "generated surfaces",
-        "Render docs/product/workflows.md from executable query-action workflow registries.",
-        "devtools.render_product_workflows",
-        use_when=(
-            "Refresh or verify the product query-action workflow contract after changing action contracts, "
-            "read-view surfaces, completion behavior, or workflow golden paths (#2305)."
-        ),
-        examples=(
-            "devtools render product-workflows",
-            "devtools render product-workflows --check",
-        ),
-    ),
-    CommandSpec(
-        "render public-claims",
-        "generated surfaces",
-        "Render README, launch, findings-page, and verified-export claim views from FINDING assertions.",
-        "devtools.render_public_claims",
-        use_when=(
-            "Refresh public claim Markdown/JSON and the generated YAML compatibility view after changing "
-            "FINDING seeds, judgments, capability declarations, or 37t.14 verdict receipts."
-        ),
-        examples=(
-            "devtools render public-claims",
-            "devtools render public-claims --check",
-            "devtools render public-claims --archive-root /path/to/archive --verdicts /path/to/verdicts.json",
-        ),
     ),
     CommandSpec(
         "render pages",
@@ -331,7 +194,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools render visual-tapes",
             "devtools render visual-tapes --capture",
-            "devtools render visual-tapes --check",
         ),
     ),
     CommandSpec(
@@ -344,18 +206,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "verify public-claims",
+        "verify ci-commands",
         "verification",
-        "Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy.",
-        "devtools.public_claims",
-        use_when=(
-            "Check externally visible claims after changing README, demos, findings, FINDING assertions, "
-            "capability declarations, or evidence-integrity receipts."
-        ),
-        examples=(
-            "devtools verify public-claims",
-            "devtools verify public-claims --json",
-        ),
+        "Validate devtools invocations in structured CI run fields.",
+        "devtools.verify_ci_commands",
+        use_when="Catch CI scripts that reference a removed or misspelled devtools command.",
+        examples=("devtools verify ci-commands", "devtools verify ci-commands --json"),
+    ),
+    CommandSpec(
+        "verify doc-commands",
+        "verification",
+        "Validate executable documentation examples against live command inventories.",
+        "devtools.verify_doc_commands",
+        use_when="Catch README and documentation examples that reference an unknown command path or flag.",
+        examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
     ),
     CommandSpec(
         "verify corpus-fidelity",
@@ -388,21 +252,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "release readiness",
-        "release",
-        "Validate the externally-presentable release gate definition.",
-        "devtools.release_readiness",
-        use_when=(
-            "Check that the release-readiness gate document, required local commands, "
-            "and release PR evidence template are still coherent before touching a release PR."
-        ),
-        examples=(
-            "devtools release readiness",
-            "devtools release readiness --json",
-            "devtools release readiness --release-body-file /tmp/release-pr-body.md",
-        ),
-    ),
-    CommandSpec(
         "lab provider completeness",
         "verification lab",
         "Report provider/importer package completeness by origin and capture mode.",
@@ -432,17 +281,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "reindex-canary",
-        "verification",
-        "Run the product's representative inactive-generation reindex canary.",
-        "devtools.reindex_canary",
-        use_when="Exercise the bounded semantic reindex canary before paying for a full rebuild.",
-        examples=(
-            "devtools reindex-canary --archive-root /path/to/isolated-archive --input /path/to/index.db --schema-inference-receipt /path/to/schema-inference-gate-receipt.json --sample 100 --report /path/to/canary.json --no-promote",
-            "devtools reindex-canary --archive-root /path/to/isolated-archive --schema-inference-receipt /path/to/schema-inference-gate-receipt.json --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
-        ),
-    ),
-    CommandSpec(
         "verify coverage",
         "verification",
         "Run pytest with the repository coverage floor from pyproject.toml.",
@@ -457,7 +295,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify mutation-freshness",
         "verification",
-        "Verify fresh mutation campaigns meet their declared kill-rate thresholds.",
+        "Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds.",
         "devtools.verify_mutation_freshness",
         use_when=(
             "Enforce mutation campaign freshness and kill-rate thresholds after a rotating CI campaign "
@@ -465,47 +303,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools verify mutation-freshness --enforce-kill-rate",
-            "devtools verify mutation-freshness --yaml .local/mutation-campaigns/index.yaml --strict",
-        ),
-    ),
-    CommandSpec(
-        "lab lanes",
-        "verification lab",
-        "Run named validation lanes.",
-        "devtools.run_validation_lanes",
-        use_when="List, dry-run, or execute authored validation lanes from the executable lane registry.",
-        examples=(
-            "devtools lab lanes --list",
-            "devtools lab lanes --lane frontier-local",
-            "devtools lab lanes --lane live-archive-smoke --dry-run",
+            "devtools verify mutation-freshness --strict --default-freshness-days 30",
         ),
     ),
     CommandSpec(
         "lab graph",
         "verification lab",
-        "Render the runtime artifact, operation, and scenario-coverage map.",
+        "Render the runtime artifact and operation graph.",
         "devtools.artifact_graph",
-        use_when="Inspect the authored runtime graph and see which scenarios currently cover declared artifacts and operations.",
+        use_when="Inspect declared runtime artifacts, operations, paths, and maintenance targets.",
         examples=(
             "devtools lab graph",
             "devtools lab graph --json",
-            "devtools lab graph --strict",
-        ),
-    ),
-    CommandSpec(
-        "lab test-economics",
-        "verification lab",
-        "Report per-package coverage/fix-density/test-cost economics (polylogue-9e5.11).",
-        "devtools.test_economics_report",
-        use_when=(
-            "Decide where test-writing effort or test-suite pruning actually pays off, by "
-            "cross-referencing coverage percent, historical fix-commit density, testmon "
-            "wall-time cost exposure, and testmon selection fan-out per top-level package."
-        ),
-        examples=(
-            "devtools lab test-economics",
-            "devtools lab test-economics --json",
-            "devtools lab test-economics --write docs/test-economics.md",
         ),
     ),
     CommandSpec(
@@ -519,53 +328,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "for bounded unrelated-change selection."
         ),
         examples=("devtools lab testmon-proof", "devtools lab testmon-proof --json"),
-    ),
-    CommandSpec(
-        "lab testmon-blind-spots",
-        "verification lab",
-        "Audit coverage-known files that are absent from the testmon fingerprint graph.",
-        "devtools.testmon_blind_spot_audit",
-        use_when=(
-            "Inspect an existing coverage JSON report against an existing pytest-testmon database. "
-            "Declaration-only modules are reported separately from executable validator risk; this command "
-            "does not run pytest or regenerate coverage."
-        ),
-        examples=(
-            "devtools lab testmon-blind-spots",
-            "devtools lab testmon-blind-spots --json",
-            "devtools lab testmon-blind-spots --coverage-json path/to/coverage.json --testmon-db path/to/testmondata",
-        ),
-    ),
-    CommandSpec(
-        "lab pytest-witness-repetitions",
-        "verification lab",
-        "Repeat the exact optimize, WAL, and embedding seed-hang witnesses with durable receipts.",
-        "devtools.pytest_witness_repetitions",
-        use_when=(
-            "Establish that the historical periodic optimize, WAL checkpoint, and embedding backlog "
-            "lifecycle witnesses survive consecutive isolated and xdist runs. Each attempt uses the ordinary "
-            "managed pytest/supervisor path; failures and timeouts are retained rather than retried."
-        ),
-        examples=(
-            "devtools lab pytest-witness-repetitions",
-            "devtools lab pytest-witness-repetitions --attempts 2 --xdist-workers 3 --json",
-        ),
-    ),
-    CommandSpec(
-        "lab seed-receipt-compare",
-        "verification lab",
-        "Compare two workload receipts for a clean, like-for-like seed/incident proof (polylogue-b054.1.1.3).",
-        "devtools.seed_receipt_compare",
-        use_when=(
-            "Judge a seed-testmon or focused pytest run's resource receipt against a named baseline "
-            "receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated "
-            "cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and "
-            "linked follow-up for any unmet target instead of silently dropping it."
-        ),
-        examples=(
-            "devtools lab seed-receipt-compare --baseline incident.json --candidate current.json",
-            "devtools lab seed-receipt-compare --baseline incident.json --candidate current.json --json",
-        ),
     ),
     CommandSpec(
         "bench ingest-amplification",
@@ -602,13 +364,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench ingest-throughput --json",
             "devtools bench ingest-throughput --batches 20 --seed 2391",
         ),
-    ),
-    CommandSpec(
-        "bench coordination-latency",
-        "benchmarking",
-        "Measure compact coordination status p50/p95 with raw stage samples.",
-        "devtools.coordination_latency_probe",
-        examples=("devtools bench coordination-latency --samples 21 --out .local/coordination-latency.json",),
     ),
     CommandSpec(
         "lab snapshot read-surface",
@@ -658,40 +413,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace backlog-calibration",
-        "workspace",
-        "Measured lead-time/discovery/staleness distributions over the bead corpus.",
-        "devtools.backlog_calibration",
-        use_when=(
-            "Re-fit the numbers a backlog-execution plan rests on instead of guessing them: "
-            "closed-bead lead-time percentiles split by priority/type/epic-membership/dependency "
-            "degree, a censoring-honest survival view (closed-only medians are survivorship-"
-            "biased), close-reason classification measuring how much of the backlog closes with "
-            "no implementation (already-satisfied/obsolete/duplicate), and created-vs-closed "
-            "discovery dynamics (does the backlog drain?). Optionally calibrates PR open->merge "
-            "latency by size from a gh dump. Answers a different question than "
-            "`workspace beads-state-report` (population shape and graph hygiene, point-in-time) "
-            "and `workspace bead-cluster` (what to batch next): this is duration *models* over "
-            "history, meant to be re-run as the corpus grows so plans stop quoting stale guesses."
-        ),
-        examples=(
-            "devtools workspace backlog-calibration",
-            "devtools workspace backlog-calibration --input beads.jsonl --json",
-            "devtools workspace backlog-calibration --prs prs.json",
-        ),
-    ),
-    CommandSpec(
-        "workspace bead-batch-show",
-        "workspace",
-        "Batch-show beads: id, status, prio, title, desc head, deps, notes tail.",
-        "devtools.bead_batch_show",
-        use_when=(
-            "Skim several beads at once (e.g. a fanout cluster or a discovered-follow-up batch) "
-            "without a separate `bd show` round-trip per id."
-        ),
-        examples=("devtools workspace bead-batch-show polylogue-kapb polylogue-2yax",),
-    ),
-    CommandSpec(
         "workspace bead-cluster",
         "workspace",
         "Footprint/overlap/contention clustering of ready Beads (execution frontier).",
@@ -701,10 +422,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "footprint (cluster into one branch/PR sweep) vs. which are genuinely disjoint "
             "(safe to run as parallel worktree lanes), and flag contention -- beads that touch "
             "the same durable migration slot or the same generated surface even without an "
-            "exact file-path overlap. Answers a different question than "
-            "`workspace delivery-gate-status` (gate-progress board): this is footprint/overlap "
-            "clustering over the same live bead data, not gate percentage. Footprints are "
-            "advisory -- verify on claim."
+            "exact file-path overlap. Footprints are advisory, so verify them when claiming work."
         ),
         examples=(
             "devtools workspace bead-cluster",
@@ -712,25 +430,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace bead-cluster --all-open",
             "devtools workspace bead-cluster --max-priority 1",
             "devtools workspace bead-cluster --input ready.json --validate-roster",
-        ),
-    ),
-    CommandSpec(
-        "workspace lane-brief",
-        "workspace",
-        "Generate a dispatch brief for a bead lane with live footprint/prior-art evidence.",
-        "devtools.lane_brief",
-        use_when=(
-            "Before dispatching a batch of bead ids as one lane/branch to a subagent, produce a "
-            "markdown brief carrying the full bead records plus LIVE evidence: every file path "
-            "mentioned in the bead text is checked against the working tree (exists? line count? "
-            "last 3 commits?) so a dispatcher does not hand a subagent stale bead prose, and closed "
-            "beads mentioning the same paths are surfaced as prior art. Sections the tool cannot "
-            "fill (measured baseline, non-goals) are emitted as explicit placeholders, never "
-            "silently dropped."
-        ),
-        examples=(
-            "devtools workspace lane-brief polylogue-abc polylogue-def",
-            "devtools workspace lane-brief polylogue-ei94 --out .agent/scratch/lane-ei94.md",
         ),
     ),
     CommandSpec(
@@ -793,7 +492,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace merge-gate",
         "workspace",
-        "Structural pre-merge safety check: fresh local-verification receipt + no late review comments.",
+        "Structural pre-merge safety check: fresh local verification + resolved review threads.",
         "devtools.merge_gate",
         use_when=(
             "Immediately before squash-merging any PR in a merge train, replacing coordinator memory "
@@ -801,17 +500,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             'per-PR) with a check that fails closed. `record <PR> --command "..."` requires the current '
             "checkout to already be the PR's exact head commit with a clean tree (it refuses otherwise), "
             "first validates the same versioned PR-scope carrier CircleCI checks, then runs a local verification "
-            "command, and persists a receipt flagging commands that look like they skip tests (e.g. "
-            "`verify --quick`). `check <PR>` polls review comments across a real grace window (default "
-            "3x20s, covering CodeRabbit's 30-60s late-arrival window) and BLOCKs unless a receipt exists "
-            "for the CURRENT head sha within a freshness window with exit_code 0, and no review comment's "
-            "created_at is newer than the head commit's timestamp unless explicitly `ack`'d for that exact "
-            "head sha. The receipt binds the carrier digest plus a fresh head- and Bead-bound scope attestation, so a changed scope or Bead state requires re-recording. Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
+            "command and persists its typed verification scope. `check <PR>` polls structured GitHub "
+            "review-thread state across a real grace window (default 3x20s, covering CodeRabbit's "
+            "30-60s late-arrival window) and BLOCKs unless a receipt exists for the CURRENT head sha "
+            "within a freshness window with exit_code 0, every review thread is resolved, and GitHub's "
+            "review decision is not CHANGES_REQUESTED. The receipt binds the carrier digest plus a fresh "
+            "head- and Bead-bound scope attestation, so a changed scope or Bead state requires re-recording. "
+            "Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
             "posted, and PR #3517 nearly merged with a 43-test regression no CI check or review comment "
             "ever flagged -- plus review findings on this tool itself (recording from an unrelated "
-            "checkout, a --quick example that would have missed its own motivating regression, a single "
-            "comment snapshot instead of a grace-period poll, and no way to triage a false-positive late "
-            "comment without an empty commit). `check --post-status` (polylogue-1cbeh) posts the "
+            "checkout, a --quick example that would have missed its own motivating regression, and a single "
+            "review snapshot instead of a grace-period poll). `check --post-status` (polylogue-1cbeh) posts the "
             "verdict as a GitHub commit status (`context=merge-gate`, success/failure) on the PR's "
             "current head sha via `gh api repos/{owner}/{repo}/statuses/{sha}` -- this is what lets "
             "branch protection or `gh pr merge --auto` gate on the same verdict instead of a "
@@ -822,7 +521,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace merge-gate check 3517",
             "devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1",
             "devtools workspace merge-gate check 3517 --post-status",
-            'devtools workspace merge-gate ack 3517 123456789 --reason "already fixed upstream, false positive"',
         ),
     ),
     CommandSpec(
@@ -855,26 +553,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace merge-conductor",
-        "workspace",
-        "Mechanical-conflict triage for the PR merge train (dry-run by default).",
-        "devtools.merge_conductor",
-        use_when=(
-            "Before or during a merge train, classify each roster PR's conflicting/modified files "
-            "into AUTO-RESOLVABLE mechanical classes (.beads/issues.jsonl take-master, regenerable "
-            "surfaces) vs ESCALATE classes (schema migrations, hooks config, anything else) and "
-            "detect cross-PR contention (two PRs claiming the same migration slot or generated-"
-            "surface family). Implements the mechanical slice of the polylogue-ei94 merge-conductor "
-            "design. --execute only touches AUTO-RESOLVABLE PRs, in a scratch worktree, and aborts "
-            "back to ESCALATE on any deviation; escalate-class PRs are never touched under --execute."
-        ),
-        examples=(
-            "devtools workspace merge-conductor --pr 3301 --pr 3302",
-            "devtools workspace merge-conductor --pr 3301 --json",
-            "devtools workspace merge-conductor --pr 3301 --execute",
-        ),
-    ),
-    CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
         "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
@@ -892,24 +570,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace bead-reimport-guard reconcile .beads/issues.jsonl",
             "devtools workspace bead-reimport-guard export /tmp/issues-snapshot.jsonl",
-        ),
-    ),
-    CommandSpec(
-        "workspace delivery-gate-status",
-        "workspace",
-        "Per-release-gate progress board over .beads/issues.jsonl (delivery:<release> / lane:<lane> overlay).",
-        "devtools.delivery_gate_status",
-        use_when=(
-            "Check overall delivery-gate progress (R0-normalize through N-horizon) -- percent "
-            "complete, ready/blocked/in-progress counts, and the active frontier gate's exit "
-            "criterion. --fresh re-exports .beads/issues.jsonl first since bd updates do not "
-            "immediately re-export."
-        ),
-        examples=(
-            "devtools workspace delivery-gate-status",
-            "devtools workspace delivery-gate-status --fresh",
-            "devtools workspace delivery-gate-status --json",
-            "devtools workspace delivery-gate-status --gate delivery:A-trust-floor",
         ),
     ),
     CommandSpec(
@@ -955,22 +615,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace dev-loop --browser-live-proof --browser-live-profile-dir .local/browser-profiles/<copy> --json",
             "devtools workspace dev-loop --tui-plan --json",
             "devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id> --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace frontier",
-        "workspace",
-        "Derive a complete, non-mutating execution focus from live Beads state.",
-        "devtools.frontier_report",
-        use_when=(
-            "During Direction, Velocity, or wait-ahead windows, distinguish the full ambition, admitted "
-            "active set, current claims, dependency-ready work, and resource-permitted execution focus before "
-            "claiming or dispatching work."
-        ),
-        examples=(
-            "devtools workspace frontier",
-            "devtools workspace frontier --json",
-            "devtools workspace frontier --out .agent/task-history/frontier-latest.md",
         ),
     ),
     CommandSpec(
@@ -1070,20 +714,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace raw-live-source-reconciliation",
             "devtools workspace raw-live-source-reconciliation --json",
             "devtools workspace raw-live-source-reconciliation --limit 500 --sample-limit 20",
-        ),
-    ),
-    CommandSpec(
-        "workspace chatgpt-lifecycle-anchor-audit",
-        "workspace",
-        "Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts.",
-        "devtools.chatgpt_lifecycle_anchor_audit",
-        use_when=(
-            "Run the read-only parser-to-classifier census behind the historical ChatGPT mapping-order defect. "
-            "It emits only aggregate, sanitized evidence and never reclassifies source rows or graph gates."
-        ),
-        examples=(
-            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive",
-            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive --receipt docs/audits/receipt.json",
         ),
     ),
     CommandSpec(
@@ -1497,21 +1127,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace temporal-devloop",
-        "workspace",
-        "Compose git and operating-log events into a temporal evidence window.",
-        "devtools.devloop_temporal",
-        use_when=(
-            "Dogfood temporal analysis on the current devloop without inventing a bespoke report shape: "
-            "git commits and OPERATING-LOG headings are normalized as event families and projected through "
-            "the shared TemporalEvidenceWindow."
-        ),
-        examples=(
-            "devtools workspace temporal-devloop --since 2026-06-30T00:00:00+02:00 --json",
-            "devtools workspace temporal-devloop --out .agent/demos/14-devloop-temporal-dogfood/devloop-events.json",
-        ),
-    ),
-    CommandSpec(
         "workspace temporal-archive-aggregates",
         "workspace",
         "Build run-projection aggregate artifacts from the active archive.",
@@ -1523,7 +1138,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace temporal-archive-aggregates --json",
-            "devtools workspace temporal-archive-aggregates --out-dir .agent/demos/01-real-archive-temporal-devloops",
+            "devtools workspace temporal-archive-aggregates --out-dir .local/temporal-archive-aggregates",
         ),
     ),
     CommandSpec(
@@ -1539,7 +1154,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace lineage-validation --json",
             "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
-            "devtools workspace lineage-validation --out-dir .agent/demos/lineage-validation/current",
+            "devtools workspace lineage-validation --out-dir .local/evidence/lineage-validation/current",
         ),
     ),
     CommandSpec(
@@ -1554,24 +1169,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace affordance-usage --days 7 --json",
             "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
-            "devtools workspace affordance-usage --out-dir .agent/demos/agent-affordance-usage",
+            "devtools workspace affordance-usage --out-dir .local/evidence/agent-affordance-usage",
         ),
     ),
     CommandSpec(
-        "workspace demo-shelf",
+        "workspace claim-vs-evidence",
         "workspace",
-        "Refresh or verify current demo shelf indexes.",
-        "devtools.demo_shelf",
+        "Analyze structured failures and the assistant behavior that followed.",
+        "devtools.claim_vs_evidence",
         use_when=(
-            "After curating .agent/demos or another explicit current demo shelf, regenerate "
-            "MANIFEST.readable.json and SUMMARY_INDEX.json from one deterministic helper. "
-            "Declarative read packages own portable readable bundles; the shelf is the best current set, "
-            "not an append-only archive."
+            "Measure bounded, origin-stratified follow-up behavior from structural tool-result failures; "
+            "the report preserves ambiguous outcomes, calibration, sensitivity windows, and separate "
+            "usage/cost lanes instead of treating prose as the failure oracle."
         ),
         examples=(
-            "devtools workspace demo-shelf",
-            "devtools workspace demo-shelf --check",
-            "devtools workspace demo-shelf --root /realm/project/sinex/.agent/demos --json",
+            "devtools workspace claim-vs-evidence --json",
+            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .local/evidence/claim-vs-evidence",
         ),
     ),
     CommandSpec(
@@ -1586,37 +1199,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
         examples=(
             "devtools workspace degraded-archive-proof --json",
-            "devtools workspace degraded-archive-proof --out-dir .agent/demos/degraded-archive-proof/current --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace cli-surface-audit",
-        "workspace",
-        "Capture a current-curated CLI surface audit demo.",
-        "devtools.cli_surface_audit",
-        use_when=(
-            "Refresh the CLI surface audit shelf through one reusable command that captures representative "
-            "help, status, query, read, and facets outputs while keeping large unbounded diagnostics opt-in."
-        ),
-        examples=(
-            "devtools workspace cli-surface-audit",
-            "devtools workspace cli-surface-audit --out-dir .agent/demos/cli-surface-audit/current --json",
-            "devtools workspace cli-surface-audit --include-unbounded-dialogue",
-        ),
-    ),
-    CommandSpec(
-        "workspace claim-vs-evidence",
-        "workspace",
-        "Build a structured failure follow-up claim-vs-evidence demo.",
-        "devtools.claim_vs_evidence",
-        use_when=(
-            "Produce a fast, bounded report over structured tool failures and the immediately following "
-            "assistant turn, using tool_result is_error/exit_code as the evidence anchor instead of "
-            "prose-mined outcome claims."
-        ),
-        examples=(
-            "devtools workspace claim-vs-evidence --json",
-            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .agent/demos/claim-vs-evidence",
+            "devtools workspace degraded-archive-proof --out-dir .local/evidence/degraded-archive-proof/current --json",
         ),
     ),
     CommandSpec(
@@ -1635,18 +1218,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab projections",
-        "verification lab",
-        "Render the authored scenario-bearing verification projections.",
-        "devtools.scenario_projections",
-        use_when="Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps.",
-        examples=(
-            "devtools lab projections",
-            "devtools lab projections --source-kind validation-lane --artifact-target session_insight_rows",
-            "devtools lab projections --json",
-        ),
-    ),
-    CommandSpec(
         "verify agent-integration",
         "verification",
         "Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures.",
@@ -1657,17 +1228,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify agent-integration --json",
             "devtools verify agent-integration --require-live",
         ),
-    ),
-    CommandSpec(
-        "verify closure-matrix",
-        "verification",
-        "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",
-        "devtools.verify_closure_matrix",
-        use_when=(
-            "Keep the per-domain test-closure matrix honest — fails when a declared target file or "
-            "representative test path is missing, or when a row violates the gate schema."
-        ),
-        examples=("devtools verify closure-matrix", "devtools verify closure-matrix --json"),
     ),
     CommandSpec(
         "bench slo",
@@ -1704,79 +1264,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify manifests",
-        "verification",
-        "Verify internal consistency across all docs/plans/*.yaml manifest files.",
-        "devtools.verify_manifests",
-        use_when=(
-            "Catch malformed manifests, duplicate rule IDs, missing required fields, "
-            "and cross-manifest reference inconsistencies."
-        ),
-        examples=("devtools verify manifests",),
-    ),
-    CommandSpec(
-        "verify doc-commands",
-        "verification",
-        "Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands.",
-        "devtools.verify_doc_commands",
-        use_when=(
-            "Catch doc drift away from the daemon-first command surface. "
-            "Fails when README.md or any docs/**/*.md references a subcommand "
-            "that is not registered, or a stale invocation like "
-            "'polylogued run --enable-api' / 'polylogue run --source'."
-        ),
-        examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
-    ),
-    CommandSpec(
-        "verify docs-coverage",
-        "verification",
-        "Verify every public CLI command, MCP tool, config key, and stable daemon route is named in the docs tree.",
-        "devtools.verify_docs_coverage",
-        use_when=(
-            "Catch doc drift in the other direction from doc-commands: a real public surface "
-            "(CLI command, MCP tool, config key, stable daemon route) shipped with zero doc-tree "
-            "mention. Fails naming the exact missing entry (polylogue-3tl.9). Pre-existing gaps "
-            "are tracked in docs/plans/docs-coverage-baseline.yaml as a ratchet, not an allowlist "
-            "to extend."
-        ),
-        examples=("devtools verify docs-coverage", "devtools verify docs-coverage --json"),
-    ),
-    CommandSpec(
-        "verify ci-workflows",
-        "verification",
-        "Verify CI workflow files reference locally-known devtools commands and existing paths.",
-        "devtools.verify_ci_workflows",
-        use_when=(
-            "Catch CI workflow files that reference unregistered devtools commands or "
-            "non-existent paths. Checks only locally verifiable facts — not remote CI state."
-        ),
-        examples=("devtools verify ci-workflows", "devtools verify ci-workflows --json"),
-    ),
-    CommandSpec(
-        "verify catalog-bypasses",
-        "verification",
-        "Reject direct devtools module or script execution outside sanctioned adapters.",
-        "devtools.verify_catalog_bypasses",
-        use_when=(
-            "Check workflow run blocks, repository hooks, and devtools process-launch sites for direct "
-            "python -m devtools.X or python devtools/X.py execution that bypasses the command catalog."
-        ),
-        examples=("devtools verify catalog-bypasses", "devtools verify catalog-bypasses --json"),
-    ),
-    CommandSpec(
-        "verify test-infra-currency",
-        "verification",
-        "Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION.",
-        "devtools.verify_test_infra_currency",
-        use_when=(
-            "Catch helpers that target renamed or removed tables (#1208). "
-            "When SCHEMA_VERSION bumps, helper SQL drifting away from the live "
-            "schema is invisible to testmon-selected runs until an unrelated change "
-            "invalidates the affected tests."
-        ),
-        examples=("devtools verify test-infra-currency", "devtools verify test-infra-currency --json"),
-    ),
-    CommandSpec(
         "lab policy schema-versioning",
         "verification lab",
         "Verify durable-tier migration and derived-tier rebuild boundaries.",
@@ -1790,234 +1277,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),
     CommandSpec(
-        "lab policy classifier-fingerprints",
-        "verification lab",
-        "Verify parser/classifier decision-boundary changes are declared as reparse-requiring or acknowledged.",
-        "devtools.verify_classifier_fingerprints",
-        use_when=(
-            "Catch the gap `lab policy schema-versioning` cannot see (polylogue-gucv): a parser/classifier "
-            "under polylogue/sources/ or polylogue/archive/artifact_taxonomy/ (looks_like*/classify_artifact* "
-            "functions) changes what it accepts for identical input bytes without any INDEX_SCHEMA_VERSION "
-            "bump at all, so already-indexed rows go silently stale with no signal a reparse was needed "
-            "(PR #3428 shipped exactly this, green, against the version-keyed gate)."
-        ),
-        examples=(
-            "devtools lab policy classifier-fingerprints",
-            "devtools lab policy classifier-fingerprints --json",
-            "devtools lab policy classifier-fingerprints --ack polylogue/sources/parsers/foo.py:looks_like_x "
-            "--reason 'only tightens a shape that never validly matched' --ref polylogue-abcd",
-        ),
-    ),
-    CommandSpec(
-        "lab policy raw-payload-hash-purity",
-        "verification lab",
-        "Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing.",
-        "devtools.verify_raw_payload_hash_purity",
-        use_when=(
-            "Prevent a regression of polylogue-u19l's confirmed bug: sources/live/batch.py used to prepend a "
-            "synthetic session_meta header onto every Codex append capture before hashing/storing it, so the "
-            "stored blob was never a literal byte-slice of the live file, permanently defeating live-source "
-            "byte-identity verification for ~59GB of raw rows. Statically forbids concatenating a synthesized "
-            "literal (bytes/str constant, f-string, json.dumps()/.encode() result) onto captured bytes anywhere "
-            "in the raw-capture write-path modules (WRITE_PATH_MODULES)."
-        ),
-        examples=("devtools lab policy raw-payload-hash-purity", "devtools lab policy raw-payload-hash-purity --json"),
-    ),
-    CommandSpec(
-        "lab policy table-exists-duplication",
-        "verification lab",
-        "Verify no module outside storage/introspection.py redefines table_exists/column_exists/index_exists.",
-        "devtools.verify_table_exists_duplication",
-        use_when=(
-            "Keep polylogue-48h's consolidation from silently regrowing: ~25 independently maintained "
-            "_table_exists/_column_exists/_index_exists copies (each trivially small and subtly different) "
-            "were merged into polylogue.storage.introspection. A grep-based tripwire forbidding a new "
-            "top-level def with one of the retired names outside that module."
-        ),
-        examples=(
-            "devtools lab policy table-exists-duplication",
-            "devtools lab policy table-exists-duplication --json",
-        ),
-    ),
-    CommandSpec(
-        "lab policy position-derived-identity",
-        "verification lab",
-        "Verify no parser mints cross-revision comparison identity from positional/index data.",
-        "devtools.verify_position_derived_identity",
-        use_when=(
-            "Prevent a regression of polylogue-hith/qkuq's already-fixed attachment-id bug (a synthetic id "
-            "seeded partly by array index was unstable across export vintages that reorder/insert entries, "
-            "manufacturing false divergence in revision-authority membership comparison) and catch new "
-            "occurrences of the same shape (polylogue-gysk3 found the identical hazard still live for "
-            "provider_message_id, the sole input to message_identity_hash). Statically scans "
-            "polylogue/sources/parsers/ for an identity-bearing field constructed from an f-string/format/"
-            "concatenation referencing a loop index/position variable, either inline or via a local variable."
-        ),
-        examples=(
-            "devtools lab policy position-derived-identity",
-            "devtools lab policy position-derived-identity --json",
-            "devtools lab policy position-derived-identity --ack "
-            "'polylogue/sources/parsers/foo.py:parse:provider_message_id' "
-            "--reason 'tracked in polylogue-xxxx, not fixed inline' --ref polylogue-xxxx",
-        ),
-    ),
-    CommandSpec(
-        "lab policy raw-authority-frontier-executability",
-        "verification lab",
-        "Verify every raw-authority frontier state has a reachable actuator.",
-        "devtools.verify_raw_authority_frontier_executability",
-        use_when=(
-            "polylogue-w32w / polylogue-lb39z (Phase 1, item 4): "
-            "RawAuthorityFrontierItem.__post_init__ raises if a CONSTRUCTED item pairs a "
-            "dispatched actuator (_APPLY_DISPATCHED_ACTUATORS) with a non-executable state "
-            "(_EXECUTABLE_STATES) -- but that only fires when a test or live classification "
-            "actually builds one; a new frontier state or re-paired actuator can ship an "
-            "unexercised branch that stays silent until it accumulates against real archive "
-            "data (the original defect: 4,174 blockers demanding an unreachable actuator, "
-            "undetected for weeks). This lint statically enumerates every literal "
-            "(state, actuator) construction site in polylogue/storage/raw_reconciler.py "
-            "(_item(...) and _StrategyOverride(...) calls) and re-checks the same invariant "
-            "at review time, independent of test coverage."
-        ),
-        examples=(
-            "devtools lab policy raw-authority-frontier-executability",
-            "devtools lab policy raw-authority-frontier-executability --json",
-        ),
-    ),
-    CommandSpec(
-        "lab policy acceptance-contracts",
-        "verification lab",
-        "Validate structured Beads acceptance contracts and the committed contract manifest.",
-        "devtools.beads_acceptance_contracts",
-        use_when=(
-            "Run the source-digest-bound acceptance-contract gate before shipping Beads state. "
-            "It validates typed contract fields, rendered criteria equality, planner-review "
-            "dispatch markers, safety and receipt clauses, and the committed 218-Bead manifest."
-        ),
-        examples=(
-            "devtools lab policy acceptance-contracts",
-            "devtools lab policy acceptance-contracts --json",
-        ),
-    ),
-    CommandSpec(
-        "lab policy acceptance-contract-reconcile",
-        "verification lab",
-        "Reconcile canonical acceptance contracts with a read-only live Beads export.",
-        "devtools.beads_acceptance_reconciliation",
-        use_when=(
-            "Run this file-level dry run before a coordinator applies acceptance contracts. "
-            "It reports authority differences, refuses source-digest mismatches, and emits "
-            "a targeted wave made from live rows with only acceptance_criteria and "
-            "metadata.acceptance_contract_v1 changed. It never invokes bd or mutates Dolt."
-        ),
-        examples=(
-            "devtools lab policy acceptance-contract-reconcile --repository .beads/issues.jsonl "
-            "--live /path/live.jsonl --wave /path/targeted.jsonl --report /path/report.json",
-            "devtools lab policy acceptance-contract-reconcile --verify-repository .beads/issues.jsonl "
-            "--verify-report /path/report.json --verify-before /path/before.jsonl "
-            "--verify-after /path/after.jsonl --verify-wave /path/targeted.jsonl --json",
-        ),
-    ),
-    CommandSpec(
-        "lab policy acceptance-contract-apply",
-        "verification lab",
-        "Apply an exact acceptance wave to a guarded JSONL file copy.",
-        "devtools.beads_acceptance_applier",
-        use_when=(
-            "Exercise the local guarded applier against an exact reconciliation report and wave. "
-            "This route never invokes bd or mutates the Beads database and accepts an identical "
-            "prior output idempotently."
-        ),
-        examples=(
-            "devtools lab policy acceptance-contract-apply --repository .beads/issues.jsonl "
-            "--before RUN/live-before.jsonl --wave RUN/targeted.jsonl --report RUN/reconciliation.json "
-            "--output RUN/applied.jsonl --json",
-        ),
-    ),
-    CommandSpec(
-        "lab policy backlog-hygiene",
-        "verification lab",
-        "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
-        "devtools.verify_backlog_hygiene",
-        use_when=(
-            "Enforce the standing backlog-hygiene invariant lint (polylogue-8jg9.1): 20 checks "
-            "over the Beads export catching dangling dependency refs, blocks-cycles, missing "
-            "horizon/AC/design content on tech-tree beads, P0/P1 beads without acceptance "
-            "criteria, unlabeled non-epic beads, epics with no members or description, stale "
-            "'adopted' decisions left open, duplicate titles, bead ids named but never "
-            "created, an unclean/corrupt bd JSONL sync receipt (S1, consuming "
-            "polylogue-gxjh.1's monotonic sync contract), an active leaf that is itself an "
-            "epic (F1), an active leaf with a missing/dangling/mismatched program ref (F2), a "
-            "stale in_progress claim with no recent activity (F3, configurable window), and a "
-            "frontier_program=active program with no admitted active leaves (F4) -- catches "
-            "backlog structure drift before it needs an archaeology sweep to recover, instead "
-            "of only a manually-invoked script. Also reports a non-blocking active-set size "
-            "diagnostic (soft target/warn bands, never a hard cap or failure)."
-        ),
-        examples=(
-            "devtools lab policy backlog-hygiene",
-            "devtools lab policy backlog-hygiene --json",
-            "devtools lab policy backlog-hygiene --fresh",
-            "devtools lab policy backlog-hygiene --stale-claim-days 10",
-        ),
-    ),
-    CommandSpec(
         "lab policy bead-graph",
         "verification lab",
-        "Bead-graph invariant lint and complete missing-AC census over live `bd` state.",
+        "Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph.",
         "devtools.verify_bead_graph",
         use_when=(
-            "Run right before shipping a bead-state delta (matches the sinex bead-graph-lint "
-            "convention). Checks LIVE `bd dep cycles` / `bd list --all --json` output rather than "
-            "the exported .beads/issues.jsonl snapshot, so it catches drift not yet re-exported. It fails "
-            "closed for real missing acceptance criteria and validates zero-or-one structured parent-child "
-            "parents. `--json` emits the complete deterministic missing-AC census, never a display page. "
-            "INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:` labels are flagged "
-            "(polylogue's `lane:`/`delivery:`/`horizon:` taxonomy is local and not enforced here)."
+            "Run before shipping a bead-state delta. With no source option it checks live `bd` state; "
+            "`--export .beads/issues.jsonl` validates the branch snapshot without importing it into the "
+            "shared database. The gate reads dependency records only and does not make prose, labels, or "
+            "campaign-specific edge lists machine authority."
         ),
-        examples=("devtools lab policy bead-graph", "devtools lab policy bead-graph --json"),
-    ),
-    CommandSpec(
-        "lab policy demo-packet-registry",
-        "verification lab",
-        "Verify every registered 212 demo has a conforming Demo Finding Packet.",
-        "devtools.verify_demo_packet_registry",
-        use_when=(
-            "Enforce the 212 portfolio contract (polylogue-212.7): every demo prompt in "
-            ".agent/demos/registry.json must have a packet directory carrying PROMPT.md, "
-            "finding.yaml (five-part provenance stanza), report.md (fixed section order), "
-            "evidence.ndjson, queries.ndjson, checks.json, and run.log. Catches a missing "
-            "or malformed packet before it silently drops out of the demo shelf."
+        examples=(
+            "devtools lab policy bead-graph",
+            "devtools lab policy bead-graph --export .beads/issues.jsonl --json",
         ),
-        examples=("devtools lab policy demo-packet-registry", "devtools lab policy demo-packet-registry --json"),
-    ),
-    CommandSpec(
-        "lab policy demo-tour-freshness",
-        "verification lab",
-        "Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts.",
-        "devtools.verify_demo_tour_freshness",
-        use_when=(
-            "Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, "
-            "report, per-step command output, recording tape) and the committed copies under "
-            "docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). "
-            "Runs the real tour (~10s), so it lives in the lab tier rather than --quick."
-        ),
-        examples=("devtools lab policy demo-tour-freshness",),
-    ),
-    CommandSpec(
-        "lab policy docs-drift",
-        "verification lab",
-        "Verify checkable factual claims in the Reference-docs table against current source.",
-        "devtools.verify_docs_drift",
-        use_when=(
-            "Catch doc-vs-code drift in the hand-maintained Reference-docs table "
-            "(CLAUDE.md): a backtick-quoted file path that no longer exists, a "
-            "'<Tier> schema version N' claim ahead of the tier's current constant, or "
-            "a watchlisted table name renamed to a different current name (e.g. "
-            "`artifact_observations` renamed to `raw_artifacts`) still asserted as "
-            "current (polylogue-9e5.13)."
-        ),
-        examples=("devtools lab policy docs-drift", "devtools lab policy docs-drift --json"),
     ),
     CommandSpec(
         "lab policy timestamp-doctrine",
@@ -2046,49 +1319,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "instead of showing as uncovered."
         ),
         examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
-    ),
-    CommandSpec(
-        "lab policy campaign-archive-boundaries",
-        "verification lab",
-        "Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation.",
-        "devtools.verify_campaign_archive_boundaries",
-        use_when=(
-            "Catch a regression of the phantom-benchmark.db bug (polylogue-ovme.3): a campaign "
-            "reintroducing a 'benchmark.db' sentinel, an ad hoc tier-path sibling derivation, or "
-            "an entry point (generate_archive/run_full_campaign/run_campaign._run) that no longer "
-            "routes through CampaignArchiveLocation. Scoped to the devtools campaign boundary only "
-            "-- the broader storage/diagnostics/daemon/maintenance/transitions boundary audit is "
-            "polylogue-ovme.2's migration surface."
-        ),
-        examples=(
-            "devtools lab policy campaign-archive-boundaries",
-            "devtools lab policy campaign-archive-boundaries --json",
-        ),
-    ),
-    CommandSpec(
-        "verify pytest-timeout-overrides",
-        "verification",
-        "Verify explicit pytest timeout overrides are positive, bounded, and justified.",
-        "devtools.verify_pytest_timeout_overrides",
-        use_when=(
-            "Check AST-parsed @pytest.mark.timeout decorators and managed pytest command literals. "
-            "Values above the pyproject default require an exact manifest rationale."
-        ),
-        examples=("devtools verify pytest-timeout-overrides", "devtools verify pytest-timeout-overrides --json"),
-    ),
-    CommandSpec(
-        "verify degrade-loudly",
-        "verification",
-        "Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure.",
-        "devtools.verify_degrade_loudly",
-        use_when=(
-            "Enforce the degrade-loudly doctrine (polylogue-cpf.4): a broad except-handler "
-            "(Exception/BaseException/*.Error) in derived-read, status, or probe code that "
-            "swallows the exception with no log call and no re-raise is indistinguishable from "
-            "'no data' to a reader. New silent sites must add a log call, or add a typed signal "
-            "plus a rationale entry in docs/plans/degrade-loudly-allowlist.yaml."
-        ),
-        examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
     ),
     CommandSpec(
         "release verify-distribution",
@@ -2292,20 +1522,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify layering", "devtools verify layering --json"),
     ),
     CommandSpec(
-        "verify evidence",
-        "verification",
-        "Render the pytest-first evidence dashboard.",
-        "devtools.evidence_dashboard",
-        use_when=(
-            "Inspect pytest health, contract-evidence inventory, coverage, SLO "
-            "catalog, static-gate status, and campaign freshness."
-        ),
-        examples=(
-            "devtools verify evidence --json",
-            "devtools verify evidence --markdown",
-        ),
-    ),
-    CommandSpec(
         "release build-package",
         "release",
         "Build the default Nix package with the out-link under .local/result.",
@@ -2316,23 +1532,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "bench mutation",
         "benchmarking",
-        "Run focused mutation campaigns and maintain their local index.",
+        "Run focused mutation campaigns with isolated execution and JSON artifacts.",
         "devtools.mutmut_campaign",
         use_when="Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.",
         examples=("devtools bench mutation list", "devtools bench mutation run filters"),
-        featured=True,
-    ),
-    CommandSpec(
-        "bench campaign",
-        "benchmarking",
-        "Run or compare benchmark campaigns.",
-        "devtools.benchmark_campaign",
-        use_when="Record durable benchmark artifacts or compare a candidate run against a baseline artifact.",
-        examples=(
-            "devtools bench campaign list",
-            "devtools bench campaign run search-filters",
-            "devtools bench campaign compare baseline.json candidate.json",
-        ),
         featured=True,
     ),
     CommandSpec(
@@ -2358,21 +1561,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace tasks",
-        "workspace",
-        "Record and query local agent task execution history.",
-        "devtools.task_history",
-        use_when="Log, view recent, or summarize agent task execution history during development sessions.",
-        examples=(
-            "devtools workspace tasks log --command 'devtools render all' --duration-ms 3200 --exit-code 0",
-            "devtools workspace tasks recent",
-            "devtools workspace tasks recent --count 20",
-            "devtools workspace tasks stats",
-            "devtools workspace tasks stats --json",
-            "devtools workspace tasks stats --resources",
-        ),
-    ),
-    CommandSpec(
         "workspace failure-context",
         "workspace",
         "Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope.",
@@ -2388,170 +1576,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace mandate-continuity-replay",
+        "workspace continuity-evidence",
         "workspace",
-        "Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact.",
-        "devtools.mandate_continuity_replay",
+        "Replay continuity scenarios and verify their query routes are discoverable.",
+        "devtools.continuity_evidence",
         use_when=(
-            "Run the polylogue-z9gh.7 terminal mandate gate: replay the polylogue-t8t continuity scenario "
-            "catalog over real MCP stdio JSON-RPC, reconcile this repository's own real git+Beads history "
-            "through the polylogue-1vpm.6.2 effect adapters, cross-check every query-tool route step against "
-            "the polylogue-z9gh.3 query-discovery catalog, and emit one JSON artifact with a mandate "
-            "acceptance-criteria matrix. Defaults to a fresh, privacy-safe synthetic archive; pass "
-            "--archive-root for an authorized live-scale replay."
+            "Replay the continuity scenario catalog over MCP stdio JSON-RPC and cross-check "
+            "its query routes against discovery. The default seeds the packaged synthetic corpus. "
+            "A supplied --archive-root must be paired with the exact --catalog that describes it; "
+            "the runner rejects an unrelated live archive rather than applying synthetic oracles."
         ),
         examples=(
-            "devtools workspace mandate-continuity-replay",
-            "devtools workspace mandate-continuity-replay --output .cache/mandate-continuity-replay.json",
-            "devtools workspace mandate-continuity-replay --archive-root /path/to/authorized/archive --keep-archive",
-        ),
-    ),
-    CommandSpec(
-        "workspace beads-state-report",
-        "workspace",
-        "Self-contained HTML state-of-the-backlog report over the whole bead population.",
-        "devtools.beads_state_report",
-        use_when=(
-            "Answer 'what shape is the backlog in?' across the whole bead population -- open "
-            "AND closed -- rather than the ready frontier. Computes status x priority x type, "
-            "epic/program trees with fill bars and per-epic trend sparklines, the blocks-graph "
-            "topology (ready/blocked/top blockers/cycles/densest cluster/parallel frontier), a "
-            "Pulse section reconstructing open/ready/blocked at now vs 7/14 days ago from "
-            "timestamps, creation/closure velocity over trailing windows, an age x priority "
-            "heatmap, graph-health review queues (dangling refs, id-vs-edge hierarchy "
-            "disagreement, open parents whose children all closed, stale in-progress claims, "
-            "duplicate titles), subsystem concentration by both area label and keyword, and the "
-            "dated hand-verified VERIFICATION(...) / RECONCILIATION marker subsets. Its findings "
-            "list is generated by conditional checks over the data, so regeneration cannot leave "
-            "stale claims. Answers a different question than `workspace bead-cluster` "
-            "(execution-frontier footprint clustering) and `workspace delivery-gate-status` "
-            "(per-gate progress): this is population shape and graph hygiene, not the next batch "
-            "to dispatch. Use --fresh, since bd mutations do not immediately re-export."
-        ),
-        examples=(
-            "devtools workspace beads-state-report --fresh",
-            "devtools workspace beads-state-report --out /tmp/beads-state.html",
-            "devtools workspace beads-state-report --json",
+            "devtools workspace continuity-evidence",
+            "devtools workspace continuity-evidence --output .cache/continuity-evidence.json",
+            "devtools workspace continuity-evidence --archive-root /path/to/archive --catalog /path/to/catalog.json",
         ),
     ),
 )
 
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
-
-
-WORKSPACE_COMMAND_DISPOSITIONS: tuple[WorkspaceCommandDisposition, ...] = (
-    WorkspaceCommandDisposition(
-        "workspace index-fast-forward",
-        "retain",
-        "Recent production commits plus focused devtools/storage tests; emits a reusable proof receipt.",
-        "Keep the registered command as the index-tier actuator.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace archive-schema-fast-forward",
-        "remove",
-        "No current CommandSpec, implementation module, focused test, or history entry exists for this name.",
-        "Use workspace index-fast-forward for declared derived-index fast-forwards.",
-        "workspace index-fast-forward",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace degraded-archive-proof",
-        "retain",
-        "Focused tests and deterministic self-healing proof artifacts cover the command.",
-        "Keep the registered command for archive repair evidence.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace frontier",
-        "retain",
-        "Operator-facing frontier report with documented workflow use and structured report output.",
-        "Keep the registered command for frontier batching and wait-ahead decisions.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace temporal-read-profile",
-        "retain",
-        "Focused tests cover the report and JSON timing output is reusable for read tuning.",
-        "Keep the registered command as the temporal read profiling entrypoint.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace temporal-devloop",
-        "retain",
-        "Focused tests cover structured and Markdown event sources; output is a reusable evidence window.",
-        "Keep the registered command as the devloop temporal evidence entrypoint.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace temporal-archive-aggregates",
-        "retain",
-        "Focused tests cover aggregate report construction and reusable archive artifacts.",
-        "Keep the registered command as the run-projection aggregate entrypoint.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace lineage-validation",
-        "retain",
-        "Focused tests cover lineage evidence and the command emits reusable count and composition proof.",
-        "Keep the registered command before publishing archive cardinality claims.",
-    ),
-    WorkspaceCommandDisposition(
-        "workspace cli-surface-audit",
-        "retain",
-        "Focused tests cover bounded output and stale-artifact pruning; the audit shelf is reusable.",
-        "Keep the registered command as the current CLI surface audit entrypoint.",
-    ),
-    WorkspaceCommandDisposition(
-        "demo real-slice-screen",
-        "retain",
-        "Focused privacy-screening tests cover redaction, PII review, and report generation.",
-        "Keep the registered command as the read-only real-archive screening entrypoint.",
-    ),
-)
-
-
-CATALOG_BYPASS_SITES: tuple[CatalogBypassSite, ...] = (
-    CatalogBypassSite(
-        ".github/workflows/mutation-testing.yml",
-        "uv run devtools verify mutation-freshness",
-        "verify mutation-freshness",
-        "registered",
-        "CI invokes the catalog command so inventory and workflow validation see the freshness gate.",
-    ),
-    CatalogBypassSite(
-        ".github/workflows/nightly-scale.yml",
-        "uv run devtools bench nightly-compare",
-        "bench nightly-compare",
-        "registered",
-        "CI invokes the catalog command so the nightly comparison is discoverable and checked.",
-    ),
-    CatalogBypassSite(
-        "devtools/pre_push_gate.py",
-        'control_plane_argv("lab policy backlog-hygiene")',
-        "lab policy backlog-hygiene",
-        "registered",
-        "The intentional Beads-only route remains narrow while using the registered policy command.",
-    ),
-    CatalogBypassSite(
-        "docs/test-economics.md",
-        "python -m devtools.test_economics_report",
-        "lab test-economics",
-        "sanctioned-bypass",
-        "The generated provenance header preserves the module that emitted the document; operators use the catalog command.",
-    ),
-    CatalogBypassSite(
-        ".githooks/pre-push",
-        "python -m devtools.pre_push_gate",
-        None,
-        "sanctioned-bypass",
-        "The hook adapter must receive Git's staged stdin update stream before dispatching its catalog-aware gate.",
-        occurrence_line=21,
-        expected_occurrences=1,
-    ),
-    CatalogBypassSite(
-        ".beads-hooks/pre-push",
-        "python -m devtools.pre_push_gate",
-        None,
-        "sanctioned-bypass",
-        "The Beads-augmented hook retains the same stdin adapter before its managed Beads section runs.",
-        occurrence_line=21,
-        expected_occurrences=1,
-    ),
-)
 
 
 def command_name_from_tokens(tokens: Iterable[str], commands: Iterable[CommandSpec] = COMMAND_SPECS) -> str | None:
@@ -2586,8 +1629,7 @@ def featured_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> t
 
 
 def verification_lab_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> tuple[CommandSpec, ...]:
-    by_name = {spec.name: spec for spec in commands}
-    return tuple(by_name[name] for name in VERIFICATION_LAB_COMMAND_NAMES)
+    return tuple(spec for spec in commands if spec.category == "verification lab")
 
 
 def grouped_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> OrderedDict[str, list[CommandSpec]]:
@@ -2604,17 +1646,13 @@ __all__ = [
     "CATEGORY_ORDER",
     "COMMANDS",
     "COMMAND_SPECS",
-    "CATALOG_BYPASS_SITES",
     "CONTROL_PLANE",
     "CommandMain",
     "CommandSpec",
-    "WorkspaceCommandDisposition",
     "command_name_from_tokens",
     "control_plane_argv",
     "control_plane_command",
     "featured_command_specs",
     "grouped_command_specs",
-    "VERIFICATION_LAB_COMMAND_NAMES",
-    "WORKSPACE_COMMAND_DISPOSITIONS",
     "verification_lab_command_specs",
 ]

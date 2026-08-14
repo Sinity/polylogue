@@ -36,7 +36,7 @@ class MCPRegistrationError(RuntimeError):
         message: str,
         *,
         tool_name: str | None = None,
-        repair_command: str = "devtools render mcp-equivalence",
+        repair_command: str = "devtools test tests/unit/mcp/test_tool_declarations.py",
     ) -> None:
         self.message = message
         self.tool_name = tool_name

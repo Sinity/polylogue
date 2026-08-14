@@ -386,7 +386,7 @@ This is the section to read before you trust anything above it.
    oversight: composing the primitive into a named CLI/MCP surface is
    separate, tracked follow-up work.
 4. **The named Hermes forensics report does not exist yet.** There is no
-   `polylogue forensics hermes` command or `read --view forensics`. What
+   dedicated Hermes forensics command or `read --view forensics`. What
    exists today composes from generic, origin-agnostic primitives already
    documented elsewhere: session topology (`get_session_topology`), the
    postmortem bundle (`polylogue/insights/postmortem.py`,
@@ -469,13 +469,11 @@ identity used for the durable-retention guarantee above.
 
 ### MCP (agent-facing)
 
-The current standing MCP surface is a small set of unified verb tools —
-`query`, `read`, `get`, `explain`, `context`, `status` — the live contract
-enforced by `tests/infra/mcp.py:EXPECTED_TOOL_NAMES`
-(see `docs/agent-manual.md` for the generated, currently-accurate reference;
-treat `docs/mcp-reference.md`'s larger per-category tool list as describing
-an earlier surface generation, not this one). The `query` tool's typed
-request accepts an `origin` field
+The read-only MCP surface is the six unified tools `query`, `read`, `get`,
+`explain`, `context`, and `status`; write, judgment, and maintenance tools are
+separate capability opt-ins. Runtime declarations are authoritative and client
+discovery exposes the exact enabled surface. The `query` tool's typed request
+accepts an `origin` field
 (`polylogue/mcp/query_contracts.py:88`) exactly like the CLI's `--origin`
 flag, so `query(origin="hermes-session", ...)` scopes a search or aggregate
 to Hermes sessions the same way.

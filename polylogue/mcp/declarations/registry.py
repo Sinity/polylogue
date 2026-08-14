@@ -24,21 +24,16 @@ from polylogue.declarations import (
 from polylogue.mcp.declarations.models import (
     MCPCapabilities,
     MCPCapabilityFlag,
-    MCPContinuationContract,
-    MCPDeprecationState,
     MCPHandlerBinding,
-    MCPInputContract,
-    MCPOutputContract,
     MCPPromptDeclaration,
     MCPResourceDeclaration,
     MCPResultSemantics,
     MCPToolDeclaration,
     MCPTransactionDeclaration,
     MCPVerb,
-    PythonParityExpectation,
 )
 
-_REPAIR_COMMAND = "devtools render mcp-equivalence"
+_REPAIR_COMMAND = "devtools test tests/unit/mcp/test_tool_declarations.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,12 +47,9 @@ class _ToolRow:
     object_kinds: tuple[str, ...]
     result_semantics: MCPResultSemantics
     schema_source: str
-    required_arguments: tuple[str, ...]
     minimal_arguments: tuple[tuple[str, JSONValue], ...]
     output_kind: str
-    envelope_fields: tuple[str, ...]
     operation_owner: str
-    python_binding: str | None
 
 
 def _compatibility(row: _ToolRow) -> CompatibilityKey:
@@ -67,18 +59,6 @@ def _compatibility(row: _ToolRow) -> CompatibilityKey:
         authority=f"mcp-capability:{row.required_capability or 'read'}",
         access_result_shape=f"{row.verb.value}:{row.result_semantics.value}:{row.output_kind}",
         durability="transport-adapter; domain-owner-controls-durability",
-    )
-
-
-def _python_parity(row: _ToolRow) -> PythonParityExpectation:
-    if row.python_binding is not None:
-        return PythonParityExpectation(binding=row.python_binding)
-    return PythonParityExpectation(
-        intentional_absence_authority="polylogue-s1kr",
-        reason=(
-            "The current MCP compatibility handler binds a lower-level owner or transport-only projection; "
-            "polylogue-s1kr owns any public Python facade addition and docs parity."
-        ),
     )
 
 
@@ -93,11 +73,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("query", "result-set"),
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.query:inspect.signature",
-        ("expression",),
         (("expression", "messages where text:needle"),),
         "envelope",
-        ("items", "query_ref", "result_ref", "continuation"),
-        "polylogue.api.Polylogue.query_units",
         "polylogue.api.Polylogue.query_units",
     ),
     _ToolRow(
@@ -110,11 +87,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("object-ref", "evidence-ref"),
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.read:inspect.signature",
-        ("ref",),
         (("ref", "session:codex-session:demo"),),
         "envelope",
-        ("ref",),
-        "polylogue.api.Polylogue.resolve_ref",
         "polylogue.api.Polylogue.resolve_ref",
     ),
     _ToolRow(
@@ -127,11 +101,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("object-ref",),
         MCPResultSemantics.SINGLE_OBJECT,
         "polylogue.mcp.server_cutover.get:inspect.signature",
-        ("ref",),
         (("ref", "session:codex-session:demo"),),
         "single_object",
-        ("ref",),
-        "polylogue.api.Polylogue.resolve_ref",
         "polylogue.api.Polylogue.resolve_ref",
     ),
     _ToolRow(
@@ -144,11 +115,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("query", "capability", "object-ref"),
         MCPResultSemantics.SINGLE_OBJECT,
         "polylogue.mcp.server_cutover.explain:inspect.signature",
-        ("subject",),
         (("subject", "capability"),),
         "single_object",
-        ("subject",),
-        "polylogue.api.Polylogue.explain_query_expression",
         "polylogue.api.Polylogue.explain_query_expression",
     ),
     _ToolRow(
@@ -161,11 +129,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("context-snapshot", "context-delivery"),
         MCPResultSemantics.BOUNDED_CONTEXT,
         "polylogue.mcp.server_cutover.context:inspect.signature",
-        ("intent",),
         (("intent", "resume"),),
         "single_object",
-        ("receipt",),
-        "polylogue.api.Polylogue.context_image_payload",
         "polylogue.api.Polylogue.context_image_payload",
     ),
     _ToolRow(
@@ -178,12 +143,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("status",),
         MCPResultSemantics.SINGLE_OBJECT,
         "polylogue.mcp.server_cutover.status:inspect.signature",
-        ("scope",),
         (("scope", "archive"),),
         "single_object",
-        ("archive",),
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.stats",
-        None,
     ),
     _ToolRow(
         "write",
@@ -198,12 +160,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("object-ref", "assertion"),
         MCPResultSemantics.MUTATION,
         "polylogue.mcp.server_cutover.write:inspect.signature",
-        ("operation",),
         (("operation", "add_tag"), ("session_id", "test:conv-mutation"), ("tag", "review")),
         "operation_result",
-        (),
         "mutate-write",
-        None,
     ),
     _ToolRow(
         "judge",
@@ -215,11 +174,8 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("assertion-candidate", "judgment"),
         MCPResultSemantics.MUTATION,
         "polylogue.mcp.server_cutover.judge:inspect.signature",
-        (),
         (("candidate_ref", "assertion:contract-candidate"), ("decision", "accept")),
         "envelope",
-        ("items", "applied_count", "failed_count"),
-        "polylogue.api.Polylogue.judge_assertion_candidates",
         "polylogue.api.Polylogue.judge_assertion_candidates",
     ),
     _ToolRow(
@@ -232,12 +188,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("saved-query", "recipe", "result-set"),
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.run:inspect.signature",
-        ("ref",),
         (("ref", "saved-view:contract-view"),),
         "envelope",
-        (),
         "mutate-run",
-        None,
     ),
     _ToolRow(
         "maintenance",
@@ -251,12 +204,9 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         ("maintenance-plan", "maintenance-operation"),
         MCPResultSemantics.MAINTENANCE,
         "polylogue.mcp.server_cutover.maintenance:inspect.signature",
-        ("operation",),
         (("operation", "list"),),
         "operation_result",
-        (),
         "polylogue.maintenance.planner.preview_backfill",
-        None,
     ),
 )
 
@@ -305,47 +255,12 @@ def _cutover_declaration(row: _ToolRow) -> MCPToolDeclaration:
             ),
         ),
     )
-    is_read = row.required_capability is None
-    continuation = "cursor_or_offset" if row.name in {"query", "read"} else "none"
     return MCPToolDeclaration(
         kernel=kernel,
         name=row.name,
         description=row.description,
-        verb=row.verb,
-        object_kinds=row.object_kinds,
         required_capability=row.required_capability,
-        capability=f"{row.required_capability or 'read'}:{row.verb.value}",
-        result_semantics=row.result_semantics,
-        canonical_plan=row.operation_owner,
-        canonical_projection=f"{row.output_kind}:root",
-        input_contract=MCPInputContract(
-            schema_source=row.schema_source,
-            schema_mode="FastMCP derives inputSchema from the cutover handler signature",
-            required_arguments=row.required_arguments,
-        ),
-        output_contract=MCPOutputContract(kind=row.output_kind, envelope_fields=row.envelope_fields),
-        minimal_arguments=row.minimal_arguments,
-        grammar_discovery=("polylogue://capabilities/query",) if is_read else (),
-        field_discovery=("polylogue://capabilities/query",) if is_read else (),
-        value_discovery=("polylogue://capabilities/query",) if is_read else (),
-        continuation=MCPContinuationContract(
-            mode=continuation,
-            continuation_ref="q2" if continuation != "none" else None,
-            exhaustive_route="query" if row.name != "query" else None,
-            notes="Continuation is opaque and must be the only resume input.",
-        ),
-        resource_alternatives=("polylogue://capabilities/query",) if is_read else (),
-        prompt_alternatives=(),
-        compatibility_route=row.name,
-        workflow_coverage=("t8t-continuity", "z9gh-workflow-incident") if is_read else ("t46.8.3-privileged-contract",),
-        incident_coverage=("z9gh-workflow-incident",) if is_read else (),
-        observed_use="observed",
-        telemetry_key=row.name,
-        deprecation_state=MCPDeprecationState.RETAINED,
-        retirement_owner="polylogue-t46.8.2" if is_read else "polylogue-t46.8.3",
         registration=MCPHandlerBinding(module=row.module, symbol=row.name, registrar=row.registrar),
-        operation_owner=row.operation_owner,
-        python_parity=_python_parity(row),
     )
 
 
@@ -406,7 +321,6 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
             MCPResultSemantics.AGGREGATE,
         ),
         purpose="Execute a declared DSL or typed plan with explicit result semantics and continuation.",
-        migration_owner="polylogue-t46.8.2",
     ),
     MCPTransactionDeclaration(
         name="read",
@@ -419,7 +333,6 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
             MCPResultSemantics.BOUNDED_CONTEXT,
         ),
         purpose="Read any stable archive ref through a declared projection/view.",
-        migration_owner="polylogue-t46.8.2",
     ),
     MCPTransactionDeclaration(
         name="get",
@@ -428,7 +341,6 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("object-ref",),
         result_semantics=(MCPResultSemantics.SINGLE_OBJECT,),
         purpose="Resolve one exact object identity when a generic read would add ambiguity.",
-        migration_owner="polylogue-t46.8.2",
     ),
     MCPTransactionDeclaration(
         name="explain",
@@ -437,7 +349,6 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("query", "object-ref", "capability"),
         result_semantics=(MCPResultSemantics.SINGLE_OBJECT,),
         purpose="Discover grammar, fields, values, plans, authority, and recovery routes.",
-        migration_owner="polylogue-t46.8.2",
     ),
     MCPTransactionDeclaration(
         name="context",
@@ -446,7 +357,6 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("context-snapshot", "context-delivery"),
         result_semantics=(MCPResultSemantics.BOUNDED_CONTEXT,),
         purpose="Compile and retrieve policy-gated bounded context plus receipts.",
-        migration_owner="polylogue-t46.8.3",
     ),
     MCPTransactionDeclaration(
         name="status",
@@ -455,7 +365,6 @@ TARGET_DEFAULT_READ_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("status", "receipt"),
         result_semantics=(MCPResultSemantics.SINGLE_OBJECT, MCPResultSemantics.AGGREGATE),
         purpose="Read archive, source, embedding, coordination, and operation status.",
-        migration_owner="polylogue-t46.8.2",
     ),
 )
 
@@ -467,7 +376,6 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("object-ref", "assertion"),
         result_semantics=(MCPResultSemantics.MUTATION,),
         purpose="Apply a declaration-owned mutation after shared authorization.",
-        migration_owner="polylogue-t46.8.3",
     ),
     MCPTransactionDeclaration(
         name="judge",
@@ -476,7 +384,6 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("assertion-candidate", "judgment"),
         result_semantics=(MCPResultSemantics.MUTATION,),
         purpose="Accept, reject, defer, or supersede candidates without collapsing candidate state.",
-        migration_owner="polylogue-t46.8.3",
     ),
     MCPTransactionDeclaration(
         name="run",
@@ -485,7 +392,6 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("saved-query", "recipe", "result-set"),
         result_semantics=(MCPResultSemantics.EXHAUSTIVE_PAGE, MCPResultSemantics.MUTATION),
         purpose="Execute a saved query or governed recipe ref.",
-        migration_owner="polylogue-t46.8.3",
     ),
     MCPTransactionDeclaration(
         name="maintenance",
@@ -494,7 +400,6 @@ PRIVILEGED_ALGEBRA: Final[tuple[MCPTransactionDeclaration, ...]] = (
         object_kinds=("maintenance-plan", "maintenance-operation"),
         result_semantics=(MCPResultSemantics.MAINTENANCE,),
         purpose="Preview, authorize, execute, inspect, and reconcile maintenance operations.",
-        migration_owner="polylogue-t46.8.3",
     ),
 )
 
@@ -504,7 +409,6 @@ TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
         object_kinds=(kind,),
         required_capability=None,
         authority="read-only object projection; resources never acquire instruction or mutation authority",
-        migration_owner="polylogue-t46.8.2" if kind != "recall-pack" else "polylogue-t46.8.3",
     )
     for kind in ("session", "message", "block", "action", "file", "query", "result-set", "recall-pack")
 ) + (
@@ -513,26 +417,25 @@ TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = tuple(
         object_kinds=("capability", "query", "result-set"),
         required_capability=None,
         authority="executable query vocabulary and recovery guidance; no mutation authority",
-        migration_owner="polylogue-z9gh.3",
     ),
 )
 
 TARGET_PROMPTS: Final[tuple[MCPPromptDeclaration, ...]] = (
-    MCPPromptDeclaration("resume_context", "resume", None, "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("postmortem_last", "postmortem", None, "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("decisions_about", "decision-recovery", None, "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("unacknowledged_failures", "failure-recovery", None, "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("sessions_touching_file", "file-touch", None, "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("cost_of", "cost-analysis", None, "none", "polylogue-t46.8.2"),
-    MCPPromptDeclaration("agent_coordination_brief", "coordination", None, "none", "polylogue-t46.8.3"),
+    MCPPromptDeclaration("resume_context", "resume", None, "none"),
+    MCPPromptDeclaration("postmortem_last", "postmortem", None, "none"),
+    MCPPromptDeclaration("decisions_about", "decision-recovery", None, "none"),
+    MCPPromptDeclaration("unacknowledged_failures", "failure-recovery", None, "none"),
+    MCPPromptDeclaration("sessions_touching_file", "file-touch", None, "none"),
+    MCPPromptDeclaration("cost_of", "cost-analysis", None, "none"),
+    MCPPromptDeclaration("agent_coordination_brief", "coordination", None, "none"),
     # Live-registered (polylogue/mcp/server_prompts.py) but previously absent
     # here, leaving completeness/discovery consumers blind to them
     # (polylogue-il50).
-    MCPPromptDeclaration("analyze_errors", "error-analysis", None, "none", "polylogue-il50"),
-    MCPPromptDeclaration("summarize_week", "weekly-summary", None, "none", "polylogue-il50"),
-    MCPPromptDeclaration("extract_code", "code-extraction", None, "none", "polylogue-il50"),
-    MCPPromptDeclaration("compare_sessions", "session-comparison", None, "none", "polylogue-il50"),
-    MCPPromptDeclaration("extract_patterns", "pattern-extraction", None, "none", "polylogue-il50"),
+    MCPPromptDeclaration("analyze_errors", "error-analysis", None, "none"),
+    MCPPromptDeclaration("summarize_week", "weekly-summary", None, "none"),
+    MCPPromptDeclaration("extract_code", "code-extraction", None, "none"),
+    MCPPromptDeclaration("compare_sessions", "session-comparison", None, "none"),
+    MCPPromptDeclaration("extract_patterns", "pattern-extraction", None, "none"),
 )
 
 if len(TARGET_DEFAULT_READ_ALGEBRA) > 15:

@@ -197,7 +197,7 @@ Two evolution regimes, enforced by `devtools lab policy schema-versioning`:
   non-semantic delta upgrades an existing generation **in place** through
   `index_fast_forward_plan()` on connect. Only a `SEMANTIC_REPARSE` delta — one
   whose result depends on parser semantics — routes to
-  `polylogue ops reset --index && polylogued run`. A bump without a declaration
+  `polylogue ops maintenance rebuild-index`. A bump without a declaration
   is a policy violation, not a free rebuild: the lint fails and the archive
   silently falls back to full raw replay.
 
@@ -293,7 +293,7 @@ scripts under any name. (Its evidence may still sit in a gitignored,
 untracked `.agent/archive/devloop-2026-07/` in some working checkouts —
 polylogue-ocby — it is not part of the repo and a fresh clone will not have
 it.) Repo agent conventions: `.agent/CONVENTIONS.md`; run
-`devtools lab policy acceptance-contracts` and `devtools lab policy bead-graph` before shipping bead-state deltas. Run `bd prime` when task
+`devtools lab policy bead-graph --export .beads/issues.jsonl` before shipping bead-state deltas. Run `bd prime` when task
 context, ready work, blockers, or project memory matter. Use `bd ready --json`,
 `bd show <id> --json`, `bd update <id> --claim --json`,
 `bd close <id> --reason "…" --json`. Create linked Beads issues for discovered
@@ -354,8 +354,12 @@ Don't treat CI as the first verification pass — anticipate failures locally.
 
 See [Schema regimes](#schema-regimes-durability-keyed). Durable tiers → numbered
 additive migration + backup manifest; derived tiers → edit canonical DDL +
-rebuild plan (`polylogue ops reset --index && polylogued run`), never an upgrade
-helper (`devtools lab policy schema-versioning` rejects them).
+an explicitly declared lifecycle delta. Non-semantic deltas may use the
+clone-validated `index_fast_forward_plan()` route; semantic deltas require
+`polylogue ops maintenance rebuild-index`. Ad hoc open-path upgrade code is not
+an accepted third route. `devtools lab policy schema-versioning` validates the
+declarations, durable migration slots, and same-version benign-DDL shapes; it
+does not infer architecture from helper names.
 
 ### Multi-lane / merge-train tooling — use these, don't reinvent the discipline by hand
 
@@ -377,8 +381,10 @@ workflow, not optional conveniences — use them at the point named, every time:
 - **Before claiming a batch of ready beads**: `devtools workspace bead-cluster`
   — footprint/overlap/contention clustering so overlapping-file beads land on
   one branch instead of colliding across parallel lanes.
-- **When dispatching a worktree-isolated lane**: `devtools workspace lane-brief
-  <ids> --out <path>` for its dispatch prompt (footprint, prior art, hazards).
+- **When dispatching a worktree-isolated lane**: give the worker the current
+  Bead acceptance criteria, verified file ownership, relevant prior commits,
+  concrete non-goals, and exact verification commands directly. Do not insert
+  a generated Markdown packet between the current evidence and the worker.
 - **Before opening a non-draft PR for a Bead lane**: render the versioned
   carrier with `devtools workspace pr-scope render --input <scope.json>`, put
   it in the PR body beside the human whole-Bead disposition matrix, then run
@@ -407,7 +413,7 @@ workflow, not optional conveniences — use them at the point named, every time:
   then auto-records a receipt if none is fresh for the current head
   sha (running `--command`, default `devtools verify`), BLOCKs the merge on
   any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
-  exit, a changed head-bound scope attestation, or an unacked review comment newer than the head commit), strips a
+  exit, a changed head-bound scope attestation, an unresolved GitHub review thread, or a changes-requested review), strips a
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
   `gh pr merge --squash`. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal
@@ -420,9 +426,6 @@ workflow, not optional conveniences — use them at the point named, every time:
   `devtools workspace merge-gate record/check` commands still exist for
   ad hoc receipt inspection, but the merge action itself should go through
   `workspace merge`.
-- Sizing/triage input: `devtools workspace backlog-calibration` for
-  lead-time/discovery/staleness distributions before deciding batch size.
-
 If you build a new tool in this family, add it here in the same sentence —
 a tool without a line in this file is a tool the next session won't use.
 
@@ -561,7 +564,7 @@ Core loop:
   [Verification](#verification--testmon-inner-loop-never-blanket-run).
 - `devtools test <sel>` — focused pytest through the managed harness.
 - `devtools lab …` — executable schema/provider/pipeline/lane checks.
-- `devtools workspace …` — task history, frontier, worktree-gc, evidence.
+- `devtools workspace …` — task history, worktree-gc, evidence.
 
 Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.

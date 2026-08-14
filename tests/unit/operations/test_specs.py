@@ -71,6 +71,8 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-session-excision",
         "mutate-session-lifecycle-request",
         "mutate-identity-reset",
+        "mutate-maintenance-target-run",
+        "mutate-filesystem-reset",
     }
     assert specs["acquire-raw-sessions"].kind is OperationKind.MATERIALIZATION
     assert specs["acquire-raw-sessions"].mutates_state is True

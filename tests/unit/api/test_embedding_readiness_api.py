@@ -57,3 +57,13 @@ async def test_embedding_preflight_returns_canonical_payload(tmp_path: Path) -> 
         max_cost_usd=0.05,
     )
     mock_payload.assert_called_once_with(report)
+
+
+@pytest.mark.asyncio
+async def test_search_similar_sessions_fails_closed_without_vector_provider(tmp_path: Path) -> None:
+    archive = Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    try:
+        with pytest.raises(ValueError, match="No vector provider configured"):
+            await archive.search_similar_sessions("missing-session")
+    finally:
+        await archive.close()

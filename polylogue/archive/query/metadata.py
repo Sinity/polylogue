@@ -1246,7 +1246,7 @@ def terminal_query_cli_surfaces(*, output_format: str = "json") -> tuple[str, ..
     """Return CLI surface examples for every executable terminal query unit."""
 
     return tuple(
-        f"polylogue --format {output_format} {descriptor.plural_source} where ..."
+        f'polylogue --format {output_format} find "{descriptor.plural_source} where ..."'
         for descriptor in query_unit_descriptors(terminal_supported=True)
     )
 

@@ -8,25 +8,20 @@ flags.
 
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 
 PIPELINE_ROOT = Path(__file__).resolve().parents[3] / "polylogue" / "pipeline"
 
-_CLI_IMPORT_RE = re.compile(
-    r"""(?mx)                # multiline + verbose
-    ^(?:\s*)                 # leading whitespace
-    (?:
-        from\s+polylogue\.cli\b
-      |
-        import\s+polylogue\.cli\b
-    )
-    """
-)
 
-
-def _find_cli_imports(source: str) -> list[str]:
-    return [match.group(0).strip() for match in _CLI_IMPORT_RE.finditer(source)]
+def _find_cli_imports(source: str, *, filename: str = "<source>") -> list[str]:
+    imports: list[str] = []
+    for node in ast.walk(ast.parse(source, filename=filename)):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names if alias.name.startswith("polylogue.cli"))
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("polylogue.cli"):
+            imports.append(node.module)
+    return imports
 
 
 def test_pipeline_does_not_import_cli() -> None:
@@ -34,7 +29,18 @@ def test_pipeline_does_not_import_cli() -> None:
     for path in sorted(PIPELINE_ROOT.rglob("*.py")):
         rel = path.relative_to(PIPELINE_ROOT.parents[1])
         text = path.read_text(encoding="utf-8")
-        violations = _find_cli_imports(text)
+        violations = _find_cli_imports(text, filename=str(path))
         if violations:
             offenders[str(rel)] = violations
     assert not offenders, "polylogue/pipeline/* must not import from polylogue/cli/*; offenders: " + repr(offenders)
+
+
+def test_pipeline_cli_import_analyzer_handles_aliases_and_multiline_imports() -> None:
+    planted = """
+import polylogue.cli.archive_query as query_surface
+from polylogue.cli.commands import (
+    diagnostics as diagnostics_surface,
+)
+"""
+
+    assert _find_cli_imports(planted) == ["polylogue.cli.archive_query", "polylogue.cli.commands"]

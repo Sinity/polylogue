@@ -117,8 +117,10 @@ changes require a copy-forward design and explicit operator consent; do not
 hide them behind a routine migration.
 
 Derived tiers (`index.db`, `embeddings.db`) are rebuildable products. They do
-not get in-place migration chains. A PR that bumps their schema edits the
-canonical DDL and provides a **rebuild/blue-green plan**:
+do not get ad hoc in-place migration chains. A PR that bumps their schema edits
+the canonical DDL, declares the delta in `storage/sqlite/lifecycle.py`, and
+provides either a clone-validated non-semantic fast-forward plan or a
+**rebuild/blue-green plan** for semantic changes:
 
 - which user-visible archive operation triggers rebuild/re-acquisition from
   source (e.g. `polylogue ops reset --index && polylogued run` for index-tier
@@ -136,8 +138,11 @@ index additions that can be grouped into one schema bump, and do not call a
 full reingest necessary unless the changed semantics actually require replaying
 source rows.
 
-The policy lint (`devtools lab policy schema-versioning`) rejects derived-tier
-upgrade helpers while allowing numbered durable-tier SQL migrations.
+The policy lint (`devtools lab policy schema-versioning`) validates derived-tier
+lifecycle declarations and clone-safe benign-DDL shapes while allowing numbered
+durable-tier SQL migrations. It does not attempt to classify Python helpers by
+their names; ad hoc open-path upgrades remain unsupported because the runtime
+routes derived changes only through declared fast-forward plans or rebuilds.
 
 ## Versioning and Releases
 

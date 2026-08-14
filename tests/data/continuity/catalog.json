@@ -158,7 +158,7 @@
         "file_rows": 1
       },
       "required_evidence_refs": [
-        "message:codex-session:ext-continuity-forensic:forensic-action"
+        "message:codex-session:ext-continuity-forensic:n:forensic-action"
       ],
       "source_refs": [
         "fixture:corpus.forensic_debug"
@@ -186,15 +186,15 @@
         "workflow_invocations": 4
       },
       "required_evidence_refs": [
-        "message:codex-session:ext-continuity-incident-coordinator:workflow-invocation-01",
-        "message:codex-session:ext-continuity-incident-coordinator:final-result",
-        "message:codex-session:ext-continuity-incident-member-001:attempt",
-        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-candidate-list",
-        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-exact-operator-phrase",
-        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-sonnet-lexical-proxy",
-        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-sessions-only-query",
-        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-correct-topology",
-        "message:codex-session:ext-continuity-incident-coordinator:incident-curriculum-correct-delegation"
+        "message:codex-session:ext-continuity-incident-coordinator:n:workflow-invocation-01",
+        "message:codex-session:ext-continuity-incident-coordinator:n:final-result",
+        "message:codex-session:ext-continuity-incident-member-001:n:attempt",
+        "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-candidate-list",
+        "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-exact-operator-phrase",
+        "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-sonnet-lexical-proxy",
+        "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-sessions-only-query",
+        "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-correct-topology",
+        "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-correct-delegation"
       ],
       "source_refs": [
         "fixture:corpus.parallel_incident",
@@ -210,7 +210,7 @@
         "failure_output": "POSTMORTEM_SENTINEL pytest collection failed because the fixture root was stale"
       },
       "required_evidence_refs": [
-        "message:codex-session:ext-continuity-postmortem:postmortem-action"
+        "message:codex-session:ext-continuity-postmortem:n:postmortem-action"
       ],
       "source_refs": [
         "fixture:corpus.postmortem"
@@ -225,7 +225,7 @@
         ]
       },
       "required_evidence_refs": [
-        "message:codex-session:ext-continuity-prior-art:prior-answer"
+        "message:codex-session:ext-continuity-prior-art:n:prior-answer"
       ],
       "source_refs": [
         "fixture:corpus.prior_art"
@@ -240,7 +240,7 @@
         ]
       },
       "required_evidence_refs": [
-        "message:codex-session:ext-continuity-resume:resume-answer"
+        "message:codex-session:ext-continuity-resume:n:resume-answer"
       ],
       "source_refs": [
         "fixture:corpus.resume"
@@ -248,20 +248,24 @@
     },
     "self-inspection": {
       "facts": {
-        "read_view_count": 12,
+      "read_view_count": 16,
         "read_view_ids": [
-          "chronicle",
+        "agent-policies",
+        "chronicle",
           "context",
           "context-image",
           "correlation",
-          "dialogue",
+        "dialogue",
+        "events",
+        "file-edits",
           "hooks",
           "messages",
           "neighbors",
           "raw",
           "summary",
           "temporal",
-          "transcript"
+        "transcript",
+        "web-content"
         ],
         "selected_units": [
           "assertion"

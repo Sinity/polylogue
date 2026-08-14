@@ -13,16 +13,12 @@ is that ``silent_proceed`` is only as good as this keyword list's recall,
 and it undercounts acknowledgments phrased without any of the listed
 markers.
 
-Two independent consumers apply this same marker list: the live
-``followup_class`` SQL CASE expression in
+The live ``followup_class`` SQL CASE expression in
 ``polylogue/storage/sqlite/archive_tiers/archive.py``
-(``_ACTION_FOLLOWUP_RELATION_SQL``, the public query-surface path) and
-``devtools/claim_vs_evidence.py``'s ``devtools claim-vs-evidence`` analysis
-command (which calls :func:`classify_failed_followup_evidence` directly).
-The SQL path reimplements the same short-follow-up/marker-match precedence
-in SQL rather than calling this module, so a change to one does not
-automatically apply to the other -- keep them in sync by hand if the
-classification rule changes.
+(``_ACTION_FOLLOWUP_RELATION_SQL``, the public query-surface path) implements
+the same short-follow-up and marker-match precedence as
+:func:`classify_failed_followup_evidence`; keep those two product paths aligned
+when the classification rule changes.
 """
 
 from __future__ import annotations

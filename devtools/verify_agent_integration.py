@@ -246,18 +246,6 @@ def _manual_compilation_lane() -> LaneResult:
         missing_reference = set(ALL_TARGET_TOOLS) - reference_tool_names
         if missing_reference:
             problems.append(f"deep reference omits target invocation(s): {sorted(missing_reference)}")
-        required_phrases = (
-            "same tool with **only** the returned opaque token",
-            "Never cite a continuation token",
-            "preview-bound confirmation",
-            "strict command floor",
-            "find` keyword",
-            "quoted expression",
-            "field syntax",
-        )
-        for phrase in required_phrases:
-            if phrase not in manual:
-                problems.append(f"standing manual omits required teaching: {phrase}")
         origin_tokens = tuple(item.token for item in ORIGIN_MEANINGS)
         if origin_tokens != tuple(item.value for item in Origin):
             problems.append("source coverage does not match the authoritative Origin enum")

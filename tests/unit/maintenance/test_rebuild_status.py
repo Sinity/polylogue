@@ -116,6 +116,8 @@ def test_reports_stale_lease_recovery_guidance(tmp_path: Path) -> None:
         recovery = status["recovery"]
         assert isinstance(recovery, list)
         assert any("dead pid" in message for message in recovery)
+        assert any("kernel lock is still authoritative" in message for message in recovery)
+        assert all("reclaims it automatically" not in message for message in recovery)
     finally:
         fcntl.flock(holder_fd, fcntl.LOCK_UN)
         os.close(holder_fd)

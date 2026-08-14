@@ -1,14 +1,9 @@
-"""Bead-graph invariant lint and full missing-AC census.
+"""Validate structural integrity of the Beads dependency graph.
 
-Run before shipping Beads state.  The command reads live structured ``bd``
-state through ``bd dep cycles`` and unbounded ``bd list --all --json``.  It
-never treats prose fields, titles, or labels as acceptance criteria.
-
-Besides dependency-cycle and wave checks, the report validates that each
-Bead has zero or one canonical parent derived solely from ``parent-child``
-dependency records.  The JSON output is deliberately complete and stable so
-the coordinator can batch the real missing-AC population without weakening
-the fail-closed lint.
+The gate inspects typed dependency records: endpoint existence, duplicate
+edges, parent cardinality, and cycles.  It deliberately does not interpret
+titles, labels, descriptions, acceptance prose, campaign snapshots, or a
+hard-coded list of project-specific edges.
 """
 
 from __future__ import annotations
@@ -22,11 +17,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from devtools import beads_acceptance_contracts
-from devtools.beads_acceptance_contracts import validate as validate_acceptance_contract
-
-_CONTRACT_MANIFEST = Path(__file__).parents[1] / "docs" / "plans" / "beads-acceptance-contracts-2026-08-07.txt"
-
 
 @dataclass(frozen=True, slots=True)
 class Finding:
@@ -35,50 +25,22 @@ class Finding:
     detail: str
 
 
-@dataclass(frozen=True, slots=True)
-class RequiredBlockingEdge:
-    """One non-negotiable ``blocks`` relation in the reindex proof graph."""
-
-    dependent_id: str
-    blocker_id: str
-
-
-# These are the twelve live-proof records whose implementation/acceptance
-# blockers must remain explicit in the current graph. Keep this as structured
-# policy rather than deriving ordering from issue text or close reasons.
-REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES: tuple[RequiredBlockingEdge, ...] = (
-    RequiredBlockingEdge("polylogue-active-leaf-live-proof", "polylogue-2hwl"),
-    RequiredBlockingEdge("polylogue-hook-authority-conflict-proof", "polylogue-foee"),
-    RequiredBlockingEdge("polylogue-chatgpt-content-live-proof", "polylogue-xofj"),
-    RequiredBlockingEdge("polylogue-excluded-cursor-live-proof", "polylogue-ix5r"),
-    RequiredBlockingEdge("polylogue-byte-supersession-live-proof", "polylogue-6753s"),
-    RequiredBlockingEdge("polylogue-hook-reconciliation-apply-proof", "polylogue-nhbvf"),
-    RequiredBlockingEdge("polylogue-raw-dedupe-apply-proof", "polylogue-zm4w8"),
-    RequiredBlockingEdge("polylogue-claude-streaming-live-proof", "polylogue-4987i"),
-    RequiredBlockingEdge("polylogue-claude-vintage-live-proof", "polylogue-0qfy"),
-    RequiredBlockingEdge("polylogue-codex-804-live-proof", "polylogue-27522"),
-    RequiredBlockingEdge("polylogue-topology-live-proof", "polylogue-4ts.10"),
-    RequiredBlockingEdge("polylogue-stalled-cursor-live-proof", "polylogue-2qrx"),
-)
-
-# The edge guard is consumed by both phase boundaries. This binds the static
-# policy to the actual readiness graph without turning it into a live receipt.
-REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS: tuple[RequiredBlockingEdge, ...] = (
-    RequiredBlockingEdge("polylogue-reindex-preflight-authorization", "polylogue-eqq02"),
-    RequiredBlockingEdge("polylogue-reindex-final-proof", "polylogue-eqq02"),
-)
-
-
-def _wave(issue: dict[str, Any]) -> tuple[int | None, Finding | None]:
-    """Parse the issue's ``wave:`` label."""
-    for label in issue.get("labels") or []:
-        if isinstance(label, str) and label.startswith("wave:"):
-            raw = label[len("wave:") :]
-            try:
-                return int(raw), None
-            except ValueError:
-                return None, Finding("malformed-wave", str(issue["id"]), f"non-numeric wave label: {label!r}")
-    return None, None
+def _validated_issues(payload: object, *, source: str) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        raise RuntimeError(f"{source} returned {type(payload).__name__}, expected list")
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, issue in enumerate(payload):
+        if not isinstance(issue, dict):
+            raise RuntimeError(f"{source} record {index} is {type(issue).__name__}, expected object")
+        bead_id = issue.get("id")
+        if not isinstance(bead_id, str) or not bead_id:
+            raise RuntimeError(f"{source} record {index} has no non-empty string id")
+        if bead_id in seen:
+            raise RuntimeError(f"{source} contains duplicate issue id {bead_id!r}")
+        seen.add(bead_id)
+        issues.append(issue)
+    return issues
 
 
 def _run_bd_dep_cycles() -> tuple[bool, str]:
@@ -88,413 +50,179 @@ def _run_bd_dep_cycles() -> tuple[bool, str]:
 
 
 def _run_bd_list_all() -> list[dict[str, Any]]:
-    """Load the complete live population; ``-n 0`` is never a display page."""
     result = subprocess.run(
         ["bd", "list", "--all", "-n", "0", "--json"],
         capture_output=True,
         text=True,
         check=True,
     )
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, list):
-        raise RuntimeError(f"bd list returned {type(payload).__name__}, expected list")
-    issues: list[dict[str, Any]] = []
-    for index, issue in enumerate(payload):
-        if not isinstance(issue, dict):
-            raise RuntimeError(
-                f"bd list record {index} is {type(issue).__name__}, expected object with non-empty string id"
-            )
-        bead_id = issue.get("id")
-        if not isinstance(bead_id, str) or not bead_id:
-            raise RuntimeError(f"bd list record {index} has no non-empty string id")
-        issues.append(issue)
-    return issues
+    return _validated_issues(json.loads(result.stdout), source="bd list")
 
 
-def _metadata(issue: dict[str, Any]) -> dict[str, Any]:
-    value = issue.get("metadata")
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
+def _load_export(path: Path) -> list[dict[str, Any]]:
+    records: list[object] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
         try:
-            decoded = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
-    return {}
+            records.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{path}:{line_number}: invalid JSON: {exc.msg}") from exc
+    return _validated_issues(records, source=str(path))
 
 
-def _labels(issue: dict[str, Any]) -> list[str]:
-    value = issue.get("labels")
-    return sorted(label for label in value if isinstance(label, str)) if isinstance(value, list) else []
-
-
-def _priority(issue: dict[str, Any]) -> int:
-    value = issue.get("priority", 2)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 2
+def _dependency_records(issue: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies = issue.get("dependencies")
+    return (
+        [dependency for dependency in dependencies if isinstance(dependency, dict)]
+        if isinstance(dependencies, list)
+        else []
+    )
 
 
 def _parent_targets(issue: dict[str, Any]) -> list[str]:
-    targets: list[str] = []
-    dependencies = issue.get("dependencies")
-    if not isinstance(dependencies, list):
-        return targets
-    for dependency in dependencies:
-        if not isinstance(dependency, dict) or dependency.get("type") != "parent-child":
-            continue
-        target = dependency.get("depends_on_id")
-        if isinstance(target, str) and target:
-            targets.append(target)
-    return targets
-
-
-def canonical_parent_map(issues: list[dict[str, Any]]) -> dict[str, str | None]:
-    """Return the structured canonical parent for every known issue.
-
-    A zero-parent issue maps to ``None``.  Multiple parent-child targets are
-    intentionally represented as ``None`` because there is no canonical
-    choice until the graph validator reports and an operator repairs it.
-    """
-    parents: dict[str, str | None] = {}
-    for issue in issues:
-        bead_id = str(issue.get("id", ""))
-        targets = _parent_targets(issue)
-        parents[bead_id] = targets[0] if len(targets) == 1 else None
-    return parents
-
-
-def _parent_findings(issues: list[dict[str, Any]]) -> list[Finding]:
-    """Validate structured parent-child edges, independent of Bead prose."""
-    by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
-    findings: list[Finding] = []
-    canonical: dict[str, str] = {}
-    for bead_id, issue in sorted(by_id.items()):
-        for dependency in issue.get("dependencies", []) if isinstance(issue.get("dependencies"), list) else []:
-            if not isinstance(dependency, dict) or dependency.get("type") != "parent-child":
-                continue
-            target = dependency.get("depends_on_id")
-            if not isinstance(target, str) or not target:
-                findings.append(Finding("malformed-parent", bead_id, f"invalid parent-child target: {target!r}"))
-        targets = _parent_targets(issue)
-        if len(targets) > 1:
-            findings.append(Finding("multiple-parents", bead_id, f"parent-child targets={sorted(targets)}"))
-            continue
-        if not targets:
-            continue
-        parent_id = next(iter(targets))
-        if parent_id not in by_id:
-            findings.append(Finding("missing-parent", bead_id, f"parent-child target {parent_id!r} does not exist"))
-            continue
-        if parent_id == bead_id:
-            findings.append(Finding("parent-self-cycle", bead_id, "parent-child target is the child itself"))
-            continue
-        canonical[bead_id] = parent_id
-
-    visited: set[str] = set()
-    for start in sorted(canonical):
-        if start in visited:
-            continue
-        path: list[str] = []
-        index: dict[str, int] = {}
-        node = start
-        while node in canonical and node not in visited:
-            if node in index:
-                cycle = path[index[node] :] + [node]
-                findings.append(Finding("parent-cycle", node, "parent-child cycle: " + " -> ".join(cycle)))
-                break
-            index[node] = len(path)
-            path.append(node)
-            node = canonical[node]
-        visited.update(path)
-    return findings
-
-
-def _blocks_targets(issue: dict[str, Any]) -> set[str]:
-    """Return the structured blockers declared by one Bead record."""
-    dependencies = issue.get("dependencies")
-    if not isinstance(dependencies, list):
-        return set()
-    return {
+    return [
         target
-        for dependency in dependencies
-        if isinstance(dependency, dict)
-        and dependency.get("type") == "blocks"
+        for dependency in _dependency_records(issue)
+        if dependency.get("type") == "parent-child"
         and isinstance((target := dependency.get("depends_on_id")), str)
         and target
-    }
-
-
-def _required_blocking_edge_findings(
-    issues: list[dict[str, Any]],
-    *,
-    required_edges: tuple[RequiredBlockingEdge, ...],
-    kind: str,
-) -> list[Finding]:
-    """Report missing structured edges without accepting another edge kind."""
-    by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
-    findings: list[Finding] = []
-    for edge in required_edges:
-        dependent = by_id.get(edge.dependent_id)
-        blocker = by_id.get(edge.blocker_id)
-        detail = f"required blocks dependency: {edge.dependent_id} -> {edge.blocker_id}"
-        if dependent is None and blocker is None:
-            findings.append(Finding(kind, edge.dependent_id, f"missing dependent and blocker; {detail}"))
-        elif dependent is None:
-            findings.append(Finding(kind, edge.dependent_id, f"missing dependent; {detail}"))
-        elif blocker is None:
-            findings.append(Finding(kind, edge.blocker_id, f"missing blocker; {detail}"))
-        elif edge.blocker_id not in _blocks_targets(dependent):
-            findings.append(Finding(kind, edge.dependent_id, f"missing {detail}"))
-    return findings
-
-
-def reindex_proof_edge_findings(issues: list[dict[str, Any]]) -> list[Finding]:
-    """Validate required reindex live-proof ownership and phase bindings."""
-    return [
-        *_required_blocking_edge_findings(
-            issues,
-            required_edges=REINDEX_REQUIRED_LIVE_PROOF_BLOCKING_EDGES,
-            kind="missing-required-reindex-proof-edge",
-        ),
-        *_required_blocking_edge_findings(
-            issues,
-            required_edges=REINDEX_PROOF_EDGE_GUARD_PHASE_BINDINGS,
-            kind="missing-reindex-proof-edge-guard-binding",
-        ),
     ]
 
 
-def collect_findings(
-    issues: list[dict[str, Any]],
-    *,
-    required_contract_ids: frozenset[str] | None = None,
-    enforce_reindex: bool = False,
-) -> list[Finding]:
-    by_id = {str(issue["id"]): issue for issue in issues if isinstance(issue.get("id"), str)}
-    findings: list[Finding] = [*_parent_findings(issues)]
-    if enforce_reindex:
-        findings.extend(reindex_proof_edge_findings(issues))
+def canonical_parent_map(issues: list[dict[str, Any]]) -> dict[str, str | None]:
+    parents: dict[str, str | None] = {}
+    for issue in issues:
+        targets = _parent_targets(issue)
+        parents[str(issue["id"])] = targets[0] if len(targets) == 1 else None
+    return parents
 
-    for issue_id in sorted(required_contract_ids or ()):
-        issue = by_id.get(issue_id)
-        if issue is None:
-            findings.append(Finding("missing-required-acceptance-contract", issue_id, "manifest Bead is absent"))
-        elif "acceptance_contract_v1" not in _metadata(issue):
-            findings.append(
-                Finding("missing-required-acceptance-contract", issue_id, "manifest Bead has no structured contract")
-            )
 
-    for issue_id, issue in sorted(by_id.items()):
-        if "acceptance_contract_v1" not in _metadata(issue):
+def _cycle_findings(edges: dict[str, set[str]], *, kind: str, label: str) -> list[Finding]:
+    findings: list[Finding] = []
+    state: dict[str, int] = {}
+    path: list[str] = []
+    positions: dict[str, int] = {}
+    reported: set[frozenset[str]] = set()
+
+    def visit(node: str) -> None:
+        state[node] = 1
+        positions[node] = len(path)
+        path.append(node)
+        for target in sorted(edges.get(node, set())):
+            if state.get(target, 0) == 0:
+                visit(target)
+            elif state.get(target) == 1:
+                cycle = path[positions[target] :] + [target]
+                identity = frozenset(cycle)
+                if identity not in reported:
+                    findings.append(Finding(kind, target, f"{label}: " + " -> ".join(cycle)))
+                    reported.add(identity)
+        path.pop()
+        positions.pop(node)
+        state[node] = 2
+
+    for start in sorted(edges):
+        if state.get(start, 0) == 0:
+            visit(start)
+    return findings
+
+
+def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
+    by_id = {str(issue["id"]): issue for issue in issues}
+    findings: list[Finding] = []
+    parent_edges: dict[str, set[str]] = {}
+    block_edges: dict[str, set[str]] = defaultdict(set)
+
+    for bead_id, issue in sorted(by_id.items()):
+        raw_dependencies = issue.get("dependencies")
+        if raw_dependencies is not None and not isinstance(raw_dependencies, list):
+            findings.append(Finding("malformed-dependencies", bead_id, "dependencies must be a list"))
             continue
-        for error in validate_acceptance_contract(issue):
-            findings.append(Finding("invalid-acceptance-contract", issue_id, error))
-
-    waves: dict[str, int | None] = {}
-    for issue_id, issue in sorted(by_id.items()):
-        if issue.get("status") == "closed":
-            continue
-        wave_value, malformed = _wave(issue)
-        waves[issue_id] = wave_value
-        if malformed is not None:
-            findings.append(malformed)
-
-    for issue_id, issue in sorted(by_id.items()):
-        if issue.get("status") == "closed":
-            continue
-        wave_labels = [label for label in _labels(issue) if label.startswith("wave:")]
-        if len(wave_labels) > 1:
-            findings.append(Finding("duplicate-wave", issue_id, f"labels={wave_labels}"))
-        acceptance_criteria = issue.get("acceptance_criteria")
-        if not isinstance(acceptance_criteria, str) or not acceptance_criteria.strip():
-            detail = (
-                str(issue.get("title", ""))[:60]
-                if isinstance(acceptance_criteria, str)
-                else "acceptance_criteria must be a non-empty string"
-            )
-            findings.append(Finding("missing-ac", issue_id, detail))
-        wave_value = waves.get(issue_id)
-        dependencies = issue.get("dependencies")
-        for dependency in dependencies if isinstance(dependencies, list) else []:
-            if not isinstance(dependency, dict) or dependency.get("type") != "blocks":
+        seen_edges: set[tuple[str, str]] = set()
+        parents: list[str] = []
+        for index, dependency in enumerate(raw_dependencies or []):
+            if not isinstance(dependency, dict):
+                findings.append(Finding("malformed-dependency", bead_id, f"dependency {index} is not an object"))
                 continue
-            blocker_id = dependency.get("depends_on_id")
-            blocker = by_id.get(str(blocker_id))
-            if blocker is None or blocker.get("status") == "closed":
+            dep_type = dependency.get("type")
+            target = dependency.get("depends_on_id")
+            if not isinstance(dep_type, str) or not dep_type or not isinstance(target, str) or not target:
+                findings.append(Finding("malformed-dependency", bead_id, f"dependency {index} lacks type or target"))
                 continue
-            blocker_wave = waves.get(str(blocker_id))
-            if wave_value is not None and blocker_wave is not None and blocker_wave > wave_value:
+            edge = (dep_type, target)
+            if edge in seen_edges:
+                findings.append(Finding("duplicate-dependency", bead_id, f"duplicate {dep_type} edge to {target}"))
+            seen_edges.add(edge)
+            if target not in by_id:
                 findings.append(
-                    Finding("wave-inversion", issue_id, f"(wave:{wave_value}) <- {blocker_id} (wave:{blocker_wave})")
+                    Finding("missing-dependency-target", bead_id, f"{dep_type} target {target!r} does not exist")
                 )
+            if target == bead_id:
+                findings.append(Finding("self-dependency", bead_id, f"{dep_type} edge targets itself"))
+            if dep_type == "parent-child":
+                parents.append(target)
+            elif dep_type == "blocks":
+                block_edges[bead_id].add(target)
+        if len(parents) > 1:
+            findings.append(Finding("multiple-parents", bead_id, f"parent-child targets={sorted(parents)}"))
+        elif parents:
+            parent_edges[bead_id] = {parents[0]}
+
+    findings.extend(_cycle_findings(parent_edges, kind="parent-cycle", label="parent-child cycle"))
+    findings.extend(_cycle_findings(block_edges, kind="blocks-cycle", label="blocks cycle"))
     return sorted(findings, key=lambda finding: (finding.kind, finding.bead_id, finding.detail))
 
 
-def _campaigns(issue: dict[str, Any]) -> list[str]:
-    """Read campaign declarations from structured metadata or labels only."""
-    values: set[str] = set()
-    metadata_campaign = _metadata(issue).get("campaign")
-    if isinstance(metadata_campaign, str) and metadata_campaign:
-        values.add(metadata_campaign)
-    elif isinstance(metadata_campaign, list):
-        values.update(value for value in metadata_campaign if isinstance(value, str) and value)
-    values.update(label.removeprefix("campaign:") for label in _labels(issue) if label.startswith("campaign:"))
-    if "campaign" in _labels(issue):
-        values.add(str(issue.get("id", "")))
-    return sorted(values)
-
-
-def _partition(items: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
-    groups: dict[str, list[str]] = defaultdict(list)
-    for item in items:
-        groups[str(item[key])].append(str(item["id"]))
-    return {name: {"count": len(ids), "ids": sorted(ids)} for name, ids in sorted(groups.items())}
-
-
-def missing_ac_census(
-    issues: list[dict[str, Any]], *, required_contract_ids: frozenset[str] | None = None
-) -> dict[str, Any]:
-    """Produce a complete, deterministic census of fail-closed missing ACs."""
-    parents = canonical_parent_map(issues)
-    missing_ids = {
-        finding.bead_id
-        for finding in collect_findings(issues, required_contract_ids=required_contract_ids)
-        if finding.kind == "missing-ac"
-    }
-    rows: list[dict[str, Any]] = []
-    for issue in issues:
-        bead_id = str(issue.get("id", ""))
-        if bead_id not in missing_ids:
-            continue
-        program = _metadata(issue).get("frontier_program_ref")
-        program_or_parent = (
-            str(program) if isinstance(program, str) and program else parents.get(bead_id) or "unparented"
-        )
-        campaigns = _campaigns(issue)
-        rows.append(
-            {
-                "id": bead_id,
-                "status": str(issue.get("status", "unknown")),
-                "priority": _priority(issue),
-                "program_or_parent": program_or_parent,
-                "campaign_relevance": "declared" if campaigns else "none",
-                "campaigns": campaigns,
-            }
-        )
-    rows.sort(key=lambda row: (row["status"], row["priority"], row["program_or_parent"], row["id"]))
-    return {
-        "report_version": 1,
-        "total": len(rows),
-        "by_status": _partition(rows, "status"),
-        "by_priority": _partition(rows, "priority"),
-        "by_program_or_parent": _partition(rows, "program_or_parent"),
-        "by_campaign_relevance": _partition(rows, "campaign_relevance"),
-        "items": rows,
-    }
-
-
-def build_report(
-    issues: list[dict[str, Any]],
-    *,
-    cycles_ok: bool,
-    cycles_output: str,
-    required_contract_ids: frozenset[str] | None = None,
-    enforce_reindex: bool = False,
-) -> dict[str, Any]:
-    findings = collect_findings(
-        issues,
-        required_contract_ids=required_contract_ids,
-        enforce_reindex=enforce_reindex,
-    )
-    by_kind: dict[str, int] = defaultdict(int)
+def build_report(issues: list[dict[str, Any]], *, cycles_ok: bool, cycles_output: str) -> dict[str, Any]:
+    findings = collect_findings(issues)
+    structured_cycles_ok = not any(finding.kind in {"parent-cycle", "blocks-cycle"} for finding in findings)
+    counts: dict[str, int] = defaultdict(int)
     for finding in findings:
-        by_kind[finding.kind] += 1
+        counts[finding.kind] += 1
     return {
-        "report_version": 1,
-        "cycles": {"ok": cycles_ok, "output": cycles_output},
+        "report_version": 2,
+        "cycles": {"ok": cycles_ok and structured_cycles_ok, "output": cycles_output},
         "issues_scanned": len(issues),
-        "contract_manifest": {
-            "expected_count": beads_acceptance_contracts._EXPECTED_MANIFEST_COUNT,
-            "digest": beads_acceptance_contracts._EXPECTED_MANIFEST_DIGEST,
-        },
         "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
-        "counts": dict(sorted(by_kind.items())),
-        "missing_ac_census": missing_ac_census(issues, required_contract_ids=required_contract_ids),
+        "counts": dict(sorted(counts.items())),
     }
 
 
 def _format_report(report: dict[str, Any]) -> str:
-    lines: list[str] = []
-    cycle_output = report["cycles"]["output"]
-    if cycle_output:
-        lines.append(str(cycle_output))
-    for finding in report["findings"]:
-        lines.append(f"{finding['kind']}: {finding['id']} {finding['detail']}")
-    counts = report["counts"]
-    lines.append(
-        "violations: "
-        f"dup_labels={counts.get('duplicate-wave', 0)} "
-        f"inversions={counts.get('wave-inversion', 0)} "
-        f"missing_ac={counts.get('missing-ac', 0)} "
-        f"invalid_contracts={counts.get('invalid-acceptance-contract', 0)} "
-        f"missing_required_contracts={counts.get('missing-required-acceptance-contract', 0)} "
-        f"malformed_wave={counts.get('malformed-wave', 0)} "
-        f"parent_integrity={sum(value for key, value in counts.items() if key.startswith('parent-') or key in {'multiple-parents', 'missing-parent'})}"
-    )
+    lines = [str(report["cycles"]["output"])] if report["cycles"]["output"] else []
+    lines.extend(f"{item['kind']}: {item['id']} {item['detail']}" for item in report["findings"])
+    lines.append(f"bead-graph: {report['issues_scanned']} issues, {len(report['findings'])} structural violations")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", action="store_true", help="emit the complete machine-readable graph report")
+    parser.add_argument("--json", action="store_true", help="emit a machine-readable structural report")
+    parser.add_argument(
+        "--export", type=Path, help="validate a JSONL export without touching the shared live Beads database"
+    )
     args = parser.parse_args(argv)
 
     try:
-        required_contract_ids = frozenset(beads_acceptance_contracts.load_manifest(_CONTRACT_MANIFEST))
-        cycles_ok, cycles_output = _run_bd_dep_cycles()
-        if not cycles_ok:
-            if args.json:
-                print(
-                    json.dumps(
-                        {
-                            "report_version": 1,
-                            "error": "dependency cycle check failed",
-                            "cycles_output": cycles_output,
-                        },
-                        indent=2,
-                        sort_keys=True,
-                    )
-                )
-            else:
-                print(f"bead-graph: dependency cycle check failed: {cycles_output}", file=sys.stderr)
-            return 1
-        issues = _run_bd_list_all()
-    except SystemExit as exc:
+        if args.export is not None:
+            issues = _load_export(args.export)
+            cycles_ok, cycles_output = True, ""
+        else:
+            cycles_ok, cycles_output = _run_bd_dep_cycles()
+            if not cycles_ok:
+                raise RuntimeError(f"dependency cycle check failed: {cycles_output}")
+            issues = _run_bd_list_all()
+        report = build_report(issues, cycles_ok=cycles_ok, cycles_output=cycles_output)
+    except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
+        payload = {"report_version": 2, "error": str(exc)}
         if args.json:
-            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
+            print(json.dumps(payload, indent=2, sort_keys=True))
         else:
             print(f"bead-graph: {exc}", file=sys.stderr)
         return 1
-    except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
-        if args.json:
-            print(json.dumps({"report_version": 1, "error": str(exc)}, indent=2, sort_keys=True))
-        else:
-            print(f"bead-graph: failed to load live Beads state: {exc}", file=sys.stderr)
-        return 1
-    report = build_report(
-        issues,
-        cycles_ok=cycles_ok,
-        cycles_output=cycles_output,
-        required_contract_ids=required_contract_ids,
-        enforce_reindex=True,
-    )
-    if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
-    else:
-        print(_format_report(report))
+
+    print(json.dumps(report, indent=2, sort_keys=True) if args.json else _format_report(report))
     return 0 if not report["findings"] else 1
 
 

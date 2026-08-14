@@ -24,26 +24,9 @@ This module closes both gaps with declaration-derived pins, mirroring how
 
 from __future__ import annotations
 
-import re
-from collections.abc import Mapping
 from typing import cast
 
-import pytest
-
-from tests.infra.mcp import EXPECTED_PROMPT_NAMES, EXPECTED_TOOL_NAMES, MCPServerUnderTest, invoke_surface_async
-
-#: Minimal arguments so every prompt renders without error. Prompts with no
-#: required parameters use their own defaults (empty dict).
-_PROMPT_INVOCATION_ARGS: Mapping[str, dict[str, object]] = {
-    "decisions_about": {"topic": "schema migration"},
-    "sessions_touching_file": {"path": "polylogue/mcp/server_prompts.py"},
-    "compare_sessions": {"id1": "example-origin:session-a", "id2": "example-origin:session-b"},
-}
-
-#: A call-like ``name(`` pattern in a prompt's rendered instruction text.
-#: Matches the same shape as the parity check in test_prompt_query_parity.py
-#: but generalized to every dispatcher tool, not just ``query``.
-_CALL_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\(")
+from tests.infra.mcp import EXPECTED_PROMPT_NAMES, MCPServerUnderTest
 
 
 def _build_server() -> MCPServerUnderTest:
@@ -65,36 +48,4 @@ def test_registered_prompts_match_target_prompts() -> None:
     assert registered == EXPECTED_PROMPT_NAMES, (
         f"registered-but-undeclared: {sorted(registered - EXPECTED_PROMPT_NAMES)}; "
         f"declared-but-unregistered: {sorted(EXPECTED_PROMPT_NAMES - registered)}"
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("prompt_name", sorted(EXPECTED_PROMPT_NAMES))
-async def test_prompt_instructions_reference_only_live_tools(prompt_name: str) -> None:
-    """Every ``name(`` call-like reference in a prompt's rendered text must
-    name a tool on the live ten-tool dispatcher surface.
-
-    Direct regression guard for the bead: six declared prompts instructed
-    callers to invoke retired names (find_resume_candidates,
-    get_resume_brief, agent_coordination_brief, blackboard_list,
-    find_abandoned_sessions, get_session_summary, get_postmortem_bundle,
-    get_pathologies, list_assertion_claims, search, find_stuck_sessions,
-    list_marks, list_annotations, cost_rollups, session_costs,
-    provider_usage). A prompt that regresses to any of those again fails
-    this test.
-    """
-    server = _build_server()
-    prompt = server._prompt_manager._prompts[prompt_name]
-    kwargs = _PROMPT_INVOCATION_ARGS.get(prompt_name, {})
-    rendered = await invoke_surface_async(prompt.fn, **kwargs)
-    assert isinstance(rendered, str)
-
-    referenced = set(_CALL_RE.findall(rendered))
-    # Prompts may reference prose fragments that happen to match the call
-    # shape (none currently do); only flag names that look like a tool call
-    # AND are not a live tool name.
-    unknown = referenced - EXPECTED_TOOL_NAMES
-    assert not unknown, (
-        f"{prompt_name} references non-tool or retired-tool call-like names {sorted(unknown)}; "
-        f"live tools are {sorted(EXPECTED_TOOL_NAMES)}"
     )

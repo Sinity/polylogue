@@ -13,8 +13,8 @@ those legacy rows in place using the same classifier, so persisted
 ``message_type`` becomes the single source of truth (AC #2) and produces
 the before/after artifact-class evidence (AC #6).
 
-The split out of ``storage/repair.py`` is the one called out in
-``docs/plans/file-size-budgets.yaml`` for that file.
+The implementation is split from ``storage/repair.py`` so this one-time
+durable-row rewrite is isolated from the repair dispatcher.
 
 Kept as a manual ``doctor --repair --target message_type_backfill`` surface
 (automagic-invariants audit, polylogue-cfvvt): unlike blob-gc or

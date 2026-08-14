@@ -1256,7 +1256,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "coverage" },
     { name = "genson" },
     { name = "hypothesis" },
     { name = "hypothesis-jsonschema" },
@@ -1282,7 +1281,6 @@ dev = [
     { name = "types-pyyaml" },
 ]
 dev-common = [
-    { name = "coverage" },
     { name = "genson" },
     { name = "hypothesis" },
     { name = "hypothesis-jsonschema" },
@@ -1343,7 +1341,6 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0" },
     { name = "atheris", marker = "extra == 'fuzz'", specifier = ">=3.1.0" },
     { name = "click", specifier = ">=8.4.2,<9.0" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'dev-common'", specifier = ">=7.15.4" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "dateparser", specifier = ">=1.4.2" },
     { name = "genson", marker = "extra == 'dev-common'", specifier = ">=1.4.0" },

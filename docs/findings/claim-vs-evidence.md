@@ -42,7 +42,8 @@ falsified by a representative, sufficiently large calibration frame showing
 that visible marker absence does not track human labels for this narrow
 observable.
 
-The generated [findings-page public-claims view](../generated/public-claims/findings-page.md) is the authority for whether this historical number is currently supported, stale, private-held, or unresolved.
+This page deliberately labels the number historical. A newly generated result
+is not a current public claim merely because the report command completed.
 
 This is a lower-bound field observation from one archive and one method. It is not a prevalence estimate for all agents, models, users, providers, or tasks.
 
@@ -106,12 +107,14 @@ The calibration is small. The method therefore keeps 3,375 cases ambiguous inste
 
 ## First-party evidence boundary
 
-The current report is a regenerable local evidence artifact, not a registered
-analysis definition, immutable analysis run, or finding. Those first-party
-objects require the pending durable user-tier kernel and migration admission;
-until that work is accepted, this page must not promote a newly generated
-packet into a current public claim. The generated public-claims view remains
-the authority for claim status.
+The command is read-only by default. With explicit `--materialize-evidence`, it
+records a content-addressed analysis definition, result-set membership,
+evaluation receipt, and finding through the archive's existing user-tier
+writers. It emits a public-claim declaration only when the run's own
+minimum-sample and classified-outcome gates pass. The surviving
+`PublicClaimProjection` applies publication, privacy, freshness, frame, and
+evidence-integrity state independently; report generation alone never upgrades
+this historical page into a supported current claim.
 
 ## Interpretation
 
@@ -142,19 +145,16 @@ Operators with the relevant archive can run:
 ```bash
 devtools workspace claim-vs-evidence \
   --limit 5000 \
-  --out-dir .agent/demos/claim-vs-evidence \
+  --out-dir .local/evidence/claim-vs-evidence \
   --json
-
-devtools workspace demo-shelf
 ```
 
 ## Evidence and caveats
 
 See:
 
-- [Proof Artifacts](../proof-artifacts.md);
 - `devtools/claim_vs_evidence.py`;
 - `tests/unit/devtools/test_claim_vs_evidence.py`;
-- the local `.agent/demos/claim-vs-evidence/` packet when generated.
+- the local `.local/evidence/claim-vs-evidence/` packet when generated.
 
 Publication requires the packet’s archive cursor, measure version, commit SHA, sample-frame predicate, and run date. If any is missing or stale, the finding page should refuse regeneration rather than silently retain an old number.

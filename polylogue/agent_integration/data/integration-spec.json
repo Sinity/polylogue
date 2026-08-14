@@ -168,84 +168,72 @@
   "state_schema_version": 1,
   "target_prompts": [
     {
-      "migration_owner": "polylogue-t46.8.2",
       "mutation_authority": "none",
       "name": "resume_context",
       "required_capability": null,
       "workflow": "resume"
     },
     {
-      "migration_owner": "polylogue-t46.8.2",
       "mutation_authority": "none",
       "name": "postmortem_last",
       "required_capability": null,
       "workflow": "postmortem"
     },
     {
-      "migration_owner": "polylogue-t46.8.2",
       "mutation_authority": "none",
       "name": "decisions_about",
       "required_capability": null,
       "workflow": "decision-recovery"
     },
     {
-      "migration_owner": "polylogue-t46.8.2",
       "mutation_authority": "none",
       "name": "unacknowledged_failures",
       "required_capability": null,
       "workflow": "failure-recovery"
     },
     {
-      "migration_owner": "polylogue-t46.8.2",
       "mutation_authority": "none",
       "name": "sessions_touching_file",
       "required_capability": null,
       "workflow": "file-touch"
     },
     {
-      "migration_owner": "polylogue-t46.8.2",
       "mutation_authority": "none",
       "name": "cost_of",
       "required_capability": null,
       "workflow": "cost-analysis"
     },
     {
-      "migration_owner": "polylogue-t46.8.3",
       "mutation_authority": "none",
       "name": "agent_coordination_brief",
       "required_capability": null,
       "workflow": "coordination"
     },
     {
-      "migration_owner": "polylogue-il50",
       "mutation_authority": "none",
       "name": "analyze_errors",
       "required_capability": null,
       "workflow": "error-analysis"
     },
     {
-      "migration_owner": "polylogue-il50",
       "mutation_authority": "none",
       "name": "summarize_week",
       "required_capability": null,
       "workflow": "weekly-summary"
     },
     {
-      "migration_owner": "polylogue-il50",
       "mutation_authority": "none",
       "name": "extract_code",
       "required_capability": null,
       "workflow": "code-extraction"
     },
     {
-      "migration_owner": "polylogue-il50",
       "mutation_authority": "none",
       "name": "compare_sessions",
       "required_capability": null,
       "workflow": "session-comparison"
     },
     {
-      "migration_owner": "polylogue-il50",
       "mutation_authority": "none",
       "name": "extract_patterns",
       "required_capability": null,
@@ -255,7 +243,6 @@
   "target_resources": [
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "session"
       ],
@@ -264,7 +251,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "message"
       ],
@@ -273,7 +259,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "block"
       ],
@@ -282,7 +267,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "action"
       ],
@@ -291,7 +275,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "file"
       ],
@@ -300,7 +283,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "query"
       ],
@@ -309,7 +291,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.2",
       "object_kinds": [
         "result-set"
       ],
@@ -318,7 +299,6 @@
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "migration_owner": "polylogue-t46.8.3",
       "object_kinds": [
         "recall-pack"
       ],
@@ -327,7 +307,6 @@
     },
     {
       "authority": "executable query vocabulary and recovery guidance; no mutation authority",
-      "migration_owner": "polylogue-z9gh.3",
       "object_kinds": [
         "capability",
         "query",

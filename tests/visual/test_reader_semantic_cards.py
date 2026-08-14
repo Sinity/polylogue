@@ -71,8 +71,8 @@ def _outcome(card: dict[str, object]) -> dict[str, object]:
 
 @pytest.fixture
 def _semantic_card_session(reader_workspace: ReaderWorkspace) -> tuple[str, dict[str, object]]:
+    seed_reader_semantic_cards(reader_workspace)
     with running_reader_server(reader_workspace) as (_, base_url):
-        seed_reader_semantic_cards(reader_workspace)
         payload = get_json(base_url, f"/api/sessions/{READER_SEM1}/messages?limit=100&offset=0")
     assert isinstance(payload, dict)
     return base_url, payload

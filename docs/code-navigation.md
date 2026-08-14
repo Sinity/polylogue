@@ -201,5 +201,5 @@ registry or declaration, not the rendered output.
 | Parser or identity semantics | provider fixture, eager/streaming/replay equivalence, and content-hash/fingerprint tests |
 | Any merge candidate | `devtools verify --quick` plus the PR's affected-area tests |
 
-For the complete verification and cost model, see [Testing](../TESTING.md),
-[Test Economics](test-economics.md), and [Developer Tools](devtools.md).
+For the complete verification model, see [Testing](../TESTING.md) and
+[Developer Tools](devtools.md).

@@ -72,7 +72,7 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
     DemoConstruct(
         construct_id="tool_result_blocks",
         label="Tool-result blocks",
-        description="Tool outcomes are present for action-result and claim-vs-evidence demos.",
+        description="Tool outcomes are present for action-result queries.",
         sql="SELECT COUNT(*) FROM blocks WHERE block_type = 'tool_result'",
     ),
     DemoConstruct(

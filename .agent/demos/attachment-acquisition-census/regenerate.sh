@@ -156,7 +156,7 @@ payload = {
     },
 }
 
-(demo_root / "census.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+(demo_root / "census.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 lines = [
     "# Attachment Acquisition Census",

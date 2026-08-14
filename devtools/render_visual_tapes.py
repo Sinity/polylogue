@@ -9,13 +9,9 @@ The README documents ``devtools render visual-tapes --capture`` as the single
 command that regenerates the demo screencast media, so the first-contact GIF
 stays reproducible instead of being a committed binary that bitrots.
 
-``--check`` does two things (polylogue-3tl.17): it confirms every default spec
-still generates cleanly (structural check), and it byte-compares each
-generated tape against its committed counterpart under
-``docs/examples/visual-tapes/`` (drift check). The kit shipped a stale
-``demo-tour.tape`` twice in 2026-07 with every prior gate green -- the specs
-generated cleanly, nothing compared the output against what was actually
-committed.
+``--check`` confirms every default spec still generates cleanly and
+byte-compares each generated tape against its committed counterpart under
+``docs/examples/visual-tapes/``.
 """
 
 from __future__ import annotations
@@ -40,13 +36,7 @@ COMMITTED_TAPES_DIR = Path("docs/examples/visual-tapes")
 def committed_tape_drift(
     tapes: dict[str, str], *, committed_dir: Path = COMMITTED_TAPES_DIR
 ) -> dict[str, tuple[str | None, str]]:
-    """Return ``{spec_name: (committed_text_or_None, generated_text)}`` for every
-    spec whose generated content differs from (or has no) committed tape.
-
-    A spec with no committed tape at all is reported too (``committed`` is
-    ``None``) rather than silently skipped -- a new default spec ships with a
-    committed tape from day one, not a bare generator entry.
-    """
+    """Return generated tapes that differ from the committed visual surface."""
     drift: dict[str, tuple[str | None, str]] = {}
     for name, generated in tapes.items():
         committed_path = committed_dir / f"{name}.tape"
@@ -92,10 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help=(
-            "verify the tape specs generate cleanly and match the committed "
-            f"tapes under {COMMITTED_TAPES_DIR}, without writing any files"
-        ),
+        help="verify generated tapes match the committed visual surface without writing files",
     )
     args = parser.parse_args(argv)
 
@@ -103,16 +90,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         tapes = generate_all_tapes(specs)
-        print(f"visual-tapes: {len(tapes)} tape specs generate cleanly")
         drift = committed_tape_drift(tapes)
         if drift:
-            print(f"visual-tapes: {len(drift)} committed tape(s) out of sync with their spec:", file=sys.stderr)
-            _print_drift(drift, committed_dir=COMMITTED_TAPES_DIR)
-            print(
-                "visual-tapes: run 'devtools render visual-tapes --output-dir "
-                f"{COMMITTED_TAPES_DIR}' and commit the result to fix",
-                file=sys.stderr,
-            )
+            print(f"visual-tapes: {len(drift)} committed tape(s) out of sync", file=sys.stderr)
+            _print_drift(drift)
             return 1
         print(f"visual-tapes: {len(tapes)} committed tape(s) match their generated spec output")
         return 0
@@ -149,17 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def generated_surface_main(argv: list[str] | None = None) -> int:
-    """Entry point wired into ``devtools.generated_surfaces.GENERATED_SURFACES``.
-
-    ``--check`` behaves exactly like the public CLI: it drift-compares the
-    generated tapes against the committed ``docs/examples/visual-tapes/``
-    directory without writing anything. Render mode, however, writes directly
-    into that committed directory (rather than the public CLI's
-    ``.local/visual-tapes`` staging default) so a plain ``devtools render
-    all`` fixes drift in place, matching every other generated surface. The
-    public ``devtools render visual-tapes`` command keeps its staging default
-    for manual iteration and ``--capture`` GIF runs.
-    """
+    """Render/check the committed tape files as a generated repository surface."""
     args = list(argv or [])
     if "--check" in args:
         return main(args)

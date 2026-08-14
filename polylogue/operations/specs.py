@@ -34,12 +34,7 @@ SafetyGuard = Literal["write_role_required", "confirmed_before_execute", "explic
 """Declared safety guard that a mutating operation's public surfaces must enforce."""
 
 ExecutorStatus = Literal["executor-routed", "declared-not-routed", "typed-exemption"]
-"""t46.9 AC1 inventory status: whether a ``mutates_state=True`` operation's
-production surfaces drive it through ``operations.mutation_transaction
-.OperationExecutor`` (``executor-routed``), still enforce authorization
-independently pending Phase 2 migration (``declared-not-routed``, visible
-debt rather than silent absence), or are exempt with a typed reason recorded
-in ``docs/plans/mutation-census.yaml`` (``typed-exemption``)."""
+"""Whether a mutating operation uses ``OperationExecutor`` or carries typed debt."""
 
 
 class OperationKind(str, Enum):
@@ -1442,6 +1437,49 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 allowed_recovery=("reconcile_required",),
             ),
         ),
+    ),
+    OperationSpec(
+        name="mutate-maintenance-target-run",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Execute resumable maintenance targets through the CLI replay route or the MCP/daemon planner route. "
+            "These routes retain operation ids, cursor checkpoints, failure isolation, and explicit confirmation, "
+            "but do not yet run through OperationExecutor."
+        ),
+        code_refs=(
+            "polylogue.cli.commands.maintenance._run.run_command",
+            "polylogue.maintenance.replay.execute_replay",
+            "polylogue.maintenance.planner.execute_backfill",
+            "polylogue.mcp.server_cutover._dispatch_maintenance",
+            "polylogue.daemon.http.DaemonAPIHandler._handle_maintenance_run",
+        ),
+        surfaces=("cli", "mcp", "daemon"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required", "confirmed_before_execute"),
+        executor_status="declared-not-routed",
+        resumable=True,
+    ),
+    OperationSpec(
+        name="mutate-filesystem-reset",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Delete selected archive databases, blob/assets/cache trees, or authentication state after an exact "
+            "target preview and explicit confirmation. Session/source identity reset is a separate executor-routed operation."
+        ),
+        code_refs=(
+            "polylogue.cli.commands.reset.reset_command",
+            "polylogue.cli.commands.reset._archive_database_targets",
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("FileWrite", "Destructive"),
+        safety_guards=("confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="declared-not-routed",
     ),
     OperationSpec(
         name="project-archive-readiness",

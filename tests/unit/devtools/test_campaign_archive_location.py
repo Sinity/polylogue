@@ -53,6 +53,7 @@ def _tiny_spec() -> ArchiveSpec:
 async def test_generate_archive_writes_active_index_never_a_benchmark_db_sentinel(tmp_path: Path) -> None:
     """generate_archive must mutate the real active index.db, not invent a sentinel file."""
     archive_dir = tmp_path / "archive-small"
+    archive_dir.mkdir()
 
     with CampaignArchiveLocation.acquire(archive_dir) as location:
         metrics = await generate_archive(_tiny_spec(), archive_dir, location=location)
@@ -77,8 +78,8 @@ async def test_open_connection_on_raw_sentinel_reproduces_phantom_benchmark_db(t
     ``run_fts_rebuild_campaign``/``run_session_insight_materialization_campaign``
     use internally, against the literal ``archive_dir / "benchmark.db"``
     sentinel that campaigns used to hand them -- exactly what
-    ``devtools/run_campaign.py`` and ``devtools/benchmark_campaigns.py`` did
-    before this fix (see git history: both files previously derived
+    ``devtools/run_campaign.py`` did before this fix (see git history: it
+    previously derived
     ``db_path = archive_dir / "benchmark.db"`` and passed it straight
     through). It does NOT modify production code to demonstrate this: the
     ambiguity lives entirely in what path a *caller* constructs and passes
@@ -87,6 +88,7 @@ async def test_open_connection_on_raw_sentinel_reproduces_phantom_benchmark_db(t
     instead) closes.
     """
     archive_dir = tmp_path / "archive-small"
+    archive_dir.mkdir()
 
     with CampaignArchiveLocation.acquire(archive_dir) as location:
         metrics = await generate_archive(_tiny_spec(), archive_dir, location=location)
@@ -125,13 +127,14 @@ async def test_open_connection_on_raw_sentinel_reproduces_phantom_benchmark_db(t
 async def test_campaign_archive_location_prevents_phantom_benchmark_db(tmp_path: Path) -> None:
     """The fix: routing through CampaignArchiveLocation never creates a phantom file."""
     archive_dir = tmp_path / "archive-small"
+    archive_dir.mkdir()
 
     with CampaignArchiveLocation.acquire(archive_dir) as location:
         metrics = await generate_archive(_tiny_spec(), archive_dir, location=location)
 
         # A campaign reopening the archive later in the same run (as
-        # devtools/benchmark_campaigns.py::run_full_campaign now does for
-        # every registered benchmark) must go through active_index_path.
+        # devtools/run_campaign.py now does for every registered benchmark)
+        # must go through active_index_path.
         reopened_path = location.active_index_path
         assert reopened_path == archive_dir / "index.db"
 

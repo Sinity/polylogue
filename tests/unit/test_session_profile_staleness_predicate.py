@@ -28,7 +28,6 @@ disagrees. It would fail against the pre-fix repair predicate, which ignored
 
 from __future__ import annotations
 
-import inspect
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,7 +36,6 @@ import polylogue.daemon.convergence_stages as convergence_stages
 import polylogue.storage.repair as repair
 from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
-    session_profile_stale_predicate,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
@@ -193,31 +191,3 @@ def test_repair_selects_zero_rows_immediately_after_convergence_agrees(tmp_path:
 
     assert _run_convergence_pass(db_path) == []
     assert _run_repair_pass(db_path) == ()
-
-
-def test_session_profile_stale_predicate_has_exactly_one_definition() -> None:
-    """Static companion check: no module reimplements the ABS/source_sort_key comparison.
-
-    Complements the behavioral agreement tests above by asserting the
-    textual pattern that caused the divergence (``ABS(COALESCE(<alias>.
-    source_sort_key`` for the session_profiles/session_latency_profiles
-    aliases) exists nowhere except inside
-    ``session_profile_stale_predicate`` itself — a careless reintroduction of
-    an inline copy in either convergence_stages.py or repair.py is caught
-    here even if its NULL-branch semantics happened to be correct.
-    """
-
-    predicate_source = inspect.getsource(session_profile_stale_predicate)
-    assert "ABS(COALESCE(" in predicate_source
-
-    # "source_sort_key," (comma immediately after, no "_ms") uniquely identifies
-    # the session_profiles/session_latency_profiles staleness comparison this
-    # predicate owns — distinct from the unrelated insight_materialization
-    # "source_sort_key_ms" family that legitimately stays inline.
-    for module in (convergence_stages, repair):
-        module_source = inspect.getsource(module)
-        assert "source_sort_key," not in module_source, (
-            f"{module.__name__} appears to reimplement the session-profile staleness ABS/source_sort_key "
-            "comparison inline instead of composing session_profile_stale_predicate() "
-            "(polylogue-a7xr.2)."
-        )

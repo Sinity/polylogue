@@ -4,11 +4,10 @@ Polylogue mines longitudinal agent usage through the normal archive analysis
 surfaces, not a standalone report script. The useful outputs are composable:
 coverage describes archive shape, cost rollups describe provider/model spend
 evidence, usage timelines describe monthly token/cost movement, and the
-claim-vs-evidence workspace packet turns structured tool failures into an
-inspectable proof artifact.
+action query surface exposes provider-reported tool outcomes and their
+immediate follow-up classification.
 
-All commands below are read-only against the archive unless an explicit
-`--out-dir` is supplied for a demo packet.
+All commands below are read-only against the archive.
 
 ## Queries
 
@@ -28,9 +27,8 @@ polylogue analyze usage --origin codex-session --format json --limit 0
 # Monthly usage movement by origin and model.
 polylogue analyze insights usage-timeline --group-by month-origin-model --format json
 
-# Focused claim-vs-evidence packet for the current demo shelf.
-devtools workspace claim-vs-evidence --limit 5000 \
-  --out-dir .agent/demos/claim-vs-evidence --json
+# Inspect structurally failed actions and their immediate follow-up class.
+polylogue --format json actions where is_error:true
 ```
 
 The same analysis can be reproduced against the deterministic demo archive:
@@ -40,7 +38,7 @@ polylogue demo seed --root /tmp/demo-archive --force --with-overlays --format js
 POLYLOGUE_ARCHIVE_ROOT=/tmp/demo-archive \
   polylogue analyze insights usage-timeline --format json
 POLYLOGUE_ARCHIVE_ROOT=/tmp/demo-archive \
-  devtools workspace claim-vs-evidence --limit 5000 --out-dir /tmp/claim-vs-evidence --json
+  polylogue --format json actions where is_error:true
 ```
 
 ## What The Surfaces Report
@@ -56,9 +54,9 @@ POLYLOGUE_ARCHIVE_ROOT=/tmp/demo-archive \
   estimates, catalog coverage gaps, and subscription-credit estimates through
   `cost-rollups` and `usage-timeline`.
 - **Model evolution:** usage buckets grouped by month, origin, and model.
-- **Structured failure follow-up:** `claim-vs-evidence` anchors on structured
-  tool-result failures (`is_error=1` or non-zero `exit_code`) and classifies the
-  immediately following assistant turn for explicit acknowledgment markers.
+- **Structured failure follow-up:** action queries anchor on provider-reported
+  tool-result failures (`is_error=1` or non-zero `exit_code`) and expose the
+  immediately following assistant turn's acknowledgment classification.
 
 ## Accuracy Notes
 
@@ -84,9 +82,9 @@ distinct:
    which collapses fork/resume/replay chains by logical session and model. Use
    the physical view for archive-materialization claims and the logical view for
    logical-work claims; do not silently substitute one for the other.
-5. **Failure claims.** Claim-vs-evidence does not infer tool success or failure
-   from assistant prose. Structured tool-result fields are the evidence anchor;
-   prose is only a follow-up acknowledgment signal.
+5. **Failure classification.** Action queries do not infer tool success or
+   failure from assistant prose. Structured tool-result fields are the evidence
+   anchor; prose is only a follow-up acknowledgment signal.
 
 Current caveat: all-provider logical-session repricing is still being repaired.
 Treat physical usage totals as current archive measurements, not final billing
@@ -94,7 +92,6 @@ reconciliation or logical-work totals.
 
 ## Privacy
 
-The query outputs are aggregate statistics by default: no message content,
-session titles, or source paths. Demo packets that include samples should stay
-inside the local `.agent/demos/` shelf unless they have been explicitly
-redacted for publication.
+Aggregate analysis outputs omit message content, session titles, and source
+paths by default. Action queries can return archived content, so treat their
+output according to the archive's privacy boundary.

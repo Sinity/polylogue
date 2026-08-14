@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.mcp.archive_support import (
     archive_session_list_payload,
@@ -27,19 +27,6 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
     from polylogue.mcp.server_support import ServerCallbacks
-
-
-def _without_migration_owner(entry: Any) -> dict[str, object]:
-    """``asdict(entry)`` minus the internal ``migration_owner`` bookkeeping
-    field -- a tracking-bead reference, not agent-facing capability data.
-
-    Used for the ``polylogue://capabilities/query`` discovery payload's
-    ``mcp_algebra`` roster, which is under a hard MCP response byte budget
-    (``MCP_RESPONSE_BUDGET_BYTES``); dropping a field that exists only for
-    the repo's own migration bookkeeping keeps that budget from being
-    consumed by data the calling agent has no use for.
-    """
-    return {key: value for key, value in asdict(entry).items() if key != "migration_owner"}
 
 
 def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
@@ -260,14 +247,9 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         "coverage": "current index generation; check readiness for freshness",
                     },
                     "mcp_algebra": {
-                        # migration_owner is internal tracking-bead bookkeeping,
-                        # not agent-facing capability data; dropped from all
-                        # three algebra lists to keep this byte-budgeted
-                        # catalog under MCP_RESPONSE_BUDGET_BYTES as the
-                        # declared surface grows (polylogue-il50).
-                        "read_transactions": [_without_migration_owner(entry) for entry in TARGET_DEFAULT_READ_ALGEBRA],
-                        "resources": [_without_migration_owner(entry) for entry in TARGET_RESOURCES],
-                        "prompts": [_without_migration_owner(entry) for entry in TARGET_PROMPTS],
+                        "read_transactions": [asdict(entry) for entry in TARGET_DEFAULT_READ_ALGEBRA],
+                        "resources": [asdict(entry) for entry in TARGET_RESOURCES],
+                        "prompts": [asdict(entry) for entry in TARGET_PROMPTS],
                     },
                     "units": units,
                 }

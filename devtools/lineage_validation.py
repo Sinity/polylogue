@@ -706,31 +706,17 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
         "index_db": report["index_db"],
         "snapshot_identity": report["snapshot_identity"],
         "index_schema_version": report["index_schema_version"],
-        "claim": (
-            "Polylogue can emit a read-only lineage validation artifact that separates physical stored "
-            "archive counts from logical session counts before those numbers are cited externally."
-        ),
-        "non_claim": (
-            "This artifact does not prove every composed transcript is byte-identical to the pre-lineage "
-            "archive; it samples composed reads and flags residual integrity gaps for follow-up."
-        ),
-        "proof_report": {
-            "external_counts_citable": verdict["external_counts_citable"],
-            "physical_sessions": counts["physical_sessions"],
-            "logical_sessions": counts["logical_sessions"],
-            "stored_messages": counts["stored_messages"],
-            "profile_coverage": counts["profile_coverage"],
-            "link_counts": report["lineage"]["counts"],
-            "integrity": report["lineage"]["integrity"],
-            "sample": report["lineage"]["prefix_sharing_read_sample"],
-            "topology": report["lineage"]["topology"],
-        },
-        "caveats": verdict["reasons"]
-        or [
-            "Prefix-sharing read composition is sampled, not exhaustively compared against historical pre-dedup transcripts.",
-            "The archive may still have non-lineage convergence caveats outside this gate.",
-        ],
-        "source_files": [
+        "external_counts_citable": verdict["external_counts_citable"],
+        "reasons": verdict["reasons"],
+        "physical_sessions": counts["physical_sessions"],
+        "logical_sessions": counts["logical_sessions"],
+        "stored_messages": counts["stored_messages"],
+        "profile_coverage": counts["profile_coverage"],
+        "link_counts": report["lineage"]["counts"],
+        "integrity": report["lineage"]["integrity"],
+        "sample": report["lineage"]["prefix_sharing_read_sample"],
+        "topology": report["lineage"]["topology"],
+        "files": [
             "lineage-validation.report.json",
             "summary.json",
             "README.md",
@@ -773,7 +759,6 @@ def _write_readme(path: Path, report: dict[str, Any]) -> None:
         "## Files",
         "",
         "- `lineage-validation.report.json` — full machine-readable evidence.",
-        "- `summary.json` — demo-shelf claim/non-claim/proof/caveat summary.",
         "",
     ]
     if verdict["reasons"]:

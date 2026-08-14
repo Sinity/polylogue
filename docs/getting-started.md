@@ -102,7 +102,7 @@ polylogued status
 
 | Command | Purpose |
 |---------|---------|
-| `polylogue <terms>` | Full-text search |
+| `polylogue find <terms>` | Full-text search |
 | `polylogue --since <when> read --all` | List matched sessions |
 | `polylogue --origin <origin> analyze --count` | Count matched sessions |
 | `polylogue analyze --by origin` | Grouped statistics |

@@ -52,31 +52,32 @@ def _tour_result(tmp_path: Path, *, ok: bool = True) -> DemoTourResult:
     )
 
 
-def test_tour_report_carries_v2_epistemic_fields(tmp_path: Path) -> None:
+def test_tour_report_contains_measured_result_and_no_self_attestation(tmp_path: Path) -> None:
     payload = _tour_report_payload(_tour_result(tmp_path))
 
-    assert payload["demo_packet_contract_version"] == "2.0.0"
-    assert payload["primary_construct"]["id"] == "demo.public-tour"  # type: ignore[index]
-    assert payload["claim"]["declared_before_execution"] is True  # type: ignore[index]
-    assert payload["oracle"]["independent"] is True  # type: ignore[index]
-    assert payload["baseline"]
-    assert payload["controls"]
-    assert payload["falsifier"]["triggered"] is False  # type: ignore[index]
-    assert payload["non_claims"]
+    assert payload["ok"] is True
+    assert payload["verify"]["ok"] is True  # type: ignore[index]
+    assert payload["steps"][0]["exit_code"] == 0  # type: ignore[index]
+    assert payload["problems"] == []
+    assert "claim" not in payload
+    assert "oracle" not in payload
 
 
-def test_tour_report_marks_a_failed_run_as_refuted(tmp_path: Path) -> None:
+def test_tour_report_preserves_failed_run_evidence(tmp_path: Path) -> None:
     payload = _tour_report_payload(_tour_result(tmp_path, ok=False))
 
-    assert payload["claim"]["status"] == "refuted"  # type: ignore[index]
-    assert payload["falsifier"]["triggered"] is True  # type: ignore[index]
-    assert payload["falsifier"]["result"] == "fail"  # type: ignore[index]
+    assert payload["ok"] is False
+    assert payload["verify"]["ok"] is False  # type: ignore[index]
+    assert payload["steps"][0]["exit_code"] == 1  # type: ignore[index]
+    assert payload["problems"] == ["demo archive verification failed"]
 
 
-def test_tour_markdown_keeps_non_claims_visible(tmp_path: Path) -> None:
+def test_tour_markdown_renders_measured_run_values(tmp_path: Path) -> None:
     report = _render_report_markdown(_tour_result(tmp_path))
 
-    assert "## Claim" in report
-    assert "## Oracle" in report
-    assert "## Non-claims" in report
-    assert "private-archive Receipts benchmark" in report
+    assert "Status: **passed**" in report
+    assert "First evidence result: 2.000s" in report
+    assert "Full tour: 4.000s" in report
+    assert "Sessions: 11" in report
+    assert "Messages: 43" in report
+    assert "| archive facets | 0 | 1.000s | 20 |" in report

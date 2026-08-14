@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from devtools import lineage_validation
-from devtools.command_catalog import COMMANDS
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
@@ -791,7 +790,10 @@ def test_lineage_validation_writes_demo_artifacts(tmp_path: Path) -> None:
     assert written["receipt_sha256"] == report["receipt_sha256"]
     assert lineage_validation._receipt_sha256(written) == written["receipt_sha256"]
     assert summary["artifact"] == "lineage-validation"
-    assert summary["proof_report"]["external_counts_citable"] is True
+    assert summary["external_counts_citable"] is True
+    assert summary["physical_sessions"] == report["counts"]["physical_sessions"]
+    assert summary["logical_sessions"] == report["counts"]["logical_sessions"]
+    assert summary["integrity"] == report["lineage"]["integrity"]
     assert "external counts citable: `true`" in readme
 
 
@@ -810,11 +812,6 @@ def test_lineage_validation_artifacts_attribute_selected_index(tmp_path: Path) -
     assert summary["snapshot_identity"] == report["snapshot_identity"]
     assert f"Evidence index: `{candidate_db.resolve()}`" in readme
     assert f"Evidence snapshot SHA-256: `{report['snapshot_identity']['sha256']}`" in readme
-
-
-def test_lineage_validation_command_registered() -> None:
-    spec = COMMANDS["workspace lineage-validation"]
-    assert spec.module == "devtools.lineage_validation"
 
 
 def test_lineage_validation_main_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

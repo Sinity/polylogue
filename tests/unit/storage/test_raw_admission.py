@@ -486,18 +486,9 @@ def test_admit_raw_observation_arm5_reacquire_returns_none_when_source_vanished(
     assert result.refusal_reason == "reacquire_unavailable_or_absent"
 
 
-def test_admit_raw_observation_arm4_artifact_never_touches_index_db(tmp_path: Path) -> None:
-    """Structural proof for AC(c): the artifact arm writes raw_sessions +
-    raw_artifacts (both source.db tables) and this module has no import of
-    any index-tier writer -- so a tool-results/*.json-classified payload
-    cannot reach a code path that creates an index.db `sessions` row."""
-    import polylogue.storage.sqlite.archive_tiers.raw_admission as raw_admission_module
-
-    assert raw_admission_module.__file__ is not None
-    source_lines = Path(raw_admission_module.__file__).read_text()
-    assert "archive_tiers.write" not in source_lines
-    assert "archive_tiers.index" not in source_lines
-
+def test_admit_raw_observation_arm4_artifact_never_materializes_a_session(tmp_path: Path) -> None:
+    """Artifact admission mutates source evidence without producing index material."""
+    initialize_active_archive_root(tmp_path)
     conn = _connect(tmp_path / "source.db")
     classification = ArtifactClassification(
         provider=Provider.CLAUDE_CODE,
@@ -538,10 +529,8 @@ def test_admit_raw_observation_arm4_artifact_never_touches_index_db(tmp_path: Pa
     assert artifact_row["parse_as_session"] == 0
     assert artifact_row["raw_id"] == result.raw_id
 
-    # There is no `sessions` table in source.db at all -- structural proof
-    # this tier cannot materialize a conversation.
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
-    assert "sessions" not in tables
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
 def test_admit_raw_observation_requires_logical_source_key(tmp_path: Path) -> None:

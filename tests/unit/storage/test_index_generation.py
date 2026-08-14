@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import fcntl
 import json
-import logging
 import multiprocessing
 import os
 import sqlite3
@@ -85,15 +84,11 @@ def test_rebuild_lease_refuses_new_active_writer(tmp_path: Path) -> None:
             writer.acquire()
 
 
-def test_rebuild_lease_reclaims_lock_held_by_dead_pid(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """A lock file recorded as held by a pid that no longer exists is stale and reclaimable.
+def test_rebuild_lease_does_not_bypass_lock_held_with_dead_pid(tmp_path: Path) -> None:
+    """A live kernel lock remains authoritative when its diagnostic pid is stale.
 
-    Simulates the polylogue-k8kj live incident: a genuinely-locked inode
-    (held here by a raw fd we keep open in-process, standing in for a
-    crashed rebuild or an orphaned forked worker) whose lock file records a
-    pid that is not actually running. A fresh ``RebuildLease`` acquisition
-    must reclaim it -- not raise ``RebuildLeaseUnavailableError`` -- and log
-    the reclamation loudly.
+    A forked worker can outlive the owner pid written by its parent.  Replacing
+    that inode would let two exclusive writers proceed under different locks.
     """
     lock_path = tmp_path / ".index-rebuild.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,14 +97,26 @@ def test_rebuild_lease_reclaims_lock_held_by_dead_pid(tmp_path: Path, caplog: py
     os.write(holder_fd, f"pid={_DEFINITELY_DEAD_PID} host=nowhere\n".encode())
     os.fsync(holder_fd)
     try:
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(RebuildLeaseUnavailableError):
             with RebuildLease(tmp_path):
                 pass
-        assert "reclaiming stale index rebuild lease" in caplog.text
-        assert str(_DEFINITELY_DEAD_PID) in caplog.text
     finally:
         fcntl.flock(holder_fd, fcntl.LOCK_UN)
         os.close(holder_fd)
+
+
+def test_rebuild_lease_does_not_bypass_active_writer_with_stale_owner_text(tmp_path: Path) -> None:
+    """A shared daemon-writer lease and an exclusive rebuild never split lock domains."""
+    lock_path = tmp_path / ".index-rebuild.lock"
+    lock_path.write_text(f"pid={_DEFINITELY_DEAD_PID} host=old-owner\n", encoding="utf-8")
+    writer = ActiveWriterLease(tmp_path)
+    writer.acquire()
+    try:
+        with pytest.raises(RebuildLeaseUnavailableError):
+            with RebuildLease(tmp_path):
+                pass
+    finally:
+        writer.close()
 
 
 def test_rebuild_lease_still_refuses_lock_held_by_live_pid(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import require_json_document
 from polylogue.storage import raw_authority, repair
-from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanStatus
+from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -113,7 +113,7 @@ def _require_not_none(value: _T | None, detail: str) -> _T:
 
 
 def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "archive.db")
+    return Config(archive_root=root, render_root=root / "render", sources=[])
 
 
 def _conversation(session_id: str, *, text: str, update_time: int) -> dict[str, object]:
@@ -585,6 +585,13 @@ def _result_summary(result: repair.RepairResult) -> dict[str, object]:
     }
 
 
+def _outcome_has_application_decision(outcome: RawReplayPlanOutcome, expected: str) -> bool:
+    if outcome.application_receipt is None:
+        return False
+    rows = outcome.application_receipt.get("application_rows")
+    return isinstance(rows, list) and any(isinstance(row, dict) and row.get("decision") == expected for row in rows)
+
+
 def _resume_and_drain(topology: PreparedTopology) -> tuple[dict[str, object], ...]:
     results: list[dict[str, object]] = []
     config = _config(topology.archive_root)
@@ -604,7 +611,46 @@ def _resume_and_drain(topology: PreparedTopology) -> tuple[dict[str, object], ..
                 ).fetchone()[0]
             )
         if not candidates.raw_ids and planned == 0:
-            _require(result.success, f"production repair drained candidates but reported failure: {result.detail}")
+            if not result.success:
+                # The scenario deliberately injects these two non-success
+                # outcomes. Accept only their typed application evidence;
+                # production continues to report the archive unhealthy.
+                expected = {
+                    topology.plan_ids_by_role["membership-terminal"]: (
+                        RawReplayPlanStatus.TERMINAL,
+                        "ambiguous",
+                    ),
+                    topology.plan_ids_by_role["membership-deferred"]: (
+                        RawReplayPlanStatus.DEFERRED,
+                        "deferred",
+                    ),
+                }
+                exceptional = tuple(
+                    outcome
+                    for outcome in result.plan_outcomes
+                    if outcome.status not in {RawReplayPlanStatus.EXECUTED, RawReplayPlanStatus.CARRIED_FORWARD}
+                )
+                expected_failure = {outcome.plan_id for outcome in exceptional} == set(expected)
+                for outcome in exceptional:
+                    expected_outcome = expected.get(outcome.plan_id)
+                    expected_failure = (
+                        expected_failure
+                        and expected_outcome is not None
+                        and outcome.status is expected_outcome[0]
+                        and _outcome_has_application_decision(outcome, expected_outcome[1])
+                    )
+                blocker_metrics = (
+                    result.metrics.get("raw_materialization_plan_conservation_error_count", 0),
+                    result.metrics.get("raw_materialization_unresolved_blocker_count", 0),
+                    result.metrics.get("raw_materialization_missing_blob_count", 0),
+                    result.metrics.get("raw_materialization_resource_blocked_count", 0),
+                    result.metrics.get("raw_materialization_no_progress_count", 0),
+                    result.metrics.get("raw_materialization_remaining_byte_authority_pending_count", 0),
+                )
+                _require(
+                    expected_failure and not any(blocker_metrics),
+                    f"production repair drained candidates but reported unexplained failure: {result.detail}",
+                )
             return tuple(results)
     raise RawAuthorityRestartProofError("production repair did not drain the compact topology after restart")
 

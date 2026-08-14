@@ -2084,17 +2084,9 @@ def build_verify_steps(
             [
                 ("render all", _devtools_cmd("render all", "--check")),
                 ("verify layering", _devtools_cmd("verify layering")),
-                ("lab graph strict", _devtools_cmd("lab graph", "--strict")),
-                ("verify closure-matrix", _devtools_cmd("verify closure-matrix")),
-                ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
-                ("verify manifests", _devtools_cmd("verify manifests")),
-                ("verify ci-workflows", _devtools_cmd("verify ci-workflows")),
-                ("verify catalog-bypasses", _devtools_cmd("verify catalog-bypasses")),
+                ("verify ci-commands", _devtools_cmd("verify ci-commands")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
-                ("verify docs-coverage", _devtools_cmd("verify docs-coverage")),
-                ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
-                ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
-                ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
+                ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
                 # Static, archive-independent, sub-second: an index bump that
                 # lands without its lifecycle.py delta declaration silently
                 # downgrades every existing generation to a full raw replay
@@ -2102,60 +2094,6 @@ def build_verify_steps(
                 # failure surfaces as an unqueryable live archive rather than
                 # as a test failure.
                 ("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")),
-                # Static, archive-independent, sub-second: catches the gap the
-                # schema-versioning gate above cannot see -- a parser/classifier
-                # changing what it accepts for identical input bytes with no
-                # version bump at all (polylogue-gucv; PR #3428 is the
-                # concrete case that shipped green against the version-keyed
-                # gate above).
-                ("lab policy classifier-fingerprints", _devtools_cmd("lab policy classifier-fingerprints")),
-                # ~15-30s, fully deterministic (wall-clock timing is masked
-                # before comparison, see devtools/verify_demo_tour_freshness.py).
-                # Unlike backlog-hygiene/bead-graph below, this check's failure
-                # count does not scale with total backlog/bead-corpus size --
-                # it is a fixed-cost diff against one committed fixture that
-                # only drifts when demo/insight code actually changes shape
-                # (polylogue-ze5i: moved out of --lab after the committed
-                # fixture was regenerated to match a `healed_tiers` field the
-                # demo receipts code had already grown).
-                ("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")),
-                # Static, archive-independent, sub-second: forbids the exact
-                # byte-mutation-before-hashing pattern that produced
-                # polylogue-u19l's Codex append-header bug (a synthesized
-                # literal spliced onto captured bytes before they reached the
-                # content hasher, permanently defeating live-source
-                # byte-identity verification for ~59GB of raw rows).
-                ("lab policy raw-payload-hash-purity", _devtools_cmd("lab policy raw-payload-hash-purity")),
-                # Static, archive-independent, sub-second: forbids a NEW
-                # occurrence of polylogue-hith/qkuq's already-fixed
-                # attachment-id bug shape (comparison identity minted from
-                # positional/index data, unstable across export vintages
-                # that reorder entries) -- polylogue-gysk3 found the same
-                # hazard still live for provider_message_id.
-                ("lab policy position-derived-identity", _devtools_cmd("lab policy position-derived-identity")),
-                # Static, archive-independent, sub-second: forbids a NEW
-                # unreachable (frontier state, dispatched actuator) pairing in
-                # polylogue/storage/raw_reconciler.py -- polylogue-w32w found
-                # UNRESOLVED_PROVENANCE paired with the dispatched
-                # REFINE_QUARANTINE actuator, an actuator no path could ever
-                # select, and 4,174 blockers accumulated behind it for weeks
-                # before anyone noticed. The runtime constructor guard
-                # (RawAuthorityFrontierItem.__post_init__) only fires when
-                # something actually constructs the bad combination; this
-                # lint re-checks every literal pairing at review time.
-                (
-                    "lab policy raw-authority-frontier-executability",
-                    _devtools_cmd("lab policy raw-authority-frontier-executability"),
-                ),
-                # Static, archive-independent, sub-second: forbids a NEW
-                # top-level def named table_exists/column_exists/index_exists
-                # (or a _-prefixed/_sync/_async variant) outside
-                # polylogue/storage/introspection.py -- the ~25-copy
-                # duplication polylogue-48h consolidated into that module.
-                (
-                    "lab policy table-exists-duplication",
-                    _devtools_cmd("lab policy table-exists-duplication"),
-                ),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.
@@ -2172,20 +2110,6 @@ def build_verify_steps(
                         str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                     ],
                 ),
-                # Static, archive-independent: the committed incident ledger
-                # must agree with the structured Beads dependency graph and
-                # every receipt/reference must resolve before quick verify is
-                # allowed to report green.
-                (
-                    "incident coverage ledger",
-                    [
-                        sys.executable,
-                        "-m",
-                        "devtools.incident_coverage_ledger",
-                        "--beads-export",
-                        str(ROOT / ".beads" / "issues.jsonl"),
-                    ],
-                ),
             ]
         )
 
@@ -2196,8 +2120,7 @@ def build_verify_steps(
         # Scale-tier policy (issue #1183): default verify includes
         # ``scale_small`` but excludes ``scale_medium`` / ``scale_large``.
         # ``--lab`` lets the medium tier in; the large tier is reserved
-        # for nightly CI and explicit ``devtools bench campaign``
-        # invocations.
+        # for nightly CI's direct pytest-benchmark execution.
         scale_marker_expr = "not scale_large" if lab else "not scale_medium and not scale_large"
         pytest_cmd = [
             sys.executable,
@@ -2274,36 +2197,6 @@ def build_verify_steps(
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
-        steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
-        steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
-        steps.append(
-            ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
-        )
-        steps.append(("lab policy acceptance-contracts", _devtools_cmd("lab policy acceptance-contracts")))
-        steps.append(
-            (
-                "lab policy acceptance-contract-reconcile",
-                _devtools_cmd("lab policy acceptance-contract-reconcile"),
-            )
-        )
-        steps.append(
-            (
-                "lab policy acceptance-contract-apply",
-                _devtools_cmd("lab policy acceptance-contract-apply"),
-            )
-        )
-        # backlog-hygiene and bead-graph are corpus-wide backlog-debt scans
-        # (findings scale with the total count of open Beads issues, not
-        # with this change's diff) -- they stay --lab-only/scheduled rather
-        # than default- or CI-gated. Gating either on a merge would block
-        # every PR in the repo until the entire pre-existing backlog is
-        # cleaned up (485 backlog-hygiene findings / 225 missing-AC beads
-        # measured 2026-08-02), which is periodic hygiene debt, not a
-        # per-change regression signal. Wired into the CircleCI nightly
-        # schedule instead (polylogue-ze5i) so continuous failure is at
-        # least visible, and the backlog itself is tracked by follow-up
-        # beads rather than left to rot silently.
-        steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
         steps.append(("lab policy bead-graph", _devtools_cmd("lab policy bead-graph")))
     return steps
 

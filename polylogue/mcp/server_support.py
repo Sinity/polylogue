@@ -1,11 +1,4 @@
-"""Shared helpers and runtime-service access for the MCP server.
-
-Testmon fan-out note (polylogue-9e5.11): this file is a testmon dependency
-"hub" -- its recorded fingerprint touches essentially every test in the
-suite, so a change here gets no narrowing benefit from testmon (expect a
-full-suite-equivalent selection regardless of edit size). Review changes
-with that blast radius in mind; see docs/test-economics.md.
-"""
+"""Shared helpers and runtime-service access for the MCP server."""
 
 from __future__ import annotations
 
@@ -517,8 +510,11 @@ def _record_mcp_call_log(
         from polylogue.config import load_polylogue_config
         from polylogue.mcp.call_log import enqueue_mcp_call_log
 
+        config = load_polylogue_config()
+        if config.no_daemon or config.daemon_client_mode.strip().lower() == "off":
+            return
         enqueue_mcp_call_log(
-            load_polylogue_config(),
+            config,
             tool_name=fn_name,
             session_id=session_id,
             session_ids=session_ids,

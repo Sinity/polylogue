@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -26,10 +28,6 @@ from devtools.storage_correctness_scenario import (
     run_storage_correctness,
     storage_correctness_scenario_entry,
 )
-from devtools.visual_artifacts import (
-    READER_VISUAL_SMOKE_PYTEST_COMMAND,
-    reader_visual_artifact_payloads,
-)
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.scenarios import AssertionSpec, ExecutionSpec, polylogue_execution
 
@@ -40,6 +38,7 @@ _SCENARIO_NAMES = (
     REBUILD_SAFETY_SCENARIO_NAME,
 )
 _ARCHIVE_SMOKE_TIER = 0
+_READER_VISUAL_SMOKE_PYTEST_ARGS: tuple[str, ...] = ("-m", "pytest", "-q", "tests/visual")
 
 
 class _ScenarioResult(Protocol):
@@ -251,8 +250,7 @@ def list_scenarios(*, as_json: bool) -> int:
         {
             "name": "reader-visual-smoke",
             "kind": "reader-visual",
-            "command": " ".join((sys.executable, *READER_VISUAL_SMOKE_PYTEST_COMMAND[1:])),
-            "artifact_count": len(reader_visual_artifact_payloads()),
+            "command": " ".join((sys.executable, *_READER_VISUAL_SMOKE_PYTEST_ARGS)),
         },
         storage_correctness_scenario_entry(),
         {
@@ -282,13 +280,26 @@ def list_scenarios(*, as_json: bool) -> int:
 
 def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
     """Run the daemon reader visual/DOM smoke lane."""
-    command = [sys.executable, *READER_VISUAL_SMOKE_PYTEST_COMMAND[1:]]
+    command = [sys.executable, *_READER_VISUAL_SMOKE_PYTEST_ARGS]
+    artifact_dir = report_dir / "reader-visual-artifacts" if report_dir is not None else None
+    env = os.environ.copy()
+    if artifact_dir is not None:
+        if artifact_dir.exists():
+            shutil.rmtree(artifact_dir)
+        artifact_dir.mkdir(parents=True)
+        env["POLYLOGUE_VISUAL_EVIDENCE_DIR"] = str(artifact_dir)
     result = subprocess.run(
         command,
         cwd=_get_root(),
+        env=env,
         text=True,
         capture_output=True,
         check=False,
+    )
+    artifact_inventory = (
+        [json.loads(path.read_text(encoding="utf-8")) for path in sorted(artifact_dir.glob("*.json"))]
+        if artifact_dir is not None
+        else []
     )
     artifact_report = report_dir / "reader-visual-smoke.json" if report_dir is not None else None
     payload: dict[str, object] = {
@@ -297,7 +308,7 @@ def run_reader_visual_smoke(*, report_dir: Path | None, as_json: bool) -> int:
         "exit_code": result.returncode,
         "stdout": result.stdout,
         "stderr": result.stderr,
-        "artifact_inventory": reader_visual_artifact_payloads(),
+        "artifact_inventory": artifact_inventory,
         "artifact_report": str(artifact_report) if artifact_report is not None else None,
     }
     if report_dir is not None and artifact_report is not None:

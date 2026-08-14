@@ -6,16 +6,12 @@ keys that carry file bodies an agent authored or edited (``Write``'s
 ``$.content``, ``Edit``'s ``$.old_string``/``$.new_string``). That boundary
 is now documented in ``docs/search.md`` § "Searchable Content Coverage".
 
-This module pins three things:
+This module proves the user-visible FTS boundary:
 
-1. The live ``search_text`` DDL expression matches what the docs claim is
-   indexed (drift check) -- if a future change adds/removes a
-   ``json_extract`` path from the generated column without updating the
-   docs, this test fails.
-2. A distinctive string that only appears inside a ``Write``/``Edit`` tool
+1. A distinctive string that only appears inside a ``Write``/``Edit`` tool
    body is genuinely NOT reachable through FTS (proves the gap is real, not
    just documented).
-3. The documented raw-SQL workaround (``json_extract`` + ``LIKE`` over
+2. The documented raw-SQL workaround (``json_extract`` + ``LIKE`` over
    ``tool_input``) DOES find it, so the documented escape hatch actually
    works.
 """

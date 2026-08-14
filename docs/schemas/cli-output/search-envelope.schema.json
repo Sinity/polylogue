@@ -1090,7 +1090,7 @@
   "title": "Search Envelope",
   "type": "object",
   "x-polylogue-cli-surfaces": [
-    "polylogue --format json <query>",
+    "polylogue --format json find <query>",
     "GET /api/sessions?query=..."
   ],
   "x-polylogue-source-model": "SearchEnvelope"

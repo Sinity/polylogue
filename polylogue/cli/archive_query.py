@@ -110,6 +110,7 @@ _PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
+_DAEMON_MUTATION_TIMEOUT_S: float | None = None
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 _TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
 
@@ -185,18 +186,14 @@ def execute_delete_by_session_ids(
     resolved set the real delete acts on (the guard, preview, and deleted sets
     must be identical, #1873).
     """
-    config = load_effective_config(env)
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     params: dict[str, object] = {"force": force, "delete_matched": True, "dry_run": dry_run}
-    with archive_read_context(
-        archive_root,
-        operation="cli.delete.resolve",
-        arguments={"session_ids": session_ids, "dry_run": dry_run},
-        projection="delete-preview",
-    ) as archive:
-        _emit_delete(env, archive, tuple(session_ids), params=params)
+    if dry_run:
+        _emit_delete(env, tuple(session_ids), params=params)
+        return
+    # Cardinality resolution already produced an immutable ID tuple. Do not
+    # reopen a read transaction while the daemon executes the write: an old
+    # WAL reader would pin checkpoints for the full batch-delete duration.
+    _emit_delete(env, tuple(session_ids), params=params)
 
 
 def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
@@ -671,7 +668,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         )
                         return
                     if delete_matched:
-                        _emit_delete(env, archive, matched_session_ids, params=params)
+                        _emit_delete(env, matched_session_ids, params=params)
                         return
                     if params.get("open_result"):
                         if not page_hits:
@@ -728,7 +725,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     )
                     return
                 if delete_matched:
-                    _emit_delete(env, archive, (session_id,), params=params)
+                    _emit_delete(env, (session_id,), params=params)
                     return
                 if params.get("open_result"):
                     _open_session(env, session_id, output_format=output_format, print_url=bool(params.get("print_url")))
@@ -799,7 +796,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             if delete_matched:
                 session_ids = tuple(hit.session_id for hit in page_hits)
-                _emit_delete(env, archive, session_ids, params=params)
+                _emit_delete(env, session_ids, params=params)
                 return
             if params.get("open_result"):
                 if not page_hits:
@@ -868,7 +865,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         if delete_matched:
             session_ids = tuple(summary.session_id for summary in page_summaries)
-            _emit_delete(env, archive, session_ids, params=params)
+            _emit_delete(env, session_ids, params=params)
             return
         if params.get("open_result"):
             if not page_summaries:
@@ -1442,6 +1439,51 @@ def _fetch_daemon_payload(
             payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
         return payload
     return None
+
+
+def _submit_daemon_mutation(
+    config: Config,
+    path: str,
+    *,
+    body: dict[str, object],
+) -> dict[str, object] | None:
+    """Submit a confirmed write to the matching daemon and retain its outcome.
+
+    Read fast paths may give up quickly and read from SQLite instead. A delete
+    cannot do that after its request reaches the daemon, because retrying
+    offline would make the confirmed actuator outcome ambiguous.
+    """
+
+    if _daemon_disabled():
+        return None
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    mutation_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+    client = DaemonClient(
+        daemon_socket_path(mutation_root),
+        timeout_s=_DAEMON_MUTATION_TIMEOUT_S,
+        auth_token=resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    if (
+        client.probe(
+            archive_root=str(mutation_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        is None
+    ):
+        return None
+    payload = client.request_mutation_json("POST", path, body)
+    if payload is not None and client.last_elapsed_ms is not None:
+        payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
+    return payload
 
 
 def _fetch_daemon_sessions_payload_with_deadline(
@@ -2128,9 +2170,7 @@ def _emit_user_mutations(
     )
 
 
-def _emit_delete(
-    env: AppEnv, archive: ArchiveStore, session_ids: tuple[str, ...], *, params: dict[str, object]
-) -> None:
+def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str, object]) -> None:
     """Delete sessions through the shared OperationExecutor mutation authority.
 
     Every surface that can permanently delete a session (this CLI route and
@@ -2140,9 +2180,6 @@ def _emit_delete(
     ``ArchiveStore.delete_sessions`` directly, so preview/authorization/
     receipt semantics cannot diverge between adapters.
     """
-    from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
     from polylogue.surfaces.payloads import MutationResultPayload
 
     dry_run = bool(params.get("dry_run"))
@@ -2169,46 +2206,99 @@ def _emit_delete(
             )
         )
         return
+    if not force and env.ui.plain:
+        click.echo(
+            MutationResultPayload(
+                status="aborted",
+                operation="delete",
+                session_count=count,
+                affected_count=0,
+                detail="confirmation_required",
+            ).to_json(exclude_none=True)
+        )
+        return
+    config = load_effective_config(env)
+    from polylogue.daemon_client import DaemonMutationIndeterminateError, DaemonResponseError
+
+    try:
+        daemon_preview = _submit_daemon_mutation(
+            config,
+            "/api/cli/delete/prepare",
+            body={"session_ids": list(session_ids)},
+        )
+    except DaemonMutationIndeterminateError as exc:
+        raise click.ClickException(
+            "delete preview outcome is indeterminate after the daemon accepted the request; "
+            "do not retry offline, inspect daemon audit state before retrying"
+        ) from exc
+    except DaemonResponseError as exc:
+        raise click.ClickException(f"daemon refused delete preview ({exc.status}): {exc.detail}") from exc
+    if daemon_preview is None:
+        raise click.ClickException("daemon is unavailable; it must prepare the delete authorization")
+
+    prepared_session_ids = _prepared_delete_session_ids(daemon_preview)
     if not force:
-        # Machine/non-interactive surfaces must never block on an interactive
-        # confirmation prompt (#1818 P6). The delete verb always emits a JSON
-        # MutationResultPayload, so in plain mode (``--format`` machine output,
-        # a non-TTY pipe, or ``POLYLOGUE_FORCE_PLAIN``) we refuse without
-        # prompting and emit a parseable ``aborted`` envelope that names the
-        # required flag, mirroring the reset command's plain-mode guard rather
-        # than relying on the generic plain-prompt SystemExit.
-        if env.ui.plain:
-            click.echo(
-                MutationResultPayload(
-                    status="aborted",
-                    operation="delete",
-                    session_count=count,
-                    affected_count=0,
-                    detail="confirmation_required",
-                ).to_json(exclude_none=True)
-            )
-            return
-        click.echo(f"About to delete {count} session(s):", err=True)
-        for session_id in session_ids[:5]:
+        click.echo(f"About to delete {len(prepared_session_ids)} session(s):", err=True)
+        for session_id in prepared_session_ids[:5]:
             click.echo(f"  - {session_id}", err=True)
-        if count > 5:
-            click.echo(f"  ... and {count - 5} more", err=True)
+        if len(prepared_session_ids) > 5:
+            click.echo(f"  ... and {len(prepared_session_ids) - 5} more", err=True)
         if not env.ui.confirm("Proceed?", default=False):
+            preview_ref = daemon_preview.get("preview_ref")
+            if not isinstance(preview_ref, str) or not preview_ref:
+                raise click.ClickException("daemon returned an invalid delete preview")
+            try:
+                cancellation = _submit_daemon_mutation(
+                    config,
+                    "/api/cli/delete/cancel",
+                    body={"preview_ref": preview_ref},
+                )
+            except DaemonMutationIndeterminateError as exc:
+                raise click.ClickException(
+                    "delete cancellation outcome is indeterminate after the daemon accepted the request; "
+                    "inspect daemon audit state before retrying"
+                ) from exc
+            except DaemonResponseError as exc:
+                raise click.ClickException(f"daemon refused delete cancellation ({exc.status}): {exc.detail}") from exc
+            if cancellation is None:
+                raise click.ClickException("daemon became unavailable before it cancelled the delete preview")
+            if cancellation.get("status") != "cancelled" or cancellation.get("preview_ref") != preview_ref:
+                raise click.ClickException("daemon returned an invalid delete cancellation acknowledgement")
             click.echo(
                 MutationResultPayload(
                     status="aborted", operation="delete", session_count=count, affected_count=0
                 ).to_json(exclude_none=True)
             )
             return
-    actuator = SessionDeleteActuator()
-    executor = OperationExecutor.for_archive_root(archive.archive_root)
-    prepare_args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal("user:cli", frozenset({"archive.delete_session"}), "cli", "write")
-    preview = executor.prepare_bound_for_archive(binding, prepare_args, principal, archive_root=archive.archive_root)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
-    receipt = executor.execute_bound(binding, preview, authorization, prepare_args)
-    deleted = receipt.affected_count
+    preview_ref = daemon_preview.get("preview_ref")
+    if not isinstance(preview_ref, str) or not preview_ref:
+        raise click.ClickException("daemon returned an invalid delete preview")
+    try:
+        daemon_authorization = _submit_daemon_mutation(
+            config,
+            "/api/cli/delete/authorize",
+            body={"preview_ref": preview_ref},
+        )
+        if daemon_authorization is None:
+            raise click.ClickException("daemon became unavailable before it authorized the confirmed delete")
+        authorization_token = daemon_authorization.get("authorization_token")
+        if not isinstance(authorization_token, str) or not authorization_token:
+            raise click.ClickException("daemon returned an invalid delete authorization")
+        daemon_payload = _submit_daemon_mutation(
+            config,
+            "/api/cli/delete",
+            body={"authorization_token": authorization_token},
+        )
+    except DaemonMutationIndeterminateError as exc:
+        raise click.ClickException(
+            "delete outcome is indeterminate after the daemon accepted the request; "
+            "do not retry offline, inspect the archive or wait for the daemon to report completion"
+        ) from exc
+    except DaemonResponseError as exc:
+        raise click.ClickException(f"daemon refused delete ({exc.status}): {exc.detail}") from exc
+    if daemon_payload is None:
+        raise click.ClickException("daemon became unavailable before it consumed the confirmed delete authorization")
+    deleted = _object_int(daemon_payload.get("affected_count"))
     # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.
     click.echo(
         MutationResultPayload(
@@ -2218,6 +2308,22 @@ def _emit_delete(
             affected_count=deleted,
         ).to_json(exclude_none=True)
     )
+
+
+def _prepared_delete_session_ids(
+    daemon_preview: dict[str, object],
+) -> tuple[str, ...]:
+    """Use the daemon's canonical preview, never a client-side substitution."""
+
+    raw_session_ids = daemon_preview.get("session_ids")
+    if not isinstance(raw_session_ids, list) or any(
+        not isinstance(value, str) or not value for value in raw_session_ids
+    ):
+        raise click.ClickException("daemon returned an invalid delete preview")
+    session_ids = tuple(raw_session_ids)
+    if not session_ids or len(set(session_ids)) != len(session_ids):
+        raise click.ClickException("daemon returned a non-canonical delete preview")
+    return session_ids
 
 
 def _inject_attached_units(

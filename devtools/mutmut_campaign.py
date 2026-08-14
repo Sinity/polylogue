@@ -27,33 +27,24 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 
-from .authored_scenario_catalog import get_authored_scenario_catalog
-from .mutation_catalog import MutationCampaignEntry
-from .verify_mutation_freshness import (
-    MANIFEST as _FRESHNESS_MANIFEST,
-)
+from .mutation_scenario_catalog import MUTATION_CAMPAIGNS, MutationCampaign
 from .verify_mutation_freshness import (
     assess_campaign as _freshness_assess,
-)
-from .verify_mutation_freshness import (
-    load_manifest as _freshness_load_manifest,
 )
 
 ROOT = _get_root()
 CAMPAIGN_ARTIFACT_DIR = Path(".local/mutation-campaigns")
 
 
-def default_artifact_paths(campaign_name: str, created_at: datetime) -> tuple[Path, Path]:
-    """Default JSON/Markdown artifact paths for a campaign run.
+def default_artifact_path(campaign_name: str, created_at: datetime) -> Path:
+    """Return the default JSON artifact path for a campaign run.
 
-    Layout: ``.local/mutation-campaigns/<campaign>/<timestamp>.{json,md}``.
-    Used by ``mutmut-campaign run`` when ``--json-out`` / ``--markdown-out``
-    are not supplied, and consumed by ``verify-mutation-freshness`` and
-    ``mutmut-campaign status`` to locate the per-campaign artifact history.
+    Layout: ``.local/mutation-campaigns/<campaign>/<timestamp>.json``. It is
+    consumed by ``verify-mutation-freshness`` and ``mutmut-campaign status``.
     """
     stamp = created_at.strftime("%Y%m%dT%H%M%SZ")
     base = CAMPAIGN_ARTIFACT_DIR / campaign_name / stamp
-    return base.with_suffix(".json"), base.with_suffix(".md")
+    return base.with_suffix(".json")
 
 
 STATUS_IGNORE_PREFIXES = (f"{CAMPAIGN_ARTIFACT_DIR.as_posix()}/",)
@@ -67,7 +58,7 @@ DEFAULT_IGNORE_PATTERNS = shutil.ignore_patterns(
     "__pycache__",
     ".claude",
 )
-CAMPAIGNS = get_authored_scenario_catalog().mutation_campaign_index()
+CAMPAIGNS = MUTATION_CAMPAIGNS
 
 
 @dataclass(frozen=True)
@@ -278,210 +269,17 @@ def summarize_mutmut_results(
     )
 
 
-def format_markdown(result: CampaignResult) -> str:
-    def render_table(rows: list[tuple[str, int]]) -> str:
-        if not rows:
-            return "| Function | Count |\n| --- | ---: |\n| _none_ | 0 |"
-        body = "\n".join(f"| `{name}` | {count} |" for name, count in rows)
-        return f"| Function | Count |\n| --- | ---: |\n{body}"
-
-    lines = [
-        f"# Mutmut Campaign: `{result.campaign}`",
-        "",
-        f"- Recorded on `{result.created_at}`",
-        f"- Commit: `{result.commit}`",
-        f"- Worktree dirty: `{'yes' if result.worktree_dirty else 'no'}`",
-        f"- Description: {result.description}",
-        f"- Workspace: `{result.workspace}`",
-        f"- Command: `{' '.join(result.command)}`",
-        "",
-        "## Scope",
-        "",
-        f"- Mutated paths: {', '.join(f'`{path}`' for path in result.paths_to_mutate)}",
-        f"- Selected tests: {', '.join(f'`{path}`' for path in result.tests)}",
-    ]
-    if result.path_targets or result.artifact_targets or result.operation_targets or result.tags:
-        lines.extend(["", "## Scenario Metadata", ""])
-        lines.append(f"- Origin: `{result.origin}`")
-        if result.path_targets:
-            lines.append(f"- Path targets: `{', '.join(result.path_targets)}`")
-        if result.artifact_targets:
-            lines.append(f"- Artifact targets: `{', '.join(result.artifact_targets)}`")
-        if result.operation_targets:
-            lines.append(f"- Operation targets: `{', '.join(result.operation_targets)}`")
-        if result.tags:
-            lines.append(f"- Tags: `{', '.join(result.tags)}`")
-    lines.extend(
-        [
-            "",
-            "## Counts",
-            "",
-            "| Status | Count |",
-            "| --- | ---: |",
-            f"| Killed | {result.counts.get('killed', 0)} |",
-            f"| Survived | {result.counts.get('survived', 0)} |",
-            f"| Timeout | {result.counts.get('timeout', 0)} |",
-            f"| Not checked | {result.counts.get('not_checked', 0)} |",
-            f"| Suspicious | {result.counts.get('suspicious', 0)} |",
-            f"| Skipped | {result.counts.get('skipped', 0)} |",
-            "",
-            f"- Runtime: `{result.runtime_seconds:.2f}s`",
-            f"- Exit code: `{result.exit_code}`",
-            "",
-            "## Dominant Survivors",
-            "",
-            render_table(result.dominant_survivors),
-            "",
-            "## Dominant Timeouts",
-            "",
-            render_table(result.dominant_timeouts),
-            "",
-            "## Dominant Not-Checked Clusters",
-            "",
-            render_table(result.dominant_not_checked),
-        ]
-    )
-    if result.survivor_keys:
-        lines.extend(
-            [
-                "",
-                "## Survivor Keys",
-                "",
-            ]
-        )
-        lines.extend(f"- `{key}`" for key in result.survivor_keys[:25])
-        if len(result.survivor_keys) > 25:
-            lines.append(f"- ... {len(result.survivor_keys) - 25} more")
-    if result.timeout_keys:
-        lines.extend(
-            [
-                "",
-                "## Timeout Keys",
-                "",
-            ]
-        )
-        lines.extend(f"- `{key}`" for key in result.timeout_keys[:25])
-        if len(result.timeout_keys) > 25:
-            lines.append(f"- ... {len(result.timeout_keys) - 25} more")
-    if result.not_checked_keys:
-        lines.extend(
-            [
-                "",
-                "## Not-Checked Keys",
-                "",
-            ]
-        )
-        lines.extend(f"- `{key}`" for key in result.not_checked_keys[:25])
-        if len(result.not_checked_keys) > 25:
-            lines.append(f"- ... {len(result.not_checked_keys) - 25} more")
-    if result.status_summary:
-        lines.extend(["", "## Source Worktree Status", ""])
-        lines.extend(f"- `{line}`" for line in result.status_summary[:50])
-        if len(result.status_summary) > 50:
-            lines.append(f"- ... {len(result.status_summary) - 50} more")
-    if result.notes:
-        lines.extend(["", "## Notes", ""])
-        lines.extend(f"- {note}" for note in result.notes)
-    lines.append("")
-    return "\n".join(lines)
-
-
-def load_results(campaign_dir: Path) -> list[CampaignResult]:
-    results: list[CampaignResult] = []
-    for path in sorted(campaign_dir.glob("*.json")):
-        payload = json.loads(path.read_text())
-        result = CampaignResult(
-            campaign=payload["campaign"],
-            description=payload["description"],
-            commit=payload["commit"],
-            worktree_dirty=bool(payload.get("worktree_dirty", False)),
-            status_summary=list(payload.get("status_summary", [])),
-            created_at=payload["created_at"],
-            workspace=payload["workspace"],
-            command=list(payload["command"]),
-            paths_to_mutate=list(payload["paths_to_mutate"]),
-            tests=list(payload["tests"]),
-            counts=dict(payload["counts"]),
-            dominant_survivors=[tuple(item) for item in payload["dominant_survivors"]],
-            dominant_timeouts=[tuple(item) for item in payload["dominant_timeouts"]],
-            dominant_not_checked=[tuple(item) for item in payload["dominant_not_checked"]],
-            survivor_keys=list(payload.get("survivor_keys", [])),
-            timeout_keys=list(payload.get("timeout_keys", [])),
-            not_checked_keys=list(payload.get("not_checked_keys", [])),
-            runtime_seconds=float(payload["runtime_seconds"]),
-            exit_code=int(payload["exit_code"]),
-            notes=list(payload.get("notes", [])),
-            origin=str(payload.get("origin", "authored")),
-            path_targets=list(payload.get("path_targets", [])),
-            artifact_targets=list(payload.get("artifact_targets", [])),
-            operation_targets=list(payload.get("operation_targets", [])),
-            tags=list(payload.get("tags", [])),
-        )
-        results.append(result)
-    return results
-
-
-def latest_results_by_campaign(results: list[CampaignResult]) -> list[CampaignResult]:
-    latest: dict[str, CampaignResult] = {}
-    for result in results:
-        existing = latest.get(result.campaign)
-        if existing is None or result.created_at > existing.created_at:
-            latest[result.campaign] = result
-    return sorted(latest.values(), key=lambda result: result.campaign)
-
-
-def format_index(results: list[CampaignResult]) -> str:
-    latest = latest_results_by_campaign(results)
-    lines = [
-        "# Mutation Campaign Index",
-        "",
-        "Latest recorded artifact per campaign.",
-        "",
-        "| Campaign | Recorded | Commit | Killed | Survived | Timeout | Not checked | Dirty | Runtime |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: |",
-    ]
-    for result in latest:
-        lines.append(
-            "| "
-            f"`{result.campaign}` | "
-            f"`{result.created_at}` | "
-            f"`{result.commit[:12]}` | "
-            f"{result.counts.get('killed', 0)} | "
-            f"{result.counts.get('survived', 0)} | "
-            f"{result.counts.get('timeout', 0)} | "
-            f"{result.counts.get('not_checked', 0)} | "
-            f"{'yes' if result.worktree_dirty else 'no'} | "
-            f"{result.runtime_seconds:.2f}s |"
-        )
-    lines.extend(
-        [
-            "",
-            "## Notes",
-            "",
-            "- Artifacts live in this directory as per-campaign JSON and Markdown files.",
-            "- `Dirty` reflects non-artifact worktree changes in the source repository at campaign start.",
-            "- Use `devtools bench mutation list` to inspect available campaign scopes.",
-        ]
-    )
-    lines.append("")
-    return "\n".join(lines)
-
-
-def write_artifacts(result: CampaignResult, *, json_out: Path | None, markdown_out: Path | None) -> None:
+def write_json_artifact(result: CampaignResult, *, json_out: Path | None) -> None:
     if json_out is not None:
         json_out.parent.mkdir(parents=True, exist_ok=True)
         json_out.write_text(json.dumps(asdict(result), indent=2) + "\n")
-    if markdown_out is not None:
-        markdown_out.parent.mkdir(parents=True, exist_ok=True)
-        markdown_out.write_text(format_markdown(result))
 
 
 def run_campaign(
-    campaign: MutationCampaignEntry,
+    campaign: MutationCampaign,
     *,
     repo_root: Path,
     json_out: Path | None,
-    markdown_out: Path | None,
     keep_workspace: bool,
 ) -> CampaignResult:
     commit = git_commit_sha(repo_root)
@@ -558,7 +356,7 @@ def run_campaign(
             operation_targets=list(campaign.operation_targets),
             tags=list(campaign.tags or ("mutation",)),
         )
-        write_artifacts(result, json_out=json_out, markdown_out=markdown_out)
+        write_json_artifact(result, json_out=json_out)
         return result
     finally:
         if temp_dir_obj is not None:
@@ -575,35 +373,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_parser = subparsers.add_parser("run", help="Run one isolated mutation campaign")
     run_parser.add_argument("campaign", choices=sorted(CAMPAIGNS))
     run_parser.add_argument("--json-out", type=Path)
-    run_parser.add_argument("--markdown-out", type=Path)
     run_parser.add_argument("--keep-workspace", action="store_true")
     run_parser.set_defaults(command_fn=cmd_run)
 
     status_parser = subparsers.add_parser(
         "status",
-        help="Show per-campaign last-run, kill rate, and freshness against docs/plans/campaign-coverage.yaml.",
+        help="Show per-campaign last-run, kill rate, and freshness from the executable catalog.",
     )
     status_parser.add_argument("--json", action="store_true")
     status_parser.add_argument(
         "--default-freshness-days",
         type=int,
         default=60,
-        help="Freshness budget for manifest entries without freshness_days (default 60).",
+        help="Freshness budget for campaign artifacts (default 60).",
     )
     status_parser.set_defaults(command_fn=cmd_status)
-
-    index_parser = subparsers.add_parser("index", help="Build an index over recorded campaign artifacts")
-    index_parser.add_argument(
-        "--campaign-dir",
-        type=Path,
-        default=ROOT / CAMPAIGN_ARTIFACT_DIR,
-    )
-    index_parser.add_argument(
-        "--out",
-        type=Path,
-        default=ROOT / CAMPAIGN_ARTIFACT_DIR / "README.md",
-    )
-    index_parser.set_defaults(command_fn=cmd_index)
 
     return parser.parse_args(argv)
 
@@ -621,49 +405,32 @@ def cmd_list(_args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     campaign = CAMPAIGNS[args.campaign]
-    json_out: Path | None
-    markdown_out: Path | None
-    if args.json_out is None and args.markdown_out is None:
+    if args.json_out is None:
         # Default per-campaign artifact layout so freshness lint and status
-        # readouts always have something to discover. Operators can still
-        # override with explicit --json-out / --markdown-out.
-        default_json, default_md = default_artifact_paths(campaign.name, datetime.now(UTC))
-        json_out = ROOT / default_json
-        markdown_out = ROOT / default_md
+        # readouts always have something to discover.
+        json_out = ROOT / default_artifact_path(campaign.name, datetime.now(UTC))
     else:
-        json_out = (
-            None if args.json_out is None else (args.json_out if args.json_out.is_absolute() else ROOT / args.json_out)
-        )
-        markdown_out = (
-            None
-            if args.markdown_out is None
-            else (args.markdown_out if args.markdown_out.is_absolute() else ROOT / args.markdown_out)
-        )
+        json_out = args.json_out if args.json_out.is_absolute() else ROOT / args.json_out
     result = run_campaign(
         campaign,
         repo_root=ROOT,
         json_out=json_out,
-        markdown_out=markdown_out,
         keep_workspace=args.keep_workspace,
     )
-    print(format_markdown(result))
+    print(json.dumps(asdict(result), indent=2))
     return result.exit_code
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    manifest = _freshness_load_manifest(_FRESHNESS_MANIFEST)
-    raw_entries = manifest.get("mutation_campaigns") or []
-    entries: list[object] = list(raw_entries) if isinstance(raw_entries, list) else []
     now = datetime.now(UTC)
     assessments = [
         _freshness_assess(
-            entry,
+            campaign.name,
             repo_root=ROOT,
             now=now,
-            default_freshness_days=args.default_freshness_days,
+            freshness_days=args.default_freshness_days,
         )
-        for entry in entries
-        if isinstance(entry, dict) and "name" in entry
+        for campaign in CAMPAIGNS.values()
     ]
     if args.json:
         json.dump(
@@ -681,17 +448,6 @@ def cmd_status(args: argparse.Namespace) -> int:
         kill = "n/a" if a.kill_rate is None else f"{a.kill_rate * 100:.1f}%"
         artifact = a.newest_artifact or "-"
         print(f"{a.name:<24} {a.state:<8} {age:>10} {budget:>8} {kill:>8} {artifact}")
-    return 0
-
-
-def cmd_index(args: argparse.Namespace) -> int:
-    campaign_dir = args.campaign_dir if args.campaign_dir.is_absolute() else ROOT / args.campaign_dir
-    out = args.out if args.out.is_absolute() else ROOT / args.out
-    results = load_results(campaign_dir)
-    rendered = format_index(results)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(rendered)
-    print(rendered)
     return 0
 
 

@@ -210,32 +210,15 @@ def _demo_summary(report: dict[str, Any]) -> dict[str, Any]:
         "index_db": report["index_db"],
         "snapshot_identity": report["snapshot_identity"],
         "index_schema_version": report["index_schema_version"],
-        "claim": (
-            "Polylogue can compare agent affordance usage across normalized action evidence "
-            "without summing unlike tool-name spellings or provider-specific call shapes."
-        ),
-        "non_claim": (
-            "This is not a human-quality utility evaluation of any particular tool family. "
-            "It measures captured usage evidence, failure signals, and coverage gaps; "
-            "usefulness still requires qualitative review of session context and outcomes."
-        ),
-        "proof_report": {
-            "report_version": report["report_version"],
-            "action_scope": report["action_scope"],
-            "recent_window_days": report["recent_window_days"],
-            "patterns": report["patterns"],
-            "detail_patterns": report["detail_patterns"],
-            "top_families": summary["top_families"],
-            "recent_top_families": summary["recent_top_families"],
-            "surface_inventory_summary": surface_summary,
-        },
-        "caveats": [
-            "Counts describe captured action evidence, not independent proof of user benefit.",
-            "Failure rates are provider-reported tool-result signals where available; missing outcome structure is not success.",
-            "Recent windows are adoption-sensitive and can legitimately differ from all-time counts.",
-            "Zero captured agent use is not enough to remove operator-only surfaces; those rows carry an operator-only caveat.",
-        ],
-        "source_files": [
+        "report_version": report["report_version"],
+        "action_scope": report["action_scope"],
+        "recent_window_days": report["recent_window_days"],
+        "patterns": report["patterns"],
+        "detail_patterns": report["detail_patterns"],
+        "top_families": summary["top_families"],
+        "recent_top_families": summary["recent_top_families"],
+        "surface_inventory_summary": surface_summary,
+        "files": [
             "affordance-usage.report.json",
             "family-counts.csv",
             "evidence-kind-counts.csv",

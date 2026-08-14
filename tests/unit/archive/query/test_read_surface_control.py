@@ -6,22 +6,7 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[4]
-READ_SURFACES = (
-    "polylogue/api/archive.py",
-    "polylogue/api/insights.py",
-    "polylogue/annotations/join.py",
-    "polylogue/archive/query/archive_execution.py",
-    "polylogue/archive/query/search_hits.py",
-    "polylogue/cli/archive_query.py",
-    "polylogue/cli/commands/diagnostics.py",
-    "polylogue/cli/commands/maintenance/_archive_read.py",
-    "polylogue/cli/read_views/standard.py",
-    "polylogue/cli/shell_completion_values.py",
-    "polylogue/daemon/http.py",
-    "polylogue/demo/verify.py",
-    "polylogue/mcp/archive_support.py",
-    "polylogue/mcp/server_prompts.py",
-)
+CONTROLLED_READER = "polylogue/archive/query/execution_control.py"
 
 
 def _direct_archive_open_lines(path: Path) -> list[tuple[int, bool | None]]:
@@ -30,9 +15,9 @@ def _direct_archive_open_lines(path: Path) -> list[tuple[int, bool | None]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
-        if node.func.attr != "open_existing" or not isinstance(node.func.value, ast.Attribute):
+        if node.func.attr != "open_existing" or not isinstance(node.func.value, ast.Name):
             continue
-        if node.func.value.attr != "ArchiveStore":
+        if node.func.value.id != "ArchiveStore":
             continue
         read_only: bool | None = None
         for keyword in node.keywords:
@@ -42,16 +27,21 @@ def _direct_archive_open_lines(path: Path) -> list[tuple[int, bool | None]]:
     return lines
 
 
-def test_read_surface_direct_opens_are_absent_or_explicit_writer_paths() -> None:
-    """A read adapter must not silently bypass admission/deadline/cancellation."""
+def test_all_direct_archive_opens_use_the_controlled_reader_or_explicit_write_mode() -> None:
+    """Every production module participates; new adapters cannot evade the boundary."""
 
     violations: list[str] = []
-    for relative_path in READ_SURFACES:
-        path = REPO_ROOT / relative_path
+    controlled_reader_opens = 0
+    for path in sorted((REPO_ROOT / "polylogue").rglob("*.py")):
+        relative_path = path.relative_to(REPO_ROOT).as_posix()
         for line, read_only in _direct_archive_open_lines(path):
+            if relative_path == CONTROLLED_READER:
+                controlled_reader_opens += 1
+                continue
             if read_only is not False:
                 violations.append(f"{relative_path}:{line} read_only={read_only!r}")
 
+    assert controlled_reader_opens > 0, "the controlled reader must own the read-only ArchiveStore open"
     assert not violations, "direct archive opens must be controlled reads or explicit writer paths: " + ", ".join(
         violations
     )

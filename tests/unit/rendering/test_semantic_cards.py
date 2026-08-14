@@ -320,14 +320,7 @@ def test_fixture_checker_rejects_corrupted_frozen_card(
 
 
 def test_pure_renderer_modules_do_not_import_storage_api_or_daemon() -> None:
-    modules = (
-        Path("polylogue/core/tool_identity.py"),
-        Path("polylogue/rendering/block_models.py"),
-        Path("polylogue/rendering/semantic_card_models.py"),
-        Path("polylogue/rendering/semantic_card_registry.py"),
-        Path("polylogue/rendering/semantic_cards.py"),
-        Path("polylogue/rendering/semantic_markdown.py"),
-    )
+    modules = (Path("polylogue/core/tool_identity.py"), *sorted(Path("polylogue/rendering").glob("*.py")))
     forbidden = ("polylogue.storage", "polylogue.api", "polylogue.daemon", "polylogue.insights")
     violations: list[str] = []
     for path in modules:

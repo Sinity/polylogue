@@ -6,7 +6,11 @@ import argparse
 import os
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from markdown_it import MarkdownIt
 
 from devtools.command_catalog import control_plane_command
 from devtools.docs_surface import (
@@ -27,7 +31,6 @@ README_DOC_DESCRIPTIONS = {
     "Getting Started": "Install Polylogue, create an archive, and run a first query.",
     "Installation": "Package, source-checkout, Nix, and managed deployment options.",
     "Demos and Proofs": "Run the private-data-free tour and see what each demo establishes.",
-    "Proof Artifacts": "Links between public claims and reproducible checks.",
     "Architecture": "Storage, data flow, and component responsibilities.",
     "Code Navigation": "Find the owning package, runtime path, and verification for a code change.",
     "Search & Query": "Search syntax, filters, action queries, ranking, and output formats.",
@@ -68,10 +71,45 @@ def _select_entries(entries: tuple[DocsEntry, ...], titles: tuple[str, ...]) -> 
     return tuple(by_title[title] for title in titles)
 
 
+def _markdown_links(path: Path) -> Iterable[str]:
+    """Yield local Markdown link destinations from one documentation page."""
+
+    parser = MarkdownIt("commonmark", {"html": False, "linkify": False})
+    for token in parser.parse(path.read_text(encoding="utf-8")):
+        for candidate in (token, *(token.children or ())):
+            if candidate.type != "link_open":
+                continue
+            href = candidate.attrGet("href")
+            if isinstance(href, str):
+                yield href
+
+
+def _reachable_documentation_paths(docs_entries: tuple[DocsEntry, ...], *, docs_root: Path) -> set[str]:
+    """Return registered docs and local Markdown pages reachable from them."""
+
+    resolved_docs_root = docs_root.resolve()
+    repo_root = resolved_docs_root.parent
+    queued = [repo_root / entry.path for entry in docs_entries if (repo_root / entry.path).is_file()]
+    reached: set[Path] = set()
+    while queued:
+        page = queued.pop().resolve()
+        if page in reached:
+            continue
+        reached.add(page)
+        for href in _markdown_links(page):
+            parts = urlsplit(href)
+            if parts.scheme or parts.netloc or not unquote(parts.path).lower().endswith(".md"):
+                continue
+            target = (page.parent / unquote(parts.path)).resolve()
+            if target.is_relative_to(resolved_docs_root) and target.is_file() and target not in reached:
+                queued.append(target)
+    return {path.relative_to(repo_root).as_posix() for path in reached}
+
+
 def undocumented_paths(docs_entries: tuple[DocsEntry, ...], *, docs_root: Path) -> set[str]:
-    """Return Markdown files that have no deliberate place in the docs map."""
+    """Return Markdown files unreachable from the deliberate docs map."""
     expected = {f"docs/{path.relative_to(docs_root).as_posix()}" for path in docs_root.rglob("*.md")}
-    documented = {entry.path for entry in docs_entries}
+    documented = _reachable_documentation_paths(docs_entries, docs_root=docs_root)
     return expected - documented - GENERATED_DOC_PATHS
 
 

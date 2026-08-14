@@ -14,7 +14,7 @@ from polylogue.product.continuity_scenarios import (
     ContinuityFactProjection,
     continuity_scenario,
 )
-from polylogue.product.workflows import QUERY_ACTION_WORKFLOW_BY_ID
+from polylogue.product.workflows import EXECUTABLE_WORKFLOW_GOLDEN_PATHS
 from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
 from tests.infra.archive_scenarios import ScenarioContentBlock
 from tests.infra.continuity import load_continuity_catalog
@@ -49,10 +49,11 @@ def test_continuity_catalog_extends_existing_scenario_source_seam() -> None:
 
 
 def test_declarations_use_only_allowed_public_tools_and_existing_workflows() -> None:
+    executable_workflow_ids = {entry.workflow_id for entry in EXECUTABLE_WORKFLOW_GOLDEN_PATHS}
     for scenario in CONTINUITY_SCENARIOS:
         route_tools = {step.tool for step in scenario.route_steps}
         assert route_tools == set(scenario.allowed_query_surfaces)
-        assert set(scenario.workflow_ids) <= set(QUERY_ACTION_WORKFLOW_BY_ID)
+        assert set(scenario.workflow_ids) <= executable_workflow_ids
         assert len(scenario.required_facts) == len(set(scenario.required_facts))
         assert scenario.canonical_plan_families
         assert scenario.route_plan_signature in scenario.equivalent_plan_signatures

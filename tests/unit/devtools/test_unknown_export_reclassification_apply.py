@@ -5,15 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from devtools.command_catalog import COMMANDS
 from devtools.unknown_export_reclassification_apply import main
 from polylogue.maintenance.unknown_export_reclassification_apply import UnknownExportReclassificationApplyReport
-
-
-def test_unknown_export_apply_is_catalogued_and_exposes_receipt_contract() -> None:
-    spec = COMMANDS["workspace unknown-export-reclassification-apply"]
-    assert spec.module == "devtools.unknown_export_reclassification_apply"
-    assert callable(spec.resolve_main())
 
 
 def test_unknown_export_apply_json_contract(

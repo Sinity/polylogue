@@ -1,4 +1,4 @@
-"""Structural check that every committed Atheris fuzz target stays importable.
+"""Behavior checks that every committed Atheris fuzz target stays executable.
 
 This test does **not** invoke libFuzzer or run the targets. It only confirms
 that each module under ``tests/fuzz/`` exposes the documented target
@@ -8,8 +8,8 @@ functions and a ``main()`` entrypoint so that:
   rather than being silently dropped from the campaign surface
 * every documented fuzz module remains a runnable script
   (``python tests/fuzz/fuzz_<name>.py``)
-* the ``main()`` entrypoint references ``atheris.Setup`` and ``atheris.Fuzz``
-  so the libFuzzer wiring cannot drift unnoticed
+* the ``main()`` entrypoint actually invokes Atheris with the module's declared
+  target, so a green test proves executable wiring rather than source spelling
 
 See ``tests/fuzz/README.md`` for invocation and seed-corpus policy.
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +47,13 @@ _FUZZ_MODULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_FUZZ_ENTRY_TARGETS = {
+    "tests.fuzz.fuzz_fts5_escape": "fuzz_fts5_escape",
+    "tests.fuzz.fuzz_json_parsers": "fuzz_all_parsers",
+    "tests.fuzz.fuzz_path_sanitizer": "fuzz_path_sanitizer",
+    "tests.fuzz.fuzz_timestamp": "fuzz_all_timestamps",
+}
+
 
 @pytest.mark.parametrize("module_name,targets", list(_FUZZ_MODULES.items()))
 def test_fuzz_module_exposes_targets(module_name: str, targets: tuple[str, ...]) -> None:
@@ -62,25 +69,34 @@ def test_fuzz_module_exposes_targets(module_name: str, targets: tuple[str, ...])
 
 
 @pytest.mark.parametrize("module_name", list(_FUZZ_MODULES.keys()))
-def test_fuzz_module_has_libfuzzer_entrypoint(module_name: str) -> None:
+def test_fuzz_module_runs_libfuzzer_entrypoint(module_name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     module = importlib.import_module(module_name)
     assert callable(getattr(module, "main", None)), (
         f"{module_name} is missing the libFuzzer main() entrypoint documented in tests/fuzz/README.md"
     )
 
-    source = Path(module.__file__ or "").read_text(encoding="utf-8") if module.__file__ else ""
-    assert "atheris.Setup" in source, (
-        f"{module_name} does not call atheris.Setup; libFuzzer wiring drifted from README contract"
-    )
-    assert "atheris.Fuzz" in source, (
-        f"{module_name} does not call atheris.Fuzz; libFuzzer wiring drifted from README contract"
-    )
+    calls: list[tuple[str, tuple[list[str], object] | None]] = []
 
+    def setup(args: list[str], target: object) -> None:
+        calls.append(("setup", (args, target)))
 
-def test_fuzz_readme_lists_every_module() -> None:
-    readme = Path("tests/fuzz/README.md").read_text(encoding="utf-8")
-    for module_name, targets in _FUZZ_MODULES.items():
-        short = module_name.rsplit(".", 1)[-1]
-        assert short in readme, f"tests/fuzz/README.md missing entry for {short}"
-        for target in targets:
-            assert target in readme, f"tests/fuzz/README.md missing target {target}"
+    def fuzz() -> None:
+        calls.append(("fuzz", None))
+
+    monkeypatch.setattr(module, "HAS_ATHERIS", True)
+    monkeypatch.setattr(
+        module,
+        "atheris",
+        SimpleNamespace(Setup=setup, Fuzz=fuzz),
+        raising=False,
+    )
+    monkeypatch.setenv("FUZZ_ITERATIONS", "7")
+
+    module.main()
+
+    assert [name for name, _payload in calls] == ["setup", "fuzz"]
+    setup_payload = calls[0][1]
+    assert setup_payload is not None
+    setup_args, setup_target = setup_payload
+    assert "-runs=7" in setup_args
+    assert setup_target is getattr(module, _FUZZ_ENTRY_TARGETS[module_name])

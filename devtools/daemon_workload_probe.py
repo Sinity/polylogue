@@ -21,7 +21,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from devtools.preflight_ledger import build_preflight_ledger
 from polylogue.config import Config
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -33,7 +32,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 20  # v20 adds the opt-in read-only preflight ledger.
+REPORT_VERSION = 19
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -2356,7 +2355,6 @@ def probe(
     exact_derived_counts: bool = False,
     exact_table_counts: bool = False,
     blob_reference_debt: bool = False,
-    preflight: bool = False,
 ) -> dict[str, Any]:
     ops_db = db.with_name("ops.db")
     index_db = db.with_name("index.db")
@@ -2420,11 +2418,6 @@ def probe(
             "convergence_debt": convergence_debt,
             "cursor_lag_baselines": _cursor_lag_baselines(conn, ops_db=ops_db),
             "query_plans": _query_plans(conn, db=db),
-            "preflight_ledger": (
-                build_preflight_ledger(db.parent, limit=limit)
-                if preflight
-                else {"requested": False, "read_only": True, "state": "not_requested", "mutation_operations": []}
-            ),
         }
     finally:
         conn.close()
@@ -2989,11 +2982,6 @@ def _parser() -> argparse.ArgumentParser:
         help="Count missing referenced blob files exactly (can stat many blob paths on large archives)",
     )
     parser.add_argument(
-        "--preflight",
-        action="store_true",
-        help="Add the strict read-only deployed-status preflight ledger (exact source/FTS/frontier reads)",
-    )
-    parser.add_argument(
         "--compare",
         nargs=2,
         metavar=("BEFORE", "AFTER"),
@@ -3028,7 +3016,6 @@ def main(argv: list[str] | None = None) -> int:
         exact_derived_counts=args.exact_derived_counts,
         exact_table_counts=args.exact_table_counts,
         blob_reference_debt=args.blob_reference_debt,
-        preflight=args.preflight,
     )
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -3039,32 +3026,6 @@ def main(argv: list[str] | None = None) -> int:
     if not payload.get("ok"):
         print(f"  error: {payload.get('error')}")
         return 1
-    preflight = payload.get("preflight_ledger") or {}
-    if preflight.get("requested") is not False:
-        print(
-            "  preflight: "
-            f"{preflight.get('state')} "
-            f"(blocking={len(preflight.get('blocking_checks') or [])}, "
-            f"warnings={len(preflight.get('warning_checks') or [])})"
-        )
-        source = (preflight.get("checks") or {}).get("source") or {}
-        totals = source.get("totals") or {}
-        if totals:
-            print(
-                "    source raw: "
-                f"{totals.get('raw_count', 0)} total, "
-                f"{totals.get('quarantined_count', 0)} quarantined, "
-                f"{totals.get('missing_census_count', 0)} missing census"
-            )
-            for item in source.get("by_origin") or []:
-                quarantine = item.get("quarantine") or {}
-                census = item.get("census_coverage") or {}
-                print(
-                    f"      {item.get('origin')}: quarantine={quarantine.get('count', 0)} "
-                    f"({(quarantine.get('size') or {}).get('display', '0.0GiB')}), "
-                    f"census={census.get('missing_count', 0)} missing "
-                    f"({(census.get('missing_size') or {}).get('display', '0.0GiB')})"
-                )
     counts = payload["attempt_counts"]
     print(f"  attempts: {counts['total']} total, {counts['running']} running, {counts['failed']} failed")
     print(f"  stale cursor writes: {counts.get('stale_cursor_writes', 0)}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -9,7 +10,6 @@ from typing import cast
 import pytest
 
 from devtools import raw_authority_restart_proof as proof
-from devtools.command_catalog import COMMANDS
 from polylogue.storage import repair
 from polylogue.storage.raw_authority import RawReplayPlanStatus
 
@@ -56,6 +56,11 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
         [crash["validated_executed_receipt_count"] for crash in cast(list[dict[str, object]], case["crashes"])]
         for case in cases
     ] == [[1], [2], [1, 1]]
+    assert any(
+        apply_pass["success"] is False
+        for case in cases
+        for apply_pass in cast(list[dict[str, object]], case["apply_passes"])
+    )
 
 
 def test_raw_authority_restart_proof_rejects_broken_ledger_conservation(tmp_path: Path) -> None:
@@ -144,6 +149,28 @@ def test_raw_authority_restart_proof_rejects_postcondition_mutation_after_crash(
         ).fetchone() == (RawReplayPlanStatus.REJECTED_STALE.value,)
 
 
+def test_raw_authority_restart_proof_requires_every_expected_non_success_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One retained expected outcome cannot hide another missing outcome."""
+
+    topology = proof._prepare_case(tmp_path / "missing-expected-outcome")
+    real_repair = repair.repair_raw_materialization
+    deferred_plan_id = topology.plan_ids_by_role["membership-deferred"]
+
+    def omit_deferred_outcome(*args: object, **kwargs: object) -> repair.RepairResult:
+        result = real_repair(*args, **kwargs)  # type: ignore[arg-type]
+        return replace(
+            result,
+            plan_outcomes=tuple(outcome for outcome in result.plan_outcomes if outcome.plan_id != deferred_plan_id),
+        )
+
+    monkeypatch.setattr(repair, "repair_raw_materialization", omit_deferred_outcome)
+
+    with pytest.raises(proof.RawAuthorityRestartProofError, match="unexplained failure"):
+        proof._resume_and_drain(topology)
+
+
 def test_raw_authority_restart_proof_cli_and_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -158,9 +185,3 @@ def test_raw_authority_restart_proof_cli_and_catalog(monkeypatch: pytest.MonkeyP
     assert proof.main(["--workdir", str(tmp_path), "--keep"], stdout=stdout) == 0
     assert captured == {"workdir": tmp_path, "keep": True}
     assert stdout.getvalue() == "raw-authority-restart-proof:test\n"
-    command = COMMANDS["workspace raw-authority-restart-proof"]
-    assert command.module == "devtools.raw_authority_restart_proof"
-    assert command.examples == (
-        "devtools workspace raw-authority-restart-proof --json",
-        "devtools workspace raw-authority-restart-proof --workdir .cache/raw-restart-proof --keep --json",
-    )

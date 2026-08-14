@@ -27,7 +27,12 @@ The human transcript is deliberately evidence-first rather than audit-first:
 5. read a fork as one composed chronicle while preserving parent refs;
 6. only then zoom out to archive facets.
 
-The full fixture audit remains machine-readable in `report.json`, so the public story stays compact without weakening verification. The current fixture world covers every wired origin (ChatGPT, Claude.ai, Claude Code, Codex, AI Studio/Gemini, Gemini CLI, Antigravity, and Hermes), structured tool outcomes, attachment bytes, browser-capture coalescing, lineage, a subagent, a compaction boundary, context snapshots, user overlays, and deterministic synthetic embeddings. See the [construct audit](plans/demo-corpus-construct-audit.md) and [proof map](proof-artifacts.md).
+The current fixture world covers every wired origin (ChatGPT, Claude.ai,
+Claude Code, Codex, AI Studio/Gemini, Gemini CLI, Antigravity, and Hermes),
+structured tool outcomes, attachment bytes, browser-capture coalescing,
+lineage, a subagent, a compaction boundary, context snapshots, user overlays,
+and deterministic synthetic embeddings. Run `polylogue demo verify` to measure
+the current fixture directly.
 
 ## Current public proofs
 
@@ -55,13 +60,6 @@ The full fixture audit remains machine-readable in `report.json`, so the public 
 
 **Does not prove:** that every possible source outage is currently detected.
 
-## Field finding: claim versus structural failure
-
-<!-- public-claim:finding.silent-proceed-lower-bound -->
-The historical packet generated on 2026-07-04 sampled 5,000 structured failures from a frame of 42,033. It classified 1,205 cases as silent proceed on the next assistant turn, a 24.1% lower bound, while 3,375 cases remained ambiguous. This is a field observation from one archive and one method—not a population estimate or an automatically current claim.
-
-Read the full [finding, method, calibration, and caveats](findings/claim-vs-evidence.md), then check the generated [findings-page claim status](generated/public-claims/findings-page.md) before reusing the number.
-
 ## Flagship demonstrations under construction
 
 These are roadmap items, not present capabilities unless their packets are linked above.
@@ -84,38 +82,20 @@ A view of exactly which evidence and reviewed assertions an agent received, what
 
 A preregistered paired comparison between strong raw-reference access and a generated resume packet. A workflow demonstration is insufficient; any benefit claim requires fixed sampling, equal budgets, preserved outputs, and independent scoring.
 
-## Demo Packet v2 contract
+## Demo evidence
 
-The Demo Finding Packet contains:
-
-- an executable prompt;
-- a provenance stanza;
-- a fixed-section report;
-- evidence and query rows;
-- checks, unsupported claims, and coverage notes;
-- the raw run transcript.
-
-The versioned machine contract is
-[`schemas/demo-packet-v2.schema.json`](schemas/demo-packet-v2.schema.json). It
-also requires exactly one primary construct, a receipt-backed claim declared
-before execution, an independent oracle, a comparative baseline, negative and
-missing-evidence controls, an explicit falsifier, bounded non-claims, and local
-SHA-256-bound receipt artifacts. `devtools lab policy demo-packet-registry`
-validates every registered packet and rejects unregistered v2 packets.
-
-The production gate resolves every nested receipt citation through the
-top-level receipt table, confines each artifact path to its packet, verifies
-the artifact bytes against the declared SHA-256 digest, and confirms that the
-ref occurs in those same bytes. Reports use `## Claim` through `## Reproduce`
-exactly once and in the canonical order. The gate also rejects contradictory
-falsifier state and duplicate control IDs or measurement names. See the
-[worked contract example](examples/demo-packet-v2/README.md).
+Substantive demo directories retain their prompt, report, raw command output,
+and machine-readable observations for human review. Those artifacts are
+examples, not release authority: a committed hash proves only which bytes were
+reviewed, not that a self-described oracle was independent or that prose claims
+are true. Product and release claims must be established by the executable
+route, behavior tests, and current runtime evidence that actually support them.
 
 A deterministic public packet proves a product contract on the approved seed
 1843 fixture world. It does not establish field prevalence, production scale,
 or model behavior in the wild. Private-archive benchmarks remain a separate
 local-only lane with their own sampling and privacy obligations.
 
-## Why the anti-demo belongs beside the successes
+## Negative evidence
 
-Polylogue’s category claim is not merely “it can answer difficult questions.” It is also “it can say when the archive does not support an answer.” A public portfolio that publishes only successful reconstructions would hide the project’s most important epistemic behavior.
+Polylogue must say when the archive does not support an answer. Demonstrations and runtime surfaces should expose unsupported reconstruction rather than fabricate a successful result.

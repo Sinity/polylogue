@@ -25,25 +25,18 @@ into something that fails closed instead of silently not happening:
     never actually tested (review-caught gap: recording from an unrelated
     checkout, e.g. master or a stale worktree, previously produced a receipt
     that ``check`` would accept).
-  - ``check``: polls PR review comments across a real grace window (default
-    3 rounds x 20s, covering the 30-60s late-arrival window from incident 1)
+  - ``check``: polls GitHub's structured review-thread state across a real
+    grace window (default 3 rounds x 20s, covering the 30-60s late-arrival
+    window from incident 1)
     before deciding. BLOCKs unless a receipt exists for the PR's *current*
     head sha (not a stale one from an earlier push), was recorded within a
-    freshness window, had exit code 0, and its command actually looks like it
-    ran tests (a bare ``--quick`` profile is flagged, not silently accepted --
-    review-caught gap: the documented example used exactly the profile that
-    would have missed the PR #3517 regression). No review comment's
-    ``created_at`` may be newer than the head commit's ``committedDate``
-    unless it has been explicitly acknowledged via ``ack`` for this exact
-    head sha (review-caught gap: without ``ack``, a stale-forever comparison
-    made even a reviewed false positive permanently unmergeable without an
-    empty commit).
-
-This does not replace judgment about *what* a late comment means -- ``ack``
-still requires a human/agent to have actually read it and decided it's not
-actionable. It makes the presence of an unverified late signal impossible to
-merge past silently, and impossible to permanently paper over without an
-explicit, current-head-scoped decision.
+    freshness window, had exit code 0, and emitted a typed verification scope
+    and release-baseline decision (command wording grants no authority). Every
+    review thread must be
+    resolved in GitHub and ``reviewDecision`` must not be
+    ``CHANGES_REQUESTED``. Review requests, review summaries,
+    acknowledgements, and ordinary PR conversation are not findings and do
+    not need a second local acknowledgement registry.
 
 ``check --post-status`` closes the remaining gap (2026-08-03,
 polylogue-1cbeh): the verdict above is a purely local CLI result, so nothing
@@ -63,7 +56,6 @@ Usage:
     devtools workspace merge-gate check 3517
     devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1
     devtools workspace merge-gate check 3517 --post-status
-    devtools workspace merge-gate ack 3517 <comment-id> --reason "false positive, already fixed upstream"
 """
 
 from __future__ import annotations
@@ -91,13 +83,13 @@ _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
 _DEFAULT_POLL_ROUNDS = 3
 _DEFAULT_POLL_INTERVAL_S = 20
-# Heuristic: profiles that explicitly skip tests (see CLAUDE.md -- `devtools
-# verify --quick` is format+lint+mypy+render, no pytest). Not exhaustive; a
-# command containing neither this nor an obvious test-runner name still gets
-# flagged as an advisory, since the whole point is not trusting a plausible-
-# looking command string without comment.
-_TEST_SKIPPING_MARKERS: tuple[str, ...] = ("verify --quick", "verify --lab")
-_LOOKS_LIKE_TESTS_MARKERS: tuple[str, ...] = ("test", "pytest", "verify --all", "devtools verify")
+_MERGE_AUTHORIZING_VERIFICATION_SCOPES = frozenset(
+    {
+        VerificationScope.AFFECTED.value,
+        VerificationScope.NARROW_TERMINAL.value,
+        VerificationScope.RELEASE_BASELINE.value,
+    }
+)
 
 
 def _gh_json(args: list[str]) -> Any:
@@ -105,25 +97,6 @@ def _gh_json(args: list[str]) -> Any:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip()[:300] or f"gh {' '.join(args)} failed")
     return json.loads(result.stdout)
-
-
-def _gh_json_paginated(args: list[str]) -> list[Any]:
-    """Like ``_gh_json`` but follows pagination -- the GitHub REST list
-    endpoints cap at 30-100 items per page, and a PR with more review comments
-    than that would otherwise silently hide later (possibly late-arriving)
-    ones from the late-comment check. ``--slurp`` wraps every page's own JSON
-    array into one outer array, which this then flattens."""
-    result = subprocess.run(["gh", *args, "--paginate", "--slurp"], capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip()[:300] or f"gh {' '.join(args)} --paginate failed")
-    pages = json.loads(result.stdout)
-    items: list[Any] = []
-    for page in pages:
-        if isinstance(page, list):
-            items.extend(page)
-        else:
-            items.append(page)
-    return items
 
 
 # GitHub commit-status `description` is truncated to 140 chars by the API
@@ -134,7 +107,7 @@ _STATUS_DESCRIPTION_MAX = 140
 
 def _status_description(verdict: GateVerdict) -> str:
     if verdict.ok:
-        return "merge-gate OK: verification receipt fresh, no unacked late comments"
+        return "merge-gate OK: verification fresh, no unresolved review threads"
     joined = "; ".join(verdict.reasons) or "merge-gate BLOCK"
     if len(joined) > _STATUS_DESCRIPTION_MAX:
         joined = joined[: _STATUS_DESCRIPTION_MAX - 1] + "…"
@@ -217,24 +190,13 @@ class GateVerdict:
     reasons: list[str] = field(default_factory=list)
     head_sha: str = ""
     receipt: dict[str, Any] | None = None
-    late_comments: list[dict[str, Any]] = field(default_factory=list)
+    unresolved_review_threads: list[dict[str, Any]] = field(default_factory=list)
     status_post: dict[str, Any] | None = None
     pr_scope: dict[str, Any] | None = None
 
 
 def _receipt_path(pr: int) -> Path:
     return _repository_root() / _RECEIPT_DIR / f"pr-{pr}.json"
-
-
-def _ack_path(pr: int) -> Path:
-    return _repository_root() / _RECEIPT_DIR / f"pr-{pr}-acks.json"
-
-
-def _command_skips_tests(command: str) -> bool:
-    lowered = command.lower()
-    if any(marker in lowered for marker in _TEST_SKIPPING_MARKERS):
-        return True
-    return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
 
 
 def _invocation_receipt(
@@ -246,7 +208,6 @@ def _invocation_receipt(
     checkout_root: Path,
 ) -> dict[str, Any] | None:
     """Load the exact run artifact bound to the launched verifier process."""
-
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -407,7 +368,6 @@ def cmd_record(pr: int, command: str) -> int:
         )["attestation_digest"],
         "branch": info["headRefName"],
         "command": command,
-        "skips_tests": _command_skips_tests(command),
         "verification_scope": _verification_scope(verification_receipt),
         "release_baseline_allowed": _release_baseline_permission(verification_receipt),
         "terminal_authorization": _terminal_authorization(verification_receipt),
@@ -422,98 +382,112 @@ def cmd_record(pr: int, command: str) -> int:
     receipt_path.write_text(json.dumps(receipt, indent=2))
 
     print(f"recorded receipt for PR #{pr} @ {head_sha[:8]}: exit={result.returncode} ({duration_s}s)")
-    if receipt["skips_tests"]:
-        print(
-            f"  advisory: command {command!r} does not look like it ran tests -- `check` will flag this",
-            file=sys.stderr,
-        )
     if result.returncode != 0:
         print(result.stdout[-2000:])
         print(result.stderr[-2000:], file=sys.stderr)
     return result.returncode
 
 
-def cmd_ack(pr: int, comment_id: int, *, reason: str) -> int:
-    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid"])
-    head_sha = info["headRefOid"]
+_REVIEW_STATE_QUERY = """
+query($owner:String!,$repo:String!,$number:Int!,$endCursor:String) {
+  repository(owner:$owner,name:$repo) {
+    pullRequest(number:$number) {
+      reviewDecision
+      reviewThreads(first:100,after:$endCursor) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first:100) {
+            nodes { databaseId createdAt path line body }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"""
 
-    ack_path = _ack_path(pr)
-    if ack_path.exists():
-        acks = _read_json_object(ack_path)
-        if acks is None:
-            print(
-                f"REFUSING to ack: {ack_path} exists but is unreadable/corrupt -- fix or remove it by hand "
-                "first, rather than silently losing prior acknowledgements.",
-                file=sys.stderr,
-            )
-            return 2
-    else:
-        acks = {}
-    acks[str(comment_id)] = {"head_sha": head_sha, "reason": reason, "acked_at": time.time()}
-    ack_path.parent.mkdir(parents=True, exist_ok=True)
-    ack_path.write_text(json.dumps(acks, indent=2))
-    print(f"acknowledged comment {comment_id} on PR #{pr} @ {head_sha[:8]}: {reason}")
-    return 0
 
+def _fetch_review_state(pr: int) -> dict[str, Any] | None:
+    """Return GitHub's typed review decision and every unresolved thread.
 
-def _fetch_review_comments(pr: int) -> list[dict[str, Any]] | None:
-    """Combine every top-level review signal the late-comment check should
-    see: inline diff comments, issue-level PR comments, and review bodies
-    (a review's own summary text is a separate object from its line
-    comments -- see GitHub's REST API docs). All three are normalized to a
-    common shape (id, created_at, path, line, body) and empty-bodied entries
-    (e.g. an APPROVE review with no summary text) are dropped -- they carry
-    no signal for triage."""
-    normalized: list[dict[str, Any]] = []
-    try:
-        inline = _gh_json_paginated(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"])
-        for item in inline:
-            normalized.append(
-                {
-                    "id": item.get("id"),
-                    "created_at": item.get("created_at", ""),
-                    "path": item.get("path"),
-                    "line": item.get("line"),
-                    "body": item.get("body") or "",
-                }
-            )
-        issue_comments = _gh_json_paginated(["api", f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"])
-        for item in issue_comments:
-            normalized.append(
-                {
-                    "id": item.get("id"),
-                    "created_at": item.get("created_at", ""),
-                    "path": None,
-                    "line": None,
-                    "body": item.get("body") or "",
-                }
-            )
-        reviews = _gh_json_paginated(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"])
-        for item in reviews:
-            normalized.append(
-                {
-                    "id": item.get("id"),
-                    "created_at": item.get("submitted_at", ""),
-                    "path": None,
-                    "line": None,
-                    "body": item.get("body") or "",
-                }
-            )
-    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
+    Conversation bodies are deliberately not classified. A finding is a
+    review thread; its disposition is GitHub's ``isResolved`` field. This
+    avoids treating review requests, bot summaries, and repair replies as new
+    findings merely because they are prose posted after a commit.
+    """
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            "graphql",
+            "--paginate",
+            "--slurp",
+            "-F",
+            "owner={owner}",
+            "-F",
+            "repo={repo}",
+            "-F",
+            f"number={pr}",
+            "-f",
+            f"query={_REVIEW_STATE_QUERY}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
         return None
-    return [comment for comment in normalized if comment["body"].strip()]
+    try:
+        pages = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(pages, list) or not pages:
+        return None
 
-
-def _poll_stable_comments(pr: int, *, rounds: int, interval_s: int) -> list[dict[str, Any]] | None:
-    """Poll review comments repeatedly so a comment posted 30-60s after CI
-    goes green (the PR #3502 incident) is observed rather than missed by a
-    single snapshot taken too early."""
-    last: list[dict[str, Any]] | None = None
-    for round_index in range(max(1, rounds)):
-        comments = _fetch_review_comments(pr)
-        if comments is None:
+    decision: str | None = None
+    unresolved: dict[str, dict[str, Any]] = {}
+    for page in pages:
+        try:
+            pull_request = page["data"]["repository"]["pullRequest"]
+            page_decision = pull_request.get("reviewDecision")
+            threads = pull_request["reviewThreads"]["nodes"]
+        except (KeyError, TypeError):
             return None
-        last = comments
+        if isinstance(page_decision, str):
+            decision = page_decision
+        if not isinstance(threads, list):
+            return None
+        for thread in threads:
+            if not isinstance(thread, dict) or thread.get("isResolved") is not False:
+                continue
+            thread_id = thread.get("id")
+            comments = thread.get("comments", {}).get("nodes", [])
+            if not isinstance(thread_id, str) or not isinstance(comments, list):
+                return None
+            last = comments[-1] if comments and isinstance(comments[-1], dict) else {}
+            unresolved[thread_id] = {
+                "thread_id": thread_id,
+                "is_outdated": bool(thread.get("isOutdated")),
+                "comment_id": last.get("databaseId"),
+                "path": last.get("path"),
+                "line": last.get("line"),
+                "created_at": last.get("createdAt"),
+                "body_head": str(last.get("body") or "")[:200],
+            }
+    return {"review_decision": decision, "unresolved_threads": list(unresolved.values())}
+
+
+def _poll_stable_review_state(pr: int, *, rounds: int, interval_s: int) -> dict[str, Any] | None:
+    """Poll typed review state so findings arriving after CI are observed."""
+    last: dict[str, Any] | None = None
+    for round_index in range(max(1, rounds)):
+        review_state = _fetch_review_state(pr)
+        if review_state is None:
+            return None
+        last = review_state
         if round_index < rounds - 1:
             time.sleep(interval_s)
     return last
@@ -537,7 +511,7 @@ def cmd_check(
                 "view",
                 str(pr),
                 "--json",
-                "headRefOid,baseRefOid,mergeStateStatus,state,commits,body,isDraft,author,files",
+                "headRefOid,baseRefOid,mergeStateStatus,state,body,isDraft,author,files",
             ]
         )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
@@ -583,10 +557,6 @@ def cmd_check(
     if mss not in {"CLEAN", "UNSTABLE", "UNKNOWN"}:
         verdict.ok = False
         verdict.reasons.append(f"mergeStateStatus is {mss!r} (expected CLEAN/UNSTABLE/UNKNOWN)")
-
-    commits = info.get("commits") or []
-    head_commit = next((commit for commit in commits if commit.get("oid") == head_sha), None)
-    head_committed_at = head_commit.get("committedDate") if head_commit else None
 
     receipt_path = _receipt_path(pr)
     receipt = _read_json_object(receipt_path)
@@ -648,6 +618,9 @@ def cmd_check(
                 verdict.reasons.append(
                     "verification receipt lacks a valid typed verification_scope; command text cannot grant authority"
                 )
+            elif verification_scope not in _MERGE_AUTHORIZING_VERIFICATION_SCOPES:
+                verdict.ok = False
+                verdict.reasons.append("verification receipt contains no test execution and cannot authorize a merge")
             release_allowed = receipt.get("release_baseline_allowed")
             if not isinstance(release_allowed, bool):
                 verdict.ok = False
@@ -657,50 +630,22 @@ def cmd_check(
                 verdict.reasons.append(
                     "release-baseline verification receipt does not grant release_baseline_allowed=true"
                 )
-            if receipt.get("skips_tests"):
-                verdict.reasons.append(
-                    f"advisory: receipt command {receipt.get('command')!r} does not look like it ran tests "
-                    "-- confirm this PR genuinely needs no test coverage before merging"
-                )
 
-    review_comments = _poll_stable_comments(pr, rounds=poll_rounds, interval_s=poll_interval_s)
-    if review_comments is None:
+    review_state = _poll_stable_review_state(pr, rounds=poll_rounds, interval_s=poll_interval_s)
+    if review_state is None:
         verdict.ok = False
-        verdict.reasons.append("could not fetch review comments after polling")
-        review_comments = []
-
-    acks = _read_json_object(_ack_path(pr)) or {}
-
-    if head_committed_at:
-        for comment in review_comments:
-            created_at = comment.get("created_at", "")
-            if created_at <= head_committed_at:
-                continue
-            comment_id = comment.get("id")
-            ack = acks.get(str(comment_id))
-            if ack is not None and ack.get("head_sha") == head_sha:
-                continue  # explicitly triaged for this exact head sha
-            verdict.late_comments.append(
-                {
-                    "id": comment_id,
-                    "path": comment.get("path"),
-                    "line": comment.get("line"),
-                    "created_at": created_at,
-                    "body_head": (comment.get("body") or "")[:200],
-                }
-            )
-        if verdict.late_comments:
+        verdict.reasons.append("could not fetch structured review-thread state after polling")
+    else:
+        verdict.unresolved_review_threads = review_state["unresolved_threads"]
+        if verdict.unresolved_review_threads:
             verdict.ok = False
             verdict.reasons.append(
-                f"{len(verdict.late_comments)} unacknowledged review comment(s) posted after the head commit "
-                f"({head_committed_at}) -- read and `ack` (if not actionable) or fix before merging"
+                f"{len(verdict.unresolved_review_threads)} unresolved GitHub review thread(s) -- "
+                "fix or explicitly resolve each thread before merging"
             )
-    else:
-        verdict.ok = False
-        verdict.reasons.append(
-            "could not determine the head commit timestamp, so the late-comment check cannot run -- "
-            "refusing to report OK"
-        )
+        if review_state["review_decision"] == "CHANGES_REQUESTED":
+            verdict.ok = False
+            verdict.reasons.append("GitHub reviewDecision is CHANGES_REQUESTED")
 
     if post_status:
         verdict.status_post = _post_commit_status(
@@ -720,9 +665,10 @@ def _emit(verdict: GateVerdict, as_json: bool) -> None:
     print(f"PR #{verdict.pr} @ {verdict.head_sha[:8] if verdict.head_sha else '?'}: {'OK' if verdict.ok else 'BLOCK'}")
     for reason in verdict.reasons:
         print(f"  - {reason}")
-    for late in verdict.late_comments:
+    for thread in verdict.unresolved_review_threads:
         print(
-            f"    late comment id={late['id']} [{late['path']}:{late['line']}] {late['created_at']}: {late['body_head']}"
+            f"    unresolved thread {thread['thread_id']} [{thread['path']}:{thread['line']}] "
+            f"{thread['created_at']}: {thread['body_head']}"
         )
     if verdict.status_post is not None:
         if verdict.status_post.get("posted"):
@@ -759,17 +705,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    ack_p = sub.add_parser("ack", help="Acknowledge a specific review comment as triaged for the current head sha")
-    ack_p.add_argument("pr", type=int)
-    ack_p.add_argument("comment_id", type=int)
-    ack_p.add_argument("--reason", required=True, help="Why this comment does not block merging")
-
     args = parser.parse_args(argv)
 
     if args.action == "record":
         return cmd_record(args.pr, args.command)
-    if args.action == "ack":
-        return cmd_ack(args.pr, args.comment_id, reason=args.reason)
     return cmd_check(
         args.pr,
         max_age_s=args.max_age_s,

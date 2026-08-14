@@ -1,7 +1,0 @@
-{
-  "pass": true,
-  "unsupported_claims": [
-    "PR #3282 claim 4: the 7-file devtools test invocation named in the Verification section is not independently verified in the resolved session -- no matching tool_use block exists outside the gh-pr-create body text itself."
-  ],
-  "coverage_notes": "4 claims from PR #3282's body were checked structurally against the session_refs-resolved authoring/dispatch session's own blocks. 3 of 4 are supported by exact tool_use/tool_result evidence (gh pr create body/URL match, devtools verify --quick per-step exit codes, the rebuild_index.py test+commit pair). Claim 4 is explicitly and correctly scored not_supported rather than assumed true from the PR body's own prose -- this is the intended outcome of the packet's method, not a defect. The resolved session is also shown to be a merge-conductor (53 Bash + 3 Read tool_use blocks, 0 Edit/Write) rather than the direct file-editing session, which is documented as a real finding in report.md rather than hidden."
-}

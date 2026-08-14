@@ -167,10 +167,8 @@ running archive ever invokes them (fix-round note, 2026-07-14).
   `status=CANDIDATE` with `{"inject": false, "promotion_required": true}` —
   a detector can never self-promote a finding to authoritative/injectable
   context (the same invariant `PATHOLOGY`/`TRANSFORM_CANDIDATE` findings use).
-- Coverage: `tests/unit/security/test_secret_scan.py`,
-  `tests/unit/cli/test_scan_secrets.py` (also the
-  `devtools test -k secret_candidate` anchor cited by
-  `docs/plans/security-privacy-coverage.yaml`).
+- Coverage: `tests/unit/security/test_secret_scan.py` and
+  `tests/unit/cli/test_scan_secrets.py`.
 
 #### Wired into pre-commit and render/export (polylogue-t9xd)
 

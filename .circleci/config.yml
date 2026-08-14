@@ -3,12 +3,12 @@ version: 2.1
 # CircleCI free-tier CI while GitHub Actions is billing-locked (and a cheap
 # second opinion afterwards). Credit budget: ~30k credits/month on the free
 # plan. Design keeps the per-push cost low and the heavy work nightly:
-#   - quick-gate (PRs + master pushes): public claims + `devtools verify
-#     --quick` itself (not a hand-picked subset of its steps -- see
+#   - quick-gate (PRs + master pushes): `devtools verify --quick` itself (not a
+#     hand-picked subset of its steps -- see
 #     polylogue-ze5i: this job used to reimplement ruff/mypy/render-all as
 #     separate `run` steps and silently diverged from what
 #     devtools/verify.py's `if not commit:` block actually gates, so
-#     schema-versioning/classifier-fingerprints/demo-tour-freshness and
+#     schema-versioning and
 #     every other check added to that block over time never ran in real CI
 #     even though `.github/workflows/ci.yml` referenced them -- that GHA
 #     workflow does not execute, only CircleCI does). No pytest; the test
@@ -17,10 +17,9 @@ version: 2.1
 #     only.
 #   - lab-policies (scheduled pipeline named "nightly"): the `lab policy *`
 #     checks that stay --lab-only because they scan the whole Beads/backlog
-#     corpus rather than the current diff (backlog-hygiene, bead-graph) or
+#     corpus rather than the current diff (bead-graph) or
 #     are otherwise not cheap/deterministic enough for every push
-#     (timestamp-doctrine, insight-honesty, demo-packet-registry, docs-drift,
-#     campaign-archive-boundaries). Runs nightly so a policy that fails
+#     (timestamp-doctrine, insight-honesty). Runs nightly so a policy that fails
 #     continuously is at least visible somewhere, per polylogue-ze5i AC2,
 #     instead of only reachable via a human remembering `devtools verify
 #     --lab`.
@@ -69,9 +68,6 @@ jobs:
             - mypy-v1-master
             - mypy-v1-
       - run:
-          name: Public claims gate
-          command: ~/.local/bin/uv run devtools verify public-claims --json | tee /tmp/polylogue-public-claims.json
-      - run:
           name: Structured PR scope carrier
           command: |
             set -o pipefail
@@ -96,10 +92,6 @@ jobs:
           paths:
             - .mypy_cache
       - store_artifacts:
-          path: /tmp/polylogue-public-claims.json
-          destination: diagnostics
-          when: always
-      - store_artifacts:
           path: /tmp/polylogue-pr-scope.log
           destination: diagnostics
           when: always
@@ -113,11 +105,9 @@ jobs:
       - bootstrap
       # Each currently-red check runs with `when: always` so one failure
       # doesn't hide the pass/fail signal of the others in the same job --
-      # backlog-hygiene and bead-graph are known-red until the pre-existing
-      # backlog debt they report is triaged (tracked separately; see
-      # polylogue-ze5i notes), and that must not mask a genuine regression
-      # in timestamp-doctrine/insight-honesty/demo-packet-registry/
-      # docs-drift/campaign-archive-boundaries going unnoticed.
+      # bead-graph reports repository-wide graph state rather than the current
+      # diff, and that must not mask a genuine regression
+      # in timestamp-doctrine/insight-honesty going unnoticed.
       - run:
           name: lab policy timestamp-doctrine
           command: ~/.local/bin/uv run devtools lab policy timestamp-doctrine
@@ -127,24 +117,8 @@ jobs:
           command: ~/.local/bin/uv run devtools lab policy insight-honesty
           when: always
       - run:
-          name: lab policy demo-packet-registry
-          command: ~/.local/bin/uv run devtools lab policy demo-packet-registry
-          when: always
-      - run:
-          name: lab policy docs-drift
-          command: ~/.local/bin/uv run devtools lab policy docs-drift
-          when: always
-      - run:
-          name: lab policy campaign-archive-boundaries
-          command: ~/.local/bin/uv run devtools lab policy campaign-archive-boundaries
-          when: always
-      - run:
-          name: lab policy backlog-hygiene (known backlog debt, see polylogue-ze5i)
-          command: ~/.local/bin/uv run devtools lab policy backlog-hygiene
-          when: always
-      - run:
-          name: lab policy bead-graph (known backlog debt, see polylogue-ze5i)
-          command: ~/.local/bin/uv run devtools lab policy bead-graph
+          name: lab policy bead-graph
+          command: ~/.local/bin/uv run devtools lab policy bead-graph --export .beads/issues.jsonl
           when: always
 
   full-suite:

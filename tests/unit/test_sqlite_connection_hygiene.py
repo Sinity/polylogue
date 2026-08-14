@@ -146,26 +146,3 @@ def test_archive_readiness_active_rebuild_attempts_closes_connection(
     result = active_rebuild_index_attempts(ops_db)
     assert result == []
     _assert_all_closed(captured)
-
-
-@pytest.mark.parametrize("module_path", sorted(MODULE_TARGETS))
-def test_swept_modules_do_not_reference_bare_with_connect(module_path: str) -> None:
-    """Static companion check: source no longer contains the leak pattern.
-
-    Complements the runtime captures above by asserting the exact textual
-    pattern (``with sqlite3.connect(``) is gone from each swept module's
-    source, so a careless partial revert (e.g. restoring one call site by
-    hand while leaving the import) is caught even before the more expensive
-    connection-capture tests run.
-    """
-
-    import importlib
-    import inspect
-
-    module = importlib.import_module(module_path)
-    source = inspect.getsource(module)
-    assert "with sqlite3.connect(" not in source, (
-        f"{module_path} regressed to a bare 'with sqlite3.connect(...)' — wrap in "
-        "contextlib.closing()/contextlib's closing so the connection is closed on exit, "
-        "not just committed (polylogue-a7xr.1)."
-    )

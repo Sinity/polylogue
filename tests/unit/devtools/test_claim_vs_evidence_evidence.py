@@ -6,6 +6,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from devtools.claim_vs_evidence_evidence import (
     build_findings,
     build_query_definition,
@@ -14,6 +16,7 @@ from devtools.claim_vs_evidence_evidence import (
 )
 from polylogue.core.enums import AssertionKind
 from polylogue.core.query_identity import query_hash_for_plan
+from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
@@ -28,7 +31,7 @@ def _report(
     acknowledged: int,
     ambiguous: int,
     n_min: int = 30,
-    member_refs: tuple[str, ...] = ("message:s1:tool-1-result", "message:s1:tool-2-result"),
+    member_refs: tuple[str, ...] = ("block:s1:tool-1-result:0", "block:s1:tool-2-result:0"),
     captured_at: str = "2026-07-18T00:00:00+00:00",
 ) -> dict[str, Any]:
     classified = silent + acknowledged
@@ -90,9 +93,9 @@ def test_build_result_set_members_returns_sorted_refs(tmp_path: Path) -> None:
         silent=1,
         acknowledged=1,
         ambiguous=1,
-        member_refs=("message:s1:z", "message:s1:a"),
+        member_refs=("block:s1:z:0", "block:s1:a:0"),
     )
-    assert build_result_set_members(report) == ("message:s1:a", "message:s1:z")
+    assert build_result_set_members(report) == ("block:s1:a:0", "block:s1:z:0")
 
 
 def test_build_findings_omits_public_claim_when_not_publishable(tmp_path: Path) -> None:
@@ -254,3 +257,49 @@ def test_materialize_at_a_later_time_reuses_query_and_result_set_but_records_a_n
         assert len(findings) == 2
     finally:
         conn.close()
+
+
+def test_materialize_distinguishes_query_identity_for_the_same_members(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
+    first_report = _report(archive_root=archive_root, silent=20, acknowledged=15, ambiguous=5, n_min=30)
+    second_report = _report(archive_root=archive_root, silent=20, acknowledged=15, ambiguous=5, n_min=50)
+
+    first = materialize_claim_vs_evidence_evidence(first_report, archive_root=archive_root, now_ms=1_000)
+    second = materialize_claim_vs_evidence_evidence(second_report, archive_root=archive_root, now_ms=2_000)
+
+    assert first["query_ref"] != second["query_ref"]
+    assert first["result_set_ref"] != second["result_set_ref"]
+
+
+def test_materialize_refuses_a_second_writer_before_opening_user_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
+    report = _report(archive_root=archive_root, silent=20, acknowledged=15, ambiguous=5, n_min=30)
+    monkeypatch.setattr(
+        "devtools.claim_vs_evidence_evidence.open_daemon_connection",
+        lambda *_args, **_kwargs: pytest.fail("user.db opened before writer exclusion"),
+    )
+    writer = ActiveWriterLease(archive_root)
+    writer.acquire()
+    try:
+        with pytest.raises(RebuildLeaseUnavailableError):
+            materialize_claim_vs_evidence_evidence(report, archive_root=archive_root, now_ms=1_000)
+    finally:
+        writer.close()
+
+
+def test_materialize_refuses_report_and_durable_tiers_from_different_file_sets(tmp_path: Path) -> None:
+    report_root = tmp_path / "report-archive"
+    wrong_root = tmp_path / "wrong-archive"
+    report_root.mkdir()
+    wrong_root.mkdir()
+    initialize_archive_database(wrong_root / "user.db", ArchiveTier.USER)
+    report = _report(archive_root=report_root, silent=20, acknowledged=15, ambiguous=5, n_min=30)
+
+    with pytest.raises(ValueError, match="does not match materialization root"):
+        materialize_claim_vs_evidence_evidence(report, archive_root=wrong_root, now_ms=1_000)

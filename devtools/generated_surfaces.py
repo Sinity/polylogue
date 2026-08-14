@@ -7,19 +7,12 @@ from dataclasses import dataclass
 
 from devtools import (
     render_agent_manual,
-    render_api_operation_parity,
     render_cli_output_schemas,
     render_cli_reference,
-    render_demo_corpus_datasheet,
     render_devtools_reference,
     render_docs_surface,
-    render_mcp_equivalence,
-    render_mcp_tool_index,
     render_openapi,
     render_pages,
-    render_product_workflows,
-    render_public_claims,
-    render_quality_reference,
     render_query_discovery,
     render_visual_tapes,
     render_webui_client,
@@ -42,23 +35,6 @@ class GeneratedSurface:
 
 GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
-        name="api-operation-parity",
-        label="Python API operation parity",
-        description="Render the semantic-operation matrix and generated Python facade reference.",
-        command=control_plane_argv("render api-operation-parity"),
-        main=render_api_operation_parity.main,
-        inputs=(
-            "polylogue/api/__init__.py",
-            "polylogue/api/archive.py",
-            "polylogue/api/embeddings.py",
-            "polylogue/api/ingest.py",
-            "polylogue/api/insights.py",
-            "polylogue/api/operation_parity.py",
-            "devtools/render_api_operation_parity.py",
-            "docs/library-api.md",
-        ),
-    ),
-    GeneratedSurface(
         name="agent-manual",
         label="Agent manual",
         description="Render the declaration-generated six-tool manual and packaged native-integration assets.",
@@ -75,7 +51,7 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
     GeneratedSurface(
         name="cli-reference",
         label="CLI docs",
-        description="Render docs/cli-reference.md from live CLI help and action-contract metadata.",
+        description="Render docs/cli-reference.md from live CLI help.",
         command=control_plane_argv("render cli-reference"),
         main=render_cli_reference.main,
         inputs=(
@@ -94,7 +70,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/surfaces/payloads.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_cli_reference.py",
-            "devtools/action_contract_report.py",
             "devtools/render_cli_output_schemas.py",
             "devtools/provider_completeness.py",
         ),
@@ -178,53 +153,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         ),
     ),
     GeneratedSurface(
-        name="demo-corpus-datasheet",
-        label="Demo corpus datasheet",
-        description="Render docs/plans/demo-corpus-construct-audit.md from declared demo families and measured seed rows.",
-        command=control_plane_argv("render demo-corpus-datasheet"),
-        main=render_demo_corpus_datasheet.main,
-        inputs=(
-            "devtools/render_demo_corpus_datasheet.py",
-            "polylogue/demo/",
-            "polylogue/scenarios/",
-        ),
-    ),
-    GeneratedSurface(
-        name="quality-reference",
-        label="Quality docs",
-        description="Render docs/test-quality-workflows.md from quality registries.",
-        command=control_plane_argv("render quality-reference"),
-        main=render_quality_reference.main,
-        inputs=(
-            "devtools/render_quality_reference.py",
-            "devtools/benchmark_catalog.py",
-            "devtools/mutation_catalog.py",
-            "devtools/quality_registry.py",
-            "devtools/run_validation_lanes.py",
-            "devtools/scenario_coverage.py",
-            "devtools/scenario_projection_catalog.py",
-            "devtools/validation_lane_catalog_contracts.py",
-            "devtools/validation_lane_catalog_live.py",
-            "polylogue/operations/specs.py",
-            "polylogue/scenarios/",
-            "pyproject.toml",
-        ),
-    ),
-    GeneratedSurface(
-        name="product-workflows",
-        label="Product workflows",
-        description="Render docs/product/workflows.md from query-action workflow registries (#2305).",
-        command=control_plane_argv("render product-workflows"),
-        main=render_product_workflows.main,
-        inputs=(
-            "devtools/render_product_workflows.py",
-            "polylogue/product/workflows.py",
-            "polylogue/operations/action_contracts.py",
-            "polylogue/surfaces/action_affordances.py",
-            "polylogue/archive/viewport/profiles.py",
-        ),
-    ),
-    GeneratedSurface(
         name="query-discovery",
         label="Query discovery",
         description="Render parser-gated query examples and result semantics into docs/search.md.",
@@ -237,24 +165,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/archive/query/metadata.py",
             "polylogue/archive/query/transaction.py",
             "docs/search.md",
-        ),
-    ),
-    GeneratedSurface(
-        name="public-claims",
-        label="Public claims",
-        description="Render all public-claim presets and the generated YAML compatibility view.",
-        command=control_plane_argv("render public-claims"),
-        main=render_public_claims.main,
-        inputs=(
-            "devtools/render_public_claims.py",
-            "devtools/public_claims.py",
-            "polylogue/insights/measurement/public_claims.py",
-            "polylogue/scenarios/corpus.py",
-            "polylogue/storage/sqlite/archive_tiers/user_write.py",
-            "polylogue/storage/sqlite/finding_provenance.py",
-            "README.md",
-            "docs/demos.md",
-            "docs/findings/claim-vs-evidence.md",
         ),
     ),
     GeneratedSurface(
@@ -275,26 +185,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "docs/",
             "README.md",
         ),
-    ),
-    GeneratedSurface(
-        name="mcp-equivalence",
-        label="MCP algebra equivalence map",
-        description="Render the executable MCP contract and migration map as generated JSON.",
-        command=control_plane_argv("render mcp-equivalence"),
-        main=render_mcp_equivalence.main,
-        inputs=(
-            "devtools/render_mcp_equivalence.py",
-            "polylogue/declarations/",
-            "polylogue/mcp/declarations/",
-        ),
-    ),
-    GeneratedSurface(
-        name="mcp-tool-index",
-        label="MCP tool index",
-        description="Render the exhaustive generated tool-name appendix into docs/mcp-reference.md.",
-        command=control_plane_argv("render mcp-tool-index"),
-        main=render_mcp_tool_index.main,
-        inputs=("devtools/render_mcp_tool_index.py", "polylogue/mcp/declarations/registry.py"),
     ),
     GeneratedSurface(
         name="pages",
@@ -320,31 +210,15 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         description="Render (or verify) the committed VHS tape files for the default visual evidence specs.",
         command=control_plane_argv("render visual-tapes"),
         main=render_visual_tapes.generated_surface_main,
-        inputs=(
-            "devtools/visual_vhs.py",
-            "devtools/render_visual_tapes.py",
-        ),
+        inputs=("devtools/visual_vhs.py", "devtools/render_visual_tapes.py"),
     ),
 )
 
 GENERATED_SURFACE_BY_NAME = {surface.name: surface for surface in GENERATED_SURFACES}
 
 
-# Commands in `devtools/command_catalog.py`'s "generated surfaces" category
-# that are intentionally NOT registered above, because their check semantics
-# genuinely don't fit the hash-stamp render/--check contract every
-# GeneratedSurface.main follows. Each entry names the bespoke gate that covers
-# it instead, so the exemption is auditable rather than a silent gap --
-# `tests/unit/devtools/test_generated_surfaces.py` fails closed if a new
-# "generated surfaces" command shows up here without either a GENERATED_SURFACES
-# entry or a line in this dict (polylogue-bfc7a). "render all" itself is the
-# orchestrator over this registry, not a member of it, and needs no entry.
-GENERATED_SURFACES_CATALOG_EXEMPTIONS: dict[str, str] = {}
-
-
 __all__ = [
     "GENERATED_SURFACES",
-    "GENERATED_SURFACES_CATALOG_EXEMPTIONS",
     "GENERATED_SURFACE_BY_NAME",
     "GeneratedSurface",
 ]
