@@ -846,10 +846,10 @@ def validate_migration_backup_live_fingerprint(
 def validate_full_evidence_backup_for_archive_root_relocation(
     path: Path,
     *,
-    old_configured_root: Path,
-    old_archive_root: Path,
+    backup_configured_root: Path,
+    backup_archive_root: Path,
 ) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
-    """Authenticate complete old-root backup evidence for a root relocation."""
+    """Authenticate complete full-evidence backup at the moved archive root."""
     manifest_path, receipt_path, backup_root, manifest, receipt = _load_verified_backup_package(path)
     if manifest.get("profile") != "full_evidence":
         raise MigrationError("archive-root relocation requires a verified full_evidence backup")
@@ -860,9 +860,13 @@ def validate_full_evidence_backup_for_archive_root_relocation(
         raise MigrationError("archive-root relocation backup must contain the exact complete tier set")
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
         try:
-            verify_verification_receipt(receipt, tier=tier.value, live_tier_path=old_archive_root / f"{tier.value}.db")
+            verify_verification_receipt(
+                receipt, tier=tier.value, live_tier_path=backup_archive_root / f"{tier.value}.db"
+            )
         except BackupAttestationError as exc:
-            raise MigrationError(f"archive-root relocation old-root authority failed for {tier.value}: {exc}") from exc
+            raise MigrationError(
+                f"archive-root relocation moved-root authority failed for {tier.value}: {exc}"
+            ) from exc
     validated_artifacts = _validate_closed_backup_package(
         backup_root,
         manifest,
@@ -884,29 +888,29 @@ def validate_full_evidence_backup_for_archive_root_relocation(
             raise MigrationError(f"archive-root relocation backup lacks authenticated inode authority for {filename}")
         recorded_path = fingerprint.get("path")
         if not isinstance(recorded_path, str):
-            raise MigrationError(f"archive-root relocation backup lacks old path authority for {filename}")
+            raise MigrationError(f"archive-root relocation backup lacks moved-tier path authority for {filename}")
         recorded = Path(recorded_path).resolve(strict=False)
         if tier == ArchiveTier.INDEX.value:
-            if not recorded.is_relative_to(old_archive_root.resolve(strict=False)):
-                raise MigrationError("archive-root relocation backup active index is outside the old archive root")
-        elif recorded != (old_archive_root / filename).resolve(strict=False):
-            raise MigrationError(f"archive-root relocation backup belongs to a different old tier path: {filename}")
+            if not recorded.is_relative_to(backup_archive_root.resolve(strict=False)):
+                raise MigrationError("archive-root relocation backup active index is outside the moved archive root")
+        elif recorded != (backup_archive_root / filename).resolve(strict=False):
+            raise MigrationError(f"archive-root relocation backup belongs to a different moved tier path: {filename}")
     root_identity = manifest.get("archive_root_source_identity")
     if not isinstance(root_identity, dict) or not all(
         isinstance(root_identity.get(field), int) for field in ("device", "inode")
     ):
-        raise MigrationError("archive-root relocation backup lacks authenticated root inode authority")
+        raise MigrationError("archive-root relocation backup lacks authenticated moved-root inode authority")
     recorded_root = root_identity.get("resolved_path")
-    if not isinstance(recorded_root, str) or Path(recorded_root).resolve(strict=False) != old_archive_root.resolve(
+    if not isinstance(recorded_root, str) or Path(recorded_root).resolve(strict=False) != backup_archive_root.resolve(
         strict=False
     ):
-        raise MigrationError("archive-root relocation backup belongs to a different old archive root")
+        raise MigrationError("archive-root relocation backup belongs to a different moved archive root")
     recorded_configured_root = root_identity.get("configured_path")
     if (
         not isinstance(recorded_configured_root, str)
-        or Path(recorded_configured_root).absolute() != old_configured_root.absolute()
+        or Path(recorded_configured_root).absolute() != backup_configured_root.absolute()
     ):
-        raise MigrationError("archive-root relocation backup belongs to a different configured old archive root")
+        raise MigrationError("archive-root relocation backup belongs to a different configured moved archive root")
     return manifest_path, receipt_path, manifest, receipt
 
 

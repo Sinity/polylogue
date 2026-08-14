@@ -41,7 +41,7 @@ command's migration result alone.
 
 ## Relocating an archive root
 
-Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. It requires the daemon to be stopped, archive ownership, and a successful verified `full_evidence` backup whose receipt is authenticated against the old root path. A current source train with post-release source content must first have receipt-backed source-continuity authority; relocation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
+Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. `--old-root` names the retired pre-move root for the identity transition and active-index pointer mapping. Create a fresh verified `full_evidence` backup after setting `POLYLOGUE_ARCHIVE_ROOT` to the moved root. The relocation plan authenticates that backup against the moved root and revalidates its device/inode inventory there; it never asks a moved-root backup to authenticate the nonexistent retired path. A current source train with post-release source content must first have receipt-backed source-continuity authority; relocation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation plan --old-root /old/archive/root --backup-manifest /path/to/manifest.json --output /safe/relocation-plan.json --output-format json
@@ -59,7 +59,7 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-contin
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-continuity-recovery apply --plan /safe/continuity-plan.json --authorize PLAN_SHA256 --output-format json
 ```
 
-After this bridge commits, create and verify a fresh `full_evidence` backup at the moved root before running the separate archive-root-relocation plan/apply transition. A prepared bridge receipt blocks daemon startup and names its exact resume command.
+After this bridge commits, create and verify a fresh `full_evidence` backup at the moved root. Use that moved-root manifest with the separate archive-root-relocation plan/apply transition while `--old-root` continues to name the retired pre-move root. A prepared bridge receipt blocks daemon startup and names its exact resume command.
 
 ### Rebuild deployment-currency preflight
 

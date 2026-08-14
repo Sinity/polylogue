@@ -64,6 +64,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
     load_durable_change_train_manifest,
     rebind_released_source_train_archive_identity,
+    recover_released_source_train_continuity,
 )
 from polylogue.storage.sqlite.migration_runner import (
     _canonical_json_sha256,
@@ -113,14 +114,15 @@ def test_relocation_nested_dispatch_keeps_analyze_facets_on_the_real_action(cli_
 
 
 def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
-    workspace_env: dict[str, Path], tmp_path: Path
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The plan enters backup attestation and immutable archive inspection, never a write route."""
     old_root = workspace_env["archive_root"]
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "moved-archive"
     os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
     before = {
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
@@ -141,10 +143,13 @@ def test_plan_refuses_fresh_bootstrap_without_writing_the_moved_archive(
 
 
 def test_plan_rejects_mutated_manifest_and_stale_authenticated_receipt(
-    workspace_env: dict[str, Path], tmp_path: Path
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The old-path HMAC cannot bypass manifest-byte or closed-package binding."""
     old_root = workspace_env["archive_root"]
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
     first = backup_archive(output_dir=tmp_path / "first", profile="full_evidence", verify=True)
     second = backup_archive(output_dir=tmp_path / "second", profile="full_evidence", verify=True)
     assert first.ok and first.output_path is not None
@@ -154,8 +159,6 @@ def test_plan_rejects_mutated_manifest_and_stale_authenticated_receipt(
     second_receipt = Path(second.output_path) / "verification-receipt.json"
     original_manifest = first_manifest.read_bytes()
     original_receipt = first_receipt.read_bytes()
-    new_root = tmp_path / "moved"
-    os.rename(old_root, new_root)
 
     first_manifest.write_bytes(original_manifest + b"\n")
     with pytest.raises(ArchiveRootRelocationError, match="does not match manifest"):
@@ -195,7 +198,7 @@ def test_plan_rejects_byte_identical_copied_archive_with_new_inodes(
     assert (old_root / "source.db").read_bytes() == (new_root / "source.db").read_bytes()
     assert (old_root / "source.db").stat().st_ino != (new_root / "source.db").stat().st_ino
 
-    with pytest.raises(ArchiveRootRelocationError, match="device/inode continuity"):
+    with pytest.raises(ArchiveRootRelocationError, match="moved-root authority"):
         prepare_archive_root_relocation(
             old_root=old_root,
             new_root=new_root,
@@ -213,8 +216,8 @@ def test_tier_identity_rejects_a_changed_device_with_a_coincident_inode(tmp_path
         tier="source",
         configured_path=str(tmp_path / "source.db"),
         resolved_path=str(tmp_path / "source.db"),
-        old_device=41,
-        old_inode=99,
+        backup_device=41,
+        backup_inode=99,
         device=42,
         inode=99,
         size_bytes=1,
@@ -225,8 +228,8 @@ def test_tier_identity_rejects_a_changed_device_with_a_coincident_inode(tmp_path
         quick_check=("ok",),
     )
     fingerprint = {
-        "device": snapshot.old_device,
-        "inode": snapshot.old_inode,
+        "device": snapshot.backup_device,
+        "inode": snapshot.backup_inode,
         "size_bytes": snapshot.size_bytes,
         "sha256": snapshot.sha256,
         "user_version": snapshot.user_version,
@@ -248,10 +251,11 @@ def test_plan_rejects_root_device_change_with_a_coincident_inode(
 
     old_root = workspace_env["archive_root"]
     _released_moved_source_train(old_root, monkeypatch)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
     real_authenticated_identity = relocation._authenticated_identity
 
     def changed_root_device(payload: object, *, label: str) -> tuple[int, int]:
@@ -1236,10 +1240,11 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
     old_root = workspace_env["archive_root"]
     manifest = _released_moved_source_train(old_root, monkeypatch)
     _attach_retained_source_continuity(old_root, manifest)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
     moved_manifest = new_root / manifest.relative_to(old_root)
     with sqlite3.connect(new_root / "source.db") as connection:
         with pytest.raises(Exception, match="continuity proof failed"):
@@ -1258,8 +1263,8 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
         stopped_daemon_evidence_ref="proof:daemon-stopped",
         single_writer_evidence_ref="proof:archive-ownership-lock",
     )
-    assert plan.old_root_inode == plan.new_root_inode
-    assert all(item.old_inode == item.inode for item in plan.tiers)
+    assert plan.backup_root_inode == plan.new_root_inode
+    assert all(item.backup_inode == item.inode for item in plan.tiers)
     assert database_before == {
         path.name: (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) for path in new_root.glob("*.db")
     }
@@ -1354,10 +1359,11 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     manifest = _released_moved_source_train(old_root, monkeypatch)
     _attach_retained_source_continuity(old_root, manifest)
     old_active_target = _activate_movable_index_generation(old_root)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
 
     plan = prepare_archive_root_relocation(
         old_root=old_root,
@@ -1412,14 +1418,15 @@ def test_relocation_rejects_an_active_pointer_not_owned_by_the_old_root(
     old_root = workspace_env["archive_root"]
     manifest = _released_moved_source_train(old_root, monkeypatch)
     _attach_retained_source_continuity(old_root, manifest)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     foreign = tmp_path / "foreign" / "index.db"
     foreign.parent.mkdir()
     foreign.write_bytes(b"foreign")
     (old_root / ".index-active-pointer").write_text(str(foreign), encoding="utf-8")
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
 
     with pytest.raises(ArchiveRootRelocationError, match="not owned by the old root"):
         prepare_archive_root_relocation(
@@ -1448,10 +1455,11 @@ def test_plan_rejects_the_real_stale_source_train_shape_before_receipt_write(
         ),
     )
     write_durable_change_train_manifest(manifest, stale, expected_revision=released.revision)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
     manifest_before = (new_root / manifest.relative_to(old_root)).read_bytes()
 
     with pytest.raises(ArchiveRootRelocationError, match="typed source-continuity refresh"):
@@ -1465,3 +1473,245 @@ def test_plan_rejects_the_real_stale_source_train_shape_before_receipt_write(
 
     assert (new_root / manifest.relative_to(old_root)).read_bytes() == manifest_before
     assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
+
+
+def test_historical_continuity_recovery_cli_rejects_a_byte_identical_copied_archive(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The historical old-path attestation must not authorize a copied destination file."""
+    moved_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    copied_root = tmp_path / "copied"
+    shutil.copytree(moved_root, copied_root, symlinks=True)
+    plan_path = tmp_path / "copied-continuity-plan.json"
+
+    with _test_historical_operation_evidence_resource(evidence):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(plan_path),
+                "--output-format",
+                "json",
+            ],
+            env={"POLYLOGUE_ARCHIVE_ROOT": str(copied_root)},
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code != 0
+    assert "device/inode continuity" in result.output
+
+
+def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_relocation(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented recovery, fresh backup, then relocation sequence uses public commands."""
+    moved_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(moved_root)}
+    continuity_plan = tmp_path / "continuity-plan.json"
+    with _test_historical_operation_evidence_resource(evidence):
+        planned = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(continuity_plan),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert planned.exit_code == 0, planned.output
+        continuity_digest = str(_maintenance_json_output(planned.output)["plan_sha256"])
+        recovered = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(continuity_plan),
+                "--authorize",
+                continuity_digest,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+    assert recovered.exit_code == 0, recovered.output
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(moved_root))
+    backup = backup_archive(output_dir=tmp_path / "moved-backup", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    relocation_plan = tmp_path / "relocation-plan.json"
+    relocated = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "archive-root-relocation",
+            "plan",
+            "--old-root",
+            str(workspace_env["archive_root"]),
+            "--backup-manifest",
+            str(Path(backup.output_path) / "manifest.json"),
+            "--output",
+            str(relocation_plan),
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+
+    assert relocated.exit_code == 0, relocated.output
+
+
+def test_historical_continuity_recovery_resume_rejects_a_foreign_same_evidence_receipt(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prepared recovery may resume only with its sealed refresh receipt and CAS revision."""
+    from polylogue.operations import historical_source_continuity_recovery as recovery
+
+    moved_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(moved_root)}
+    plan_path = tmp_path / "continuity-plan.json"
+    with _test_historical_operation_evidence_resource(evidence):
+        planned = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(plan_path),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert planned.exit_code == 0, planned.output
+        plan = _maintenance_json_output(planned.output)
+        plan_sha256 = str(plan["plan_sha256"])
+        source_before = plan.get("source_before")
+        source_after = plan.get("source_after")
+        assert isinstance(source_before, dict) and isinstance(source_after, dict)
+        observed_at_ms = source_after.get("observed_at_ms")
+        assert type(observed_at_ms) is int
+        real_write_refresh = recovery._write_refresh_receipt
+        monkeypatch.setattr(
+            recovery, "_write_refresh_receipt", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("crash"))
+        )
+        with pytest.raises(RuntimeError, match="crash"):
+            CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "ops",
+                    "maintenance",
+                    "source-continuity-recovery",
+                    "apply",
+                    "--plan",
+                    str(plan_path),
+                    "--authorize",
+                    plan_sha256,
+                    "--output-format",
+                    "json",
+                ],
+                env=command_env,
+                catch_exceptions=False,
+            )
+        monkeypatch.setattr(recovery, "_write_refresh_receipt", real_write_refresh)
+        train_path = Path(str(plan["source_train_path"]))
+        train = load_durable_change_train_manifest(train_path)
+        foreign_payload = {
+            "format": "polylogue.source-continuity-refresh.v1",
+            "operation_id": "foreign",
+            "evidence_ref": "proof:foreign-continuity",
+            "backup_manifest": str(pre_manifest),
+            "backup_manifest_sha256": _sha256(pre_manifest),
+            "mutation_receipt": str(mutation_receipt),
+            "mutation_receipt_sha256": _sha256(mutation_receipt),
+            "train_id": train.train_id,
+            "source_before": source_before,
+            "source_after": source_after,
+            "refreshed_at_ms": observed_at_ms,
+        }
+        foreign_digest = _canonical_json_sha256(foreign_payload)
+        real_write_refresh(
+            moved_root / ".maintenance-state" / "source-continuity-refreshes" / f"{foreign_digest}.json",
+            {**foreign_payload, "refresh_sha256": foreign_digest},
+        )
+        substituted = recover_released_source_train_continuity(
+            train,
+            current_evidence=recovery._evidence_from_plan(source_after),
+            proof_ref=f"proof:source-continuity-refresh:{foreign_digest}",
+        )
+        write_durable_change_train_manifest(train_path, substituted, expected_revision=train.revision)
+        resumed = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+
+    assert resumed.exit_code != 0
+    assert "exact refresh proof" in resumed.output

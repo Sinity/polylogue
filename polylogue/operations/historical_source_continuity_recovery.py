@@ -36,7 +36,7 @@ from polylogue.maintenance.receipt_fs import (
     read_optional_receipt,
 )
 from polylogue.paths import render_root
-from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, TierFileIdentity
 from polylogue.storage.backup_attestation import BackupAttestationError, verify_verification_receipt
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
@@ -99,6 +99,14 @@ class HistoricalSourceContinuityRecoveryPlan(BaseModel):
     post_backup_manifest_sha256: str
     post_backup_receipt_path: str
     post_backup_receipt_sha256: str
+    pre_backup_source_device: int
+    pre_backup_source_inode: int
+    post_backup_source_device: int
+    post_backup_source_inode: int
+    new_source_device: int
+    new_source_inode: int
+    refresh_proof_id: str
+    refresh_receipt_sha256: str
     source_train_path: str
     source_train_revision: int
     source_train_sha256: str
@@ -289,7 +297,7 @@ def _verify_receipt(receipt: HistoricalSourceContinuityRecoveryReceipt) -> None:
 
 def _backup_source_evidence(
     manifest_path: Path, *, old_source_path: Path
-) -> tuple[Path, dict[str, object], DurableDatabaseEvidence]:
+) -> tuple[Path, dict[str, object], DurableDatabaseEvidence, tuple[int, int]]:
     """Authenticate one old-path source backup without assuming it is full-evidence."""
     _real_file(manifest_path, label="historical backup manifest")
     backup_root = _real_directory(manifest_path.parent, label="historical backup directory")
@@ -322,6 +330,9 @@ def _backup_source_evidence(
         raise HistoricalSourceContinuityRecoveryError("historical backup lacks source artifact authority")
     if fingerprint.get("path") != str(old_source_path) or artifact.get("source_fingerprint") != fingerprint:
         raise HistoricalSourceContinuityRecoveryError("historical backup source path authority changed")
+    device, inode = fingerprint.get("device"), fingerprint.get("inode")
+    if type(device) is not int or type(inode) is not int:
+        raise HistoricalSourceContinuityRecoveryError("historical backup lacks authenticated source device/inode")
     backup_source = backup_root / "source.db"
     _real_file(backup_source, label="historical backup source.db")
     actual = {"sha256": _sha256(backup_source), "size_bytes": backup_source.stat().st_size}
@@ -337,7 +348,94 @@ def _backup_source_evidence(
         or artifact.get("user_version") != evidence.user_version
     ):
         raise HistoricalSourceContinuityRecoveryError("historical backup source version differs from its receipt")
-    return receipt_path, manifest, evidence
+    return receipt_path, manifest, evidence, (device, inode)
+
+
+def _require_source_identity(root: Path, *, device: int, inode: int, label: str) -> TierFileIdentity:
+    identity = TierFileIdentity.resolve("source", root / "source.db")
+    if not identity.exists or (identity.device, identity.inode) != (device, inode):
+        raise HistoricalSourceContinuityRecoveryError(
+            f"historical continuity recovery requires source.db device/inode continuity for {label}; "
+            "a copied archive is not accepted"
+        )
+    return identity
+
+
+def _refresh_proof_id(
+    *,
+    old_root: Path,
+    new_root: Path,
+    source_train_sha256: str,
+    historical_evidence_sha256: str,
+    pre_identity: tuple[int, int],
+    post_identity: tuple[int, int],
+    new_identity: TierFileIdentity,
+) -> str:
+    return _canonical_json_sha256(
+        {
+            "old_root": str(old_root),
+            "new_root": str(new_root),
+            "source_train_sha256": source_train_sha256,
+            "historical_evidence_sha256": historical_evidence_sha256,
+            "pre_identity": pre_identity,
+            "post_identity": post_identity,
+            "new_identity": (new_identity.device, new_identity.inode),
+        }
+    )
+
+
+def _refresh_payload(plan: HistoricalSourceContinuityRecoveryPlan, *, train_id: str) -> dict[str, object]:
+    observed_at_ms = plan.source_after.get("observed_at_ms")
+    if type(observed_at_ms) is not int:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery plan has invalid refresh timestamp"
+        )
+    return {
+        "format": "polylogue.source-continuity-refresh.v1",
+        "operation_id": plan.legacy_candidate_digest,
+        "evidence_ref": "proof:historical-source-continuity-recovery:" + plan.refresh_proof_id,
+        "refresh_proof_id": plan.refresh_proof_id,
+        "backup_manifest": plan.pre_backup_manifest_path,
+        "backup_manifest_sha256": plan.pre_backup_manifest_sha256,
+        "mutation_receipt": plan.mutation_receipt_path,
+        "mutation_receipt_sha256": plan.mutation_receipt_sha256,
+        "train_id": train_id,
+        "source_before": plan.source_before,
+        "source_after": plan.source_after,
+        "refreshed_at_ms": observed_at_ms,
+        "historical_bridge": {
+            "pre_backup": plan.pre_backup_manifest_sha256,
+            "post_backup": plan.post_backup_manifest_sha256,
+            "pre_backup_source_identity": [plan.pre_backup_source_device, plan.pre_backup_source_inode],
+            "post_backup_source_identity": [plan.post_backup_source_device, plan.post_backup_source_inode],
+            "new_source_identity": [plan.new_source_device, plan.new_source_inode],
+            "legacy_candidate_count": plan.legacy_candidate_count,
+            "legacy_candidate_digest": plan.legacy_candidate_digest,
+            "census": plan.census,
+        },
+    }
+
+
+def _validate_exact_refresh_binding(
+    root: Path, plan: HistoricalSourceContinuityRecoveryPlan, train: DurableChangeTrain
+) -> None:
+    expected_ref = "proof:source-continuity-refresh:" + plan.refresh_receipt_sha256
+    if expected_ref not in train.proof_refs or train.source_continuity_evidence is None:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof is missing")
+    refresh_path = _refresh_path(root, plan.refresh_receipt_sha256)
+    try:
+        payload = json.loads(refresh_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery exact refresh proof is unreadable"
+        ) from exc
+    if not isinstance(payload, dict) or payload.pop("refresh_sha256", None) != plan.refresh_receipt_sha256:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof changed")
+    expected_payload = _refresh_payload(plan, train_id=train.train_id)
+    if payload != expected_payload or _canonical_json_sha256(payload) != plan.refresh_receipt_sha256:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof changed")
+    if not _evidence_matches_plan(train.source_continuity_evidence, plan.source_after):
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof changed")
 
 
 def _legacy_liveness_receipt(receipt_path: Path, *, old_source_path: Path, pre_manifest: Path) -> tuple[int, str]:
@@ -707,8 +805,21 @@ def prepare_historical_source_continuity_recovery(
             "historical continuity recovery requires distinct old and new roots"
         )
     old_source = old_resolved / "source.db"
-    pre_receipt, _pre_manifest, pre = _backup_source_evidence(pre_backup_manifest, old_source_path=old_source)
-    post_receipt, _post_manifest, post = _backup_source_evidence(post_backup_manifest, old_source_path=old_source)
+    pre_receipt, _pre_manifest, pre, pre_identity = _backup_source_evidence(
+        pre_backup_manifest, old_source_path=old_source
+    )
+    post_receipt, _post_manifest, post, post_identity = _backup_source_evidence(
+        post_backup_manifest, old_source_path=old_source
+    )
+    if pre_identity != post_identity:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical backups do not retain one authenticated source identity"
+        )
+    new_source_identity = _require_source_identity(
+        root, device=pre_identity[0], inode=pre_identity[1], label="pre backup"
+    )
+    _require_source_identity(root, device=post_identity[0], inode=post_identity[1], label="post backup")
+    assert new_source_identity.device is not None and new_source_identity.inode is not None
     candidates, candidate_digest = _legacy_liveness_receipt(
         mutation_receipt, old_source_path=old_source, pre_manifest=pre_backup_manifest.absolute()
     )
@@ -775,6 +886,39 @@ def prepare_historical_source_continuity_recovery(
     if train.source_continuity_evidence is not None:
         raise HistoricalSourceContinuityRecoveryError("current released source train already has continuity authority")
     census = _census(root)
+    refresh_proof_id = _refresh_proof_id(
+        old_root=old_resolved,
+        new_root=root,
+        source_train_sha256=_sha256(train_path),
+        historical_evidence_sha256=historical_evidence_sha256,
+        pre_identity=pre_identity,
+        post_identity=post_identity,
+        new_identity=new_source_identity,
+    )
+    refresh_payload = {
+        "format": "polylogue.source-continuity-refresh.v1",
+        "operation_id": candidate_digest,
+        "evidence_ref": "proof:historical-source-continuity-recovery:" + refresh_proof_id,
+        "refresh_proof_id": refresh_proof_id,
+        "backup_manifest": str(pre_backup_manifest.absolute()),
+        "backup_manifest_sha256": _sha256(pre_backup_manifest),
+        "mutation_receipt": str(mutation_receipt.absolute()),
+        "mutation_receipt_sha256": _sha256(mutation_receipt),
+        "train_id": train.train_id,
+        "source_before": source_before,
+        "source_after": _evidence_payload(current),
+        "refreshed_at_ms": current.observed_at_ms,
+        "historical_bridge": {
+            "pre_backup": _sha256(pre_backup_manifest),
+            "post_backup": _sha256(post_backup_manifest),
+            "pre_backup_source_identity": list(pre_identity),
+            "post_backup_source_identity": list(post_identity),
+            "new_source_identity": [new_source_identity.device, new_source_identity.inode],
+            "legacy_candidate_count": candidates,
+            "legacy_candidate_digest": candidate_digest,
+            "census": census,
+        },
+    }
     return _sealed_plan(
         old_configured_root=str(old_configured),
         old_resolved_root=str(old_resolved),
@@ -793,6 +937,14 @@ def prepare_historical_source_continuity_recovery(
         post_backup_manifest_sha256=_sha256(post_backup_manifest),
         post_backup_receipt_path=str(post_receipt),
         post_backup_receipt_sha256=_sha256(post_receipt),
+        pre_backup_source_device=pre_identity[0],
+        pre_backup_source_inode=pre_identity[1],
+        post_backup_source_device=post_identity[0],
+        post_backup_source_inode=post_identity[1],
+        new_source_device=new_source_identity.device,
+        new_source_inode=new_source_identity.inode,
+        refresh_proof_id=refresh_proof_id,
+        refresh_receipt_sha256=_canonical_json_sha256(refresh_payload),
         source_train_path=str(train_path),
         source_train_revision=train.revision,
         source_train_sha256=_sha256(train_path),
@@ -924,8 +1076,22 @@ def _revalidate(
     if str(root) != plan.new_resolved_root:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery configured root changed")
     old_source = Path(plan.old_resolved_root) / "source.db"
-    pre_receipt, _m, pre = _backup_source_evidence(Path(plan.pre_backup_manifest_path), old_source_path=old_source)
-    post_receipt, _m2, post = _backup_source_evidence(Path(plan.post_backup_manifest_path), old_source_path=old_source)
+    pre_receipt, _m, pre, pre_identity = _backup_source_evidence(
+        Path(plan.pre_backup_manifest_path), old_source_path=old_source
+    )
+    post_receipt, _m2, post, post_identity = _backup_source_evidence(
+        Path(plan.post_backup_manifest_path), old_source_path=old_source
+    )
+    if pre_identity != (plan.pre_backup_source_device, plan.pre_backup_source_inode) or post_identity != (
+        plan.post_backup_source_device,
+        plan.post_backup_source_inode,
+    ):
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery backup identity changed")
+    new_identity = _require_source_identity(
+        root, device=plan.new_source_device, inode=plan.new_source_inode, label="sealed destination"
+    )
+    if (new_identity.device, new_identity.inode) != pre_identity or pre_identity != post_identity:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source identity changed")
     bindings = (
         (Path(plan.mutation_receipt_path), plan.mutation_receipt_sha256),
         (Path(plan.pre_backup_manifest_path), plan.pre_backup_manifest_sha256),
@@ -1007,27 +1173,12 @@ def _apply_historical_source_continuity_recovery_locked(
     resolved = _real_directory(root, label="configured archive root")
     _revalidate(resolved, plan, stopped=stopped_daemon_evidence_ref, writer=single_writer_evidence_ref)
     planned_current = _evidence_from_plan(plan.source_after)
-    refresh_payload = {
-        "format": "polylogue.source-continuity-refresh.v1",
-        "operation_id": plan.legacy_candidate_digest,
-        "evidence_ref": "proof:historical-source-continuity-recovery:" + plan.plan_sha256,
-        "backup_manifest": plan.pre_backup_manifest_path,
-        "backup_manifest_sha256": plan.pre_backup_manifest_sha256,
-        "mutation_receipt": plan.mutation_receipt_path,
-        "mutation_receipt_sha256": plan.mutation_receipt_sha256,
-        "train_id": load_durable_change_train_manifest(Path(plan.source_train_path)).train_id,
-        "source_before": plan.source_before,
-        "source_after": plan.source_after,
-        "refreshed_at_ms": planned_current.observed_at_ms,
-        "historical_bridge": {
-            "pre_backup": plan.pre_backup_manifest_sha256,
-            "post_backup": plan.post_backup_manifest_sha256,
-            "legacy_candidate_count": plan.legacy_candidate_count,
-            "legacy_candidate_digest": plan.legacy_candidate_digest,
-            "census": plan.census,
-        },
-    }
+    refresh_payload = _refresh_payload(
+        plan, train_id=load_durable_change_train_manifest(Path(plan.source_train_path)).train_id
+    )
     refresh_digest = _canonical_json_sha256(refresh_payload)
+    if refresh_digest != plan.refresh_receipt_sha256:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery sealed refresh proof changed")
     refresh_path = _refresh_path(resolved, refresh_digest)
     command = f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance source-continuity-recovery apply --plan <plan.json> --authorize {plan.plan_sha256} --output-format json"
     receipt_path = _receipt_path(resolved, plan)
@@ -1051,6 +1202,7 @@ def _apply_historical_source_continuity_recovery_locked(
         if receipt.state == "committed":
             train = load_durable_change_train_manifest(Path(plan.source_train_path))
             _validate_source_continuity_refresh_receipt(resolved, train)
+            _validate_exact_refresh_binding(resolved, plan, train)
             return HistoricalSourceContinuityRecoveryResult(
                 state="committed",
                 plan_sha256=plan.plan_sha256,
@@ -1071,12 +1223,8 @@ def _apply_historical_source_continuity_recovery_locked(
         write_durable_change_train_manifest(path, updated, expected_revision=plan.source_train_revision)
     else:
         _validate_source_continuity_refresh_receipt(resolved, train)
-        if train.source_continuity_evidence is None or not _evidence_matches_plan(
-            train.source_continuity_evidence, plan.source_after
-        ):
-            raise HistoricalSourceContinuityRecoveryError(
-                "historical continuity recovery source train is neither exact before nor after"
-            )
+        _validate_exact_refresh_binding(resolved, plan, train)
+    _validate_exact_refresh_binding(resolved, plan, load_durable_change_train_manifest(path))
     committed = _sealed_receipt(
         state="committed",
         revision=1,
