@@ -672,12 +672,6 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             style=payload_optional_string(payload.get("style")) or "default",
             session_native_ids=payload_string_tuple(payload.get("session_native_ids")),
             origin=metadata.origin,
-            path_targets=metadata.path_targets,
-            artifact_targets=metadata.artifact_targets,
-            conceptual_path_targets=metadata.conceptual_path_targets,
-            conceptual_artifact_targets=metadata.conceptual_artifact_targets,
-            operation_targets=metadata.operation_targets,
-            maintenance_targets=metadata.maintenance_targets,
             tags=metadata.tags,
         )
 
@@ -714,14 +708,6 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
 def _inferred_schema_metadata() -> ScenarioMetadata:
     return ScenarioMetadata(
         origin="inferred.schema",
-        path_targets=("inferred-corpus-compilation-loop",),
-        artifact_targets=(
-            "schema_packages",
-            "schema_cluster_manifests",
-            "inferred_corpus_specs",
-            "inferred_corpus_scenarios",
-        ),
-        operation_targets=("compile-inferred-corpus-specs", "compile-inferred-corpus-scenarios"),
         tags=("inferred", "schema", "synthetic"),
     )
 
@@ -809,16 +795,6 @@ def build_corpus_scenarios(
                 package_version=package_version,
                 corpus_specs=ordered_specs,
                 origin=origin,
-                path_targets=merge_unique_string_tuples(*(spec.path_targets for spec in ordered_specs)),
-                artifact_targets=merge_unique_string_tuples(*(spec.artifact_targets for spec in ordered_specs)),
-                conceptual_path_targets=merge_unique_string_tuples(
-                    *(spec.conceptual_path_targets for spec in ordered_specs)
-                ),
-                conceptual_artifact_targets=merge_unique_string_tuples(
-                    *(spec.conceptual_artifact_targets for spec in ordered_specs)
-                ),
-                operation_targets=merge_unique_string_tuples(*(spec.operation_targets for spec in ordered_specs)),
-                maintenance_targets=merge_unique_string_tuples(*(spec.maintenance_targets for spec in ordered_specs)),
                 tags=merge_unique_string_tuples(tags, *(spec.tags for spec in ordered_specs)),
             )
         )
@@ -1194,12 +1170,6 @@ def _cluster_to_corpus_spec(
         messages_max=16,
         style="default",
         origin=metadata.origin,
-        path_targets=metadata.path_targets,
-        artifact_targets=metadata.artifact_targets,
-        conceptual_path_targets=metadata.conceptual_path_targets,
-        conceptual_artifact_targets=metadata.conceptual_artifact_targets,
-        operation_targets=metadata.operation_targets,
-        maintenance_targets=metadata.maintenance_targets,
         tags=metadata.tags,
     )
 
@@ -1243,12 +1213,6 @@ def build_inferred_corpus_specs(
             messages_max=16,
             style="default",
             origin=metadata.origin,
-            path_targets=metadata.path_targets,
-            artifact_targets=metadata.artifact_targets,
-            conceptual_path_targets=metadata.conceptual_path_targets,
-            conceptual_artifact_targets=metadata.conceptual_artifact_targets,
-            operation_targets=metadata.operation_targets,
-            maintenance_targets=metadata.maintenance_targets,
             tags=metadata.tags,
         ),
     )

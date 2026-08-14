@@ -39,35 +39,6 @@ def test_polylogue_execution_renders_runtime_and_display_forms() -> None:
     assert execution.polylogue_invoke_args == ("--plain", "ops", "doctor", "--format", "json")
 
 
-def test_polylogue_doctor_targeted_execution_uses_maintenance_target_catalog_metadata() -> None:
-    execution = polylogue_execution(
-        "ops",
-        "doctor",
-        "--repair",
-        "--target",
-        "message_type_backfill",
-        "--target",
-        "session_insights",
-    )
-
-    assert execution.metadata.operation_targets == (
-        "backfill-message-type",
-        "materialize-session-insights",
-        "project-session-insight-readiness",
-    )
-    assert execution.metadata.maintenance_targets == (
-        "message_type_backfill",
-        "session_insights",
-    )
-
-
-def test_polylogue_doctor_target_aliases_resolve_through_catalog() -> None:
-    execution = polylogue_execution("ops", "doctor", "--target", "raw_snapshots")
-
-    assert execution.metadata.operation_targets == ()
-    assert execution.metadata.maintenance_targets == ("superseded_raw_snapshots",)
-
-
 def test_pipeline_probe_execution_renders_control_plane_command() -> None:
     execution = pipeline_probe_execution(
         PipelineProbeRequest(

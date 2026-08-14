@@ -418,17 +418,6 @@ def test_build_inferred_corpus_specs_uses_cluster_families_when_present() -> Non
     assert specs[0].profile.profile_tokens == ()
     assert specs[0].profile.observed_sample_count == 12
     assert specs[0].origin == "inferred.schema"
-    assert specs[0].path_targets == ("inferred-corpus-compilation-loop",)
-    assert specs[0].artifact_targets == (
-        "schema_packages",
-        "schema_cluster_manifests",
-        "inferred_corpus_specs",
-        "inferred_corpus_scenarios",
-    )
-    assert specs[0].operation_targets == (
-        "compile-inferred-corpus-specs",
-        "compile-inferred-corpus-scenarios",
-    )
 
 
 def test_build_inferred_corpus_specs_merges_package_profile_metadata() -> None:
@@ -709,9 +698,6 @@ def test_build_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
                 package_version="v7",
                 profile=CorpusProfile(family_ids=("cluster-a",)),
                 origin="inferred.schema",
-                conceptual_path_targets=("schema-variant-a",),
-                conceptual_artifact_targets=("schema-artifact-a",),
-                maintenance_targets=("session_insights",),
                 tags=("inferred", "schema", "synthetic"),
             ),
             CorpusSpec(
@@ -719,9 +705,6 @@ def test_build_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
                 package_version="v7",
                 profile=CorpusProfile(family_ids=("cluster-b",)),
                 origin="inferred.schema",
-                conceptual_path_targets=("schema-variant-b",),
-                conceptual_artifact_targets=("schema-artifact-b",),
-                maintenance_targets=("message_type_backfill",),
                 tags=("inferred", "schema", "synthetic"),
             ),
         ),
@@ -739,9 +722,6 @@ def test_build_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
                     package_version="v7",
                     profile=CorpusProfile(family_ids=("cluster-a",)),
                     origin="inferred.schema",
-                    conceptual_path_targets=("schema-variant-a",),
-                    conceptual_artifact_targets=("schema-artifact-a",),
-                    maintenance_targets=("session_insights",),
                     tags=("inferred", "schema", "synthetic"),
                 ),
                 CorpusSpec(
@@ -749,16 +729,10 @@ def test_build_corpus_scenarios_groups_specs_by_provider_and_version() -> None:
                     package_version="v7",
                     profile=CorpusProfile(family_ids=("cluster-b",)),
                     origin="inferred.schema",
-                    conceptual_path_targets=("schema-variant-b",),
-                    conceptual_artifact_targets=("schema-artifact-b",),
-                    maintenance_targets=("message_type_backfill",),
                     tags=("inferred", "schema", "synthetic"),
                 ),
             ),
             origin="compiled.inferred-corpus-scenario",
-            conceptual_path_targets=("schema-variant-a", "schema-variant-b"),
-            conceptual_artifact_targets=("schema-artifact-a", "schema-artifact-b"),
-            maintenance_targets=("session_insights", "message_type_backfill"),
             tags=("inferred", "schema", "synthetic", "scenario"),
         ),
     )

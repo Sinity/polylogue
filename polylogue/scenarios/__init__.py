@@ -70,12 +70,6 @@ from .insight_surfaces import (
 )
 from .metadata import (
     ScenarioMetadata,
-    declared_operation_target_names,
-    runtime_artifact_graph,
-    runtime_artifact_target_names,
-    runtime_maintenance_target_names,
-    runtime_operation_target_names,
-    runtime_path_target_names,
 )
 from .operational_surfaces import (
     OPERATIONAL_SURFACE_FAMILIES,
@@ -179,7 +173,6 @@ __all__ = [
     "compile_projection_entries",
     "dispatch_execution",
     "dispatch_runner_execution",
-    "declared_operation_target_names",
     "ExecutableScenario",
     "ExecutionKind",
     "ExecutionSpec",
@@ -206,11 +199,6 @@ __all__ = [
     "run_execution",
     "build_insight_contract_surfaces",
     "build_live_insight_surface_lanes",
-    "runtime_artifact_graph",
-    "runtime_artifact_target_names",
-    "runtime_maintenance_target_names",
-    "runtime_operation_target_names",
-    "runtime_path_target_names",
     "WorkloadBudget",
     "WorkloadBudgetResult",
     "WorkloadEnvelopeSpec",

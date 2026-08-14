@@ -20,9 +20,6 @@ class CampaignResult:
     db_stats: dict[str, int] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     origin: str = "authored"
-    path_targets: list[str] = field(default_factory=list)
-    artifact_targets: list[str] = field(default_factory=list)
-    operation_targets: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
 

@@ -6,8 +6,6 @@ from polylogue.scenarios import (
     CorpusSpec,
     ExecutableScenario,
     ScenarioProjectionSourceKind,
-    devtools_execution,
-    polylogue_execution,
     pytest_execution,
 )
 
@@ -38,7 +36,6 @@ def test_executable_scenario_exposes_pytest_targets() -> None:
         description="machine contract lane",
         execution=pytest_execution("tests/unit/cli/test_machine_contract.py"),
         origin="authored.validation-lane",
-        operation_targets=("cli.json-contract",),
         tags=("contract", "json"),
     )
 
@@ -48,7 +45,6 @@ def test_executable_scenario_exposes_pytest_targets() -> None:
     assert scenario.tests == ("tests/unit/cli/test_machine_contract.py",)
     assert projection.source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
     assert projection.name == "machine-contract"
-    assert projection.operation_targets == ("cli.json-contract",)
     assert projection.tags == ("contract", "json")
     assert execution_payload["kind"] == "pytest"
     assert execution_payload["argv"] == ["tests/unit/cli/test_machine_contract.py"]
@@ -67,56 +63,3 @@ def test_executable_scenario_projection_payload_preserves_corpus_specs() -> None
     corpus_specs = _dict_list_payload(projection.source_payload["corpus_specs"])
 
     assert corpus_specs[0]["provider"] == "chatgpt"
-
-
-def test_executable_scenario_infers_schema_query_metadata_from_devtools_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="gen-schema-list",
-        description="schema list contract",
-        execution=devtools_execution("lab schema list", "--json"),
-    )
-
-    assert scenario.path_targets == ("schema-list-query-loop",)
-    assert scenario.artifact_targets == (
-        "schema_packages",
-        "schema_cluster_manifests",
-        "inferred_corpus_specs",
-        "inferred_corpus_scenarios",
-        "schema_list_results",
-    )
-    assert scenario.operation_targets == ("query-schema-catalog",)
-
-
-def test_executable_scenario_infers_schema_explain_metadata_from_devtools_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="gen-schema-explain-chatgpt",
-        description="schema explain contract",
-        execution=devtools_execution("lab schema explain", "--provider", "chatgpt", "--json"),
-    )
-
-    assert scenario.path_targets == ("schema-explain-query-loop",)
-    assert scenario.artifact_targets == ("schema_packages", "schema_explanation_results")
-    assert scenario.operation_targets == ("query-schema-explanations",)
-
-
-def test_executable_scenario_infers_embed_stats_metadata_from_polylogue_execution() -> None:
-    scenario = _ExecutableFixture(
-        name="embed-stats-contract",
-        description="embed stats contract",
-        execution=polylogue_execution("embed", "--stats", "--format", "json"),
-    )
-
-    assert scenario.path_targets == ("retrieval-band-readiness-loop", "embedding-status-query-loop")
-    assert scenario.artifact_targets == (
-        "embedding_metadata_rows",
-        "embedding_status_rows",
-        "message_embedding_vectors",
-        "session_insight_readiness",
-        "retrieval_band_readiness",
-        "embedding_status_results",
-    )
-    assert scenario.operation_targets == (
-        "project-retrieval-band-readiness",
-        "query-embedding-status",
-        "cli.json-contract",
-    )

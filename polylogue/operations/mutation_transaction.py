@@ -42,6 +42,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -593,6 +594,9 @@ class OperationExecutor:
         self._now_ms = now_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
         self._archive_root = archive_root
+        self._prevalidated_executions: ContextVar[tuple[tuple[object, MutationPlan], ...]] = ContextVar(
+            "operation_executor_prevalidated_executions", default=()
+        )
 
     @classmethod
     def for_archive_root(
@@ -762,8 +766,10 @@ class OperationExecutor:
         operation_id: str | None = None
         if self._audit is not None:
             operation_id = self._audit.consume_authorization_and_start(preview, authorization)
+        active_executions = self._prevalidated_executions.get()
+        scope_token = self._prevalidated_executions.set((*active_executions, (binding.actuator, fresh_plan)))
         try:
-            result = binding.actuator.apply(fresh_plan, args)
+            result = self.execute(binding.actuator, fresh_plan, authorization, args)
         except Exception as exc:
             if self._audit is not None and operation_id is not None:
                 self._audit.finalize_attempt(
@@ -773,6 +779,8 @@ class OperationExecutor:
                     unknown_reason="actuator exception after durable intent",
                 )
             raise
+        finally:
+            self._prevalidated_executions.reset(scope_token)
         receipt = result
         if self._audit is not None and operation_id is not None:
             try:
@@ -942,6 +950,19 @@ class OperationExecutor:
             raise AuthorizationMismatchError(
                 f"authorization bound to plan {authorization.plan_hash!r} does not match plan {plan.plan_hash!r}"
             )
+        active_executions = self._prevalidated_executions.get()
+        if active_executions:
+            expected_actuator, expected_plan = active_executions[-1]
+            if actuator is not expected_actuator or plan is not expected_plan:
+                raise MutationTransactionError("prevalidated execution does not match the active bound mutation")
+            # Context variables are copied into callbacks/tasks at creation.
+            # Remove this one-shot authority before entering actuator-owned
+            # code so work it schedules cannot inherit and replay it later.
+            cleared = self._prevalidated_executions.set(())
+            try:
+                return actuator.apply(plan, args)
+            finally:
+                self._prevalidated_executions.reset(cleared)
         fresh_plan = actuator.prepare(args)
         if fresh_plan.plan_hash != plan.plan_hash:
             raise PlanStaleError(

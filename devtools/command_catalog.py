@@ -307,17 +307,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab graph",
-        "verification lab",
-        "Render the runtime artifact and operation graph.",
-        "devtools.artifact_graph",
-        use_when="Inspect declared runtime artifacts, operations, paths, and maintenance targets.",
-        examples=(
-            "devtools lab graph",
-            "devtools lab graph --json",
-        ),
-    ),
-    CommandSpec(
         "lab testmon-proof",
         "verification lab",
         "Prove real testmon affected selection against a semantic production mutation.",

@@ -351,12 +351,6 @@ def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry
             raise ValueError("manifest workload_profile must be a JSON object when present")
         spec_fields = {
             "origin",
-            "path_targets",
-            "artifact_targets",
-            "conceptual_path_targets",
-            "conceptual_artifact_targets",
-            "operation_targets",
-            "maintenance_targets",
             "tags",
             "docs_role",
             "caption",

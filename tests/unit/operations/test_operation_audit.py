@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
@@ -183,6 +186,40 @@ def test_token_is_digest_only_and_consumption_run_attempt_are_atomic(tmp_path: P
     assert audit.list_events(receipt.operation_id)[-1]["event_type"] == "attempt_finalized"
     with pytest.raises(RuntimeError, match="consumed"):
         executor.execute_bound(_binding(actuator), preview, authorization, object())
+    assert actuator.calls == 1
+
+
+def test_execute_bound_routes_the_effect_through_execute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bound execution reaches the executor's sole actuator.apply gate."""
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "bound-route-token")
+    binding = _binding(actuator)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    calls: list[object] = []
+    original_execute = OperationExecutor.execute
+
+    def record_execute(
+        self: OperationExecutor, invoked_actuator: object, plan: object, auth: object, args: object
+    ) -> object:
+        calls.append(invoked_actuator)
+        return original_execute(self, invoked_actuator, plan, auth, args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(OperationExecutor, "execute", record_execute)
+
+    receipt = executor.execute_bound(binding, preview, authorization, object())
+
+    assert receipt.status == "applied"
+    assert calls == [actuator]
     assert actuator.calls == 1
 
 
@@ -637,6 +674,56 @@ def test_audit_repository_replays_a_prepared_mutation_with_its_original_inputs(
             "archive:replayed",
             123,
         )
+
+
+def test_reconcile_waits_for_an_inflight_continuity_write(tmp_path: Path) -> None:
+    """Recovery cannot promote another writer's prepared command out from under it."""
+
+    _audit(tmp_path)
+    prepared = threading.Event()
+    release_writer = threading.Event()
+    reconcile_started = threading.Event()
+    applied_by: list[str] = []
+
+    def pause_after_prepare(phase: str, _mutation: AuditMutation) -> None:
+        if phase == "after_source_prepare":
+            prepared.set()
+            if not release_writer.wait(timeout=10):
+                raise TimeoutError("writer was not released")
+
+    writer = AuditContinuityCoordinator(tmp_path, phase_hook=pause_after_prepare)
+    recovery = AuditContinuityCoordinator(tmp_path)
+    mutation = AuditMutation("test_serialized_recovery", "mutation:writer", 1, {})
+
+    def execute_writer() -> None:
+        writer.execute(mutation, lambda _connection, _mutation: applied_by.append("writer"))
+
+    def reconcile() -> None:
+        reconcile_started.set()
+        recovery.reconcile(lambda _connection, _mutation: applied_by.append("recovery"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer_result = pool.submit(execute_writer)
+        assert prepared.wait(timeout=10)
+        reconcile_result = pool.submit(reconcile)
+        assert reconcile_started.wait(timeout=10)
+        with pytest.raises(FuturesTimeoutError):
+            reconcile_result.result(timeout=0.1)
+        release_writer.set()
+        writer_result.result(timeout=10)
+        reconcile_result.result(timeout=10)
+
+    assert applied_by == ["writer"]
+    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "audit.db") as audit:
+        source_head = source.execute(
+            "SELECT committed_generation, committed_head_sha256, pending_mutation_id "
+            "FROM audit_continuity_control WHERE singleton = 1"
+        ).fetchone()
+        audit_head = audit.execute(
+            "SELECT generation, head_sha256, mutation_id FROM audit_continuity_head WHERE singleton = 1"
+        ).fetchone()
+    assert source_head == (audit_head[0], audit_head[1], None)
+    assert audit_head[2] == mutation.mutation_id
 
 
 def test_mark_preview_stale_advances_and_replays_durable_continuity(

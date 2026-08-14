@@ -38,7 +38,7 @@ ExecutorStatus = Literal["executor-routed", "declared-not-routed", "typed-exempt
 
 
 class OperationKind(str, Enum):
-    """High-level operation class over runtime artifacts."""
+    """High-level class for a runtime operation."""
 
     PLANNING = "planning"
     MATERIALIZATION = "materialization"
@@ -54,15 +54,11 @@ class OperationKind(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class OperationSpec:
-    """One named runtime operation over declared artifact nodes."""
+    """One named runtime operation and its control-plane policy."""
 
     name: str
     kind: OperationKind
     description: str
-    consumes: tuple[str, ...] = ()
-    produces: tuple[str, ...] = ()
-    path_targets: tuple[str, ...] = ()
-    code_refs: tuple[str, ...] = ()
     surfaces: tuple[str, ...] = ()
     mutates_state: bool = False
     previewable: bool = False
@@ -87,10 +83,6 @@ class OperationSpec:
                 "name": self.name,
                 "kind": self.kind.value,
                 "description": self.description,
-                "consumes": list(self.consumes),
-                "produces": list(self.produces),
-                "path_targets": list(self.path_targets),
-                "code_refs": list(self.code_refs),
                 "surfaces": list(self.surfaces),
                 "mutates_state": self.mutates_state,
                 "previewable": self.previewable,
@@ -147,14 +139,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="acquire-raw-sessions",
         kind=OperationKind.MATERIALIZATION,
         description="Traverse configured sources, detect provider-shaped payloads, and persist raw session records plus artifact observations.",
-        consumes=("configured_sources", "source_payload_stream"),
-        produces=("raw_validation_state", "artifact_observation_rows"),
-        path_targets=("source-acquisition-loop",),
-        code_refs=(
-            "polylogue.pipeline.services.acquisition.AcquisitionService.acquire_sources",
-            "polylogue.sources.source_acquisition.iter_source_raw_data",
-            "polylogue.pipeline.services.acquisition_persistence.persist_raw_record",
-        ),
         surfaces=("daemon", "sources"),
         mutates_state=True,
         effects=("Network", "DbWrite", "LiveArchive"),
@@ -164,13 +148,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="plan-validation-backlog",
         kind=OperationKind.PLANNING,
         description="Select raw records that still require validation before normal parse planning.",
-        consumes=("raw_validation_state",),
-        produces=("validation_backlog",),
-        path_targets=("raw-reparse-loop", "raw-archive-ingest-loop"),
-        code_refs=(
-            "polylogue.storage.raw.artifacts.validation_backlog_query_spec",
-            "polylogue.pipeline.services.planning_backlog.collect_validation_backlog",
-        ),
         surfaces=("daemon", "reparse"),
         previewable=True,
         effects=("DbRead",),
@@ -179,13 +156,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="plan-parse-backlog",
         kind=OperationKind.PLANNING,
         description="Select raw records that are eligible for parse planning under ordinary or force-reparse rules.",
-        consumes=("raw_validation_state",),
-        produces=("parse_backlog", "parse_quarantine"),
-        path_targets=("raw-reparse-loop", "raw-archive-ingest-loop"),
-        code_refs=(
-            "polylogue.storage.raw.artifacts.parse_backlog_query_spec",
-            "polylogue.pipeline.services.planning_backlog.collect_parse_backlog",
-        ),
         surfaces=("daemon", "reparse"),
         previewable=True,
         effects=("DbRead",),
@@ -196,15 +166,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Decode, validate, parse, transform, and persist raw sessions into the durable archive runtime tables."
         ),
-        consumes=("raw_validation_state", "validation_backlog", "parse_backlog"),
-        produces=("raw_validation_state", "archive_session_rows"),
-        path_targets=("raw-archive-ingest-loop",),
-        code_refs=(
-            "polylogue.pipeline.services.parsing_workflow.parse_from_raw",
-            "polylogue.storage.sqlite.archive_tiers.write.write_parsed_session_to_archive",
-            "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_validated",
-            "polylogue.storage.repository.raw.repository_raw.RepositoryRawMixin.mark_raw_parsed",
-        ),
         surfaces=("daemon", "reprocess", "ingest"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
@@ -214,14 +175,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="index-message-fts",
         kind=OperationKind.INDEXING,
         description="Build or repair lexical message FTS rows from persisted archive messages.",
-        consumes=("message_source_rows",),
-        produces=("message_fts",),
-        path_targets=("message-fts-readiness-loop", "session-query-loop"),
-        code_refs=(
-            "polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync",
-            "polylogue.storage.fts.fts_lifecycle.repair_fts_index_sync",
-            "polylogue.storage.fts.fts_lifecycle.message_fts_readiness_sync",
-        ),
         surfaces=("daemon", "doctor", "repair", "query"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
@@ -231,14 +184,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="materialize-transcript-embeddings",
         kind=OperationKind.MATERIALIZATION,
         description="Build or refresh transcript embedding metadata, session status rows, and semantic vector entries from archive sessions.",
-        consumes=("archive_session_rows",),
-        produces=("embedding_metadata_rows", "embedding_status_rows", "message_embedding_vectors"),
-        path_targets=("embedding-materialization-loop",),
-        code_refs=(
-            "polylogue.cli.shared.embed_runtime.embed_batch",
-            "polylogue.cli.shared.embed_runtime.embed_single",
-            "polylogue.storage.search_providers.sqlite_vec_queries.SqliteVecQueryMixin.upsert",
-        ),
         surfaces=("daemon", "embed", "retrieval"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
@@ -248,14 +193,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-sessions",
         kind=OperationKind.QUERY,
         description="Resolve session-level query and search results from archive retrieval plans.",
-        consumes=("message_fts",),
-        produces=("session_query_results",),
-        path_targets=("session-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_summaries",
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.search_summaries",
-            "polylogue.archive.query.archive_execution",
-        ),
         surfaces=("query", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -264,23 +201,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="materialize-session-insights",
         kind=OperationKind.MATERIALIZATION,
         description="Build durable session-insight rows and their trigger-maintained FTS projections from archive sessions.",
-        consumes=("session_insight_source_sessions",),
-        produces=(
-            "session_profile_rows",
-            "session_work_event_rows",
-            "session_work_event_fts",
-            "session_phase_rows",
-            "thread_rows",
-            "thread_fts",
-            "session_tag_rollup_rows",
-            "session_insight_rows",
-            "session_insight_fts",
-        ),
-        path_targets=("session-insight-repair-loop",),
-        code_refs=(
-            "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
-            "polylogue.storage.insights.session.refresh.refresh_session_insights_for_session_async",
-        ),
         surfaces=("daemon", "insights", "doctor", "repair"),
         mutates_state=True,
         effects=("DbRead", "DbWrite"),
@@ -290,19 +210,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="project-retrieval-band-readiness",
         kind=OperationKind.PROJECTION,
         description="Project transcript/evidence/inference/enrichment retrieval readiness from embeddings and durable read-model readiness.",
-        consumes=(
-            "embedding_metadata_rows",
-            "embedding_status_rows",
-            "message_embedding_vectors",
-            "session_insight_readiness",
-        ),
-        produces=("retrieval_band_readiness",),
-        path_targets=("retrieval-band-readiness-loop",),
-        code_refs=(
-            "polylogue.storage.embeddings.embedding_stats.read_embedding_stats_sync",
-            "polylogue.storage.embeddings.support.build_retrieval_bands_from_status",
-            "polylogue.storage.derived.derived_status.build_retrieval_statuses",
-        ),
         surfaces=("embed", "doctor", "retrieval"),
         previewable=True,
         effects=("DbRead",),
@@ -311,18 +218,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-embedding-status",
         kind=OperationKind.QUERY,
         description="Resolve operator-facing embedding coverage, freshness, and retrieval-band readiness status views.",
-        consumes=(
-            "embedding_metadata_rows",
-            "embedding_status_rows",
-            "message_embedding_vectors",
-            "retrieval_band_readiness",
-        ),
-        produces=("embedding_status_results",),
-        path_targets=("embedding-status-query-loop",),
-        code_refs=(
-            "polylogue.storage.embeddings.status_payload.embedding_status_payload",
-            "polylogue.cli.shared.embed_stats.render_embedding_stats",
-        ),
         surfaces=("daemon", "embed", "doctor", "retrieval"),
         previewable=True,
         effects=("DbRead",),
@@ -331,14 +226,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="project-session-insight-readiness",
         kind=OperationKind.PROJECTION,
         description="Project readiness, debt, and stale-surface semantics from durable session-insight rows and FTS state.",
-        consumes=("session_insight_rows", "session_insight_fts"),
-        produces=("session_insight_readiness",),
-        path_targets=("session-insight-repair-loop",),
-        code_refs=(
-            "polylogue.storage.insights.session.status",
-            "polylogue.storage.repair",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "doctor", "archive_debt", "repair"),
         previewable=True,
         effects=("DbRead",),
@@ -347,13 +234,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-profiles",
         kind=OperationKind.QUERY,
         description="Resolve durable session-profile insights from profile rows and merged profile FTS.",
-        consumes=("session_profile_rows",),
-        produces=("session_profile_results",),
-        path_targets=("session-profile-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_profile_insights",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -362,13 +242,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-work-events",
         kind=OperationKind.QUERY,
         description="Resolve durable session work-event insights from work-event rows and work-event FTS.",
-        consumes=("session_work_event_rows", "session_work_event_fts"),
-        produces=("session_work_event_results",),
-        path_targets=("session-work-event-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_work_event_insights",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -377,13 +250,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-phases",
         kind=OperationKind.QUERY,
         description="Resolve durable session-phase insights from phase rows.",
-        consumes=("session_phase_rows",),
-        produces=("session_phase_results",),
-        path_targets=("session-phase-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_phase_insights",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -392,13 +258,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-threads",
         kind=OperationKind.QUERY,
         description="Resolve durable thread insights from thread rows and thread FTS.",
-        consumes=("thread_rows", "thread_fts"),
-        produces=("thread_results",),
-        path_targets=("thread-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_thread_insights",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -407,13 +266,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-tag-rollups",
         kind=OperationKind.QUERY,
         description="Resolve durable session tag-rollup insights from aggregate tag rows.",
-        consumes=("session_tag_rollup_rows",),
-        produces=("session_tag_rollup_results",),
-        path_targets=("session-tag-rollup-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_session_tag_rollup_insights",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -422,13 +274,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-session-insight-status",
         kind=OperationKind.QUERY,
         description="Resolve projected session-insight status views from session-insight readiness state.",
-        consumes=("session_insight_readiness",),
-        produces=("session_insight_status_results",),
-        path_targets=("session-insight-status-query-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.get_session_insight_status",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -437,14 +282,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-archive-coverage",
         kind=OperationKind.QUERY,
         description="Resolve provider, day, or week archive coverage rollups from durable archive and session-profile rows.",
-        consumes=("archive_session_rows", "session_profile_rows"),
-        produces=("archive_coverage_results",),
-        path_targets=("archive-coverage-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_archive_coverage_insights",
-            "polylogue.cli.commands.insights",
-            "polylogue.cli.shared.helper_summary",
-        ),
         surfaces=("insights", "facade", "mcp", "helpers"),
         previewable=True,
         effects=("DbRead",),
@@ -453,13 +290,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-tool-usage",
         kind=OperationKind.QUERY,
         description="Resolve per-origin tool usage analytics from canonical archive actions.",
-        consumes=("archive_session_rows",),
-        produces=("tool_usage_results",),
-        path_targets=("tool-usage-query-loop",),
-        code_refs=(
-            "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.list_tool_usage_insights",
-            "polylogue.cli.commands.insights",
-        ),
         surfaces=("insights", "facade", "mcp"),
         previewable=True,
         effects=("DbRead",),
@@ -468,15 +298,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-archive-debt",
         kind=OperationKind.QUERY,
         description="Resolve unified archive debt rows from tier, convergence, embedding, FTS, and assertion readiness.",
-        consumes=("archive_readiness", "embedding_status_results", "message_fts"),
-        produces=("archive_debt_results",),
-        path_targets=("archive-debt-query-loop",),
-        code_refs=(
-            "polylogue.operations.archive_debt.archive_debt_list",
-            "polylogue.cli.commands.debt.debt_list_command",
-            "polylogue.api.archive.PolylogueArchiveMixin.archive_debt",
-            "polylogue.daemon.http.DaemonAPIHandler._handle_archive_debt",
-        ),
         surfaces=("cli", "facade", "mcp", "daemon", "maintenance"),
         previewable=True,
         effects=("DbRead",),
@@ -485,14 +306,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="compile-session-digest",
         kind=OperationKind.PROJECTION,
         description="Compile one archived session into the deterministic session digest artifact and evidence index.",
-        consumes=("archive_session_rows", "message_source_rows"),
-        produces=("session_digest", "forensic_index", "resume_bundle"),
-        path_targets=("session-digest-transform-loop",),
-        code_refs=(
-            "polylogue.insights.transforms.compile_session_digest",
-            "polylogue.api.archive.PolylogueArchiveMixin._session_digest",
-            "polylogue.cli.query_verbs.continue_verb",
-        ),
         surfaces=("cli", "report"),
         previewable=True,
         effects=("DbRead",),
@@ -501,14 +314,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="render-session-report",
         kind=OperationKind.PROJECTION,
         description="Render deterministic session report presets from a compiled session digest.",
-        consumes=("session_digest", "forensic_index"),
-        produces=("session_report_markdown",),
-        path_targets=("session-digest-transform-loop",),
-        code_refs=(
-            "polylogue.insights.transforms.render_session_report",
-            "polylogue.insights.transforms.SessionDigest.report_markdown",
-            "polylogue.cli.query_verbs.continue_verb",
-        ),
         surfaces=("cli", "mcp", "report"),
         previewable=True,
         effects=("Pure",),
@@ -517,13 +322,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="compile-inferred-corpus-specs",
         kind=OperationKind.PROJECTION,
         description="Compile inferred synthetic corpus specs from schema packages and cluster manifests.",
-        consumes=("schema_packages", "schema_cluster_manifests"),
-        produces=("inferred_corpus_specs",),
-        path_targets=("inferred-corpus-compilation-loop",),
-        code_refs=(
-            "polylogue.scenarios.corpus.build_inferred_corpus_specs",
-            "polylogue.schemas.operator.inference.list_inferred_corpus_specs",
-        ),
         surfaces=("schema", "verification-lab", "synthetic"),
         previewable=True,
         effects=("Pure",),
@@ -532,13 +330,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="compile-inferred-corpus-scenarios",
         kind=OperationKind.PROJECTION,
         description="Compile inferred corpus scenarios grouped from inferred corpus specs.",
-        consumes=("inferred_corpus_specs",),
-        produces=("inferred_corpus_scenarios",),
-        path_targets=("inferred-corpus-compilation-loop",),
-        code_refs=(
-            "polylogue.scenarios.corpus.build_corpus_scenarios",
-            "polylogue.schemas.operator.inference.list_inferred_corpus_scenarios",
-        ),
         surfaces=("schema", "verification-lab", "synthetic"),
         previewable=True,
         effects=("Pure",),
@@ -547,13 +338,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-schema-catalog",
         kind=OperationKind.QUERY,
         description="Resolve schema package catalogs, manifests, and inferred corpus projections for schema list surfaces.",
-        consumes=("schema_packages", "schema_cluster_manifests", "inferred_corpus_specs", "inferred_corpus_scenarios"),
-        produces=("schema_list_results",),
-        path_targets=("schema-list-query-loop",),
-        code_refs=(
-            "polylogue.schemas.operator.inference.list_schemas",
-            "polylogue.cli.shared.schema_rendering_results.render_schema_list_result",
-        ),
         surfaces=("schema", "cli"),
         previewable=True,
         effects=("Pure",),
@@ -562,13 +346,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="query-schema-explanations",
         kind=OperationKind.QUERY,
         description="Resolve provider schema element explanations from versioned schema packages.",
-        consumes=("schema_packages",),
-        produces=("schema_explanation_results",),
-        path_targets=("schema-explain-query-loop",),
-        code_refs=(
-            "polylogue.schemas.operator.resolution.explain_schema",
-            "polylogue.cli.shared.schema_rendering_explain.render_schema_explain_result",
-        ),
         surfaces=("schema", "cli"),
         previewable=True,
         effects=("Pure",),
@@ -579,15 +356,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Add a tag to one session. Idempotent — returns unchanged when the tag is already present. "
             "Routed through OperationExecutor/TagAddActuator (reversible class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("tag-mutation-loop",),
-        code_refs=(
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.add_tag",
-            "polylogue.api.archive.PolylogueArchiveMixin.add_tag",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.TagAddActuator",
         ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
@@ -603,14 +371,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Remove a tag from one session. Idempotent — returns not-found when the tag is absent. "
             "Routed through OperationExecutor/TagRemoveActuator (reversible class, role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("tag-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.remove_tag",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.TagRemoveActuator",
-        ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -624,13 +384,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Apply tags to multiple sessions in one transaction. Returns affected and skipped counts. "
             "Routed through OperationExecutor/BulkTagActuator (reversible class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("tag-mutation-loop",),
-        code_refs=(
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.BulkTagActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -646,15 +399,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Set a metadata key on one session. Idempotent — returns unchanged when the value matches. "
             "Routed through OperationExecutor/MetadataSetActuator (reversible class, role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("metadata-mutation-loop",),
-        code_refs=(
-            "polylogue.storage.repository.archive.repository_writes.RepositoryWriteMixin.update_metadata",
-            "polylogue.api.archive.PolylogueArchiveMixin.update_metadata",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.MetadataSetActuator",
-        ),
         surfaces=("facade", "mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -668,13 +412,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Delete a metadata key from one session. Idempotent — returns not-found when the key is absent. "
             "Routed through OperationExecutor/MetadataDeleteActuator (reversible class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("metadata-mutation-loop",),
-        code_refs=(
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.MetadataDeleteActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -692,14 +429,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "class, role_only confirmation); the first MCP no-spec mutation family (t46.9 phase 2) to gain "
             "an OperationSpec and executor route."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("mark-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.add_mark",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.MarkAddActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -714,14 +443,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Remove a mark from a session, message, or block. Idempotent — returns unchanged when the mark "
             "is absent. Routed through OperationExecutor/MarkRemoveActuator (reversible class, role_only "
             "confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("mark-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.remove_mark",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.MarkRemoveActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -738,14 +459,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "created-vs-updated is a receipt detail, not an idempotency short-circuit. Routed through "
             "OperationExecutor/AnnotationSaveActuator (reversible class, role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("annotation-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.save_annotation",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.AnnotationSaveActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -760,14 +473,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Soft-delete an annotation (marks its assertion row deleted). Idempotent — returns not-found "
             "when already absent. Routed through OperationExecutor/AnnotationDeleteActuator (reversible "
             "class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("annotation-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_annotation",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.AnnotationDeleteActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -785,14 +490,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "destructive counterpart today -- role_only confirmation. Routed through "
             "OperationExecutor/BlackboardPostActuator."
         ),
-        consumes=("assertions",),
-        produces=("assertions",),
-        path_targets=("blackboard-post-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.post_blackboard_note",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.BlackboardPostActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=False,
@@ -808,15 +505,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "TTL, and the user-tier write are executed through OperationExecutor/"
             "CaptureAssertionCandidateActuator with role_only confirmation."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("assertion-candidate-capture-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.capture_assertion_candidate",
-            "polylogue.cli.commands.note.note_command",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.CaptureAssertionCandidateActuator",
-        ),
         surfaces=("facade", "cli", "mcp"),
         mutates_state=True,
         idempotent=False,
@@ -831,13 +519,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Import a bounded JSONL annotation batch with durable schema, provenance, validation outcomes, and "
             "candidate assertions. Live reference validation stays in the import operation; its atomic user-tier "
             "write is routed through OperationExecutor/AnnotationBatchImportActuator with role_only confirmation."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("annotation-mutation-loop",),
-        code_refs=(
-            "polylogue.annotations.importer.import_annotation_batch",
-            "polylogue.annotations.importer.AnnotationBatchImportActuator",
         ),
         surfaces=("facade", "cli", "mcp"),
         mutates_state=True,
@@ -864,14 +545,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Rebuild the derived block-FTS index from persisted blocks. The operation is idempotent and "
             "routes its real ArchiveStore primitive through OperationExecutor/IndexRebuildActuator."
-        ),
-        consumes=("message_source_rows",),
-        produces=("message_fts",),
-        path_targets=("message-fts-readiness-loop",),
-        code_refs=(
-            "polylogue.api.ingest.PolylogueIngestMixin.rebuild_index",
-            "polylogue.mcp.server_cutover._dispatch_maintenance",
-            "polylogue.operations.mutation_actuators.IndexRebuildActuator",
         ),
         surfaces=("facade", "mcp"),
         mutates_state=True,
@@ -900,14 +573,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Reconcile the derived block-FTS index for the facade update route. The current storage "
             "primitive rebuilds the complete index, and OperationExecutor binds the caller scope before it runs."
         ),
-        consumes=("message_source_rows",),
-        produces=("message_fts",),
-        path_targets=("message-fts-readiness-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.update_index",
-            "polylogue.mcp.server_cutover._dispatch_maintenance",
-            "polylogue.operations.mutation_actuators.IndexRebuildActuator",
-        ),
         surfaces=("facade", "mcp"),
         mutates_state=True,
         previewable=True,
@@ -934,14 +599,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Rebuild durable session-insight read models for the requested session set. The canonical "
             "materializer runs through OperationExecutor/InsightsRebuildActuator with a typed receipt."
-        ),
-        consumes=("session_insight_source_sessions",),
-        produces=("session_insight_rows", "session_insight_fts"),
-        path_targets=("session-insight-repair-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.rebuild_insights",
-            "polylogue.mcp.server_cutover._dispatch_maintenance",
-            "polylogue.operations.mutation_actuators.InsightsRebuildActuator",
         ),
         surfaces=("facade", "mcp"),
         mutates_state=True,
@@ -973,14 +630,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "blockers additionally require their exact accepted assertion id and "
             "disposition=retain_canonical_authority, enforced by the primitive itself."
         ),
-        consumes=("raw_authority_plans", "raw_authority_blockers"),
-        produces=("raw_authority_blocker_resolution",),
-        path_targets=("raw-authority-blocker-resolution-loop",),
-        code_refs=(
-            "polylogue.storage.raw_authority.resolve_raw_authority_blocker",
-            "polylogue.cli.commands.maintenance._raw_identity.raw_authority_blocker_resolve_command",
-            "polylogue.operations.mutation_actuators.BlockerResolveActuator",
-        ),
         surfaces=("cli",),
         mutates_state=True,
         previewable=True,
@@ -1011,13 +660,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "and never touches parser census, accepted raws, or blobs. Fresh applies run through OperationExecutor; "
             "only a durable already-authorized intent may resume receipt finalization offline."
         ),
-        consumes=("raw_authority_census_ledger",),
-        produces=("raw_authority_census_recovery_receipt",),
-        path_targets=("raw-authority-recovery-loop",),
-        code_refs=(
-            "polylogue.maintenance.raw_authority_recovery.ResetRawAuthorityCensusActuator",
-            "polylogue.cli.commands.maintenance._raw_authority_recovery.raw_authority_recovery_command",
-        ),
         surfaces=("cli",),
         mutates_state=True,
         previewable=True,
@@ -1047,13 +689,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "offline operator-maintenance ownership; it never performs a broad index reset. Fresh applies run through "
             "OperationExecutor; only a durable already-authorized intent may resume receipt finalization offline."
         ),
-        consumes=("raw_revision_heads", "raw_revision_applications", "raw_sessions"),
-        produces=("raw_authority_index_seed_recovery_receipt",),
-        path_targets=("raw-authority-recovery-loop",),
-        code_refs=(
-            "polylogue.maintenance.raw_authority_recovery.PruneOrphanedIndexRevisionSeedsActuator",
-            "polylogue.cli.commands.maintenance._raw_authority_recovery.raw_authority_recovery_command",
-        ),
         surfaces=("cli",),
         mutates_state=True,
         previewable=True,
@@ -1082,14 +717,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "receipt detail, not an idempotency short-circuit. Routed through OperationExecutor/"
             "SavedViewSaveActuator (reversible class, role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("saved-view-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.save_view",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.SavedViewSaveActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -1104,14 +731,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Soft-delete a saved query view (marks its assertion row deleted). Idempotent — returns "
             "not-found when already absent. Routed through OperationExecutor/SavedViewDeleteActuator "
             "(reversible class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("saved-view-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_view",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.SavedViewDeleteActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -1128,14 +747,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "references). Every apply writes. Routed through OperationExecutor/RecallPackSaveActuator "
             "(reversible class, role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("recall-pack-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.create_recall_pack",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.RecallPackSaveActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -1150,14 +761,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Soft-delete a recall pack (marks its assertion row deleted). Idempotent — returns not-found "
             "when already absent. Routed through OperationExecutor/RecallPackDeleteActuator (reversible "
             "class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("recall-pack-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_recall_pack",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.RecallPackDeleteActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -1174,14 +777,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "apply writes. Routed through OperationExecutor/WorkspaceSaveActuator (reversible class, "
             "role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("workspace-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.save_workspace",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.WorkspaceSaveActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -1196,14 +791,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Soft-delete a durable reader workspace (marks its assertion row deleted). Idempotent — "
             "returns not-found when already absent. Routed through OperationExecutor/"
             "WorkspaceDeleteActuator (reversible class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("workspace-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_workspace",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.WorkspaceDeleteActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -1220,14 +807,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "writes. Routed through OperationExecutor/CorrectionRecordActuator (reversible class, "
             "role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("correction-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.record_correction",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.CorrectionRecordActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -1242,14 +821,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Soft-delete one learning correction (marks its assertion row deleted). Idempotent — "
             "returns not-found when already absent. Routed through OperationExecutor/"
             "CorrectionDeleteActuator (reversible class, role_only confirmation)."
-        ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("correction-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_correction",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.CorrectionDeleteActuator",
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,
@@ -1267,14 +838,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "forces a replan. Routed through OperationExecutor/CorrectionsClearActuator (reversible "
             "class, role_only confirmation)."
         ),
-        consumes=("sessions", "assertions"),
-        produces=("assertions",),
-        path_targets=("correction-mutation-loop",),
-        code_refs=(
-            "polylogue.api.archive.PolylogueArchiveMixin.clear_corrections",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.CorrectionsClearActuator",
-        ),
         surfaces=("mcp", "api"),
         mutates_state=True,
         idempotent=True,
@@ -1290,18 +853,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "OperationExecutor/SessionDeleteActuator on every surface: PREPARE previews "
             "the exact target set, EXECUTE requires a confirm-flag-strength authorization "
             "bound to that plan's hash."
-        ),
-        consumes=("archive_session_rows",),
-        produces=("archive_deleted_session",),
-        path_targets=("session-delete-loop",),
-        code_refs=(
-            "polylogue.storage.repository.archive.writes.sessions.delete_session_via_backend",
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_session",
-            "polylogue.api.archive.PolylogueArchiveMixin.delete_session_safe",
-            "polylogue.cli.query_verbs.delete_verb",
-            "polylogue.cli.archive_query._emit_delete",
-            "polylogue.mcp.server_cutover._dispatch_write",
-            "polylogue.operations.mutation_actuators.SessionDeleteActuator",
         ),
         surfaces=("facade", "cli", "mcp", "daemon"),
         mutates_state=True,
@@ -1336,15 +887,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "records a removed-hash marker so unmodified-source re-ingest cannot resurrect it. "
             "Routed through OperationExecutor/SessionExcisionActuator; requires --yes/confirm-flag."
         ),
-        consumes=("archive_session_rows", "raw_sessions", "blob_refs"),
-        produces=("excision_receipt",),
-        path_targets=("session-excision-loop",),
-        code_refs=(
-            "polylogue.security.excision.plan_session_excision",
-            "polylogue.security.excision.apply_session_excision",
-            "polylogue.cli.commands.excise.excise_command",
-            "polylogue.operations.mutation_actuators.SessionExcisionActuator",
-        ),
         surfaces=("cli",),
         mutates_state=True,
         previewable=True,
@@ -1371,14 +913,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Create one durable mirror/primary session lifecycle-request outbox row through "
             "OperationExecutor so its intent, authorization, and receipt share audit continuity authority."
-        ),
-        consumes=("archive_session_rows",),
-        produces=("excision_receipt",),
-        path_targets=("session-excision-loop",),
-        code_refs=(
-            "polylogue.cli.commands.excise.excise_command",
-            "polylogue.security.lifecycle.submit_lifecycle_request",
-            "polylogue.operations.mutation_actuators.SessionLifecycleRequestActuator",
         ),
         surfaces=("cli",),
         mutates_state=True,
@@ -1410,14 +944,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "requires --yes/confirm-flag. Distinct from excision: re-ingest of unmodified "
             "source content can still repopulate index.db rows, but the suppression hides them."
         ),
-        consumes=("archive_session_rows",),
-        produces=("suppression_rows",),
-        path_targets=("identity-reset-loop",),
-        code_refs=(
-            "polylogue.cli.commands.reset.reset_command",
-            "polylogue.cli.commands.reset._apply_identity_reset",
-            "polylogue.operations.mutation_actuators.IdentityResetActuator",
-        ),
         surfaces=("cli",),
         mutates_state=True,
         previewable=True,
@@ -1446,13 +972,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "These routes retain operation ids, cursor checkpoints, failure isolation, and explicit confirmation, "
             "but do not yet run through OperationExecutor."
         ),
-        code_refs=(
-            "polylogue.cli.commands.maintenance._run.run_command",
-            "polylogue.maintenance.replay.execute_replay",
-            "polylogue.maintenance.planner.execute_backfill",
-            "polylogue.mcp.server_cutover._dispatch_maintenance",
-            "polylogue.daemon.http.DaemonAPIHandler._handle_maintenance_run",
-        ),
         surfaces=("cli", "mcp", "daemon"),
         mutates_state=True,
         previewable=True,
@@ -1469,10 +988,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Delete selected archive databases, blob/assets/cache trees, or authentication state after an exact "
             "target preview and explicit confirmation. Session/source identity reset is a separate executor-routed operation."
         ),
-        code_refs=(
-            "polylogue.cli.commands.reset.reset_command",
-            "polylogue.cli.commands.reset._archive_database_targets",
-        ),
         surfaces=("cli",),
         mutates_state=True,
         previewable=True,
@@ -1485,14 +1000,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="project-archive-readiness",
         kind=OperationKind.PROJECTION,
         description="Project archive-wide readiness and debt semantics from message FTS and durable derived-model readiness.",
-        consumes=("message_fts", "session_insight_readiness", "retrieval_band_readiness"),
-        produces=("archive_readiness",),
-        path_targets=("message-fts-readiness-loop", "retrieval-band-readiness-loop"),
-        code_refs=(
-            "polylogue.readiness.run_archive_readiness",
-            "polylogue.storage.derived.derived_status.collect_derived_model_statuses_sync",
-            "polylogue.storage.repair.collect_archive_debt_statuses_sync",
-        ),
         surfaces=("doctor", "archive_debt", "maintenance"),
         previewable=True,
         effects=("DbRead",),
@@ -1528,12 +1035,6 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="seed-demo-archive",
         kind=OperationKind.MATERIALIZATION,
         description="Build a deterministic demo archive from seeded fixtures through the public demo command.",
-        code_refs=(
-            "polylogue.cli.commands.demo.seed_demo_archive",
-            "polylogue.demo.seed.seed_demo_archive",
-            "tests.unit.cli.test_demo_command",
-            "tests.unit.demo.test_demo_seed_verify",
-        ),
         surfaces=("cli", "tests", "validation-lane"),
         mutates_state=True,
         previewable=False,
@@ -1544,12 +1045,6 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="verify-demo-archive",
         kind=OperationKind.READINESSCHECK,
         description="Verify a seeded demo archive exposes the expected query, assertion, and session evidence.",
-        code_refs=(
-            "polylogue.cli.commands.demo.verify_demo_archive",
-            "polylogue.demo.verify.verify_demo_archive",
-            "tests.unit.cli.test_demo_command",
-            "tests.unit.demo.test_demo_seed_verify",
-        ),
         surfaces=("cli", "tests", "validation-lane"),
         previewable=True,
         effects=("DbRead",),
@@ -1558,10 +1053,6 @@ DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         name="reader-visual-dom",
         kind=OperationKind.CLI,
         description="Exercise the daemon reader shell DOM through deterministic visual smoke tests.",
-        code_refs=(
-            "polylogue.daemon.web_shell",
-            "tests.visual.test_reader_dom_smoke",
-        ),
         surfaces=("daemon", "tests", "validation-lane"),
         previewable=True,
         effects=("Pure",),
