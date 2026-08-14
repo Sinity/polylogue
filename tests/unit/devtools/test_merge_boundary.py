@@ -26,10 +26,19 @@ _SCOPE_BEAD = {
 
 
 @pytest.fixture(autouse=True)
-def _scope_bead_record(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    beads_dir = tmp_path / ".beads"
-    beads_dir.mkdir()
-    (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
+def _scope_bead_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give merge-flow tests a canonical Bead snapshot without faking validation.
+
+    Production scope validation reads the candidate and prospective records from
+    committed Git revisions. These unit tests deliberately use placeholder PR
+    SHAs, so inject that storage boundary and retain the real carrier,
+    disposition, digest, and merge-gate validation paths.
+    """
+
+    def canonical_records(_revision: str) -> dict[str, dict[str, object]]:
+        return {_SCOPE_BEAD["id"]: dict(_SCOPE_BEAD)}
+
+    monkeypatch.setattr(pr_scope, "_bead_records_at", canonical_records)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
 
 

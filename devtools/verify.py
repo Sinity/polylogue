@@ -2676,7 +2676,10 @@ def _pytest_profile() -> str:
 
 def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str | None]:
     environment = {
-        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE"),
+        # Hypothesis uses its default profile when the variable is absent.
+        # Record that effective value in the testmon environment identity so a
+        # bootstrap graph is reusable by the following affected invocation.
+        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE") or "default",
         "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
     }
     if force_release_profile:
