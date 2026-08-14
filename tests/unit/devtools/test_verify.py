@@ -140,6 +140,7 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
         assert selection_flag in command
         assert "--json-report" in command
         assert command[command.index("-p") + 1] == "devtools.pytest_progress_plugin"
+        assert (verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS in command) is (mode in {"bootstrap", "full"})
 
 
 def test_native_corpus_excludes_only_benchmark_directory() -> None:
@@ -154,76 +155,6 @@ def test_native_corpus_excludes_only_benchmark_directory() -> None:
     assert complete_expr == "not load_sensitive"
     assert "--ignore=tests/benchmarks" in complete_command
     assert "--ignore=tests/integration" not in complete_command
-
-
-@pytest.mark.parametrize(
-    "selector",
-    [
-        "-k smoke",
-        "--keyword=smoke",
-        "--ignore=tests/benchmarks",
-        "--ignore-glob=tests/integration/**",
-        "--ignore-glob tests/integration/**",
-        "tests/unit/devtools/test_verify.py::test_release_authority_requires_current_complete_green_invocation",
-    ],
-)
-def test_inherited_collection_selectors_are_not_release_authority(
-    monkeypatch: pytest.MonkeyPatch,
-    selector: str,
-) -> None:
-    """The production authority path must reject every inherited narrowing form."""
-    monkeypatch.setenv("PYTEST_ADDOPTS", selector)
-
-    assert verify._has_inherited_collection_selector() is True
-    assert not _release_baseline_allowed(
-        selection_mode="bootstrap",
-        verification_scope=VerificationScope.RELEASE_BASELINE,
-        exit_code=0,
-        checkout_stable=True,
-        aggregate={
-            "complete_corpus_covered": True,
-            "terminal_green": True,
-            "external_collection_selector": verify._has_inherited_collection_selector(),
-            "cleanup": {"complete": True},
-            "containment": {"complete": True},
-            "deadline": {"met": True},
-        },
-    )
-
-
-def test_configured_collection_selector_is_not_release_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pytest config addopts are inherited by the production pytest process too."""
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.pytest.ini_options]\naddopts = '--ignore-glob=tests/integration/**'\n",
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
-
-    assert verify._has_inherited_collection_selector() is True
-
-
-def test_unrelated_inherited_pytest_options_do_not_disable_release_authority(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Treating every ambient option as a selector would reject harmless options."""
-    monkeypatch.setenv("PYTEST_ADDOPTS", "-ra --strict-markers")
-
-    assert verify._has_inherited_collection_selector() is False
-    assert _release_baseline_allowed(
-        selection_mode="bootstrap",
-        verification_scope=VerificationScope.RELEASE_BASELINE,
-        exit_code=0,
-        checkout_stable=True,
-        aggregate={
-            "complete_corpus_covered": True,
-            "terminal_green": True,
-            "external_collection_selector": verify._has_inherited_collection_selector(),
-            "cleanup": {"complete": True},
-            "containment": {"complete": True},
-            "deadline": {"met": True},
-        },
-    )
 
 
 def test_lab_verify_delegates_to_lab_smoke() -> None:
@@ -509,8 +440,8 @@ def test_aggregate_pytest_statistics_merges_partial_canonical_and_event_outcomes
     assert result["outcomes"] == {"passed": 1, "xfailed": 1}
 
 
-def test_native_aggregate_rejects_inherited_selector_without_counting_missing_nodes(tmp_path: Path) -> None:
-    """Using the selected union as corpus authority would mark this narrowed run green."""
+def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp_path: Path) -> None:
+    """A missing lane invariant cannot become release authority through green outcomes."""
     for lane, nodeid, outcome in (("parallel", "a", "passed"), ("serial", "b", "skipped")):
         step = tmp_path / lane
         step.mkdir()
@@ -536,6 +467,7 @@ def test_native_aggregate_rejects_inherited_selector_without_counting_missing_no
                 "semantic_lane": "parallel",
                 "artifact_dir": "parallel",
                 "exit": 0,
+                "external_addopts_neutralized": True,
                 "statistics": {"cleanup": {"complete": True}},
             },
             {
@@ -550,10 +482,11 @@ def test_native_aggregate_rejects_inherited_selector_without_counting_missing_no
         selection_mode="bootstrap",
         invocation_duration_s=0.1,
         budget_s=10.0,
-        external_collection_selector=True,
     )
 
-    assert result["external_collection_selector"] is True
+    assert result["external_addopts_neutralized"] is False
+    assert result["lanes"][0]["external_addopts_neutralized"] is True
+    assert result["lanes"][1]["external_addopts_neutralized"] is False
     assert result["selected_union_count"] == 2
     assert result["terminal_union_count"] == 2
     assert result["non_green_count"] == 0
@@ -3077,6 +3010,36 @@ def test_run_propagates_pytest_addopts_basetemp_to_resource_policy(
     assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
 
 
+def test_release_lane_removes_environment_addopts_before_pytest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_command: list[str] = []
+    captured_env: dict[str, str] = {}
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only")
+
+    def run_pytest(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_command.extend(command)
+        captured_env.update(cast("dict[str, str]", kwargs["env"]))
+        return completed
+
+    with (
+        patch("devtools.verify.apply_managed_pytest_runtime_policy", side_effect=lambda env, **_kwargs: (env, None)),
+        patch("devtools.verify._run_pytest_with_heartbeat", side_effect=run_pytest),
+        patch("devtools.verify.cleanup_managed_pytest_basetemp", return_value=None),
+        patch("devtools.verify._read_pytest_report", return_value=None),
+    ):
+        rc, _elapsed, metadata = _run(
+            "pytest native parallel (full)",
+            ["pytest", verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS],
+        )
+
+    assert rc == 0
+    assert verify._PYTEST_CLEAR_CONFIGURED_ADDOPTS in captured_command
+    assert "PYTEST_ADDOPTS" not in captured_env
+    assert metadata["external_addopts_neutralized"] is True
+
+
 def test_run_clears_stale_current_statistics_before_an_interrupted_pytest_step(tmp_path: Path) -> None:
     stale_statistics = tmp_path / verify_runs.CURRENT_STATISTICS_PATH
     stale_statistics.parent.mkdir(parents=True)
@@ -4150,7 +4113,7 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     aggregate = {
         "complete_corpus_covered": True,
         "terminal_green": True,
-        "external_collection_selector": False,
+        "external_addopts_neutralized": True,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
         "deadline": {"met": True},
@@ -4173,6 +4136,7 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     for broken in (
         {**aggregate, "complete_corpus_covered": False},
         {**aggregate, "terminal_green": False},
+        {**aggregate, "external_addopts_neutralized": False},
         {**aggregate, "cleanup": {"complete": False}},
         {**aggregate, "containment": {"complete": False}},
         {**aggregate, "deadline": {"met": False}},

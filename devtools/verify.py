@@ -39,8 +39,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from _pytest.config import get_config
-
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -119,6 +117,7 @@ from polylogue.scenarios.workload import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+_PYTEST_CLEAR_CONFIGURED_ADDOPTS = "--override-ini=addopts="
 
 
 def _anchor_verification_paths() -> None:
@@ -1635,6 +1634,9 @@ def _run(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
+    release_addopts_neutralized = _pytest_uses_full_suite_basetemp(label)
+    if release_addopts_neutralized:
+        env.pop("PYTEST_ADDOPTS", None)
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
@@ -1688,6 +1690,9 @@ def _run(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        if release_addopts_neutralized:
+            env.pop("PYTEST_ADDOPTS", None)
+            release_addopts_neutralized = _PYTEST_CLEAR_CONFIGURED_ADDOPTS in cmd
     interrupted = False
     pytest_containment_quiescent = True
     containment_error: str | None = None
@@ -1742,6 +1747,7 @@ def _run(
             metadata["diagnosis"] = "pytest_containment_unproven"
             metadata["termination_reason"] = f"pytest containment did not quiesce: {containment_error}"
         metadata.update(_pytest_command_metadata(cmd))
+        metadata["external_addopts_neutralized"] = release_addopts_neutralized
         metadata["heartbeat_s"] = _pytest_heartbeat_interval()
         metadata["timeout_s"] = _pytest_timeout_s() if timeout_s is None else timeout_s
         metadata["stall_timeout_s"] = _pytest_stall_timeout_s()
@@ -2163,6 +2169,8 @@ def build_verify_steps(
             raise ValueError(f"unknown native testmon mode: {testmon_mode}")
         if not testmon_environment:
             raise ValueError("native testmon environment is required for pytest verification")
+        if testmon_mode in {"bootstrap", "full"}:
+            pytest_cmd.append(_PYTEST_CLEAR_CONFIGURED_ADDOPTS)
         native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
         if testmon_mode == "affected":
             native_args.append("--testmon-forceselect")
@@ -2370,24 +2378,6 @@ def _changed_test_relevant_paths(base_commit: str, head_commit: str) -> tuple[st
     )
 
 
-def _has_inherited_collection_selector() -> bool:
-    """Return whether pytest's inherited configuration narrows collection."""
-    try:
-        config = get_config([])
-        config.parse([])
-    except BaseException:
-        return True
-    options = config.known_args_namespace
-    return bool(
-        options.keyword
-        or options.markexpr
-        or options.deselect
-        or options.ignore
-        or options.ignore_glob
-        or options.file_or_dir
-    )
-
-
 _ACTIVE_VERIFY_RUN: tuple[VerifyRun, float, VerificationScope] | None = None
 
 
@@ -2441,7 +2431,7 @@ def _release_baseline_allowed(
     return bool(
         aggregate.get("complete_corpus_covered") is True
         and aggregate.get("terminal_green") is True
-        and aggregate.get("external_collection_selector") is False
+        and aggregate.get("external_addopts_neutralized") is True
         and isinstance(cleanup, Mapping)
         and cleanup.get("complete") is True
         and isinstance(containment, Mapping)
@@ -2891,7 +2881,6 @@ def _main(argv: list[str] | None = None) -> int:
             selection_mode=testmon_mode or "affected",
             invocation_duration_s=total_duration,
             budget_s=VERIFY_INVOCATION_BUDGET_S,
-            external_collection_selector=_has_inherited_collection_selector(),
         )
 
     # Aggregation and final graph inspection are part of the same invocation

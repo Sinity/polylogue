@@ -433,7 +433,10 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     for step in lanes:
         assert "--testmon-noselect" in step["statistics"]["command"]
         assert "--testmon-forceselect" not in step["statistics"]["command"]
+        assert "--override-ini=addopts=" in step["statistics"]["command"]
+        assert step["external_addopts_neutralized"] is True
     aggregate = payload["pytest_aggregate"]
+    assert aggregate["external_addopts_neutralized"] is True
     assert aggregate["selection_mode"] == "full"
     assert aggregate["environment"]["native_corpus_count"] == 2
     assert aggregate["corpus"]["count"] == 2
@@ -445,6 +448,84 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
     assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
+
+
+@pytest.mark.parametrize(
+    ("environment_addopts", "configured_addopts"),
+    [
+        ("--setup-only", None),
+        ("--collect-only", None),
+        ("tests/test_release.py::test_parallel_body_must_run", None),
+        ("--ignore-glob=tests/**", None),
+        ("--ignore-glob tests/**", None),
+        (None, "--setup-only --ignore-glob=tests/**"),
+        ("-ra --strict-markers", None),
+    ],
+    ids=(
+        "setup-only",
+        "collect-only",
+        "positional-node",
+        "ignore-glob-equal",
+        "ignore-glob-split",
+        "configured",
+        "harmless",
+    ),
+)
+def test_production_verify_all_neutralizes_external_pytest_addopts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    environment_addopts: str | None,
+    configured_addopts: str | None,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "tests" / "test_release.py").write_text(
+        "import pytest\n\n"
+        "def test_parallel_body_must_run():\n"
+        "    assert False, 'parallel body executed'\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_body_must_run():\n"
+        "    assert False, 'serial body executed'\n",
+        encoding="utf-8",
+    )
+    if configured_addopts is not None:
+        config = repo / "pyproject.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                'addopts = "-p no:randomly"',
+                f'addopts = "{configured_addopts}"',
+            ),
+            encoding="utf-8",
+        )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+    if environment_addopts is None:
+        monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    else:
+        monkeypatch.setenv("PYTEST_ADDOPTS", environment_addopts)
+
+    completed, payload = _run_production_verify(repo, "--all")
+
+    assert completed.returncode == 1
+    assert payload["release_baseline_allowed"] is False
+    aggregate = payload["pytest_aggregate"]
+    assert aggregate["external_addopts_neutralized"] is True
+    assert aggregate["selected_union_count"] == 2
+    assert aggregate["terminal_union_count"] == 2
+    assert aggregate["outcomes"] == {"failed": 2}
+    lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
+    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True]
+    assert all("--override-ini=addopts=" in step["statistics"]["command"] for step in lanes)
+    assert "parallel body executed" in completed.stderr
+    assert "serial body executed" in completed.stderr
 
 
 def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: Path) -> None:
