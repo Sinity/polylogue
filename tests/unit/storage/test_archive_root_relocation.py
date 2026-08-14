@@ -62,6 +62,7 @@ from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    DurableChangeTrainError,
     load_durable_change_train_manifest,
     rebind_released_source_train_archive_identity,
     recover_released_source_train_continuity,
@@ -1150,6 +1151,33 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                 )
             )
         admitted_components.assert_called_once()
+        foreign_refresh = tmp_path / "foreign-recovery-refresh.json"
+        shutil.copyfile(refresh_path, foreign_refresh)
+        refresh_path.unlink()
+        refresh_path.symlink_to(foreign_refresh)
+        train_before_rejected_resume = plan_train.read_bytes()
+        with pytest.raises(DurableChangeTrainError, match="refresh receipt is unreadable"):
+            CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "ops",
+                    "maintenance",
+                    "source-continuity-recovery",
+                    "apply",
+                    "--plan",
+                    str(plan_path),
+                    "--authorize",
+                    plan_sha256,
+                    "--output-format",
+                    "json",
+                ],
+                env=command_env,
+                catch_exceptions=False,
+            )
+        assert plan_train.read_bytes() == train_before_rejected_resume
+        refresh_path.unlink()
+        shutil.copyfile(foreign_refresh, refresh_path)
         rerun = CliRunner().invoke(
             cli,
             [
@@ -1604,6 +1632,101 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
     source_trains = relocation_plan_payload["source_trains"]
     assert isinstance(source_trains, list) and len(source_trains) == 1
     assert source_trains[0]["requires_rebind"] is False
+
+    refresh_digests = source_trains[0]["source_continuity_receipt_digests"]
+    assert isinstance(refresh_digests, list) and len(refresh_digests) == 1
+    refresh_path = moved_root / ".maintenance-state" / "source-continuity-refreshes" / f"{refresh_digests[0]}.json"
+    foreign_refresh = tmp_path / "foreign-refresh.json"
+    shutil.copyfile(refresh_path, foreign_refresh)
+    refresh_path.unlink()
+    refresh_path.symlink_to(foreign_refresh)
+    train_path = Path(str(source_trains[0]["path"]))
+    protected_paths = (*sorted(moved_root.glob("*.db")), train_path)
+    before_rejections = {
+        path: (path.stat().st_dev, path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes())
+        for path in protected_paths
+    }
+    relocation_receipt = moved_root / ".maintenance-state" / "archive-root-relocations" / f"{relocation_digest}.json"
+
+    rejected_plan = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "archive-root-relocation",
+            "plan",
+            "--old-root",
+            str(workspace_env["archive_root"]),
+            "--backup-manifest",
+            str(Path(backup.output_path) / "manifest.json"),
+            "--output",
+            str(tmp_path / "rejected-relocation-plan.json"),
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+    assert rejected_plan.exit_code != 0
+    assert "source continuity authority is invalid" in rejected_plan.output
+
+    rejected_apply = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "archive-root-relocation",
+            "apply",
+            "--plan",
+            str(relocation_plan),
+            "--authorize",
+            relocation_digest,
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+    assert rejected_apply.exit_code != 0
+    assert "continuity receipt is invalid" in rejected_apply.output
+
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.operations import durable_change_train as durable_operations
+
+    configure = Mock()
+    admission = Mock(wraps=durable_operations.reconcile_durable_change_trains_on_startup)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, 10_000)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.AUDIT, 10_000)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: moved_root)
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.reconcile_durable_change_trains_on_startup",
+        admission,
+    )
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", configure)
+    with pytest.raises(DurableChangeTrainError, match="refresh receipt is unreadable"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+    admission.assert_called_once_with(moved_root)
+    configure.assert_called_once()
+    assert not relocation_receipt.exists()
+    assert {
+        path: (path.stat().st_dev, path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes())
+        for path in protected_paths
+    } == before_rejections
+
+    refresh_path.unlink()
+    shutil.copyfile(foreign_refresh, refresh_path)
 
     applied = CliRunner().invoke(
         cli,

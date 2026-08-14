@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrain,
     DurableChangeTrainError,
     DurableChangeTrainState,
+    _read_source_continuity_refresh_receipt,
     _released_train_manifests_by_target,
     _require_released_train_chain,
     _validate_source_continuity_refresh_receipt,
@@ -422,15 +423,16 @@ def _validate_exact_refresh_binding(
     expected_ref = "proof:source-continuity-refresh:" + plan.refresh_receipt_sha256
     if expected_ref not in train.proof_refs or train.source_continuity_evidence is None:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof is missing")
-    refresh_path = _refresh_path(root, plan.refresh_receipt_sha256)
     try:
-        payload = json.loads(refresh_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = _read_source_continuity_refresh_receipt(
+            root,
+            digest=plan.refresh_receipt_sha256,
+            train=train,
+        )
+    except DurableChangeTrainError as exc:
         raise HistoricalSourceContinuityRecoveryError(
             "historical continuity recovery exact refresh proof is unreadable"
         ) from exc
-    if not isinstance(payload, dict) or payload.pop("refresh_sha256", None) != plan.refresh_receipt_sha256:
-        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof changed")
     expected_payload = _refresh_payload(plan, train_id=train.train_id)
     if payload != expected_payload or _canonical_json_sha256(payload) != plan.refresh_receipt_sha256:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery exact refresh proof changed")

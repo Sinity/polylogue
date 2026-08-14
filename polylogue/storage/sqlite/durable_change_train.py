@@ -1114,7 +1114,6 @@ def _validate_source_continuity_refresh_receipt(
     if train.source_continuity_evidence is None:
         return
     expected_after = _migration_runner._manifest_json_value(train.source_continuity_evidence)
-    refresh_root = archive_root / ".maintenance-state" / "source-continuity-refreshes"
     refresh_refs = [
         ref.removeprefix("proof:source-continuity-refresh:")
         for ref in train.proof_refs
@@ -1129,8 +1128,7 @@ def _validate_source_continuity_refresh_receipt(
         raise DurableChangeTrainError("source continuity evidence has no retained refresh receipt")
     refresh_payloads: dict[str, dict[str, object]] = {}
     for digest in refresh_refs:
-        receipt_path = refresh_root / f"{digest}.json"
-        payload = _read_source_continuity_refresh_receipt(receipt_path, digest=digest, train=train)
+        payload = _read_source_continuity_refresh_receipt(archive_root, digest=digest, train=train)
         refresh_payloads[digest] = payload
     matching_authorities = {
         ("refresh", digest)
@@ -1159,15 +1157,23 @@ def _validate_source_continuity_refresh_receipt(
 
 
 def _read_source_continuity_refresh_receipt(
-    receipt_path: Path,
+    archive_root: Path,
     *,
     digest: str,
     train: DurableChangeTrain,
 ) -> dict[str, object]:
     """Load one train-retained refresh artifact and authenticate its identity."""
+    receipt_path = archive_root / ".maintenance-state" / "source-continuity-refreshes" / f"{digest}.json"
     try:
-        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        with existing_maintenance_receipt_directory(archive_root, "source-continuity-refreshes") as directory_fd:
+            encoded = None if directory_fd is None else read_optional_receipt(directory_fd, receipt_path.name)
+    except MaintenanceReceiptPathError as exc:
+        raise DurableChangeTrainError(f"source continuity refresh receipt is unreadable: {receipt_path}") from exc
+    if encoded is None:
+        raise DurableChangeTrainError(f"source continuity refresh receipt is missing: {receipt_path}")
+    try:
+        raw = json.loads(encoded)
+    except json.JSONDecodeError as exc:
         raise DurableChangeTrainError(f"source continuity refresh receipt is unreadable: {receipt_path}") from exc
     if not isinstance(raw, dict):
         raise DurableChangeTrainError(f"source continuity refresh receipt is not an object: {receipt_path}")
@@ -1265,7 +1271,7 @@ def write_source_continuity_relocation_transition(
     matching_refreshes: list[str] = []
     for digest in refresh_refs:
         payload = _read_source_continuity_refresh_receipt(
-            archive_root / ".maintenance-state" / "source-continuity-refreshes" / f"{digest}.json",
+            archive_root,
             digest=digest,
             train=train,
         )
@@ -1445,7 +1451,7 @@ def _refresh_released_source_train_continuity_locked(
             digest = existing_path.stem
             if digest not in retained_refs:
                 continue
-            existing = _read_source_continuity_refresh_receipt(existing_path, digest=digest, train=train)
+            existing = _read_source_continuity_refresh_receipt(archive_root, digest=digest, train=train)
             if existing.get("mutation_receipt_sha256") == mutation_digest:
                 retained_refreshes.append((existing_path, existing))
         for existing_path, existing in retained_refreshes:
@@ -1518,13 +1524,12 @@ def _refresh_released_source_train_continuity_locked(
             _migration_runner._fsync_manifest_directory(refresh_root.parent)
         refresh_path = refresh_root / f"{refresh_digest}.json"
         if refresh_path.exists():
-            try:
-                existing = json.loads(refresh_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                raise DurableChangeTrainError(
-                    f"source continuity refresh receipt is unreadable: {refresh_path}"
-                ) from exc
-            if existing != {**payload, "refresh_sha256": refresh_digest}:
+            existing = _read_source_continuity_refresh_receipt(
+                archive_root,
+                digest=refresh_digest,
+                train=train,
+            )
+            if existing != payload:
                 raise DurableChangeTrainError("source continuity refresh receipt collision")
         else:
             encoded = (
