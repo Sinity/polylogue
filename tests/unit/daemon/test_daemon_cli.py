@@ -2556,6 +2556,69 @@ def test_live_watcher_cancellation_during_drain_retains_rebuild_exclusion(
             pass
 
 
+def test_live_watcher_stop_failure_still_retains_undrained_rebuild_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A watcher stop exception cannot bypass coordinator drain authority."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.product import raw_authority
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+
+    archive_root_path = tmp_path / "archive"
+    archive_root_path.mkdir()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root_path)
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FailingStopWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            raise RuntimeError("watcher stop failed")
+
+    class UndrainedCoordinator:
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            return False
+
+    captured: list[raw_authority.ArchiveWriterRebuildExclusion] = []
+    real_exclusion = raw_authority.archive_writer_rebuild_exclusion
+
+    @contextlib.contextmanager
+    def capture_exclusion(root: Path) -> Iterator[raw_authority.ArchiveWriterRebuildExclusion]:
+        with real_exclusion(root) as exclusion:
+            captured.append(exclusion)
+            yield exclusion
+
+    monkeypatch.setattr(raw_authority, "archive_writer_rebuild_exclusion", capture_exclusion)
+    with (
+        patch.object(daemon_cli, "Polylogue", FakePolylogue),
+        patch.object(daemon_cli, "LiveWatcher", FailingStopWatcher),
+        patch.object(daemon_cli, "daemon_write_coordinator", return_value=UndrainedCoordinator()),
+        pytest.raises(RuntimeError, match="watcher stop failed"),
+    ):
+        asyncio.run(daemon_cli.run_live_watcher(sources=(), debounce_s=1.0))
+
+    assert len(captured) == 1
+    with pytest.raises(RebuildLeaseUnavailableError, match="index rebuild lease is already held"):
+        with RebuildLease(archive_root_path):
+            pass
+
+    captured[0].release()
+    with RebuildLease(archive_root_path):
+        pass
+
+
 def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

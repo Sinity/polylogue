@@ -2159,13 +2159,15 @@ async def run_live_watcher(
                 with contextlib.suppress(KeyboardInterrupt):
                     await watcher.run()
         finally:
-            if watcher is not None:
-                watcher.stop()
-            await _shutdown_writer_coordinator_with_rebuild_exclusion(
-                coordinator,
-                rebuild_exclusion,
-                timeout=5.0,
-            )
+            try:
+                if watcher is not None:
+                    watcher.stop()
+            finally:
+                await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                    coordinator,
+                    rebuild_exclusion,
+                    timeout=5.0,
+                )
 
 
 async def run_daemon_services(
