@@ -3288,6 +3288,9 @@ def test_bench_slo_forces_nested_pytest_to_managed_scratch(
     scratch.mkdir()
     run = VerifyRun(tier="lab", argv=[], git_head=None, root=tmp_path)
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", str(inherited_tmpfs_root))
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--collect-only")
+    monkeypatch.setenv("PYTEST_PLUGINS", "ambient_plugin")
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
     managed_env = {
         "POLYLOGUE_PYTEST_TMPFS": "0",
         "POLYLOGUE_PYTEST_BASETEMP_ROOT": str(scratch),
@@ -3310,6 +3313,9 @@ def test_bench_slo_forces_nested_pytest_to_managed_scratch(
     assert env["POLYLOGUE_PYTEST_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
+    assert "PYTEST_ADDOPTS" not in env
+    assert "PYTEST_PLUGINS" not in env
+    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in env
 
 
 def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3317,6 +3323,10 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("POLYLOGUE_REPO_ROOT", "/stale/main")
     monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/stale/main/.cache/pycache")
     monkeypatch.setenv("PYTHONPATH", "/stale/main")
+    monkeypatch.setenv("PYTHONOPTIMIZE", "1")
+    monkeypatch.setenv("PYTHONHOME", "/stale/python")
+    monkeypatch.setenv("PYTHONUSERBASE", "/stale/user-site")
+    monkeypatch.setenv("PYTHONNOUSERSITE", "0")
     completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
 
     with patch("devtools.verify.subprocess.run", return_value=completed) as run:
@@ -3327,8 +3337,26 @@ def test_run_forces_subprocesses_to_current_checkout(monkeypatch: pytest.MonkeyP
     assert env["POLYLOGUE_ROOT"] == str(ROOT)
     assert env["POLYLOGUE_REPO_ROOT"] == str(ROOT)
     assert env["PYTHONPYCACHEPREFIX"] == str(ROOT / ".cache" / "pycache")
-    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(ROOT)
+    assert env["PYTHONPATH"] == str(ROOT)
+    assert "PYTHONOPTIMIZE" not in env
+    assert "PYTHONHOME" not in env
+    assert "PYTHONUSERBASE" not in env
+    assert env["PYTHONNOUSERSITE"] == "1"
     assert env["POLYLOGUE_PYTEST_EVENTS_PATH"] == str(ROOT / PYTEST_EVENTS_PATH)
+
+
+def test_mypy_probe_uses_managed_python_startup_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHONPATH", "/caller/sitecustomize")
+    monkeypatch.setenv("PYTHONOPTIMIZE", "2")
+    completed = subprocess.CompletedProcess(args=["dmypy", "status"], returncode=1, stdout="", stderr="")
+
+    with patch("devtools.verify.subprocess.run", return_value=completed) as run:
+        assert verify._mypy_cmd() == ["mypy"]
+
+    assert run.call_args.kwargs["cwd"] == ROOT
+    env = run.call_args.kwargs["env"]
+    assert env["PYTHONPATH"] == str(ROOT)
+    assert "PYTHONOPTIMIZE" not in env
 
 
 def test_verify_subprocess_env_removes_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:

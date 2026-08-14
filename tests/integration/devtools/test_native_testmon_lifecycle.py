@@ -172,6 +172,8 @@ def _run_production_verify(
     repo: Path,
     *args: str,
     allow_rejection: bool = False,
+    environment_overrides: dict[str, str] | None = None,
+    interpreter_args: tuple[str, ...] = (),
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run the production verifier orchestration against a tiny fixture corpus.
 
@@ -227,9 +229,19 @@ raise SystemExit(verify.main(sys.argv[2:]))
             "GIT_OPTIONAL_LOCKS": "0",
         }
     )
+    if environment_overrides is not None:
+        env.update(environment_overrides)
     try:
         completed = subprocess.run(
-            [sys.executable, "-c", driver, str(repo), *args, "--json"],
+            [
+                sys.executable,
+                *interpreter_args,
+                "-c",
+                driver,
+                str(repo),
+                *args,
+                "--json",
+            ],
             cwd=PROJECT_ROOT,
             env=env,
             capture_output=True,
@@ -266,6 +278,8 @@ raise SystemExit(verify.main(sys.argv[2:]))
     persisted = json.loads(receipt.read_text(encoding="utf-8"))
     assert persisted["invocation_id"] == invocation_id
     assert persisted["pytest_aggregate"] == payload["pytest_aggregate"]
+    for authority_field in ("diagnosis", "exit_code", "release_baseline_allowed"):
+        assert persisted.get(authority_field) == payload.get(authority_field)
     return completed, payload
 
 
@@ -538,6 +552,115 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     assert all("--override-ini=addopts=" in step["statistics"]["command"] for step in lanes)
     assert "parallel body executed" in completed.stderr
     assert "serial body executed" in completed.stderr
+
+
+def test_production_verify_all_drops_pythonpath_startup_injection(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    release_source = (
+        "import pytest\n\n"
+        "def test_parallel_passes():\n"
+        "    assert True\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_passes():\n"
+        "    assert True\n\n"
+        "def test_omitted_failure():\n"
+        "    assert False, 'PYTHONPATH startup injection did not narrow execution'\n"
+    )
+    (repo / "tests" / "test_release.py").write_text(release_source, encoding="utf-8")
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+    startup_path = tmp_path / "ambient-pythonpath"
+    startup_path.mkdir()
+    (startup_path / "sitecustomize.py").write_text(
+        'import os\nos.environ["PYTEST_ADDOPTS"] = "-k passes"\n',
+        encoding="utf-8",
+    )
+
+    completed, payload = _run_production_verify(
+        repo,
+        "--all",
+        environment_overrides={
+            "PYTHONPATH": os.pathsep.join((str(PROJECT_ROOT), str(startup_path))),
+        },
+    )
+
+    assert completed.returncode == 1
+    assert payload["release_baseline_allowed"] is False
+    aggregate = payload["pytest_aggregate"]
+    assert aggregate["selected_union_count"] == 3
+    assert aggregate["terminal_union_count"] == 3
+    assert aggregate["outcomes"] == {"failed": 1, "passed": 2}
+    assert aggregate["terminal_green"] is False
+    assert "PYTHONPATH startup injection did not narrow execution" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("environment_overrides", "interpreter_args", "verify_args"),
+    [
+        ({"PYTHONOPTIMIZE": "1"}, (), ("--all",)),
+        ({}, ("-O",), ("--all",)),
+        ({}, ("-OO",), ("--all",)),
+        ({"PYTHONOPTIMIZE": "1"}, (), ("--quick", "--lab")),
+        ({"PYTHONOPTIMIZE": "1"}, (), ("--commit", "--lab")),
+    ],
+    ids=("pythonoptimize", "dash-o", "dash-oo", "quick-lab", "commit-lab"),
+)
+def test_production_verify_rejects_optimized_managed_pytest_interpreter(
+    tmp_path: Path,
+    environment_overrides: dict[str, str],
+    interpreter_args: tuple[str, ...],
+    verify_args: tuple[str, ...],
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    package = repo / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "invariant.py").write_text(
+        "def require_failure():\n    assert False, 'product assertion executed'\n",
+        encoding="utf-8",
+    )
+    (repo / "tests" / "test_release.py").write_text(
+        "import pytest\n"
+        "from polylogue.invariant import require_failure\n\n"
+        "def test_parallel_product_assertion():\n"
+        "    require_failure()\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_lane():\n"
+        "    require_failure()\n",
+        encoding="utf-8",
+    )
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    completed, payload = _run_production_verify(
+        repo,
+        *verify_args,
+        allow_rejection=True,
+        environment_overrides=environment_overrides,
+        interpreter_args=interpreter_args,
+    )
+
+    assert completed.returncode == 125
+    assert payload["diagnosis"] == "optimized_python_interpreter"
+    assert payload["exit_code"] == 125
+    assert payload["release_baseline_allowed"] is False
+    assert payload["pytest_aggregate"]["selection_mode"] == "none"
+    assert "Python optimization disables verification assertions" in completed.stderr
 
 
 @pytest.mark.parametrize("ambient_addopts", ["--collect-only", "--setup-only"])

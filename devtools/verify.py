@@ -147,11 +147,23 @@ _PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
 )
 
 
-def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
+def _normalize_managed_pytest_environment(
+    env: dict[str, str],
+    *,
+    disable_plugin_autoload: bool = True,
+) -> None:
     """Remove ambient pytest options and extensions from a managed child."""
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
-    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    if disable_plugin_autoload:
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    else:
+        env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+
+
+def _python_optimization_level() -> int:
+    """Return the active interpreter optimization level."""
+    return int(sys.flags.optimize)
 
 
 @dataclass(slots=True)
@@ -244,6 +256,8 @@ def _mypy_cmd() -> list[str]:
             capture_output=True,
             text=True,
             timeout=5,
+            cwd=ROOT,
+            env=_subprocess_env(),
         )
         if result.returncode == 0:
             return ["dmypy", "run", "--", "--no-error-summary"]
@@ -1761,6 +1775,7 @@ def _run_step(
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
     has_managed_pytest_child = label == "bench slo"
+    owns_pytest_environment = managed_native_lane or has_managed_pytest_child
     if is_pytest and run is not None:
         isolated_report = run.run_dir / f"pytest-report-{uuid.uuid4().hex}.json"
         cmd = [f"--json-report-file={isolated_report}" if arg.startswith("--json-report-file=") else arg for arg in cmd]
@@ -1770,8 +1785,8 @@ def _run_step(
     env = _subprocess_env(native_testmon_data=native_testmon_data)
     external_addopts_neutralized = False
     external_plugins_neutralized = False
-    if managed_native_lane:
-        _normalize_managed_pytest_environment(env)
+    if owns_pytest_environment:
+        _normalize_managed_pytest_environment(env, disable_plugin_autoload=managed_native_lane)
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
         env[PYTEST_EXPLICIT_BASETEMP_ENV] = str(explicit_basetemp)
@@ -1825,8 +1840,9 @@ def _run_step(
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        if owns_pytest_environment:
+            _normalize_managed_pytest_environment(env, disable_plugin_autoload=managed_native_lane)
         if managed_native_lane:
-            _normalize_managed_pytest_environment(env)
             external_addopts_neutralized = _PYTEST_CLEAR_CONFIGURED_ADDOPTS in cmd
             external_plugins_neutralized = (
                 "PYTEST_PLUGINS" not in env and env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1"
@@ -2211,8 +2227,13 @@ def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["POLYLOGUE_ROOT"] = str(ROOT)
     env["POLYLOGUE_REPO_ROOT"] = str(ROOT)
-    inherited_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
+    # Managed verification owns Python startup. Inherited paths can load a
+    # sitecustomize module before pytest gets a chance to neutralize addopts.
+    env["PYTHONPATH"] = str(ROOT)
+    env.pop("PYTHONOPTIMIZE", None)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONUSERBASE", None)
+    env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["TESTMON_DATAFILE"] = str(native_testmon_data or TESTMON_DATA)
     env["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(ROOT / PYTEST_EVENTS_DIR)
@@ -2798,6 +2819,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     head = _git_head()
     pytest_enabled = not (args.quick or args.commit)
+    managed_pytest_enabled = pytest_enabled or args.lab
     planned_scope = _planned_verification_scope(
         args,
         testmon_mode="full" if full_requested else None,
@@ -2813,6 +2835,23 @@ def _main(argv: list[str] | None = None) -> int:
         verification_scope=planned_scope,
         head=head,
     )
+
+    optimization_level = _python_optimization_level()
+    if managed_pytest_enabled and optimization_level > 0:
+        return _finalize_preflight_failure(
+            verify_run,
+            started_at=started_at,
+            tier=tier,
+            head=head,
+            verification_scope=planned_scope,
+            diagnosis="optimized_python_interpreter",
+            exit_code=125,
+            message=(
+                "Python optimization disables verification assertions; "
+                f"refusing managed pytest at optimization level {optimization_level}"
+            ),
+            use_json=bool(use_json),
+        )
 
     try:
         fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
