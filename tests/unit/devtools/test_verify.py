@@ -156,13 +156,51 @@ def test_native_corpus_excludes_only_benchmark_directory() -> None:
     assert "--ignore=tests/integration" not in complete_command
 
 
-@pytest.mark.parametrize("selector", ["-k smoke", "--keyword=smoke", "--ignore=tests/benchmarks"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "-k smoke",
+        "--keyword=smoke",
+        "--ignore=tests/benchmarks",
+        "--ignore-glob=tests/integration/**",
+        "--ignore-glob tests/integration/**",
+        "tests/unit/devtools/test_verify.py::test_release_authority_requires_current_complete_green_invocation",
+    ],
+)
 def test_inherited_collection_selectors_are_not_release_authority(
     monkeypatch: pytest.MonkeyPatch,
     selector: str,
 ) -> None:
-    """Removing selector detection would incorrectly authorize the narrowed corpus."""
+    """The production authority path must reject every inherited narrowing form."""
     monkeypatch.setenv("PYTEST_ADDOPTS", selector)
+
+    assert verify._has_inherited_collection_selector() is True
+    assert not _release_baseline_allowed(
+        selection_mode="bootstrap",
+        verification_scope=VerificationScope.RELEASE_BASELINE,
+        exit_code=0,
+        checkout_stable=True,
+        aggregate={
+            "complete_corpus_covered": True,
+            "terminal_green": True,
+            "external_collection_selector": verify._has_inherited_collection_selector(),
+            "cleanup": {"complete": True},
+            "containment": {"complete": True},
+            "deadline": {"met": True},
+        },
+    )
+
+
+def test_configured_collection_selector_is_not_release_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pytest config addopts are inherited by the production pytest process too."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\naddopts = '--ignore-glob=tests/integration/**'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
 
     assert verify._has_inherited_collection_selector() is True
 
@@ -172,6 +210,20 @@ def test_unrelated_inherited_pytest_options_do_not_disable_release_authority(mon
     monkeypatch.setenv("PYTEST_ADDOPTS", "-ra --strict-markers")
 
     assert verify._has_inherited_collection_selector() is False
+    assert _release_baseline_allowed(
+        selection_mode="bootstrap",
+        verification_scope=VerificationScope.RELEASE_BASELINE,
+        exit_code=0,
+        checkout_stable=True,
+        aggregate={
+            "complete_corpus_covered": True,
+            "terminal_green": True,
+            "external_collection_selector": verify._has_inherited_collection_selector(),
+            "cleanup": {"complete": True},
+            "containment": {"complete": True},
+            "deadline": {"met": True},
+        },
+    )
 
 
 def test_lab_verify_delegates_to_lab_smoke() -> None:
@@ -4098,6 +4150,7 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     aggregate = {
         "complete_corpus_covered": True,
         "terminal_green": True,
+        "external_collection_selector": False,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
         "deadline": {"met": True},
