@@ -64,6 +64,7 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableDatabaseEvidence,
     capture_durable_database_evidence,
     capture_durable_schema_inventory,
+    durable_change_train_to_payload,
 )
 
 PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v2"] = (
@@ -111,6 +112,7 @@ class HistoricalSourceContinuityRecoveryPlan(BaseModel):
     source_train_path: str
     source_train_revision: int
     source_train_sha256: str
+    source_train_after_sha256: str
     source_before: dict[str, object]
     source_after: dict[str, object]
     census: dict[str, object]
@@ -129,7 +131,7 @@ class HistoricalSourceContinuityRecoveryReceipt(BaseModel):
     plan_sha256: str
     authorization: str
     train_before_sha256: str
-    train_after_sha256: str | None
+    train_after_sha256: str
     refresh_receipt_sha256: str
     resume_command: str
     receipt_sha256: str
@@ -175,6 +177,12 @@ def _canonical_json_sha256(payload: object) -> str:
     return hashlib.sha256(
         json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode("utf-8")
     ).hexdigest()
+
+
+def _train_manifest_sha256(train: DurableChangeTrain) -> str:
+    payload = durable_change_train_to_payload(train)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _real_file(path: Path, *, label: str) -> None:
@@ -266,11 +274,23 @@ def _sealed_receipt(**values: object) -> HistoricalSourceContinuityRecoveryRecei
 def _verify_plan(plan: HistoricalSourceContinuityRecoveryPlan) -> None:
     if plan.plan_sha256 != _canonical_json_sha256(plan.model_dump(mode="json", exclude={"plan_sha256"})):
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery plan checksum mismatch")
+    if len(plan.source_train_after_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in plan.source_train_after_sha256
+    ):
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery plan has invalid post-CAS train binding"
+        )
 
 
 def _verify_receipt(receipt: HistoricalSourceContinuityRecoveryReceipt) -> None:
     if receipt.receipt_sha256 != _canonical_json_sha256(receipt.model_dump(mode="json", exclude={"receipt_sha256"})):
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery receipt checksum mismatch")
+    if len(receipt.train_after_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in receipt.train_after_sha256
+    ):
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery receipt has invalid post-CAS train binding"
+        )
 
 
 def _backup_source_evidence(
@@ -898,6 +918,12 @@ def prepare_historical_source_continuity_recovery(
             "census": census,
         },
     }
+    refresh_digest = _canonical_json_sha256(refresh_payload)
+    expected_train = recover_released_source_train_continuity(
+        train,
+        current_evidence=current,
+        proof_ref="proof:source-continuity-refresh:" + refresh_digest,
+    )
     return _sealed_plan(
         old_configured_root=str(old_configured),
         old_resolved_root=str(old_resolved),
@@ -923,10 +949,11 @@ def prepare_historical_source_continuity_recovery(
         new_source_device=new_source_identity.device,
         new_source_inode=new_source_identity.inode,
         refresh_proof_id=refresh_proof_id,
-        refresh_receipt_sha256=_canonical_json_sha256(refresh_payload),
+        refresh_receipt_sha256=refresh_digest,
         source_train_path=str(train_path),
         source_train_revision=train.revision,
         source_train_sha256=_sha256(train_path),
+        source_train_after_sha256=_train_manifest_sha256(expected_train),
         source_before=source_before,
         source_after=_evidence_payload(current),
         census=census,
@@ -1136,11 +1163,15 @@ def _revalidate(
     train_sha256 = _sha256(Path(plan.source_train_path))
     if train_sha256 == plan.source_train_sha256:
         _assert_pre_train_authority(Path(plan.source_train_path), pre)
-    else:
+    elif train_sha256 == plan.source_train_after_sha256:
         if train.source_continuity_evidence is None:
             raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source train changed")
         _validate_source_continuity_refresh_receipt(root, train)
         _validate_exact_refresh_binding(root, plan, train)
+    else:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery source train is neither the sealed pre-CAS nor post-CAS manifest"
+        )
     if _census(root) != plan.census:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery liveness census changed")
     return current
@@ -1212,7 +1243,7 @@ def _apply_historical_source_continuity_recovery_locked(
         plan_sha256=plan.plan_sha256,
         authorization=authorization,
         train_before_sha256=plan.source_train_sha256,
-        train_after_sha256=None,
+        train_after_sha256=plan.source_train_after_sha256,
         refresh_receipt_sha256=refresh_digest,
         resume_command=command,
     )
@@ -1223,7 +1254,19 @@ def _apply_historical_source_continuity_recovery_locked(
             raise HistoricalSourceContinuityRecoveryError(
                 "historical continuity recovery receipt belongs to another plan"
             )
+        if (
+            receipt.train_before_sha256 != plan.source_train_sha256
+            or receipt.train_after_sha256 != plan.source_train_after_sha256
+            or receipt.refresh_receipt_sha256 != refresh_digest
+        ):
+            raise HistoricalSourceContinuityRecoveryError(
+                "historical continuity recovery receipt does not bind this plan's exact CAS"
+            )
         if receipt.state == "committed":
+            if _sha256(Path(plan.source_train_path)) != receipt.train_after_sha256:
+                raise HistoricalSourceContinuityRecoveryError(
+                    "historical continuity recovery committed receipt does not bind the live train manifest"
+                )
             train = load_durable_change_train_manifest(Path(plan.source_train_path))
             _validate_source_continuity_refresh_receipt(resolved, train)
             _validate_exact_refresh_binding(resolved, plan, train)
@@ -1244,10 +1287,20 @@ def _apply_historical_source_continuity_recovery_locked(
         updated = recover_released_source_train_continuity(
             train, current_evidence=planned_current, proof_ref="proof:source-continuity-refresh:" + refresh_digest
         )
+        if _train_manifest_sha256(updated) != plan.source_train_after_sha256:
+            raise HistoricalSourceContinuityRecoveryError(
+                "historical continuity recovery post-CAS train binding changed"
+            )
         write_durable_change_train_manifest(path, updated, expected_revision=plan.source_train_revision)
-    else:
+    elif _sha256(path) == plan.source_train_after_sha256:
         _validate_source_continuity_refresh_receipt(resolved, train)
         _validate_exact_refresh_binding(resolved, plan, train)
+    else:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery source train is neither the sealed pre-CAS nor post-CAS manifest"
+        )
+    if _sha256(path) != plan.source_train_after_sha256:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery post-CAS train manifest changed")
     _validate_exact_refresh_binding(resolved, plan, load_durable_change_train_manifest(path))
     committed = _sealed_receipt(
         state="committed",
@@ -1255,7 +1308,7 @@ def _apply_historical_source_continuity_recovery_locked(
         plan_sha256=plan.plan_sha256,
         authorization=authorization,
         train_before_sha256=plan.source_train_sha256,
-        train_after_sha256=_sha256(path),
+        train_after_sha256=plan.source_train_after_sha256,
         refresh_receipt_sha256=refresh_digest,
         resume_command=command,
     )

@@ -1272,14 +1272,14 @@ def _validate_source_continuity_refresh_receipt(
             )
             nodes[transition_ref] = node
             predecessor_node = node
-    matching_authorities = [
-        node.ref
-        for node in nodes.values()
-        if node.ref not in successor_by_authority and node.source_after == expected_after
-    ]
-    if len(matching_authorities) != 1:
-        raise DurableChangeTrainError("source continuity evidence does not identify exactly one terminal authority")
-    terminal = matching_authorities[0]
+    roots = [ref for ref in nodes if ref not in predecessors]
+    terminals = [node for node in nodes.values() if node.ref not in successor_by_authority]
+    if len(roots) != 1 or len(terminals) != 1:
+        raise DurableChangeTrainError("source continuity references do not form one connected authority chain")
+    terminal_node = terminals[0]
+    if terminal_node.source_after != expected_after:
+        raise DurableChangeTrainError("source continuity evidence does not identify the terminal authority")
+    terminal = terminal_node.ref
     if terminal.kind == "refresh":
         terminal_payload = refresh_payloads[terminal.sha256]
         if terminal_payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:

@@ -23,6 +23,7 @@ from polylogue.daemon.backup import backup_archive
 from polylogue.operations.archive_root_relocation import (
     ArchiveRootRelocationError,
     RelocationActiveIndexPointer,
+    RelocationIndexGeneration,
     RelocationTierEvidence,
     _check_backup_against_live,
     apply_archive_root_relocation,
@@ -1053,6 +1054,45 @@ def test_refresh_only_authority_chain_requires_exact_manifest_predecessors(
         assert_source_continuity_apply_allowed(root)
 
 
+def test_source_continuity_rejects_a_disconnected_legacy_authority_component(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every retained V1/V2/relocation authority must belong to one chain.
+
+    Anti-vacuity: source-mutation admission calls the production continuity
+    graph validator. The older terminal-only check accepted an unrelated V1
+    root whenever the legitimate V1 authority alone matched current evidence.
+    """
+    root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(root, monkeypatch)
+    _attach_retained_source_continuity(root, manifest)
+    train = load_durable_change_train_manifest(manifest)
+    retained_digest = next(
+        ref.rsplit(":", 1)[-1] for ref in train.proof_refs if ref.startswith("proof:source-continuity-refresh:")
+    )
+    retained_path = root / ".maintenance-state" / "source-continuity-refreshes" / f"{retained_digest}.json"
+    foreign_payload = json.loads(retained_path.read_text(encoding="utf-8"))
+    foreign_payload.pop("refresh_sha256")
+    foreign_payload["operation_id"] = "disconnected-legacy-authority"
+    foreign_after = dict(foreign_payload["source_after"])
+    foreign_after["content_sha256"] = "f" * 64
+    foreign_payload["source_after"] = foreign_after
+    foreign_digest = _canonical_json_sha256(foreign_payload)
+    _write_refresh_receipt(
+        retained_path.with_name(f"{foreign_digest}.json"),
+        {**foreign_payload, "refresh_sha256": foreign_digest},
+    )
+    disconnected = replace(
+        train,
+        revision=train.revision + 1,
+        proof_refs=(*train.proof_refs, f"proof:source-continuity-refresh:{foreign_digest}"),
+    )
+    write_durable_change_train_manifest(manifest, disconnected, expected_revision=train.revision)
+
+    with pytest.raises(DurableChangeTrainError, match="one connected authority chain"):
+        assert_source_continuity_apply_allowed(root)
+
+
 def test_receipt_directory_swap_cannot_redirect_either_operation_outside_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1094,7 +1134,7 @@ def test_receipt_directory_swap_cannot_redirect_either_operation_outside_archive
         plan_sha256="b" * 64,
         authorization="b" * 64,
         train_before_sha256="c" * 64,
-        train_after_sha256=None,
+        train_after_sha256="e" * 64,
         refresh_receipt_sha256="d" * 64,
         resume_command="resume continuity",
     )
@@ -1150,7 +1190,7 @@ def test_receipt_writers_never_create_through_a_symlinked_maintenance_state(tmp_
                 plan_sha256="f" * 64,
                 authorization="f" * 64,
                 train_before_sha256="0" * 64,
-                train_after_sha256=None,
+                train_after_sha256="2" * 64,
                 refresh_receipt_sha256="1" * 64,
                 resume_command="resume continuity",
             ),
@@ -1228,7 +1268,7 @@ def test_historical_startup_reader_rejects_receipt_swapped_after_enumeration(
             plan_sha256="c" * 64,
             authorization="c" * 64,
             train_before_sha256="d" * 64,
-            train_after_sha256=None,
+            train_after_sha256="f" * 64,
             refresh_receipt_sha256="e" * 64,
             resume_command="resume continuity",
         ),
@@ -1815,6 +1855,65 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     promoted = relocated_store.promote(relocated_store.load(inactive_generation.generation_id))
     assert promoted.state == "active"
     assert (new_root / "index.db").resolve(strict=True) == Path(promoted.index_path)
+
+
+def test_relocation_generation_publication_rejects_a_post_validation_directory_swap(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generation publication pins the planned directory before every write.
+
+    Anti-vacuity: the swap occurs after the production validator returns and
+    before publication. Path-based temporary files and replaces mutate the
+    byte-identical foreign generation; descriptor-pinned publication rejects
+    its different directory identity without changing any foreign artifact.
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    _activate_movable_index_generation(old_root)
+    _attach_retained_source_continuity(old_root, manifest)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    assert plan.index_generations
+    generation_root = Path(plan.index_generations[0].metadata_path).parent
+    outside = tmp_path / "foreign-generation"
+    shutil.copytree(generation_root, outside, symlinks=True)
+    outside_metadata_before = (outside / "generation.json").read_bytes()
+    outside_links_before = {path.name: os.readlink(path) for path in outside.iterdir() if path.is_symlink()}
+    detached = tmp_path / "detached-authoritative-generation"
+    real_validate = relocation._validate_index_generation_state
+    validation_calls = 0
+
+    def swap_after_publication_preflight(
+        root: Path,
+        items: tuple[RelocationIndexGeneration, ...],
+        pointer: RelocationActiveIndexPointer | None,
+    ) -> None:
+        nonlocal validation_calls
+        real_validate(root, items, pointer)
+        validation_calls += 1
+        if validation_calls == 2:
+            os.rename(generation_root, detached)
+            generation_root.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(relocation, "_validate_index_generation_state", swap_after_publication_preflight)
+    with pytest.raises(ArchiveRootRelocationError, match="cannot pin.*index generation directory"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+    assert validation_calls == 2
+    assert (outside / "generation.json").read_bytes() == outside_metadata_before
+    assert {path.name: os.readlink(path) for path in outside.iterdir() if path.is_symlink()} == outside_links_before
 
 
 def test_relocation_remaps_generations_beside_a_nested_active_index(
@@ -2659,7 +2758,158 @@ def test_historical_continuity_recovery_resume_rejects_a_foreign_same_evidence_r
         )
 
     assert resumed.exit_code != 0
-    assert "exact refresh proof" in resumed.output
+    assert "neither the sealed pre-CAS nor post-CAS manifest" in resumed.output
+
+
+def test_historical_recovery_resume_and_committed_return_require_exact_post_cas_manifest(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepared and committed recovery accept only the plan-sealed post-CAS bytes.
+
+    Anti-vacuity: the public apply route crashes immediately after the real
+    manifest CAS. A different checksummed released manifest retaining the
+    exact V1 recovery evidence plus one foreign proof ref used to resume and
+    later return as committed.
+    """
+    from polylogue.operations import historical_source_continuity_recovery as recovery
+
+    moved_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(moved_root)}
+    plan_path = tmp_path / "exact-post-cas-plan.json"
+    with _test_historical_operation_evidence_resource(evidence):
+        planned = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(plan_path),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert planned.exit_code == 0, planned.output
+        plan = _maintenance_json_output(planned.output)
+        plan_sha256 = str(plan["plan_sha256"])
+        train_path = Path(str(plan["source_train_path"]))
+        real_write = write_durable_change_train_manifest
+
+        def crash_after_manifest_cas(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> None:
+            real_write(path, train, expected_revision=expected_revision)
+            raise RuntimeError("crash after historical recovery manifest CAS")
+
+        monkeypatch.setattr(recovery, "write_durable_change_train_manifest", crash_after_manifest_cas)
+        with pytest.raises(RuntimeError, match="crash after historical recovery manifest CAS"):
+            CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "ops",
+                    "maintenance",
+                    "source-continuity-recovery",
+                    "apply",
+                    "--plan",
+                    str(plan_path),
+                    "--authorize",
+                    plan_sha256,
+                    "--output-format",
+                    "json",
+                ],
+                env=command_env,
+                catch_exceptions=False,
+            )
+        monkeypatch.setattr(recovery, "write_durable_change_train_manifest", real_write)
+        exact_post_cas = train_path.read_bytes()
+        exact_train = load_durable_change_train_manifest(train_path)
+        substituted = replace(
+            exact_train,
+            proof_refs=(*exact_train.proof_refs, "proof:foreign-post-cas-substitution"),
+        )
+        train_path.write_text(
+            json.dumps(durable_change_train_to_payload(substituted), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rejected_prepared = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert rejected_prepared.exit_code != 0
+        assert "neither the sealed pre-CAS nor post-CAS manifest" in rejected_prepared.output
+
+        train_path.write_bytes(exact_post_cas)
+        committed = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert committed.exit_code == 0, committed.output
+        train_path.write_text(
+            json.dumps(durable_change_train_to_payload(substituted), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rejected_committed = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+
+    assert rejected_committed.exit_code != 0
+    assert "neither the sealed pre-CAS nor post-CAS manifest" in rejected_committed.output
 
 
 def test_historical_recovery_rejects_foreign_train_authority_before_preparing(
@@ -2724,7 +2974,7 @@ def test_historical_recovery_rejects_foreign_train_authority_before_preparing(
         )
 
     assert applied.exit_code != 0
-    assert "exact refresh proof" in applied.output
+    assert "neither the sealed pre-CAS nor post-CAS manifest" in applied.output
     plan_sha256 = str(plan["plan_sha256"])
     assert not (
         moved_root / ".maintenance-state" / "historical-source-continuity-recoveries" / f"{plan_sha256}.json"
