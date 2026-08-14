@@ -41,14 +41,14 @@ command's migration result alone.
 
 ## Relocating an archive root
 
-Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. `--old-root` names the retired pre-move root for the identity transition and active-index pointer mapping. Create a fresh verified `full_evidence` backup after setting `POLYLOGUE_ARCHIVE_ROOT` to the moved root. The relocation plan authenticates that backup against the moved root and revalidates its device/inode inventory there; it never asks a moved-root backup to authenticate the nonexistent retired path. A current source train with post-release source content must first have receipt-backed source-continuity authority; relocation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and writes only released source durable-train manifests plus its receipt; it never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
+Use `ops maintenance archive-root-relocation` only after an offline inode-preserving root move. `--old-root` names the retired pre-move root for the identity transition and active-index pointer mapping. Create a fresh verified `full_evidence` backup after setting `POLYLOGUE_ARCHIVE_ROOT` to the moved root. The relocation plan authenticates that backup against the moved root and revalidates its device/inode inventory there; it never asks a moved-root backup to authenticate the nonexistent retired path. A current source train with post-release source content must first have receipt-backed source-continuity authority; relocation verifies and rebinds that authority but never creates it. Planning is read-only. Applying revalidates all evidence and CAS-revises only the released `source`, `user`, and `audit` durable-train manifests that require relocation authority, together with the retained exact plan and prepared/committed receipts. It never opens SQLite read-write, changes a row, rebuilds, reindexes, or repairs startup state.
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation plan --old-root /old/archive/root --backup-manifest /path/to/manifest.json --output /safe/relocation-plan.json --output-format json
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-relocation apply --plan /safe/relocation-plan.json --authorize PLAN_SHA256 --output-format json
 ```
 
-If apply stops after recording a prepared receipt, daemon startup fails closed and names the exact apply command. Rerun that command with the same plan and authorization after restoring offline ownership. Do not use this operation for a copy, restore, new archive, migration, or live service move.
+If apply stops after recording a prepared receipt, daemon startup fails closed and names an exact command whose plan path is the retained plan bound by that receipt. Rerun that command with the same authorization after restoring offline ownership. Resume accepts only the exact post-CAS manifest hashes and relocation proof chain sealed for that plan. Do not use this operation for a copy, restore, new archive, migration, or live service move.
 
 ### Recovering the one historical liveness receipt shape
 
