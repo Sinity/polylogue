@@ -1367,16 +1367,17 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
         single_writer_evidence_ref="proof:archive-ownership-lock",
     )
 
-    assert plan.active_index_pointer is not None
-    assert plan.active_index_pointer.old_target == str(old_active_target)
-    assert plan.active_index_pointer.new_target == str(new_root / old_active_target.relative_to(old_root))
+    pointer = plan.active_index_pointer
+    assert pointer is not None
+    assert pointer.old_target == str(old_active_target)
+    assert pointer.new_target == str(new_root / old_active_target.relative_to(old_root))
     real_publish = relocation._publish_active_index_pointer
     real_write = os.write
     short_pointer_write = False
 
     def write_pointer_in_two_calls(descriptor: int, payload: bytes) -> int:
         nonlocal short_pointer_write
-        expected = (plan.active_index_pointer.new_target + "\n").encode("utf-8")
+        expected = (pointer.new_target + "\n").encode("utf-8")
         if not short_pointer_write and payload == expected:
             short_pointer_write = True
             partial = len(payload) - 1
@@ -1388,7 +1389,7 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
         real_publish(root, pointer)
         raise RuntimeError("crash after active pointer publication")
 
-    monkeypatch.setattr(relocation.os, "write", write_pointer_in_two_calls)
+    monkeypatch.setattr(os, "write", write_pointer_in_two_calls)
     monkeypatch.setattr(relocation, "_publish_active_index_pointer", crash_after_pointer_publication)
     with pytest.raises(RuntimeError, match="crash after active pointer publication"):
         apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
