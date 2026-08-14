@@ -4003,8 +4003,18 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
         assert durable_payload["final_worktree_fingerprint"] == "stable"
 
 
+@pytest.mark.parametrize(
+    ("raised", "expected_exit", "expected_diagnosis"),
+    [
+        (RuntimeError("fingerprint failed"), 125, "verify_runner_exception"),
+        (KeyboardInterrupt(), 130, "verify_interrupted"),
+    ],
+)
 def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
     capsys: pytest.CaptureFixture[str],
+    raised: BaseException,
+    expected_exit: int,
+    expected_diagnosis: str,
 ) -> None:
     events: list[str] = []
     history: dict[str, Any] = {}
@@ -4021,7 +4031,7 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
         fingerprint_calls += 1
         if fingerprint_calls == 1:
             events.append("startup-fingerprint")
-            raise RuntimeError("fingerprint failed")
+            raise raised
         events.append("final-fingerprint")
         return "final-fingerprint"
 
@@ -4043,7 +4053,7 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
         patch("devtools.verify._notify"),
     ):
-        assert main(["--quick", "--json"]) == 125
+        assert main(["--quick", "--json"]) == expected_exit
 
     assert events == [
         "initial-head",
@@ -4053,11 +4063,11 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
         "final-fingerprint",
         "monitor-finished",
     ]
-    assert history["diagnosis"] == "verify_runner_exception"
+    assert history["diagnosis"] == expected_diagnosis
     assert history["final_git_head"] == "final-head"
     assert history["final_worktree_fingerprint"] == "final-fingerprint"
     payload = json.loads(capsys.readouterr().out)
-    assert payload["diagnosis"] == "verify_runner_exception"
+    assert payload["diagnosis"] == expected_diagnosis
     assert payload["final_git_head"] == "final-head"
     assert payload["final_worktree_fingerprint"] == "final-fingerprint"
 

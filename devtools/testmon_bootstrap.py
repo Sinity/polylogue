@@ -177,16 +177,42 @@ def _declared_pytest_plugin_names(root: Path) -> set[str]:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, SyntaxError, UnicodeDecodeError):
             continue
+        declaration_count = 0
         for node in tree.body:
             value = _pytest_plugins_assignment(node)
             if value is None:
+                dynamic_reference = any(
+                    isinstance(child, ast.Name) and child.id == "pytest_plugins" for child in ast.walk(node)
+                ) or any(
+                    alias.name == "pytest_plugins" or alias.asname == "pytest_plugins"
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Import | ast.ImportFrom)
+                    for alias in child.names
+                )
+                if dynamic_reference:
+                    raise NativeTestmonRepairError(
+                        f"repository pytest_plugins declaration must be one literal assignment: {path}"
+                    )
                 continue
-            with contextlib.suppress(ValueError, TypeError):
+            declaration_count += 1
+            if declaration_count != 1:
+                raise NativeTestmonRepairError(
+                    f"repository pytest_plugins declaration must be one literal assignment: {path}"
+                )
+            try:
                 declared = ast.literal_eval(value)
-                if isinstance(declared, str):
-                    names.add(declared)
-                elif isinstance(declared, tuple | list):
-                    names.update(name for name in declared if isinstance(name, str))
+            except (ValueError, TypeError) as exc:
+                raise NativeTestmonRepairError(
+                    f"repository pytest_plugins declaration must be a literal string/list/tuple: {path}"
+                ) from exc
+            if isinstance(declared, str):
+                names.add(declared)
+            elif isinstance(declared, tuple | list) and all(isinstance(name, str) for name in declared):
+                names.update(declared)
+            else:
+                raise NativeTestmonRepairError(
+                    f"repository pytest_plugins declaration must contain only literal plugin names: {path}"
+                )
     return names
 
 
@@ -562,6 +588,19 @@ def _validate_owned_state_parents(repo_root: Path) -> None:
             raise NativeTestmonRepairError(f"owned testmon parent is not a directory: {parent}")
 
 
+def validate_native_testmon_state_ownership(repo_root: Path) -> None:
+    """Reject parent or file replacement before managed SQLite access."""
+    for path in _owned_paths(repo_root):
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect owned testmon path {path}: {exc}") from exc
+        if not stat.S_ISREG(mode):
+            raise NativeTestmonRepairError(f"owned testmon path is not a regular file: {path}")
+
+
 def remove_invalid_native_testmon_state(repo_root: Path) -> tuple[Path, ...]:
     """Remove only the exact checkout-owned SQLite file and known sidecars."""
     removed: list[Path] = []
@@ -697,6 +736,8 @@ def prepare_native_testmon_environment(
         deadline_monotonic=deadline_monotonic,
     )
     local_data = root / TESTMON_DATA_RELPATH
+    local_data.parent.mkdir(parents=True, exist_ok=True)
+    _validate_owned_state_parents(root)
     local = inspect_native_testmon_environment(
         local_data,
         environment_name=environment_name,
@@ -778,4 +819,5 @@ __all__ = [
     "prepare_native_testmon_environment",
     "remove_invalid_native_testmon_state",
     "testmon_environment_digest",
+    "validate_native_testmon_state_ownership",
 ]

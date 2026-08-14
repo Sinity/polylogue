@@ -14,8 +14,10 @@ from typing import Any
 
 import pytest
 
+import devtools.verify as verify
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
+    NativeTestmonRepairError,
     inspect_native_testmon_environment,
     prepare_native_testmon_environment,
 )
@@ -166,7 +168,11 @@ def _run_plain_verify_corpus(
     return parallel, serial
 
 
-def _run_production_verify(repo: Path, *args: str) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+def _run_production_verify(
+    repo: Path,
+    *args: str,
+    allow_rejection: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run the production verifier orchestration against a tiny fixture corpus.
 
     The subprocess keeps the real native preparation, two-lane runner,
@@ -253,7 +259,7 @@ raise SystemExit(verify.main(sys.argv[2:]))
             f"production verify wrote no invocation receipt\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
     payload = json.loads(completed.stdout)
-    if completed.returncode == 125:
+    if completed.returncode == 125 and not allow_rejection:
         pytest.fail(
             f"production verify rejected the fixture checkout\npayload:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
@@ -1192,6 +1198,61 @@ def test_neutralized_environment_and_declared_plugin_identity_are_owned(
         result.completed.returncode
         for result in _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=plugin_mutated.environment_name)
     ] == [0, 0]
+
+
+def test_production_verify_fails_closed_on_dynamic_pytest_plugins(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "plugin_config.py").write_text('plugin_names = ("local_plugin",)\n', encoding="utf-8")
+    (repo / "local_plugin.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tests" / "conftest.py").write_text(
+        "from plugin_config import plugin_names\n\npytest_plugins = plugin_names\n",
+        encoding="utf-8",
+    )
+    (repo / "tests" / "test_body.py").write_text("def test_body():\n    assert True\n", encoding="utf-8")
+    _commit_all(repo, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "push", "-qu", "origin", "master")
+
+    completed, payload = _run_production_verify(repo, allow_rejection=True)
+
+    assert completed.returncode == 125
+    assert payload["diagnosis"] == "native_testmon_preparation_failed"
+    assert payload["release_baseline_allowed"] is False
+    assert "pytest_plugins declaration must be a literal" in completed.stderr
+
+
+def test_managed_native_routes_reject_replaced_cache_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / "tests" / "test_body.py").write_text("def test_body():\n    assert True\n", encoding="utf-8")
+    _commit_all(repo, "fixture")
+    preparation = prepare_native_testmon_environment(repo)
+    owned_cache = repo / ".cache"
+    owned_cache.rename(repo / ".cache-owned")
+    external_cache = tmp_path / "external-cache"
+    external_cache.mkdir()
+    sentinel = external_cache / "sentinel"
+    sentinel.write_text("external", encoding="utf-8")
+    owned_cache.symlink_to(external_cache, target_is_directory=True)
+    monkeypatch.setattr(verify, "ROOT", repo)
+    monkeypatch.setattr(verify, "TESTMON_DATA", repo / TESTMON_DATA_RELPATH)
+
+    with pytest.raises(NativeTestmonRepairError, match="refusing symlinked owned testmon parent"):
+        verify._run("pytest native parallel (affected)", ["pytest"])
+    with pytest.raises(NativeTestmonRepairError, match="refusing symlinked owned testmon parent"):
+        verify._native_environment_after_run(preparation, required_executable_paths=())
+
+    assert sentinel.read_text(encoding="utf-8") == "external"
+    assert list(external_cache.iterdir()) == [sentinel]
 
 
 def test_runtime_helper_mutation_stays_incremental_and_selects_owner(tmp_path: Path) -> None:

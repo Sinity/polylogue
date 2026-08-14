@@ -228,6 +228,25 @@ def test_declared_local_fixture_plugin_changes_environment(tmp_path: Path) -> No
     assert _testmon_environment_digest(tmp_path) != initial
 
 
+def test_dynamic_pytest_plugin_declaration_fails_closed(tmp_path: Path) -> None:
+    conftest = tmp_path / "tests" / "conftest.py"
+    conftest.parent.mkdir(parents=True)
+    conftest.write_text(
+        "from plugin_config import plugin_names\n\npytest_plugins = plugin_names\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(NativeTestmonRepairError, match="must be a literal string/list/tuple"):
+        _testmon_environment_digest(tmp_path)
+
+    conftest.write_text(
+        'pytest_plugins = []\npytest_plugins.append("tests.infra.fixture_plugin")\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(NativeTestmonRepairError, match="must be one literal assignment"):
+        _testmon_environment_digest(tmp_path)
+
+
 def test_environment_digest_ignores_neutralized_pytest_plugins(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

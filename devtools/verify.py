@@ -69,6 +69,7 @@ from devtools.testmon_bootstrap import (
     inspect_native_testmon_environment,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
+    validate_native_testmon_state_ownership,
 )
 from devtools.verification_contracts import VerificationScope
 from devtools.verify_runs import (
@@ -1701,6 +1702,8 @@ def _run(
         cmd = [f"--json-report-file={isolated_report}" if arg.startswith("--json-report-file=") else arg for arg in cmd]
     if is_pytest:
         _clear_pytest_report(cmd)
+    if managed_native_lane:
+        validate_native_testmon_state_ownership(ROOT)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env()
     external_addopts_neutralized = False
@@ -2149,7 +2152,6 @@ def _subprocess_env() -> dict[str, str]:
     inherited_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(ROOT) if not inherited_pythonpath else f"{ROOT}{os.pathsep}{inherited_pythonpath}"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
-    TESTMON_DATA.parent.mkdir(parents=True, exist_ok=True)
     env["TESTMON_DATAFILE"] = str(TESTMON_DATA)
     env["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(ROOT / PYTEST_EVENTS_DIR)
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(ROOT / PYTEST_EVENTS_PATH)
@@ -2539,6 +2541,7 @@ def _native_environment_after_run(
     *,
     required_executable_paths: Sequence[str],
 ) -> NativeTestmonState:
+    validate_native_testmon_state_ownership(ROOT)
     return inspect_native_testmon_environment(
         TESTMON_DATA,
         environment_name=preparation.environment_name,
@@ -3160,12 +3163,14 @@ def _main(argv: list[str] | None = None) -> int:
 
 def _finalize_verify_runner_exception(
     active: _ActiveVerifyRun,
-    exc: Exception,
+    exc: BaseException,
     *,
     use_json: bool,
 ) -> int:
     """Leave typed, durable failed evidence when verification orchestration raises."""
-    diagnosis = "verify_runner_exception"
+    interrupted = isinstance(exc, KeyboardInterrupt)
+    diagnosis = "verify_interrupted" if interrupted else "verify_runner_exception"
+    exit_code = 130 if interrupted else 125
     run = active.run
     try:
         final_head = _git_head()
@@ -3182,9 +3187,9 @@ def _finalize_verify_runner_exception(
         except Exception:
             mutation_observation = None
     run.finish_interrupted_steps(
-        exit_code=125,
+        exit_code=exit_code,
         diagnosis=diagnosis,
-        termination_reason="runner_exception",
+        termination_reason="operator_interrupt" if interrupted else "runner_exception",
     )
     if (
         active.head is None
@@ -3204,7 +3209,7 @@ def _finalize_verify_runner_exception(
     else:
         checkout_diagnosis = None
     payload = run.finish(
-        exit_code=125,
+        exit_code=exit_code,
         duration_s=time.monotonic() - active.started_at,
         diagnosis=diagnosis,
         verification_scope=active.verification_scope.value,
@@ -3221,7 +3226,7 @@ def _finalize_verify_runner_exception(
     if use_json:
         _print_json(payload)
     sys.stderr.write(f"verify: unexpected runner exception: {exc}\n")
-    return 125
+    return exit_code
 
 
 @finalize_checkout_mutation_monitors
@@ -3234,6 +3239,14 @@ def main(argv: list[str] | None = None) -> int:
     with lock:
         try:
             return _main(argv)
+        except KeyboardInterrupt as exc:
+            if _ACTIVE_VERIFY_RUN is None:
+                raise
+            return _finalize_verify_runner_exception(
+                _ACTIVE_VERIFY_RUN,
+                exc,
+                use_json="--json" in raw_argv,
+            )
         except Exception as exc:
             if _ACTIVE_VERIFY_RUN is None:
                 raise
