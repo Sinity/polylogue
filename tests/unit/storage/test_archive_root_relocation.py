@@ -33,7 +33,9 @@ from polylogue.operations.historical_source_continuity_recovery import (
     _assert_complete_source_semantic_delta,
     _assert_exact_liveness_delta,
     _current_evidence,
+    _sha256,
     _table_content_digest,
+    _test_historical_operation_evidence_resource,
     _verify_historical_operation_evidence,
     _write_refresh_receipt,
     assert_no_prepared_historical_source_continuity_recovery,
@@ -570,6 +572,80 @@ def _legacy_liveness_receipt(
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
 
+def _pinned_historical_operation_evidence(
+    path: Path,
+    *,
+    mutation_receipt: Path,
+    candidates: tuple[BlobRefLivenessCandidate, ...],
+    pre_manifest: Path,
+    post_manifest: Path,
+) -> None:
+    """Write the fixture's immutable-shaped descriptor from independently produced artifacts."""
+    digest = BlobRefLivenessCandidateDigest()
+    for candidate in candidates:
+        digest.update(candidate)
+    payload = {
+        "format": "polylogue.historical-source-continuity-operation-evidence.v1",
+        "operation": "blob-ref-liveness-reconciliation-20260807",
+        "mutation_receipt_sha256": _sha256(mutation_receipt),
+        "candidate_count": len(candidates),
+        "candidate_digest": digest.hexdigest(),
+        "pre_backup_manifest_sha256": _sha256(pre_manifest),
+        "pre_backup_receipt_sha256": _sha256(pre_manifest.parent / "verification-receipt.json"),
+        "pre_source_sha256": _sha256(pre_manifest.parent / "source.db"),
+        "post_backup_manifest_sha256": _sha256(post_manifest),
+        "post_backup_receipt_sha256": _sha256(post_manifest.parent / "verification-receipt.json"),
+        "post_source_sha256": _sha256(post_manifest.parent / "source.db"),
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _historical_continuity_fixture(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Build real backups, a legacy receipt, a released train, and the pinned fixture descriptor."""
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch, include_orphan_blob_ref=True)
+    pre_backup = backup_archive(output_dir=tmp_path / "pre", profile="rebuildable_cache_exclude", verify=True)
+    assert pre_backup.ok and pre_backup.output_path is not None
+    pre_manifest = Path(pre_backup.output_path) / "manifest.json"
+    with sqlite3.connect(f"file:{old_root / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
+        prior = classify_blob_ref_liveness(connection)
+    assert prior.orphaned_count == 1
+    mutation_receipt = tmp_path / "legacy-liveness.jsonl"
+    _legacy_liveness_receipt(
+        mutation_receipt,
+        old_root=old_root,
+        pre_manifest=pre_manifest,
+        candidates=prior.candidates,
+    )
+    with sqlite3.connect(old_root / "source.db") as connection:
+        connection.execute("DELETE FROM blob_refs WHERE ref_id = 'deleted'")
+    post_backup = backup_archive(output_dir=tmp_path / "post", profile="rebuildable_cache_exclude", verify=True)
+    assert post_backup.ok and post_backup.output_path is not None
+    post_manifest = Path(post_backup.output_path) / "manifest.json"
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    evidence = tmp_path / "pinned-historical-evidence.json"
+    _pinned_historical_operation_evidence(
+        evidence,
+        mutation_receipt=mutation_receipt,
+        candidates=prior.candidates,
+        pre_manifest=pre_manifest,
+        post_manifest=post_manifest,
+    )
+    return new_root, mutation_receipt, pre_manifest, post_manifest, evidence
+
+
+def _maintenance_json_output(output: str) -> dict[str, object]:
+    """Maintenance commands retain the root-provenance line before JSON output."""
+    _provenance, separator, payload = output.partition("\n")
+    assert separator and payload.startswith("{")
+    decoded = json.loads(payload)
+    assert isinstance(decoded, dict)
+    return decoded
+
+
 def _write_liveness_delta_database(path: Path, *, keep_body: str = "kept", include_candidate: bool = True) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(
@@ -898,6 +974,162 @@ def test_historical_continuity_recovery_cli_rejects_an_unbound_synthetic_operati
     )
     assert plan_result.exit_code != 0
     assert "immutable offline evidence" in plan_result.output
+
+
+def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_crashes(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the real CLI bridge through prepared and refresh-publication interruptions.
+
+    Anti-vacuity: the fixture's descriptor only authorizes independently made
+    backup, receipt, and SQLite artifacts.  The test invokes the public plan
+    and apply routes, then inspects the production refresh receipt and durable
+    train CAS result.  Removing either route's operation wiring leaves no plan,
+    no prepared admission block, or no train revision.
+    """
+    from polylogue.operations import historical_source_continuity_recovery as recovery
+
+    new_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    command_env = {"POLYLOGUE_ARCHIVE_ROOT": str(new_root)}
+    plan_path = tmp_path / "continuity-plan.json"
+    with _test_historical_operation_evidence_resource(evidence):
+        planned = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "plan",
+                "--old-root",
+                str(workspace_env["archive_root"]),
+                "--mutation-receipt",
+                str(mutation_receipt),
+                "--pre-backup-manifest",
+                str(pre_manifest),
+                "--post-backup-manifest",
+                str(post_manifest),
+                "--output",
+                str(plan_path),
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert planned.exit_code == 0, planned.output
+        plan_payload = _maintenance_json_output(planned.output)
+        plan_sha256 = str(plan_payload["plan_sha256"])
+        plan_train = Path(str(plan_payload["source_train_path"]))
+        train_before = load_durable_change_train_manifest(plan_train)
+        real_write_refresh = recovery._write_refresh_receipt
+
+        def crash_before_refresh(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("crash after prepared receipt")
+
+        monkeypatch.setattr(recovery, "_write_refresh_receipt", crash_before_refresh)
+        with pytest.raises(RuntimeError, match="crash after prepared receipt"):
+            CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "ops",
+                    "maintenance",
+                    "source-continuity-recovery",
+                    "apply",
+                    "--plan",
+                    str(plan_path),
+                    "--authorize",
+                    plan_sha256,
+                    "--output-format",
+                    "json",
+                ],
+                env=command_env,
+                catch_exceptions=False,
+            )
+        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+            assert_no_prepared_historical_source_continuity_recovery(new_root)
+
+        def crash_after_refresh(*args: object, **kwargs: object) -> None:
+            real_write_refresh(*args, **kwargs)
+            raise RuntimeError("crash after refresh receipt")
+
+        monkeypatch.setattr(recovery, "_write_refresh_receipt", crash_after_refresh)
+        with pytest.raises(RuntimeError, match="crash after refresh receipt"):
+            CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "ops",
+                    "maintenance",
+                    "source-continuity-recovery",
+                    "apply",
+                    "--plan",
+                    str(plan_path),
+                    "--authorize",
+                    plan_sha256,
+                    "--output-format",
+                    "json",
+                ],
+                env=command_env,
+                catch_exceptions=False,
+            )
+        with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+            assert_no_prepared_historical_source_continuity_recovery(new_root)
+
+        monkeypatch.setattr(recovery, "_write_refresh_receipt", real_write_refresh)
+        applied = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert applied.exit_code == 0, applied.output
+        result = _maintenance_json_output(applied.output)
+        assert result["state"] == "committed"
+        refresh_path = Path(str(result["refresh_receipt_path"]))
+        refresh_payload = json.loads(refresh_path.read_text(encoding="utf-8"))
+        assert refresh_payload["refresh_sha256"] == _canonical_json_sha256(
+            {key: value for key, value in refresh_payload.items() if key != "refresh_sha256"}
+        )
+        train_after = load_durable_change_train_manifest(plan_train)
+        assert train_after.revision == train_before.revision + 1
+        assert train_after.source_continuity_evidence is not None
+        assert_no_prepared_historical_source_continuity_recovery(new_root)
+        rerun = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "source-continuity-recovery",
+                "apply",
+                "--plan",
+                str(plan_path),
+                "--authorize",
+                plan_sha256,
+                "--output-format",
+                "json",
+            ],
+            env=command_env,
+            catch_exceptions=False,
+        )
+        assert rerun.exit_code == 0, rerun.output
+        assert _maintenance_json_output(rerun.output)["state"] == "committed"
 
 
 def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_crash(
