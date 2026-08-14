@@ -42,7 +42,7 @@ contains recent writes creates an incomplete backup.
 
 An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon and move the complete root without copying its database files. Set `POLYLOGUE_ARCHIVE_ROOT` to the moved root before creating relocation backup evidence.
 
-If the current released source train lacks continuity authority for historical source changes, first run the `source-continuity-recovery` plan and apply sequence documented in [Maintenance Operations](maintenance.md#recovering-the-one-historical-liveness-receipt-shape). Its authenticated pre/post backup evidence belongs to the retired path and is used only for that bridge. After the bridge commits, or immediately after the move when no bridge is required, create and verify a fresh complete backup at the moved root:
+If the current released source train lacks continuity authority for historical source changes, first run the `source-continuity-recovery` plan and apply sequence documented in [Maintenance Operations](maintenance.md#recovering-the-one-historical-liveness-receipt-shape). Its authenticated pre- and post-backup evidence belongs to the retired path and is used only for that bridge. After the bridge commits, or immediately after the move when no bridge is required, create and verify a fresh complete backup at the moved root:
 
 ```bash
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
