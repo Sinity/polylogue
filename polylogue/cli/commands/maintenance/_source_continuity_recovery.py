@@ -8,7 +8,7 @@ from pathlib import Path
 
 import click
 
-from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+from polylogue.operations.durable_change_train import ArchiveOwnershipError, acquire_durable_archive_ownership
 from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
     apply_historical_source_continuity_recovery,
@@ -58,7 +58,7 @@ def source_continuity_recovery_plan_command(
                 single_writer_evidence_ref="proof:archive-ownership-lock",
             )
             write_historical_source_continuity_recovery_plan(plan, output)
-    except (HistoricalSourceContinuityRecoveryError, OSError) as exc:
+    except (ArchiveOwnershipError, HistoricalSourceContinuityRecoveryError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(
         json.dumps(plan.model_dump(mode="json"), indent=2, sort_keys=True)
@@ -89,7 +89,7 @@ def source_continuity_recovery_apply_command(plan_path: Path, authorize: str, ou
                 stopped_daemon_evidence_ref=stopped,
                 single_writer_evidence_ref="proof:archive-ownership-lock",
             )
-    except (HistoricalSourceContinuityRecoveryError, OSError) as exc:
+    except (ArchiveOwnershipError, HistoricalSourceContinuityRecoveryError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(
         json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True)

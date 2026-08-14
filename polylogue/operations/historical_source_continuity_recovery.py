@@ -33,7 +33,12 @@ from polylogue.maintenance.receipt_fs import (
     read_optional_receipt,
 )
 from polylogue.paths import render_root
-from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, TierFileIdentity
+from polylogue.storage.archive_identity import (
+    ArchiveLocation,
+    ArchiveOwnershipError,
+    OwnedArchiveLocation,
+    TierFileIdentity,
+)
 from polylogue.storage.backup_attestation import BackupAttestationError, verify_verification_receipt
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
@@ -958,6 +963,29 @@ def load_historical_source_continuity_recovery_plan(path: Path) -> HistoricalSou
     return plan
 
 
+def _retained_plan_path(root: Path, plan: HistoricalSourceContinuityRecoveryPlan) -> Path:
+    return root / ".maintenance-state" / "historical-source-continuity-recovery-plans" / f"{plan.plan_sha256}.json"
+
+
+def _retain_plan(root: Path, plan: HistoricalSourceContinuityRecoveryPlan) -> Path:
+    """Retain the exact sealed plan before publishing resumable operation state."""
+    _verify_plan(plan)
+    path = _retained_plan_path(root, plan)
+    encoded = (json.dumps(plan.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
+    try:
+        with maintenance_receipt_directory(root, "historical-source-continuity-recovery-plans") as directory_fd:
+            current = read_optional_receipt(directory_fd, path.name)
+            if current is not None and current != encoded:
+                raise HistoricalSourceContinuityRecoveryError("historical continuity recovery retained plan collision")
+            if current is None:
+                atomic_replace_receipt(directory_fd, path.name, encoded)
+    except MaintenanceReceiptPathError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            "cannot retain historical source continuity recovery plan"
+        ) from exc
+    return path
+
+
 def _recovery_receipt_directory_binding(path: Path) -> tuple[Path, str]:
     state_root = path.parent.parent
     if state_root.name != ".maintenance-state" or path.suffix != ".json":
@@ -1115,19 +1143,24 @@ def apply_historical_source_continuity_recovery(
 ) -> HistoricalSourceContinuityRecoveryResult:
     """Acquire archive ownership before the API can publish receipts or a CAS revision."""
     resolved = _real_directory(root, label="configured archive root")
-    with OwnedArchiveLocation.acquire(
-        ArchiveLocation.resolve(resolved),
-        owner_id=f"historical-source-continuity-recovery:{os.getpid()}",
-        allow_reentrant=True,
-    ):
-        _require_offline_ownership_boundary(resolved)
-        return _apply_historical_source_continuity_recovery_locked(
-            root=resolved,
-            plan=plan,
-            authorization=authorization,
-            stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
-            single_writer_evidence_ref=single_writer_evidence_ref,
-        )
+    try:
+        with OwnedArchiveLocation.acquire(
+            ArchiveLocation.resolve(resolved),
+            owner_id=f"historical-source-continuity-recovery:{os.getpid()}",
+            allow_reentrant=True,
+        ):
+            _require_offline_ownership_boundary(resolved)
+            return _apply_historical_source_continuity_recovery_locked(
+                root=resolved,
+                plan=plan,
+                authorization=authorization,
+                stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
+                single_writer_evidence_ref=single_writer_evidence_ref,
+            )
+    except ArchiveOwnershipError as exc:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery could not acquire exclusive archive ownership"
+        ) from exc
 
 
 def _apply_historical_source_continuity_recovery_locked(
@@ -1153,7 +1186,12 @@ def _apply_historical_source_continuity_recovery_locked(
     if refresh_digest != plan.refresh_receipt_sha256:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery sealed refresh proof changed")
     refresh_path = _refresh_path(resolved, refresh_digest)
-    command = f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance source-continuity-recovery apply --plan <plan.json> --authorize {plan.plan_sha256} --output-format json"
+    retained_plan_path = _retain_plan(resolved, plan)
+    command = (
+        f"POLYLOGUE_ARCHIVE_ROOT={plan.new_configured_root} polylogue ops maintenance "
+        f"source-continuity-recovery apply --plan {retained_plan_path} "
+        f"--authorize {plan.plan_sha256} --output-format json"
+    )
     receipt_path = _receipt_path(resolved, plan)
     prepared = _sealed_receipt(
         state="prepared",

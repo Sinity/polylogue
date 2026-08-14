@@ -15,7 +15,7 @@ from polylogue.operations.archive_root_relocation import (
     prepare_archive_root_relocation,
     write_archive_root_relocation_plan,
 )
-from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+from polylogue.operations.durable_change_train import ArchiveOwnershipError, acquire_durable_archive_ownership
 from polylogue.paths import archive_root
 
 
@@ -54,7 +54,7 @@ def archive_root_relocation_plan_command(
                 single_writer_evidence_ref="proof:archive-ownership-lock",
             )
             write_archive_root_relocation_plan(plan, output)
-    except (ArchiveRootRelocationError, OSError) as exc:
+    except (ArchiveOwnershipError, ArchiveRootRelocationError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     if output_format == "json":
         click.echo(json.dumps(plan.model_dump(mode="json"), indent=2, sort_keys=True))

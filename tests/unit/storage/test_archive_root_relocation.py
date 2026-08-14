@@ -54,7 +54,12 @@ from polylogue.operations.historical_source_continuity_recovery import (
 from polylogue.operations.historical_source_continuity_recovery import (
     _write_receipt as _write_continuity_receipt,
 )
-from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation, OwnedArchiveLocation
+from polylogue.storage.archive_identity import (
+    ArchiveIdentity,
+    ArchiveLocation,
+    ArchiveOwnershipError,
+    OwnedArchiveLocation,
+)
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
     BlobRefLivenessCandidateDigest,
@@ -111,6 +116,69 @@ def test_archive_root_relocation_is_a_real_maintenance_route(cli_workspace: dict
     )
     assert nested.exit_code == 0, nested.output
     assert "--old-root" in nested.output
+
+
+def test_recovery_cli_reports_archive_ownership_conflicts(
+    cli_workspace: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Maintenance lock contention is a public CLI error, never an internal traceback."""
+    placeholders = {
+        name: tmp_path / name
+        for name in ("mutation.jsonl", "pre-manifest.json", "post-manifest.json", "sealed-plan.json")
+    }
+    for path in placeholders.values():
+        path.write_text("{}", encoding="utf-8")
+
+    def reject_ownership(*_args: object, **_kwargs: object) -> None:
+        raise ArchiveOwnershipError("archive already owned")
+
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._source_continuity_recovery.acquire_durable_archive_ownership",
+        reject_ownership,
+    )
+    plan_result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "source-continuity-recovery",
+            "plan",
+            "--old-root",
+            str(tmp_path / "old"),
+            "--mutation-receipt",
+            str(placeholders["mutation.jsonl"]),
+            "--pre-backup-manifest",
+            str(placeholders["pre-manifest.json"]),
+            "--post-backup-manifest",
+            str(placeholders["post-manifest.json"]),
+            "--output",
+            str(tmp_path / "out.json"),
+        ],
+    )
+    assert plan_result.exit_code == 1
+    assert "archive already owned" in plan_result.output
+
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._source_continuity_recovery.load_historical_source_continuity_recovery_plan",
+        lambda _path: object(),
+    )
+    apply_result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "source-continuity-recovery",
+            "apply",
+            "--plan",
+            str(placeholders["sealed-plan.json"]),
+            "--authorize",
+            "a" * 64,
+        ],
+    )
+    assert apply_result.exit_code == 1
+    assert "archive already owned" in apply_result.output
 
 
 def test_relocation_nested_dispatch_keeps_analyze_facets_on_the_real_action(cli_workspace: dict[str, object]) -> None:
@@ -1161,6 +1229,17 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                 env=command_env,
                 catch_exceptions=False,
             )
+        retained_plan = (
+            new_root / ".maintenance-state" / "historical-source-continuity-recovery-plans" / f"{plan_sha256}.json"
+        )
+        assert retained_plan.read_bytes() == plan_path.read_bytes()
+        prepared_receipt = json.loads(
+            (
+                new_root / ".maintenance-state" / "historical-source-continuity-recoveries" / f"{plan_sha256}.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert f"--plan {retained_plan}" in prepared_receipt["resume_command"]
+        plan_path.unlink()
         with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
             assert_no_prepared_historical_source_continuity_recovery(new_root)
         from polylogue.daemon import cli as daemon_cli
@@ -1197,7 +1276,7 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                     "source-continuity-recovery",
                     "apply",
                     "--plan",
-                    str(plan_path),
+                    str(retained_plan),
                     "--authorize",
                     plan_sha256,
                     "--output-format",
@@ -1219,7 +1298,7 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                 "source-continuity-recovery",
                 "apply",
                 "--plan",
-                str(plan_path),
+                str(retained_plan),
                 "--authorize",
                 plan_sha256,
                 "--output-format",
@@ -1270,7 +1349,7 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                     "source-continuity-recovery",
                     "apply",
                     "--plan",
-                    str(plan_path),
+                    str(retained_plan),
                     "--authorize",
                     plan_sha256,
                     "--output-format",
@@ -1291,7 +1370,7 @@ def test_historical_continuity_recovery_cli_recovers_pinned_fixture_and_resumes_
                 "source-continuity-recovery",
                 "apply",
                 "--plan",
-                str(plan_path),
+                str(retained_plan),
                 "--authorize",
                 plan_sha256,
                 "--output-format",

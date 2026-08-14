@@ -59,7 +59,7 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-contin
 POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance source-continuity-recovery apply --plan /safe/continuity-plan.json --authorize PLAN_SHA256 --output-format json
 ```
 
-After this bridge commits, create and verify a fresh `full_evidence` backup at the moved root. Use that moved-root manifest with the separate archive-root-relocation plan/apply transition while `--old-root` continues to name the retired pre-move root. A prepared bridge receipt blocks daemon startup and names its exact resume command.
+After this bridge commits, create and verify a fresh `full_evidence` backup at the moved root. Use that moved-root manifest with the separate archive-root-relocation plan/apply transition while `--old-root` continues to name the retired pre-move root. Before publishing a prepared bridge receipt, apply retains the exact sealed plan under `.maintenance-state/historical-source-continuity-recovery-plans/`; the blocking daemon error names that retained path in its executable resume command.
 
 ### Rebuild deployment-currency preflight
 
