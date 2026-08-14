@@ -11,6 +11,7 @@ from devtools.testmon_bootstrap import (
     classify_native_testmon_changes,
     classify_source_ast,
     executable_python_paths,
+    inspect_native_testmon_environment,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
 )
@@ -323,3 +324,31 @@ def test_native_preparation_rejects_symlinked_state_parent_before_inspection(tmp
 
     with pytest.raises(NativeTestmonRepairError, match="symlinked owned testmon parent"):
         prepare_native_testmon_environment(tmp_path)
+
+
+def test_native_inspection_rejects_symlinked_database_before_sqlite_open(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.db"
+    outside.write_text("external state", encoding="utf-8")
+    data = tmp_path / "testmondata"
+    data.symlink_to(outside)
+
+    state = inspect_native_testmon_environment(data, environment_name="owned-environment")
+
+    assert state.status == "invalid"
+    assert state.reason == "native testmon database is not a regular file"
+    assert outside.read_text(encoding="utf-8") == "external state"
+
+
+def test_native_inspection_rejects_symlinked_sidecar_before_sqlite_open(tmp_path: Path) -> None:
+    data = tmp_path / "testmondata"
+    data.write_text("not opened", encoding="utf-8")
+    outside = tmp_path / "outside-wal"
+    outside.write_text("external sidecar", encoding="utf-8")
+    sidecar = Path(f"{data}-wal")
+    sidecar.symlink_to(outside)
+
+    state = inspect_native_testmon_environment(data, environment_name="owned-environment")
+
+    assert state.status == "invalid"
+    assert state.reason == f"native testmon sidecar is not a regular file: {sidecar}"
+    assert outside.read_text(encoding="utf-8") == "external sidecar"

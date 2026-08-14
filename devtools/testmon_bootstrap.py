@@ -436,6 +436,15 @@ def inspect_native_testmon_environment(
         return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
     if not stat.S_ISREG(mode):
         return NativeTestmonState("invalid", "native testmon database is not a regular file")
+    for sidecar in sidecars:
+        try:
+            sidecar_mode = sidecar.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return NativeTestmonState("invalid", f"cannot inspect native testmon sidecar {sidecar}: {exc}")
+        if not stat.S_ISREG(sidecar_mode):
+            return NativeTestmonState("invalid", f"native testmon sidecar is not a regular file: {sidecar}")
     try:
         with (
             contextlib.closing(

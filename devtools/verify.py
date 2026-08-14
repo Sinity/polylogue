@@ -2566,11 +2566,11 @@ def _finalize_preflight_failure(
 ) -> int:
     """Persist one normalized failed invocation before pytest can start."""
     final_head = _git_head()
-    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
     try:
         final_worktree_fingerprint = worktree_fingerprint(ROOT) if mutation_monitor is not None else "unavailable"
     except Exception:
         final_worktree_fingerprint = "unavailable"
+    mutation_observation = finish_checkout_mutation_monitor(mutation_monitor) if mutation_monitor is not None else None
     checkout_diagnosis: str | None = None
     if mutation_monitor is None:
         checkout_diagnosis = "preflight_failed_before_checkout_monitor"

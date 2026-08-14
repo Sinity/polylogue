@@ -4071,6 +4071,8 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    events: list[str] = []
+
     class _StableMonitor:
         def __init__(self, _root: Path) -> None:
             pass
@@ -4079,7 +4081,16 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
             pass
 
         def finish(self) -> CheckoutMutationObservation:
+            events.append("finish")
             return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    def git_head() -> str:
+        events.append("head")
+        return "head"
+
+    def fingerprint(_root: Path) -> str:
+        events.append("fingerprint")
+        return "stable"
 
     history: dict[str, Any] = {}
     receipt = tmp_path / "invocation-receipt.json"
@@ -4087,10 +4098,10 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
     monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
 
     with (
-        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_head", side_effect=git_head),
         patch("devtools.verify._git_commit", return_value=None),
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify.worktree_fingerprint", side_effect=fingerprint),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
         patch("devtools.verify._notify"),
     ):
@@ -4098,6 +4109,7 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
 
     assert history["diagnosis"] == "native_git_authority_unavailable"
     assert history["final_worktree_fingerprint"] == "stable"
+    assert events[-3:] == ["head", "fingerprint", "finish"]
     assert json.loads(receipt.read_text())["diagnosis"] == "native_git_authority_unavailable"
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "native_git_authority_unavailable"
 
