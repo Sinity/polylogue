@@ -15,9 +15,6 @@ import os
 import sqlite3
 import stat
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from importlib import resources
 from pathlib import Path
 from typing import Literal, cast
@@ -63,16 +60,13 @@ from polylogue.storage.sqlite.migration_runner import (
     capture_durable_schema_inventory,
 )
 
-PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v1"] = (
-    "polylogue.historical-source-continuity-recovery-plan.v1"
+PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v2"] = (
+    "polylogue.historical-source-continuity-recovery-plan.v2"
 )
 RECEIPT_FORMAT: Literal["polylogue.historical-source-continuity-recovery-receipt.v1"] = (
     "polylogue.historical-source-continuity-recovery-receipt.v1"
 )
 _HISTORICAL_OPERATION_EVIDENCE_RESOURCE = "historical-source-continuity-operation-20260807.json"
-_TEST_HISTORICAL_OPERATION_EVIDENCE_RESOURCE: ContextVar[Path | None] = ContextVar(
-    "test_historical_operation_evidence_resource", default=None
-)
 
 
 class HistoricalSourceContinuityRecoveryError(RuntimeError):
@@ -82,7 +76,7 @@ class HistoricalSourceContinuityRecoveryError(RuntimeError):
 class HistoricalSourceContinuityRecoveryPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    format: Literal["polylogue.historical-source-continuity-recovery-plan.v1"] = PLAN_FORMAT
+    format: Literal["polylogue.historical-source-continuity-recovery-plan.v2"] = PLAN_FORMAT
     old_configured_root: str
     old_resolved_root: str
     new_configured_root: str
@@ -202,33 +196,10 @@ def _real_directory(path: Path, *, label: str) -> Path:
 
 def _historical_operation_evidence_bytes() -> bytes:
     """Read the immutable operation evidence from the installed package."""
-    test_resource = _TEST_HISTORICAL_OPERATION_EVIDENCE_RESOURCE.get()
-    if test_resource is not None:
-        _real_file(test_resource, label="test historical operation evidence")
-        try:
-            return test_resource.read_bytes()
-        except OSError as exc:
-            raise HistoricalSourceContinuityRecoveryError("test historical operation evidence is unreadable") from exc
     try:
         return resources.files("polylogue.operations").joinpath(_HISTORICAL_OPERATION_EVIDENCE_RESOURCE).read_bytes()
     except FileNotFoundError as exc:
         raise HistoricalSourceContinuityRecoveryError("immutable historical operation evidence is unreadable") from exc
-
-
-@contextmanager
-def _test_historical_operation_evidence_resource(path: Path) -> Iterator[None]:
-    """Scope a pinned fixture resource without changing production evidence selection.
-
-    Production execution always reads the immutable packaged descriptor above.
-    Tests alone opt into this context-local resource to exercise the real plan
-    and apply operations against a synthetic, independently sealed history.
-    """
-    _real_file(path, label="test historical operation evidence")
-    token = _TEST_HISTORICAL_OPERATION_EVIDENCE_RESOURCE.set(path)
-    try:
-        yield
-    finally:
-        _TEST_HISTORICAL_OPERATION_EVIDENCE_RESOURCE.reset(token)
 
 
 def _historical_operation_evidence() -> HistoricalOperationEvidence:
@@ -1144,12 +1115,12 @@ def apply_historical_source_continuity_recovery(
 ) -> HistoricalSourceContinuityRecoveryResult:
     """Acquire archive ownership before the API can publish receipts or a CAS revision."""
     resolved = _real_directory(root, label="configured archive root")
-    _require_offline_ownership_boundary(resolved)
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(resolved),
         owner_id=f"historical-source-continuity-recovery:{os.getpid()}",
         allow_reentrant=True,
     ):
+        _require_offline_ownership_boundary(resolved)
         return _apply_historical_source_continuity_recovery_locked(
             root=resolved,
             plan=plan,

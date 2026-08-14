@@ -762,7 +762,7 @@ def _validate_backup_manifest_covers_tier(
     """Validate that ``path`` has a successful backup verification receipt.
 
     ``require_attestation`` gates the cryptographic HMAC attestation check.
-    Attestations are only ever minted for durable tiers (source, user) by
+    Attestations are only ever minted for durable tiers (source, user, audit) by
     ``daemon/backup.py``'s ``_write_successful_verification_receipt`` -- a
     derived tier (index, embeddings) can never carry one, by design, so
     requiring it for those tiers would make backup-manifest validation
@@ -925,14 +925,8 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
     validation: an adoption is only safe when the backup is full evidence for
     this exact established archive, not merely a restorable subset.
     """
-    manifest_path = _backup_manifest_path(path)
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        raise MigrationError(f"audit adoption requires an existing backup manifest; missing {manifest_path}")
-    backup_root = manifest_path.parent
-    _require_real_backup_directory(backup_root, label="backup root")
-    _require_regular_backup_artifact(manifest_path, backup_root=backup_root, label="backup manifest")
-    manifest = _load_json(manifest_path, label="manifest")
-    if manifest.get("format") != "polylogue-backup-v1" or manifest.get("profile") != "full_evidence":
+    manifest_path, receipt_path, backup_root, manifest, receipt = _load_verified_backup_package(path)
+    if manifest.get("profile") != "full_evidence":
         raise MigrationError("audit adoption requires a verified full_evidence backup")
     included = set(_json_str_list(manifest.get("included_tiers")))
     required_tiers = {"source", "index", "embeddings", "user"}
@@ -944,15 +938,6 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
         or len(included_tiers) != len(included)
     ):
         raise MigrationError("audit adoption backup must contain every non-optional established tier and no audit tier")
-    receipt_path = _receipt_path(manifest_path)
-    if not receipt_path.exists() and not receipt_path.is_symlink():
-        raise MigrationError(
-            f"audit adoption requires a successful backup verification receipt; missing {receipt_path}"
-        )
-    _require_regular_backup_artifact(receipt_path, backup_root=backup_root, label="backup verification receipt")
-    receipt = _load_json(receipt_path, label="verification receipt")
-    if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT or receipt.get("verdict") != "success":
-        raise MigrationError("audit adoption requires a successful backup verification receipt")
     archive_root = archive_root.resolve()
     try:
         if backup_root.samefile(archive_root):
@@ -968,24 +953,13 @@ def validate_full_evidence_backup_for_audit_adoption(path: Path, *, archive_root
             )
         except BackupAttestationError as exc:
             raise MigrationError(f"audit adoption backup authentication failed: {exc}") from exc
-    artifact_inventory = _cached_backup_artifact_inventory(backup_root)
-    file_evidence = {str(item["path"]): item for item in artifact_inventory if item.get("type") == "file"}
-    manifest_evidence = file_evidence.get("manifest.json", {})
-    if _json_int(receipt.get("manifest_size_bytes")) != _json_int(manifest_evidence.get("size_bytes")):
-        raise MigrationError("audit adoption backup receipt does not match manifest size")
-    if receipt.get("manifest_sha256") != manifest_evidence.get("sha256"):
-        raise MigrationError("audit adoption backup receipt does not match manifest bytes")
-    artifacts = _validated_receipt_artifacts(
+    artifacts = _validate_closed_backup_package(
         backup_root,
         manifest,
         receipt,
         target_tier="audit",
         live_tier_path=archive_root / "audit.db",
-        file_evidence=file_evidence,
     )
-    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
-    if receipt.get("artifact_inventory") != artifact_inventory:
-        raise MigrationError("audit adoption backup receipt does not match the closed artifact inventory")
     for tier in sorted(included_tiers):
         live_path = archive_root / f"{tier}.db"
         artifact = artifacts[tier]

@@ -103,8 +103,8 @@ def test_archive_root_relocation_cli_help_exposes_only_plan_and_apply(
     )
 
     assert result.exit_code == 0, result.output
-    assert "plan" in result.output
-    assert "apply" in result.output
+    commands = result.output.split("Commands:\n", 1)[1]
+    assert {line.strip().split()[0] for line in commands.splitlines() if line.startswith("  ")} == {"apply", "plan"}
 
 
 def test_archive_root_relocation_apply_is_in_the_public_command_inventory() -> None:

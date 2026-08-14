@@ -26,6 +26,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
@@ -2227,13 +2228,25 @@ def test_polylogued_run_rejects_empty_component_set() -> None:
     assert "at least one daemon component must be enabled" in result.output
 
 
-def test_polylogued_watch_uses_default_sources() -> None:
+def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -> None:
     runner = CliRunner()
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
+    observed_coroutine: object | None = None
+
+    def assert_owned(coroutine: object) -> None:
+        nonlocal observed_coroutine
+        observed_coroutine = coroutine
+        with pytest.raises(ArchiveOwnershipError):
+            OwnedArchiveLocation.acquire(
+                ArchiveLocation.resolve(workspace_env["archive_root"]),
+                owner_id="competing-maintenance",
+            )
+        assert inspect.iscoroutine(coroutine)
+        cast(Any, coroutine).close()
 
     with (
         patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
-        patch("polylogue.daemon.cli.asyncio.run") as run,
+        patch("polylogue.daemon.cli.asyncio.run", side_effect=assert_owned),
     ):
         result = runner.invoke(main, ["watch", "--debounce-s", "0.25"])
 
@@ -2241,13 +2254,11 @@ def test_polylogued_watch_uses_default_sources() -> None:
     assert default_sources.call_count == 1
     assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
     assert default_sources.call_args.kwargs["beads_roots"] == ()
-    coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
-    assert inspect.iscoroutine(coroutine)
-    coroutine.close()
+    assert observed_coroutine is not None
     assert "Watching 1 source(s); debounce=0.25s" in result.stderr
 
 
-def test_polylogued_watch_builds_sources_from_roots(tmp_path: Path) -> None:
+def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     root_a = tmp_path / "claude-code"
     root_b = tmp_path / "codex"
 
@@ -4134,7 +4145,7 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
     )
     with monkeypatch.context() as scoped:
         scoped.setattr(
-            "polylogue.operations.archive_root_relocation.rebind_released_source_train_archive_identity",
+            "polylogue.operations.archive_root_relocation.rebind_released_durable_train_archive_identity",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("leave prepared relocation receipt")),
         )
         with pytest.raises(RuntimeError, match="leave prepared relocation receipt"):
@@ -4148,7 +4159,7 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
     )
     monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", configure)
 
-    with pytest.raises(ArchiveRootRelocationError, match="archive-root-relocation apply"):
+    with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),

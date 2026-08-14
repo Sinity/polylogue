@@ -23,25 +23,14 @@ def _simple_name(value: str, *, label: str) -> str:
     return value
 
 
-def _open_directory(path: Path, *, label: str) -> int:
+def _open_directory(path: Path | str, *, label: str, parent_fd: int | None = None) -> int:
     try:
-        descriptor = os.open(path, _DIRECTORY_FLAGS)
+        descriptor = os.open(path, _DIRECTORY_FLAGS, dir_fd=parent_fd)
     except OSError as exc:
         raise MaintenanceReceiptPathError(f"cannot pin {label} without following links: {path}") from exc
     if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
         os.close(descriptor)
         raise MaintenanceReceiptPathError(f"{label} is not a real directory: {path}")
-    return descriptor
-
-
-def _open_directory_at(parent_fd: int, name: str, *, label: str) -> int:
-    try:
-        descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-    except OSError as exc:
-        raise MaintenanceReceiptPathError(f"cannot pin {label} without following links: {name}") from exc
-    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise MaintenanceReceiptPathError(f"{label} is not a real directory: {name}")
     return descriptor
 
 
@@ -68,7 +57,7 @@ def _maintenance_receipt_directory(archive_root: Path, directory_name: str, *, c
     child_fd = -1
     try:
         try:
-            state_fd = _open_directory_at(root_fd, ".maintenance-state", label="maintenance state")
+            state_fd = _open_directory(".maintenance-state", label="maintenance state", parent_fd=root_fd)
         except MaintenanceReceiptPathError as exc:
             if not create and isinstance(exc.__cause__, FileNotFoundError):
                 yield None
@@ -86,7 +75,7 @@ def _maintenance_receipt_directory(archive_root: Path, directory_name: str, *, c
                 created_child = True
             except FileExistsError:
                 pass
-            child_fd = _open_directory_at(state_fd, child_name, label="maintenance receipt directory")
+            child_fd = _open_directory(child_name, label="maintenance receipt directory", parent_fd=state_fd)
             if created_child:
                 child_metadata = os.fstat(child_fd)
                 try:

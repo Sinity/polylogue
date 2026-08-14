@@ -3402,6 +3402,8 @@ def run_command(
 )
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
     from polylogue.config import resolve_runtime_config
+    from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
+    from polylogue.paths import archive_root
 
     runtime_source_paths = resolve_runtime_config().source_paths
     sources = _watch_sources_from_roots(
@@ -3414,7 +3416,16 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
         f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
         err=True,
     )
-    asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    archive_owner = acquire_durable_archive_ownership(
+        archive_root_path,
+        owner_id=f"watch:{os.getpid()}",
+    )
+    try:
+        asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
+    finally:
+        archive_owner.release()
 
 
 __all__ = [

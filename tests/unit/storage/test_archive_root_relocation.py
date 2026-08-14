@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -38,7 +41,6 @@ from polylogue.operations.historical_source_continuity_recovery import (
     _current_evidence,
     _sha256,
     _table_content_digest,
-    _test_historical_operation_evidence_resource,
     _verify_historical_operation_evidence,
     _write_refresh_receipt,
     assert_no_prepared_historical_source_continuity_recovery,
@@ -62,9 +64,10 @@ from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    DurableChangeTrain,
     DurableChangeTrainError,
     load_durable_change_train_manifest,
-    rebind_released_source_train_archive_identity,
+    rebind_released_durable_train_archive_identity,
     recover_released_source_train_continuity,
 )
 from polylogue.storage.sqlite.migration_runner import (
@@ -73,11 +76,22 @@ from polylogue.storage.sqlite.migration_runner import (
     capture_durable_database_evidence,
     capture_durable_restart_convergence,
     capture_durable_schema_inventory,
+    durable_change_train_to_payload,
     prove_durable_change_train,
     record_durable_writer_release,
     release_durable_change_train,
     write_durable_change_train_manifest,
 )
+
+
+@contextmanager
+def _test_historical_operation_evidence_resource(path: Path) -> Iterator[None]:
+    """Patch the packaged descriptor reader only within a synthetic test scope."""
+    with patch(
+        "polylogue.operations.historical_source_continuity_recovery._historical_operation_evidence_bytes",
+        side_effect=lambda: path.read_bytes(),
+    ):
+        yield
 
 
 def test_archive_root_relocation_is_a_real_maintenance_route(cli_workspace: dict[str, object]) -> None:
@@ -192,14 +206,15 @@ def test_plan_rejects_byte_identical_copied_archive_with_new_inodes(
     """Authenticated pre-move inode facts distinguish a move from copytree bytes."""
     old_root = workspace_env["archive_root"]
     _released_moved_source_train(old_root, monkeypatch)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     new_root = tmp_path / "copied"
     shutil.copytree(old_root, new_root, symlinks=True)
     assert (old_root / "source.db").read_bytes() == (new_root / "source.db").read_bytes()
     assert (old_root / "source.db").stat().st_ino != (new_root / "source.db").stat().st_ino
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
 
-    with pytest.raises(ArchiveRootRelocationError, match="moved-root authority"):
+    with pytest.raises(ArchiveRootRelocationError, match="does not authenticate the moved tier identity"):
         prepare_archive_root_relocation(
             old_root=old_root,
             new_root=new_root,
@@ -371,7 +386,7 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
     before = released
     before_evidence = before.apply_evidence
     assert before_evidence is not None
-    updated = rebind_released_source_train_archive_identity(
+    updated = rebind_released_durable_train_archive_identity(
         before,
         archive_identity_digest="a" * 64,
         proof_refs=("proof:archive-root-relocation:receipt",),
@@ -389,7 +404,7 @@ def test_rebind_rewrites_only_the_released_source_identity_fields(
         source_continuity_evidence=replace(before_evidence.post, observed_at_ms=before.released_at_ms + 1),
         proof_refs=(*before.proof_refs, "proof:source-continuity-refresh:" + "d" * 64),
     )
-    rebound_current_authority = rebind_released_source_train_archive_identity(
+    rebound_current_authority = rebind_released_durable_train_archive_identity(
         current_authority,
         archive_identity_digest="c" * 64,
         proof_refs=(
@@ -519,7 +534,10 @@ def _released_moved_source_train(
         released,
         apply_evidence=replace(
             released.apply_evidence,
-            post=replace(source_post, archive_identity_digest="b" * 64),
+            post=replace(
+                source_post,
+                archive_identity_digest=ArchiveIdentity.resolve(root).authority_identity_digest,
+            ),
         ),
         proof=source_proof,
     )
@@ -528,26 +546,97 @@ def _released_moved_source_train(
     manifest = manifest_root / "source-002.json"
     write_durable_change_train_manifest(manifest, historical, expected_revision=-1)
     monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.SOURCE, 1)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.USER, 10_000)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, ArchiveTier.AUDIT, 10_000)
+    return manifest
+
+
+def _released_moved_durable_train(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tier: ArchiveTier,
+) -> Path:
+    """Build one real released non-source train for complete relocation coverage."""
+    from tests.unit.storage import test_durable_change_train as trains
+
+    database = root / f"{tier.value}.db"
+    database.unlink()
+    trains._create_current_database(database)
+    trains._install_synthetic_migration(root.parent, monkeypatch, tier)
+    train = trains._admitted(tier)
+    with sqlite3.connect(database) as connection:
+        train = trains._reserve_and_authorize(connection, train, archive_root=root)
+        train = apply_durable_change_train(connection, train)
+    train = record_durable_writer_release(train, evidence_ref=f"proof:{tier.value}-writer-release")
+    with sqlite3.connect(database) as connection:
+        restart = capture_durable_restart_convergence(
+            connection,
+            train,
+            runtime_consumers=trains._runtime_results(),
+            evidence_ref=f"proof:{tier.value}-restart",
+        )
+    train = prove_durable_change_train(
+        train,
+        fresh_ddl_parity=trains._parity(tier),
+        runtime_consumers=trains._runtime_results(),
+        restart_convergence=restart,
+    )
+    released = release_durable_change_train(train, evidence_ref=f"proof:{tier.value}-released")
+    manifest = root / ".maintenance-state" / "durable-change-trains" / f"{tier.value}-002.json"
+    write_durable_change_train_manifest(manifest, released, expected_revision=-1)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, tier, 1)
+    return manifest
+
+
+def _clone_released_durable_train_for_tier(
+    root: Path,
+    source_manifest: Path,
+    tier: ArchiveTier,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Retarget one validated released fixture train to another durable tier."""
+    source = load_durable_change_train_manifest(source_manifest)
+    assert source.fresh_ddl_parity is not None
+    assert source.reservation is not None
+    assert source.backup_authorization is not None
+    assert source.pre_apply_evidence is not None
+    assert source.apply_evidence is not None
+    assert source.proof is not None
+    cloned = replace(
+        source,
+        train_id=f"train:{tier.value}:v{source.target_version}",
+        tier=tier,
+        migration=replace(source.migration, tier=tier),
+        fresh_ddl_parity=replace(source.fresh_ddl_parity, tier=tier),
+        reservation=replace(source.reservation, tier_path=str(root / f"{tier.value}.db")),
+        backup_authorization=replace(
+            source.backup_authorization,
+            live_tier_path=str(root / f"{tier.value}.db"),
+        ),
+        pre_apply_evidence=replace(source.pre_apply_evidence, tier=tier),
+        apply_evidence=replace(
+            source.apply_evidence,
+            pre=replace(source.apply_evidence.pre, tier=tier),
+            post=replace(source.apply_evidence.post, tier=tier),
+            migration_result=replace(source.apply_evidence.migration_result, tier=tier),
+        ),
+        proof=replace(
+            source.proof,
+            fresh_ddl_parity=replace(source.proof.fresh_ddl_parity, tier=tier),
+        ),
+    )
+    manifest = root / ".maintenance-state" / "durable-change-trains" / f"{tier.value}-002.json"
+    write_durable_change_train_manifest(manifest, cloned, expected_revision=-1)
+    monkeypatch.setitem(DURABLE_MIGRATION_ADOPTION_FLOORS, tier, 1)
     return manifest
 
 
 def _activate_movable_index_generation(root: Path) -> Path:
-    """Promote a real generation while retaining a move-safe conventional symlink.
-
-    The active-pointer target is deliberately absolute, as it is in a live
-    generation layout.  The conventional index symlink is relative so the
-    regression isolates relocation's pointer publication rather than a second
-    broken absolute symlink.
-    """
+    """Promote a real generation using the production absolute symlink layout."""
     store = IndexGenerationStore.for_archive_root(root)
     generation = store.create(owner_id="relocation-test", source_snapshot="snapshot")
     store.promote(generation)
-    target = Path(generation.index_path).resolve(strict=True)
-    conventional = root / "index.db"
-    conventional.unlink()
-    conventional.symlink_to(target.relative_to(root))
-    (root / ".index-active-pointer").write_text(str(target), encoding="utf-8")
-    return target
+    return Path(generation.index_path).resolve(strict=True)
 
 
 def _legacy_liveness_receipt(
@@ -818,6 +907,21 @@ def test_receipt_writers_never_create_through_a_symlinked_maintenance_state(tmp_
         _write_refresh_receipt(
             continuity_root / ".maintenance-state" / "source-continuity-refreshes" / ("f" * 64 + ".json"),
             {"refresh_sha256": "f" * 64},
+        )
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="unsafe"):
+        _write_continuity_receipt(
+            continuity_root / ".maintenance-state" / "historical-source-continuity-recoveries" / ("f" * 64 + ".json"),
+            _sealed_continuity_receipt(
+                state="prepared",
+                revision=0,
+                plan_sha256="f" * 64,
+                authorization="f" * 64,
+                train_before_sha256="0" * 64,
+                train_after_sha256=None,
+                refresh_receipt_sha256="1" * 64,
+                resume_command="resume continuity",
+            ),
+            expected=None,
         )
 
     assert not tuple(outside.iterdir())
@@ -1275,7 +1379,7 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
     assert backup.ok and backup.output_path is not None
     moved_manifest = new_root / manifest.relative_to(old_root)
     with sqlite3.connect(new_root / "source.db") as connection:
-        with pytest.raises(Exception, match="continuity proof failed"):
+        with pytest.raises(DurableChangeTrainError, match="continuity proof failed"):
             trains._verify_released_train_live_tier(
                 new_root,
                 connection,
@@ -1314,7 +1418,7 @@ def test_prepare_apply_rebinds_a_real_released_train_and_resumes_after_prepared_
     assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
     with monkeypatch.context() as scoped:
         scoped.setattr(
-            "polylogue.operations.archive_root_relocation.rebind_released_source_train_archive_identity",
+            "polylogue.operations.archive_root_relocation.rebind_released_durable_train_archive_identity",
             lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("crash")),
         )
         with pytest.raises(RuntimeError, match="crash"):
@@ -1385,8 +1489,8 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
 
     old_root = workspace_env["archive_root"]
     manifest = _released_moved_source_train(old_root, monkeypatch)
-    _attach_retained_source_continuity(old_root, manifest)
     old_active_target = _activate_movable_index_generation(old_root)
+    _attach_retained_source_continuity(old_root, manifest)
     new_root = tmp_path / "moved"
     os.rename(old_root, new_root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
@@ -1403,8 +1507,11 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
 
     pointer = plan.active_index_pointer
     assert pointer is not None
-    assert pointer.old_target == str(old_active_target)
-    assert pointer.new_target == str(new_root / old_active_target.relative_to(old_root))
+    assert pointer.old_target == str(old_root / "index.db")
+    assert pointer.new_target == str(new_root / "index.db")
+    assert pointer.old_resolved_target == str(old_active_target)
+    assert pointer.conventional_symlink_old_target == str(old_active_target)
+    assert pointer.conventional_symlink_new_target == str(new_root / old_active_target.relative_to(old_root))
     real_publish = relocation._publish_active_index_pointer
     real_write = os.write
     short_pointer_write = False
@@ -1435,8 +1542,175 @@ def test_relocation_remaps_an_active_generation_pointer_and_resumes_after_public
     monkeypatch.setattr(relocation, "_publish_active_index_pointer", real_publish)
     result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
     assert result.state == "committed"
-    assert ArchiveLocation.resolve(new_root).active_index_path == Path(pointer.new_resolved_target)
+    relocated_location = ArchiveLocation.resolve(new_root)
+    assert relocated_location.active_index_path == Path(pointer.new_target)
+    assert relocated_location.active_index.resolved_path == Path(pointer.new_resolved_target)
     assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
+
+
+def test_relocation_accepts_a_modern_no_rebind_train_without_rewriting_it(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An inode-preserving move leaves modern tier identity authority unchanged."""
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    train = load_durable_change_train_manifest(manifest)
+    assert train.apply_evidence is not None
+    identity = ArchiveIdentity.resolve(old_root).tier("source").stable_id
+    modern = replace(
+        train,
+        revision=train.revision + 1,
+        apply_evidence=replace(
+            train.apply_evidence,
+            post=replace(
+                train.apply_evidence.post, archive_identity_digest=hashlib.sha256(identity.encode()).hexdigest()
+            ),
+        ),
+    )
+    write_durable_change_train_manifest(manifest, modern, expected_revision=train.revision)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    assert len(plan.durable_trains) == 1
+    assert plan.durable_trains[0].requires_rebind is False
+    moved_manifest = Path(plan.durable_trains[0].path)
+    before = moved_manifest.read_bytes()
+    assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
+    assert moved_manifest.read_bytes() == before
+
+
+def test_relocation_resume_rejects_a_same_revision_manifest_substituted_after_cas(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepared recovery accepts only the exact post-CAS bytes bound before mutation."""
+    from polylogue.operations import archive_root_relocation as relocation
+
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    real_write = write_durable_change_train_manifest
+
+    def crash_after_cas(path: Path, train: DurableChangeTrain, *, expected_revision: int) -> None:
+        real_write(path, train, expected_revision=expected_revision)
+        raise RuntimeError("crash after relocation manifest CAS")
+
+    monkeypatch.setattr(relocation, "write_durable_change_train_manifest", crash_after_cas)
+    with pytest.raises(RuntimeError, match="crash after relocation manifest CAS"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    monkeypatch.setattr(relocation, "write_durable_change_train_manifest", real_write)
+    retained_plan = new_root / ".maintenance-state" / "archive-root-relocation-plans" / f"{plan.plan_sha256}.json"
+    assert retained_plan.is_file()
+    prepared_receipt = json.loads(
+        (new_root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert f"--plan {retained_plan}" in prepared_receipt["resume_command"]
+    train_path = Path(plan.durable_trains[0].path)
+    relocated = load_durable_change_train_manifest(train_path)
+    substituted = replace(relocated, proof_refs=(*relocated.proof_refs, "proof:foreign-substitution"))
+    payload = durable_change_train_to_payload(substituted)
+    train_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ArchiveRootRelocationError, match="manifest changed"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+
+def test_continuity_free_rebind_requires_its_retained_relocation_receipt(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daemon admission resolves relocation authority even without source refresh evidence."""
+    from polylogue.storage.sqlite import durable_change_train as trains
+
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    result = apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+    assert result.state == "committed"
+    Path(result.receipt_path or "").unlink()
+    train = load_durable_change_train_manifest(Path(plan.durable_trains[0].path))
+    with sqlite3.connect(new_root / "source.db") as connection:
+        with pytest.raises(DurableChangeTrainError, match="committed receipt"):
+            trains._verify_released_train_live_tier(new_root, connection, train)
+
+
+def test_relocation_rebinds_released_trains_for_every_durable_tier(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy source, user, and audit trains move under one exact CAS plan."""
+    old_root = workspace_env["archive_root"]
+    source_manifest = _released_moved_source_train(old_root, monkeypatch)
+    user_manifest = _released_moved_durable_train(old_root, monkeypatch, ArchiveTier.USER)
+    manifests = [
+        source_manifest,
+        user_manifest,
+        _clone_released_durable_train_for_tier(old_root, user_manifest, ArchiveTier.AUDIT, monkeypatch),
+    ]
+    legacy_identity = ArchiveIdentity.resolve(old_root).authority_identity_digest
+    for manifest in manifests:
+        train = load_durable_change_train_manifest(manifest)
+        assert train.apply_evidence is not None
+        rebound = replace(
+            train,
+            revision=train.revision + 1,
+            apply_evidence=replace(
+                train.apply_evidence,
+                post=replace(train.apply_evidence.post, archive_identity_digest=legacy_identity),
+            ),
+        )
+        write_durable_change_train_manifest(manifest, rebound, expected_revision=train.revision)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    assert {item.tier for item in plan.durable_trains} == {"source", "user", "audit"}
+    assert all(item.requires_rebind for item in plan.durable_trains)
+    assert apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256).state == "committed"
+    identity = ArchiveIdentity.resolve(new_root)
+    for item in plan.durable_trains:
+        train = load_durable_change_train_manifest(Path(item.path))
+        assert train.apply_evidence is not None
+        expected = hashlib.sha256(identity.tier(item.tier).stable_id.encode()).hexdigest()
+        assert train.apply_evidence.post.archive_identity_digest == expected
 
 
 def test_relocation_rejects_an_active_pointer_not_owned_by_the_old_root(
@@ -1629,11 +1903,11 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
     relocation_payload = _maintenance_json_output(relocated.output)
     relocation_digest = str(relocation_payload["plan_sha256"])
     relocation_plan_payload = json.loads(relocation_plan.read_text(encoding="utf-8"))
-    source_trains = relocation_plan_payload["source_trains"]
+    source_trains = relocation_plan_payload["durable_trains"]
     assert isinstance(source_trains, list) and len(source_trains) == 1
     assert source_trains[0]["requires_rebind"] is False
 
-    refresh_digests = source_trains[0]["source_continuity_receipt_digests"]
+    refresh_digests = source_trains[0]["continuity_receipt_digests"]
     assert isinstance(refresh_digests, list) and len(refresh_digests) == 1
     refresh_path = moved_root / ".maintenance-state" / "source-continuity-refreshes" / f"{refresh_digests[0]}.json"
     foreign_refresh = tmp_path / "foreign-refresh.json"
@@ -1755,6 +2029,78 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
     transition_refs = tuple(ref for ref in train.proof_refs if ref.startswith("proof:source-continuity-relocation:"))
     assert len(relocation_refs) == 1
     assert len(transition_refs) == 1
+
+    second_root = tmp_path / "moved-again"
+    os.rename(moved_root, second_root)
+    second_env = {"POLYLOGUE_ARCHIVE_ROOT": str(second_root)}
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(second_root))
+    second_backup = backup_archive(output_dir=tmp_path / "second-moved-backup", profile="full_evidence", verify=True)
+    assert second_backup.ok and second_backup.output_path is not None
+    second_plan = tmp_path / "second-relocation-plan.json"
+    second_planned = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "archive-root-relocation",
+            "plan",
+            "--old-root",
+            str(moved_root),
+            "--backup-manifest",
+            str(Path(second_backup.output_path) / "manifest.json"),
+            "--output",
+            str(second_plan),
+            "--output-format",
+            "json",
+        ],
+        env=second_env,
+        catch_exceptions=False,
+    )
+    assert second_planned.exit_code == 0, second_planned.output
+    second_digest = str(_maintenance_json_output(second_planned.output)["plan_sha256"])
+    second_applied = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "archive-root-relocation",
+            "apply",
+            "--plan",
+            str(second_plan),
+            "--authorize",
+            second_digest,
+            "--output-format",
+            "json",
+        ],
+        env=second_env,
+        catch_exceptions=False,
+    )
+    assert second_applied.exit_code == 0, second_applied.output
+    second_payload = json.loads(second_plan.read_text(encoding="utf-8"))
+    second_train_path = Path(str(second_payload["durable_trains"][0]["path"]))
+    second_train = load_durable_change_train_manifest(second_train_path)
+    second_transition_refs = tuple(
+        ref for ref in second_train.proof_refs if ref.startswith("proof:source-continuity-relocation:")
+    )
+    assert len(second_transition_refs) == 2
+    latest_transition = json.loads(
+        (
+            second_root
+            / ".maintenance-state"
+            / "source-continuity-relocations"
+            / f"{second_transition_refs[-1].rsplit(':', 1)[-1]}.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert latest_transition["predecessor_authority"] == {
+        "kind": "relocation",
+        "sha256": second_transition_refs[-2].rsplit(":", 1)[-1],
+    }
+    from polylogue.storage.sqlite import durable_change_train as trains
+
+    with sqlite3.connect(second_root / "source.db") as connection:
+        assert trains._verify_released_train_live_tier(second_root, connection, second_train) is None
 
 
 def test_historical_continuity_recovery_resume_rejects_a_foreign_same_evidence_receipt(

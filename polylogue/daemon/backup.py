@@ -214,7 +214,31 @@ def _json_str_list(value: object) -> list[str]:
 
 
 def _all_archive_tiers(root: Path) -> dict[str, Path]:
-    return archive_tier_paths(root)
+    tiers = archive_tier_paths(root)
+    index = tiers["index"]
+    if index.is_symlink() and not index.exists():
+        target = Path(os.readlink(index))
+        pointer = root / ".index-active-pointer"
+        if not target.is_absolute() or pointer.is_symlink() or not pointer.is_file():
+            return tiers
+        try:
+            configured_target = Path(pointer.read_text(encoding="utf-8").strip())
+            relative = target.relative_to(configured_target.parent)
+        except (OSError, ValueError):
+            return tiers
+        if not configured_target.is_absolute() or configured_target.name != "index.db":
+            return tiers
+        mapped = root / relative
+        if (
+            len(relative.parts) < 3
+            or relative.parts[0] != ".index-generations"
+            or relative.parts[-1] != "index.db"
+            or not mapped.is_file()
+            or mapped.is_symlink()
+        ):
+            return tiers
+        tiers["index"] = mapped
+    return tiers
 
 
 def _profile_archive_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:
