@@ -135,6 +135,19 @@ def materialization_generation_lease(config: Config) -> Iterator[Path]:
         lease.close()
 
 
+@contextlib.contextmanager
+def archive_writer_rebuild_exclusion(archive_root: Path) -> Iterator[None]:
+    """Exclude an offline rebuild for the complete lifetime of an archive writer."""
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    lease = ActiveWriterLease(archive_root)
+    lease.acquire()
+    try:
+        yield
+    finally:
+        lease.close()
+
+
 def materialization_lease_refusal_result(error: BaseException) -> RepairResult | None:
     """Translate only a rebuild-lease refusal into raw repair's typed result."""
     from polylogue.storage.index_generation import RebuildLeaseUnavailableError
@@ -247,6 +260,7 @@ def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> J
 __all__ = [
     "RawMaterializationCounts",
     "apply_frontier",
+    "archive_writer_rebuild_exclusion",
     "inspect_frontier",
     "list_blockers",
     "materialization_generation_lease",

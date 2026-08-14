@@ -2155,13 +2155,11 @@ async def run_daemon_services(
     until its writer coordinator has drained.
     """
     from polylogue.paths import archive_root
-    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    active_writer_lease = ActiveWriterLease(archive_root_path)
-    active_writer_lease.acquire()
-    try:
+    with archive_writer_rebuild_exclusion(archive_root_path):
         await _run_daemon_services_under_active_writer_lease(
             sources=sources,
             debounce_s=debounce_s,
@@ -2181,8 +2179,6 @@ async def run_daemon_services(
             api_auth_token=api_auth_token,
             api_allow_no_auth=api_allow_no_auth,
         )
-    finally:
-        active_writer_lease.close()
 
 
 async def _run_daemon_services_under_active_writer_lease(
