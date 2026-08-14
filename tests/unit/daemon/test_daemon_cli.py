@@ -2476,10 +2476,11 @@ def test_run_live_watcher_stops_on_keyboard_interrupt(
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
         patch.object(daemon_cli, "daemon_write_coordinator", return_value=Coordinator()),
     ):
-        asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
+        writer_drained = asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
 
     assert stopped == [True]
     assert shutdown_timeouts == [5.0]
+    assert writer_drained is True
 
 
 def test_run_live_watcher_refuses_before_entry_while_rebuild_lease_is_held(
@@ -4185,6 +4186,39 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
     assert admission.call_count == 2
     admission.assert_called_with(configured_alias)
     watcher.assert_not_called()
+
+    from polylogue.operations.historical_source_continuity_recovery import HistoricalSourceContinuityRecoveryError
+
+    continuity_admission = Mock(
+        side_effect=HistoricalSourceContinuityRecoveryError(
+            "historical source continuity recovery is prepared but incomplete; rerun resume-command"
+        )
+    )
+    monkeypatch.setattr(
+        "polylogue.operations.archive_root_relocation.assert_no_prepared_archive_root_relocation",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        "polylogue.operations.historical_source_continuity_recovery.assert_no_prepared_historical_source_continuity_recovery",
+        continuity_admission,
+    )
+
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+        CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+
+    assert continuity_admission.call_count == 2
 
 
 def test_emit_daemon_lifecycle_event_carries_dev_loop_context(

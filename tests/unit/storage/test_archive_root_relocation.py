@@ -29,7 +29,11 @@ from polylogue.operations.archive_root_relocation import (
     _check_backup_against_live,
     apply_archive_root_relocation,
     assert_no_prepared_archive_root_relocation,
+    load_archive_root_relocation_plan,
     prepare_archive_root_relocation,
+)
+from polylogue.operations.archive_root_relocation import (
+    _sealed_plan as _sealed_relocation_plan,
 )
 from polylogue.operations.archive_root_relocation import (
     _sealed_receipt as _sealed_relocation_receipt,
@@ -932,6 +936,89 @@ def _historical_continuity_fixture(
     return new_root, mutation_receipt, pre_manifest, post_manifest, evidence
 
 
+def _downgrade_historical_backup_source_identity(manifest_path: Path, *, old_root: Path) -> None:
+    """Render a verified pre-inode backup shape using the original local keys."""
+    from polylogue.storage.backup_attestation import sign_verification_receipt
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    receipt_path = manifest_path.with_name("verification-receipt.json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    fingerprint = manifest["tier_source_fingerprints"]["source.db"]
+    fingerprint.pop("device")
+    fingerprint.pop("inode")
+    for artifact in receipt["tier_artifacts"]:
+        if artifact["tier"] == "source":
+            artifact["source_fingerprint"] = fingerprint
+    manifest_encoded = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    manifest_path.write_bytes(manifest_encoded)
+    receipt["manifest_size_bytes"] = len(manifest_encoded)
+    receipt["manifest_sha256"] = hashlib.sha256(manifest_encoded).hexdigest()
+    for item in receipt["artifact_inventory"]:
+        if item.get("path") == "manifest.json":
+            item["size_bytes"] = len(manifest_encoded)
+            item["sha256"] = receipt["manifest_sha256"]
+    unsigned = {key: value for key, value in receipt.items() if key != "attestations"}
+    receipt_path.write_text(
+        json.dumps(
+            sign_verification_receipt(
+                unsigned,
+                authority_paths={
+                    "source": old_root / "source.db",
+                    "user": old_root / "user.db",
+                    "audit": old_root / "audit.db",
+                },
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_historical_recovery_consumes_verified_pre_inode_backup_manifests(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recovery planner supports issued backups that predate inode fields.
+
+    Anti-vacuity: both real backup manifests retain their successful HMAC
+    receipts and exact package bytes, but omit only the fields introduced by
+    this PR. Requiring the new fields makes an already-completed historical
+    mutation impossible to recover.
+    """
+    from polylogue.operations.historical_source_continuity_recovery import prepare_historical_source_continuity_recovery
+
+    new_root, mutation_receipt, pre_manifest, post_manifest, evidence = _historical_continuity_fixture(
+        workspace_env, tmp_path, monkeypatch
+    )
+    old_root = workspace_env["archive_root"]
+    _downgrade_historical_backup_source_identity(pre_manifest, old_root=old_root)
+    _downgrade_historical_backup_source_identity(post_manifest, old_root=old_root)
+    with sqlite3.connect(f"file:{pre_manifest.parent / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
+        candidates = classify_blob_ref_liveness(connection).candidates
+    _pinned_historical_operation_evidence(
+        evidence,
+        mutation_receipt=mutation_receipt,
+        candidates=candidates,
+        pre_manifest=pre_manifest,
+        post_manifest=post_manifest,
+    )
+
+    with _test_historical_operation_evidence_resource(evidence):
+        plan = prepare_historical_source_continuity_recovery(
+            old_root=old_root,
+            new_root=new_root,
+            mutation_receipt=mutation_receipt,
+            pre_backup_manifest=pre_manifest,
+            post_backup_manifest=post_manifest,
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+    assert plan.pre_backup_source_device is None
+    assert plan.post_backup_source_inode is None
+
+
 def _maintenance_json_output(output: str) -> dict[str, object]:
     """Maintenance commands retain the root-provenance line before JSON output."""
     _provenance, separator, payload = output.partition("\n")
@@ -1118,6 +1205,57 @@ def test_source_continuity_rejects_a_disconnected_legacy_authority_component(
 
     with pytest.raises(DurableChangeTrainError, match="one connected authority chain"):
         assert_source_continuity_apply_allowed(root)
+
+
+def test_source_continuity_admits_connected_multi_refresh_v1_history(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy V1 refreshes remain usable when sealed evidence forms one chain.
+
+    Anti-vacuity: the production admission route validates every retained V1
+    receipt. Removing V1 predecessor inference makes these two independently
+    sealed, sequential refreshes look like disconnected roots and rejects the
+    released train.
+    """
+    root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(root, monkeypatch)
+    _attach_retained_source_continuity(root, manifest)
+    first = load_durable_change_train_manifest(manifest)
+    assert first.source_continuity_evidence is not None
+    with sqlite3.connect(root / "source.db") as connection:
+        observed = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
+    terminal = replace(
+        observed,
+        archive_identity_digest=first.source_continuity_evidence.archive_identity_digest,
+        observed_at_ms=first.source_continuity_evidence.observed_at_ms + 1,
+    )
+    second_payload = {
+        "format": "polylogue.source-continuity-refresh.v1",
+        "operation_id": "legacy-second-refresh",
+        "evidence_ref": "proof:legacy-second-refresh",
+        "backup_manifest": "/authenticated/second/manifest.json",
+        "backup_manifest_sha256": "c" * 64,
+        "mutation_receipt": "/authenticated/second.jsonl",
+        "mutation_receipt_sha256": "d" * 64,
+        "train_id": first.train_id,
+        "source_before": _evidence_payload(first.source_continuity_evidence),
+        "source_after": _evidence_payload(terminal),
+        "refreshed_at_ms": terminal.observed_at_ms,
+    }
+    second_digest = _canonical_json_sha256(second_payload)
+    _write_refresh_receipt(
+        root / ".maintenance-state" / "source-continuity-refreshes" / f"{second_digest}.json",
+        {**second_payload, "refresh_sha256": second_digest},
+    )
+    updated = replace(
+        first,
+        revision=first.revision + 1,
+        source_continuity_evidence=terminal,
+        proof_refs=(*first.proof_refs, f"proof:source-continuity-refresh:{second_digest}"),
+    )
+    write_durable_change_train_manifest(manifest, updated, expected_revision=first.revision)
+
+    assert_source_continuity_apply_allowed(root)
 
 
 def test_receipt_directory_swap_cannot_redirect_either_operation_outside_archive(
@@ -1926,9 +2064,11 @@ def test_relocation_generation_publication_rejects_a_post_validation_directory_s
         root: Path,
         items: tuple[RelocationIndexGeneration, ...],
         pointer: RelocationActiveIndexPointer | None,
+        *,
+        allow_post_publication: bool,
     ) -> None:
         nonlocal validation_calls
-        real_validate(root, items, pointer)
+        real_validate(root, items, pointer, allow_post_publication=allow_post_publication)
         validation_calls += 1
         if validation_calls == 2:
             os.rename(generation_root, detached)
@@ -2015,6 +2155,212 @@ def test_relocation_apply_rejects_equivalent_generation_tier_symlink_substitutio
     assert {path: Path(path).read_bytes() for path in manifests_before} == manifests_before
     assert not (new_root / ".maintenance-state" / "archive-root-relocation-plans" / f"{plan.plan_sha256}.json").exists()
     assert not (new_root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json").exists()
+
+
+def test_relocation_apply_rejects_generation_metadata_post_state_before_publication_begins(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first apply cannot treat an after-state leaf as proof of publication.
+
+    Anti-vacuity: the production plan carries only its revision-0 receipt,
+    which has no bound manifest transition, while generation metadata is
+    atomically changed to its exact planned after bytes. Removing the
+    publication-begun gate accepts the substituted state.
+    """
+    from polylogue.operations import archive_root_relocation as relocation
+
+    new_root, plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    generation = plan.index_generations[0]
+    metadata_path = Path(generation.metadata_path)
+    before = metadata_path.read_bytes()
+    payload = relocation._index_generation_payload_for_state(generation, after=False, encoded=before)
+    after = relocation._index_generation_metadata_bytes(
+        {**payload, "archive_root": generation.after_archive_root, "index_path": generation.after_index_path}
+    )
+    assert hashlib.sha256(after).hexdigest() == generation.after_sha256
+    replacement = metadata_path.with_name(".generation.json.after")
+    replacement.write_bytes(after)
+    os.replace(replacement, metadata_path)
+
+    pointer_fields = relocation._pointer_receipt_fields(plan.active_index_pointer)
+    initial = _sealed_relocation_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256=plan.plan_sha256,
+        authorization=plan.plan_sha256,
+        manifest_before_sha256=tuple(item.before_manifest_sha256 for item in plan.durable_trains),
+        manifest_after_sha256=(),
+        active_index_pointer_old_target=pointer_fields[0],
+        active_index_pointer_new_target=pointer_fields[1],
+        active_index_pointer_new_resolved_target=pointer_fields[2],
+        resume_command="polylogue ops maintenance archive-root-relocation apply",
+    )
+    _write_relocation_receipt(relocation._receipt_path(new_root, plan), initial, expected=None)
+
+    with pytest.raises(ArchiveRootRelocationError, match="post-publication state without a prepared receipt"):
+        apply_archive_root_relocation(root=new_root, plan=plan, authorization=plan.plan_sha256)
+
+    assert metadata_path.read_bytes() == after
+    retained_initial = json.loads(
+        (new_root / ".maintenance-state" / "archive-root-relocations" / f"{plan.plan_sha256}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert retained_initial["revision"] == 0
+    assert retained_initial["manifest_after_sha256"] == []
+
+
+def test_relocation_v3_plan_decodes_but_requires_a_prepared_resume_receipt(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-leaf-sealing v3 plans refuse new publication instead of stranding resume.
+
+    Anti-vacuity: the retained plan omits exactly the v4 leaf identities. The
+    public loader must still decode it so a prepared receipt can be inspected,
+    while the public apply route rejects a first publication that cannot prove
+    its original leaves.
+    """
+    new_root, plan = _prepare_moved_root_relocation_with_generation(workspace_env, tmp_path, monkeypatch)
+    legacy_payload = plan.model_dump(mode="json")
+    legacy_payload["format"] = "polylogue.archive-root-relocation-plan.v3"
+    legacy_payload.pop("plan_sha256")
+    for generation in legacy_payload["index_generations"]:
+        generation.pop("metadata_before_device")
+        generation.pop("metadata_before_inode")
+        for link in generation["tier_symlinks"]:
+            link.pop("before_device")
+            link.pop("before_inode")
+    legacy = _sealed_relocation_plan(**legacy_payload)
+    retained = tmp_path / "retained-v3-plan.json"
+    retained.write_text(
+        json.dumps(legacy.model_dump(mode="json", exclude_none=True), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_archive_root_relocation_plan(retained)
+    assert loaded.format == "polylogue.archive-root-relocation-plan.v3"
+    assert loaded.index_generations[0].metadata_before_device is None
+    with pytest.raises(ArchiveRootRelocationError, match="create a v4 plan"):
+        apply_archive_root_relocation(root=new_root, plan=loaded, authorization=loaded.plan_sha256)
+
+    from polylogue.operations import archive_root_relocation as relocation
+
+    pointer_fields = relocation._pointer_receipt_fields(loaded.active_index_pointer)
+    initial = _sealed_relocation_receipt(
+        state="prepared",
+        revision=0,
+        plan_sha256=loaded.plan_sha256,
+        authorization=loaded.plan_sha256,
+        manifest_before_sha256=tuple(item.before_manifest_sha256 for item in loaded.durable_trains),
+        manifest_after_sha256=(),
+        active_index_pointer_old_target=pointer_fields[0],
+        active_index_pointer_new_target=pointer_fields[1],
+        active_index_pointer_new_resolved_target=pointer_fields[2],
+        resume_command="polylogue ops maintenance archive-root-relocation apply",
+    )
+    expected_after = []
+    for item in loaded.durable_trains:
+        train = load_durable_change_train_manifest(Path(item.path))
+        expected = (
+            relocation._relocated_train(
+                new_root,
+                plan=loaded,
+                item=item,
+                train=train,
+                relocation_receipt_sha256=initial.receipt_sha256,
+            )
+            if relocation._requires_train_update(item)
+            else train
+        )
+        expected_after.append(relocation._train_manifest_sha256(expected))
+    prepared = _sealed_relocation_receipt(
+        state="prepared",
+        revision=1,
+        plan_sha256=loaded.plan_sha256,
+        authorization=loaded.plan_sha256,
+        manifest_before_sha256=tuple(item.before_manifest_sha256 for item in loaded.durable_trains),
+        manifest_after_sha256=tuple(expected_after),
+        active_index_pointer_old_target=pointer_fields[0],
+        active_index_pointer_new_target=pointer_fields[1],
+        active_index_pointer_new_resolved_target=pointer_fields[2],
+        resume_command="polylogue ops maintenance archive-root-relocation apply",
+        prepared_receipt_sha256=initial.receipt_sha256,
+    )
+    _write_relocation_receipt(relocation._receipt_path(new_root, loaded), prepared, expected=None)
+
+    resumed = apply_archive_root_relocation(root=new_root, plan=loaded, authorization=loaded.plan_sha256)
+    assert resumed.state == "committed"
+
+
+def test_relocation_rejects_backup_root_nested_under_moved_archive(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relocation authority cannot be sourced from a package under the live root.
+
+    Anti-vacuity: this uses a real verified backup package copied below the
+    moved archive. Removing backup-root separation lets the public planner
+    accept evidence that the operation can overwrite or recursively include.
+    """
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch)
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    nested = new_root / "retained-backup"
+    shutil.copytree(Path(backup.output_path), nested)
+
+    with pytest.raises(ArchiveRootRelocationError, match="backup root must be separate"):
+        prepare_archive_root_relocation(
+            old_root=old_root,
+            new_root=new_root,
+            backup_manifest=nested / "manifest.json",
+            stopped_daemon_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+        )
+
+
+def test_relocation_backup_validation_checks_every_live_tier_alias(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Full-evidence relocation validation gives every artifact its live tier.
+
+    Anti-vacuity: a real full backup is revalidated through the production
+    validator. Removing the per-tier mapping passes ``None`` for every
+    artifact and this capture no longer observes the live alias boundary.
+    """
+    from polylogue.storage.sqlite import migration_runner
+
+    root = workspace_env["archive_root"]
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    observed: dict[str, Path | None] = {}
+    real_validate = migration_runner._validate_tier_artifact
+
+    def capture_live_alias(
+        backup_root: Path,
+        artifact: dict[str, object],
+        *,
+        file_evidence: dict[str, dict[str, object]],
+        live_tier_path: Path | None,
+    ) -> None:
+        observed[str(artifact["tier"])] = live_tier_path
+        real_validate(
+            backup_root,
+            artifact,
+            file_evidence=file_evidence,
+            live_tier_path=live_tier_path,
+        )
+
+    monkeypatch.setattr(migration_runner, "_validate_tier_artifact", capture_live_alias)
+    migration_runner.validate_full_evidence_backup_for_archive_root_relocation(
+        Path(backup.output_path) / "manifest.json",
+        backup_configured_root=root,
+        backup_archive_root=root,
+    )
+
+    assert observed == {tier.value: root / f"{tier.value}.db" for tier in ArchiveTier}
 
 
 def test_relocation_remaps_generations_beside_a_nested_active_index(

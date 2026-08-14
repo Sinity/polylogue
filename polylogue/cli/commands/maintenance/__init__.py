@@ -227,6 +227,8 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
     ),
 )
 
+_NESTED_GROUP_COMMANDS = frozenset({"archive-root-relocation", "source-continuity-recovery"})
+
 
 @click.group("maintenance")
 @click.pass_context
@@ -249,9 +251,7 @@ def maintenance_group(ctx: click.Context) -> None:
 
 
 for _cli_name, _submodule, _attr, _short_help in _COMMANDS:
-    _command_type = (
-        _NestedLazyGroup if _cli_name in {"archive-root-relocation", "source-continuity-recovery"} else _LazyCommand
-    )
+    _command_type = _NestedLazyGroup if _cli_name in _NESTED_GROUP_COMMANDS else _LazyCommand
     maintenance_group.add_command(
         _command_type(
             _cli_name,

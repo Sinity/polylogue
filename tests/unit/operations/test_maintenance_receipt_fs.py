@@ -37,3 +37,17 @@ def test_fsync_failure_removes_only_the_new_empty_receipt_directory(
 
     assert not (state / "new-child").exists()
     assert existing.is_dir()
+
+
+def test_receipt_directory_wraps_mkdir_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publication callers receive the typed path error when directory creation fails."""
+    root = tmp_path / "archive"
+    (root / ".maintenance-state").mkdir(parents=True)
+
+    def deny_mkdir(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("read-only maintenance state")
+
+    monkeypatch.setattr(os, "mkdir", deny_mkdir)
+    with pytest.raises(MaintenanceReceiptPathError, match="cannot create maintenance receipt directory"):
+        with maintenance_receipt_directory(root, "new-child"):
+            pytest.fail("the failed child directory must not be yielded")

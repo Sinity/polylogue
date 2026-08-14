@@ -184,6 +184,20 @@ def _sqlite_user_version(path: Path) -> int:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
+def _readable_sqlite_index(path: Path) -> bool:
+    """Return whether an active-pointer candidate is a readable SQLite index.
+
+    Backup follows a genuinely live external index target, but a malformed or
+    stale pointer must not turn an otherwise valid backup into a copy of
+    arbitrary bytes. Relocation still authenticates that pointer separately.
+    """
+    try:
+        _sqlite_user_version(path)
+    except (OSError, sqlite3.Error):
+        return False
+    return True
+
+
 def _sqlite_source_fingerprint(path: Path) -> dict[str, object]:
     metadata = path.stat()
     return {
@@ -233,6 +247,14 @@ def _all_archive_tiers(root: Path) -> dict[str, Path]:
     if not configured_target.is_absolute() or configured_target.name != "index.db":
         return tiers
     if (
+        not configured_target.is_relative_to(root.absolute())
+        and configured_target.is_file()
+        and not configured_target.is_symlink()
+        and _readable_sqlite_index(configured_target)
+    ):
+        tiers["index"] = configured_target
+        return tiers
+    if (
         configured_target.is_relative_to(root.absolute())
         and configured_target.is_file()
         and configured_target.resolve().is_relative_to(root.resolve())
@@ -246,7 +268,9 @@ def _all_archive_tiers(root: Path) -> dict[str, Path]:
     # conventional symlink paired with that pointer, including a canonical
     # index below the archive root rather than assuming ``root/index.db``.
     mapped_candidates: list[tuple[int, Path]] = []
-    for conventional in root.rglob("index.db"):
+    target_parts = configured_target.relative_to(configured_target.anchor).parts
+    conventional_candidates = tuple(root.joinpath(*target_parts[-depth:]) for depth in range(1, len(target_parts) + 1))
+    for conventional in dict.fromkeys(conventional_candidates):
         relative_conventional = conventional.relative_to(root)
         if ".index-generations" in relative_conventional.parts:
             continue
@@ -273,6 +297,7 @@ def _all_archive_tiers(root: Path) -> dict[str, Path]:
                 and relative.parts[-1] == "index.db"
                 and mapped.is_file()
                 and not mapped.is_symlink()
+                and _readable_sqlite_index(mapped)
             ):
                 mapped_candidates.append((len(relative_parts), mapped))
     longest_suffix = max((length for length, _path in mapped_candidates), default=0)

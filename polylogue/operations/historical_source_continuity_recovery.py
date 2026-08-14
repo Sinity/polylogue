@@ -52,6 +52,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrain,
     DurableChangeTrainError,
     DurableChangeTrainState,
+    _durable_train_manifest_sha256,
     _read_source_continuity_refresh_receipt,
     _released_train_manifests_by_target,
     _require_released_train_chain,
@@ -62,9 +63,9 @@ from polylogue.storage.sqlite.durable_change_train import (
 )
 from polylogue.storage.sqlite.migration_runner import (
     DurableDatabaseEvidence,
+    _canonical_json_sha256,
     capture_durable_database_evidence,
     capture_durable_schema_inventory,
-    durable_change_train_to_payload,
 )
 
 PLAN_FORMAT: Literal["polylogue.historical-source-continuity-recovery-plan.v2"] = (
@@ -76,7 +77,7 @@ RECEIPT_FORMAT: Literal["polylogue.historical-source-continuity-recovery-receipt
 _HISTORICAL_OPERATION_EVIDENCE_RESOURCE = "historical-source-continuity-operation-20260807.json"
 
 
-class HistoricalSourceContinuityRecoveryError(RuntimeError):
+class HistoricalSourceContinuityRecoveryError(DurableChangeTrainError):
     """Historical evidence cannot prove this one recovery transition."""
 
 
@@ -101,10 +102,10 @@ class HistoricalSourceContinuityRecoveryPlan(BaseModel):
     post_backup_manifest_sha256: str
     post_backup_receipt_path: str
     post_backup_receipt_sha256: str
-    pre_backup_source_device: int
-    pre_backup_source_inode: int
-    post_backup_source_device: int
-    post_backup_source_inode: int
+    pre_backup_source_device: int | None
+    pre_backup_source_inode: int | None
+    post_backup_source_device: int | None
+    post_backup_source_inode: int | None
     new_source_device: int
     new_source_inode: int
     refresh_proof_id: str
@@ -171,18 +172,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _canonical_json_sha256(payload: object) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True).encode("utf-8")
-    ).hexdigest()
-
-
-def _train_manifest_sha256(train: DurableChangeTrain) -> str:
-    payload = durable_change_train_to_payload(train)
-    encoded = (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _real_file(path: Path, *, label: str) -> None:
@@ -295,7 +284,7 @@ def _verify_receipt(receipt: HistoricalSourceContinuityRecoveryReceipt) -> None:
 
 def _backup_source_evidence(
     manifest_path: Path, *, old_source_path: Path
-) -> tuple[Path, dict[str, object], DurableDatabaseEvidence, tuple[int, int]]:
+) -> tuple[Path, dict[str, object], DurableDatabaseEvidence, tuple[int, int] | None]:
     """Authenticate one old-path source backup without assuming it is full-evidence."""
     _real_file(manifest_path, label="historical backup manifest")
     backup_root = _real_directory(manifest_path.parent, label="historical backup directory")
@@ -329,8 +318,10 @@ def _backup_source_evidence(
     if fingerprint.get("path") != str(old_source_path) or artifact.get("source_fingerprint") != fingerprint:
         raise HistoricalSourceContinuityRecoveryError("historical backup source path authority changed")
     device, inode = fingerprint.get("device"), fingerprint.get("inode")
-    if type(device) is not int or type(inode) is not int:
-        raise HistoricalSourceContinuityRecoveryError("historical backup lacks authenticated source device/inode")
+    if (device is None) != (inode is None) or (
+        device is not None and (type(device) is not int or type(inode) is not int)
+    ):
+        raise HistoricalSourceContinuityRecoveryError("historical backup has malformed source device/inode authority")
     backup_source = backup_root / "source.db"
     _real_file(backup_source, label="historical backup source.db")
     actual = {"sha256": _sha256(backup_source), "size_bytes": backup_source.stat().st_size}
@@ -346,7 +337,8 @@ def _backup_source_evidence(
         or artifact.get("user_version") != evidence.user_version
     ):
         raise HistoricalSourceContinuityRecoveryError("historical backup source version differs from its receipt")
-    return receipt_path, manifest, evidence, (device, inode)
+    source_identity = None if device is None else (device, cast(int, inode))
+    return receipt_path, manifest, evidence, source_identity
 
 
 def _require_source_identity(root: Path, *, device: int, inode: int, label: str) -> TierFileIdentity:
@@ -359,14 +351,25 @@ def _require_source_identity(root: Path, *, device: int, inode: int, label: str)
     return identity
 
 
+def _sealed_optional_source_identity(device: int | None, inode: int | None) -> tuple[int, int] | None:
+    """Decode an optional legacy backup identity without accepting a half-pair."""
+    if device is None and inode is None:
+        return None
+    if type(device) is not int or type(inode) is not int:
+        raise HistoricalSourceContinuityRecoveryError(
+            "historical continuity recovery plan has malformed source identity"
+        )
+    return device, inode
+
+
 def _refresh_proof_id(
     *,
     old_root: Path,
     new_root: Path,
     source_train_sha256: str,
     historical_evidence_sha256: str,
-    pre_identity: tuple[int, int],
-    post_identity: tuple[int, int],
+    pre_identity: tuple[int, int] | None,
+    post_identity: tuple[int, int] | None,
     new_identity: TierFileIdentity,
 ) -> str:
     return _canonical_json_sha256(
@@ -814,10 +817,16 @@ def prepare_historical_source_continuity_recovery(
         raise HistoricalSourceContinuityRecoveryError(
             "historical backups do not retain one authenticated source identity"
         )
-    new_source_identity = _require_source_identity(
-        root, device=pre_identity[0], inode=pre_identity[1], label="pre backup"
-    )
-    _require_source_identity(root, device=post_identity[0], inode=post_identity[1], label="post backup")
+    if pre_identity is None:
+        new_source_identity = TierFileIdentity.resolve("source", root / "source.db")
+        if not new_source_identity.exists:
+            raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source.db is missing")
+    else:
+        assert post_identity is not None
+        new_source_identity = _require_source_identity(
+            root, device=pre_identity[0], inode=pre_identity[1], label="pre backup"
+        )
+        _require_source_identity(root, device=post_identity[0], inode=post_identity[1], label="post backup")
     assert new_source_identity.device is not None and new_source_identity.inode is not None
     candidates, candidate_digest = _legacy_liveness_receipt(
         mutation_receipt, old_source_path=old_source, pre_manifest=pre_backup_manifest.absolute()
@@ -910,8 +919,8 @@ def prepare_historical_source_continuity_recovery(
         "historical_bridge": {
             "pre_backup": _sha256(pre_backup_manifest),
             "post_backup": _sha256(post_backup_manifest),
-            "pre_backup_source_identity": list(pre_identity),
-            "post_backup_source_identity": list(post_identity),
+            "pre_backup_source_identity": None if pre_identity is None else list(pre_identity),
+            "post_backup_source_identity": None if post_identity is None else list(post_identity),
             "new_source_identity": [new_source_identity.device, new_source_identity.inode],
             "legacy_candidate_count": candidates,
             "legacy_candidate_digest": candidate_digest,
@@ -942,10 +951,10 @@ def prepare_historical_source_continuity_recovery(
         post_backup_manifest_sha256=_sha256(post_backup_manifest),
         post_backup_receipt_path=str(post_receipt),
         post_backup_receipt_sha256=_sha256(post_receipt),
-        pre_backup_source_device=pre_identity[0],
-        pre_backup_source_inode=pre_identity[1],
-        post_backup_source_device=post_identity[0],
-        post_backup_source_inode=post_identity[1],
+        pre_backup_source_device=None if pre_identity is None else pre_identity[0],
+        pre_backup_source_inode=None if pre_identity is None else pre_identity[1],
+        post_backup_source_device=None if post_identity is None else post_identity[0],
+        post_backup_source_inode=None if post_identity is None else post_identity[1],
         new_source_device=new_source_identity.device,
         new_source_inode=new_source_identity.inode,
         refresh_proof_id=refresh_proof_id,
@@ -953,7 +962,7 @@ def prepare_historical_source_continuity_recovery(
         source_train_path=str(train_path),
         source_train_revision=train.revision,
         source_train_sha256=_sha256(train_path),
-        source_train_after_sha256=_train_manifest_sha256(expected_train),
+        source_train_after_sha256=_durable_train_manifest_sha256(expected_train),
         source_before=source_before,
         source_after=_evidence_payload(current),
         census=census,
@@ -1119,15 +1128,24 @@ def _revalidate(
     post_receipt, _m2, post, post_identity = _backup_source_evidence(
         Path(plan.post_backup_manifest_path), old_source_path=old_source
     )
-    if pre_identity != (plan.pre_backup_source_device, plan.pre_backup_source_inode) or post_identity != (
+    expected_pre_identity = _sealed_optional_source_identity(
+        plan.pre_backup_source_device,
+        plan.pre_backup_source_inode,
+    )
+    expected_post_identity = _sealed_optional_source_identity(
         plan.post_backup_source_device,
         plan.post_backup_source_inode,
-    ):
+    )
+    if pre_identity != expected_pre_identity:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery backup identity changed")
+    if post_identity != expected_post_identity:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery backup identity changed")
     new_identity = _require_source_identity(
         root, device=plan.new_source_device, inode=plan.new_source_inode, label="sealed destination"
     )
-    if (new_identity.device, new_identity.inode) != pre_identity or pre_identity != post_identity:
+    if pre_identity is not None and (
+        (new_identity.device, new_identity.inode) != pre_identity or pre_identity != post_identity
+    ):
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source identity changed")
     bindings = (
         (Path(plan.mutation_receipt_path), plan.mutation_receipt_sha256),
@@ -1287,7 +1305,7 @@ def _apply_historical_source_continuity_recovery_locked(
         updated = recover_released_source_train_continuity(
             train, current_evidence=planned_current, proof_ref="proof:source-continuity-refresh:" + refresh_digest
         )
-        if _train_manifest_sha256(updated) != plan.source_train_after_sha256:
+        if _durable_train_manifest_sha256(updated) != plan.source_train_after_sha256:
             raise HistoricalSourceContinuityRecoveryError(
                 "historical continuity recovery post-CAS train binding changed"
             )

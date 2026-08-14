@@ -10,7 +10,7 @@ import sqlite3
 import stat
 import tempfile
 import uuid
-from contextlib import suppress
+from contextlib import closing, suppress
 from pathlib import Path
 from typing import Literal, cast
 
@@ -60,14 +60,15 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
-PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v3"] = "polylogue.archive-root-relocation-plan.v3"
+PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v4"] = "polylogue.archive-root-relocation-plan.v4"
+_LEGACY_PLAN_FORMAT: Literal["polylogue.archive-root-relocation-plan.v3"] = "polylogue.archive-root-relocation-plan.v3"
 RECEIPT_FORMAT: Literal["polylogue.archive-root-relocation-receipt.v1"] = "polylogue.archive-root-relocation-receipt.v1"
 _TIER_NAMES = tuple(tier.value for tier in ArchiveTier)
 _DURABLE_TIER_NAMES = ("source", "user", "audit")
 _SIDECARS = ("-wal", "-shm", "-journal")
 
 
-class ArchiveRootRelocationError(RuntimeError):
+class ArchiveRootRelocationError(DurableChangeTrainError):
     """The requested root move has no single safe offline transition."""
 
 
@@ -124,8 +125,8 @@ class RelocationIndexGenerationSymlink(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     path: str
-    before_device: int
-    before_inode: int
+    before_device: int | None = None
+    before_inode: int | None = None
     old_target: str
     new_target: str
 
@@ -139,8 +140,8 @@ class RelocationIndexGeneration(BaseModel):
     metadata_path: str
     directory_device: int
     directory_inode: int
-    metadata_before_device: int
-    metadata_before_inode: int
+    metadata_before_device: int | None = None
+    metadata_before_inode: int | None = None
     before_sha256: str
     after_sha256: str
     before_archive_root: str
@@ -153,7 +154,10 @@ class RelocationIndexGeneration(BaseModel):
 class ArchiveRootRelocationPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    format: Literal["polylogue.archive-root-relocation-plan.v3"] = PLAN_FORMAT
+    format: Literal[
+        "polylogue.archive-root-relocation-plan.v3",
+        "polylogue.archive-root-relocation-plan.v4",
+    ] = PLAN_FORMAT
     old_configured_root: str
     old_resolved_root: str
     backup_root_device: int
@@ -214,7 +218,11 @@ def _canonical_sha256(payload: object) -> str:
 
 def _sealed_plan(**values: object) -> ArchiveRootRelocationPlan:
     plan = ArchiveRootRelocationPlan.model_validate({"format": PLAN_FORMAT, **values, "plan_sha256": ""})
-    payload = plan.model_dump(mode="json", exclude={"plan_sha256"})
+    payload = plan.model_dump(
+        mode="json",
+        exclude={"plan_sha256"},
+        exclude_none=plan.format == _LEGACY_PLAN_FORMAT,
+    )
     return plan.model_copy(update={"plan_sha256": _canonical_sha256(payload)})
 
 
@@ -225,9 +233,21 @@ def _sealed_receipt(**values: object) -> ArchiveRootRelocationReceipt:
 
 
 def _verify_plan(plan: ArchiveRootRelocationPlan) -> None:
-    expected = _canonical_sha256(plan.model_dump(exclude={"plan_sha256"}, mode="json"))
+    expected = _canonical_sha256(
+        plan.model_dump(
+            exclude={"plan_sha256"},
+            mode="json",
+            exclude_none=plan.format == _LEGACY_PLAN_FORMAT,
+        )
+    )
     if plan.plan_sha256 != expected:
         raise ArchiveRootRelocationError("archive-root relocation plan checksum mismatch")
+    if plan.format == PLAN_FORMAT:
+        for generation in plan.index_generations:
+            if generation.metadata_before_device is None or generation.metadata_before_inode is None:
+                raise ArchiveRootRelocationError("archive-root relocation v4 plan lacks generation metadata identity")
+            if any(link.before_device is None or link.before_inode is None for link in generation.tier_symlinks):
+                raise ArchiveRootRelocationError("archive-root relocation v4 plan lacks generation tier-link identity")
 
 
 def _verify_receipt(receipt: ArchiveRootRelocationReceipt) -> None:
@@ -299,7 +319,7 @@ def _tier_snapshot(
     else:
         metadata = _real_file(path, label=f"{tier.value} tier")
     try:
-        with sqlite3.connect(f"file:{resolved_path}?mode=ro&immutable=1", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{resolved_path}?mode=ro&immutable=1", uri=True)) as connection:
             if tier is ArchiveTier.EMBEDDINGS:
                 loaded, error = try_load_sqlite_vec(connection)
                 if not loaded:
@@ -577,6 +597,8 @@ def _validate_index_generation_state(
     root: Path,
     items: tuple[RelocationIndexGeneration, ...],
     active_index_pointer: RelocationActiveIndexPointer | None,
+    *,
+    allow_post_publication: bool,
 ) -> None:
     generations_root = _index_generations_root(root, active_index_pointer)
     if generations_root.exists() or generations_root.is_symlink():
@@ -593,7 +615,11 @@ def _validate_index_generation_state(
         metadata_path = Path(item.metadata_path)
         directory_fd = _open_pinned_generation_directory(root, item)
         try:
-            _pinned_generation_metadata_state(directory_fd, item)
+            _pinned_generation_metadata_state(
+                directory_fd,
+                item,
+                allow_post_publication=allow_post_publication,
+            )
             generation_root = metadata_path.parent
             for link in item.tier_symlinks:
                 path = Path(link.path)
@@ -606,7 +632,11 @@ def _validate_index_generation_state(
             if current_link_names != expected_link_names:
                 raise ArchiveRootRelocationError("archive-root relocation index generation tier inventory changed")
             for link in item.tier_symlinks:
-                _pinned_generation_symlink_state(directory_fd, link)
+                _pinned_generation_symlink_state(
+                    directory_fd,
+                    link,
+                    allow_post_publication=allow_post_publication,
+                )
         finally:
             os.close(directory_fd)
 
@@ -699,19 +729,26 @@ def _read_pinned_generation_symlink(directory_fd: int, filename: str) -> tuple[s
 def _pinned_generation_metadata_state(
     directory_fd: int,
     item: RelocationIndexGeneration,
+    *,
+    allow_post_publication: bool,
 ) -> tuple[bytes, bool]:
     """Return metadata bytes and whether they are the exact post-publication state."""
     encoded, metadata = _read_pinned_generation_metadata(directory_fd)
     digest = hashlib.sha256(encoded).hexdigest()
     if digest == item.before_sha256:
-        if (metadata.st_dev, metadata.st_ino) != (
-            item.metadata_before_device,
-            item.metadata_before_inode,
+        if (
+            item.metadata_before_device is not None
+            and item.metadata_before_inode is not None
+            and (metadata.st_dev, metadata.st_ino) != (item.metadata_before_device, item.metadata_before_inode)
         ):
             raise ArchiveRootRelocationError("archive-root relocation index generation metadata identity changed")
         _index_generation_payload_for_state(item, after=False, encoded=encoded)
         return encoded, False
     if digest == item.after_sha256:
+        if not allow_post_publication:
+            raise ArchiveRootRelocationError(
+                "archive-root relocation generation metadata reached its post-publication state without a prepared receipt"
+            )
         _index_generation_payload_for_state(item, after=True, encoded=encoded)
         return encoded, True
     raise ArchiveRootRelocationError("archive-root relocation index generation metadata changed")
@@ -720,15 +757,25 @@ def _pinned_generation_metadata_state(
 def _pinned_generation_symlink_state(
     directory_fd: int,
     link: RelocationIndexGenerationSymlink,
+    *,
+    allow_post_publication: bool,
 ) -> bool:
     """Return whether a pinned tier link is in its exact post-publication state."""
     filename = Path(link.path).name
     target, metadata = _read_pinned_generation_symlink(directory_fd, filename)
     if target == link.old_target:
-        if (metadata.st_dev, metadata.st_ino) != (link.before_device, link.before_inode):
+        if (
+            link.before_device is not None
+            and link.before_inode is not None
+            and (metadata.st_dev, metadata.st_ino) != (link.before_device, link.before_inode)
+        ):
             raise ArchiveRootRelocationError("archive-root relocation index generation tier link identity changed")
         return False
     if target == link.new_target:
+        if not allow_post_publication:
+            raise ArchiveRootRelocationError(
+                "archive-root relocation generation tier link reached its post-publication state without a prepared receipt"
+            )
         return True
     raise ArchiveRootRelocationError("archive-root relocation index generation tier link changed")
 
@@ -775,11 +822,15 @@ def _publish_index_generation_state(
     active_index_pointer: RelocationActiveIndexPointer | None,
 ) -> None:
     """CAS-publish mapped metadata and links; exact after states are idempotent."""
-    _validate_index_generation_state(root, items, active_index_pointer)
+    _validate_index_generation_state(root, items, active_index_pointer, allow_post_publication=True)
     for item in items:
         directory_fd = _open_pinned_generation_directory(root, item)
         try:
-            encoded, metadata_is_after = _pinned_generation_metadata_state(directory_fd, item)
+            encoded, metadata_is_after = _pinned_generation_metadata_state(
+                directory_fd,
+                item,
+                allow_post_publication=True,
+            )
             if not metadata_is_after and item.before_sha256 != item.after_sha256:
                 payload = _index_generation_payload_for_state(item, after=False, encoded=encoded)
                 after_payload = {
@@ -798,7 +849,11 @@ def _publish_index_generation_state(
                     raise ArchiveRootRelocationError(
                         "archive-root relocation index generation tier link path binding changed"
                     )
-                link_is_after = _pinned_generation_symlink_state(directory_fd, link)
+                link_is_after = _pinned_generation_symlink_state(
+                    directory_fd,
+                    link,
+                    allow_post_publication=True,
+                )
                 if link_is_after:
                     continue
                 if link.old_target == link.new_target:
@@ -819,7 +874,7 @@ def _publish_index_generation_state(
                         os.unlink(temporary, dir_fd=directory_fd)
         finally:
             os.close(directory_fd)
-    _validate_index_generation_state(root, items, active_index_pointer)
+    _validate_index_generation_state(root, items, active_index_pointer, allow_post_publication=True)
 
 
 def _validate_active_index_pointer(
@@ -1445,25 +1500,25 @@ def _validate_plan_continuity_binding(
         if ref.startswith("proof:source-continuity-relocation:")
     )
     matches = 0
-    for digest in transition_refs:
-        path = root / ".maintenance-state" / "source-continuity-relocations" / f"{digest}.json"
-        try:
-            with existing_maintenance_receipt_directory(root, "source-continuity-relocations") as directory_fd:
+    try:
+        with existing_maintenance_receipt_directory(root, "source-continuity-relocations") as directory_fd:
+            for digest in transition_refs:
+                path = root / ".maintenance-state" / "source-continuity-relocations" / f"{digest}.json"
                 encoded = None if directory_fd is None else read_optional_receipt(directory_fd, path.name)
-            if encoded is None:
-                raise ArchiveRootRelocationError("archive-root relocation exact transition proof is missing")
-            payload = json.loads(encoded)
-        except (MaintenanceReceiptPathError, json.JSONDecodeError) as exc:
-            raise ArchiveRootRelocationError("archive-root relocation exact transition proof is unreadable") from exc
-        if not isinstance(payload, dict) or payload.pop("transition_sha256", None) != digest:
-            raise ArchiveRootRelocationError("archive-root relocation exact transition proof changed")
-        if _canonical_sha256(payload) != digest:
-            raise ArchiveRootRelocationError("archive-root relocation exact transition proof changed")
-        if (
-            payload.get("relocation_plan_sha256") == plan.plan_sha256
-            and payload.get("relocation_receipt_sha256") == receipt_digest
-        ):
-            matches += 1
+                if encoded is None:
+                    raise ArchiveRootRelocationError("archive-root relocation exact transition proof is missing")
+                payload = json.loads(encoded)
+                if not isinstance(payload, dict) or payload.pop("transition_sha256", None) != digest:
+                    raise ArchiveRootRelocationError("archive-root relocation exact transition proof changed")
+                if _canonical_sha256(payload) != digest:
+                    raise ArchiveRootRelocationError("archive-root relocation exact transition proof changed")
+                if (
+                    payload.get("relocation_plan_sha256") == plan.plan_sha256
+                    and payload.get("relocation_receipt_sha256") == receipt_digest
+                ):
+                    matches += 1
+    except (MaintenanceReceiptPathError, json.JSONDecodeError) as exc:
+        raise ArchiveRootRelocationError("archive-root relocation exact transition proof is unreadable") from exc
     if matches != 1:
         raise ArchiveRootRelocationError("archive-root relocation exact transition proof is missing")
 
@@ -1503,6 +1558,17 @@ def _revalidate_plan_live_state(
     backup_tiers = {item.tier: (item.backup_device, item.backup_inode) for item in plan.tiers}
     if len(plan.tiers) != len(ArchiveTier) or set(backup_tiers) != {tier.value for tier in ArchiveTier}:
         raise ArchiveRootRelocationError("archive-root relocation plan tier evidence is incomplete")
+    pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
+    prepared_publication = pending_receipt is not None and (
+        pending_receipt.state in {"prepared", "committed"}
+        and pending_receipt.revision >= 1
+        and pending_receipt.prepared_receipt_sha256 is not None
+        and len(pending_receipt.manifest_after_sha256) == len(plan.durable_trains)
+    )
+    if plan.format == _LEGACY_PLAN_FORMAT and not prepared_publication:
+        raise ArchiveRootRelocationError(
+            "archive-root relocation v3 plan lacks sealed leaf identities before publication; create a v4 plan"
+        )
     snapshots = tuple(
         _tier_snapshot(
             root,
@@ -1517,8 +1583,12 @@ def _revalidate_plan_live_state(
         raise ArchiveRootRelocationError("archive-root relocation tier evidence changed")
     _check_backup_against_live(root, manifest=manifest, receipt=receipt, snapshots=snapshots)
     _validate_active_index_pointer(root, plan.active_index_pointer)
-    _validate_index_generation_state(root, plan.index_generations, plan.active_index_pointer)
-    pending_receipt = _load_receipt_for_update(_receipt_path(root, plan))
+    _validate_index_generation_state(
+        root,
+        plan.index_generations,
+        plan.active_index_pointer,
+        allow_post_publication=prepared_publication,
+    )
     allowed_pending_relocation_receipt_sha256 = (
         (pending_receipt.prepared_receipt_sha256 or pending_receipt.receipt_sha256)
         if pending_receipt is not None and pending_receipt.state == "prepared"

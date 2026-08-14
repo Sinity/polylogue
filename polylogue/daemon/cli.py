@@ -2136,7 +2136,7 @@ async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
-) -> None:
+) -> bool:
     from polylogue.daemon.events import emit_catch_up_cycle
     from polylogue.paths import archive_root
     from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
@@ -2146,6 +2146,7 @@ async def run_live_watcher(
     with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
         coordinator = daemon_write_coordinator()
         watcher: LiveWatcher | None = None
+        writer_drained = False
         try:
             async with Polylogue() as polylogue:
                 watcher = LiveWatcher(
@@ -2163,11 +2164,12 @@ async def run_live_watcher(
                 if watcher is not None:
                     watcher.stop()
             finally:
-                await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
                     coordinator,
                     rebuild_exclusion,
                     timeout=5.0,
                 )
+        return writer_drained
 
 
 async def run_daemon_services(
@@ -3426,12 +3428,16 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
         archive_root_path,
         owner_id=f"watch:{os.getpid()}",
     )
+    writer_drained = False
+    watcher_started = False
     try:
         assert_no_prepared_archive_root_relocation(archive_root_path)
         assert_no_prepared_historical_source_continuity_recovery(archive_root_path)
-        asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
+        watcher_started = True
+        writer_drained = asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
     finally:
-        archive_owner.release()
+        if not watcher_started or writer_drained:
+            archive_owner.release()
 
 
 __all__ = [

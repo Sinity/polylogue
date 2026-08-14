@@ -124,6 +124,74 @@ def test_backup_archive_includes_archive_files(
     assert marker == "native-user"
 
 
+def test_backup_uses_a_valid_external_active_index_target(workspace_env: dict[str, Path], tmp_path: Path) -> None:
+    """The active pointer wins over a stale conventional index file.
+
+    Anti-vacuity: the real tier selector receives an absolute, readable index
+    outside the archive root. Root-only fallback would silently back up the
+    stale conventional index instead.
+    """
+    root = workspace_env["archive_root"]
+    conventional = root / "index.db"
+    with sqlite3.connect(conventional) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('stale')")
+    external = tmp_path / "external" / "index.db"
+    external.parent.mkdir()
+    with sqlite3.connect(external) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('active')")
+    pointer = root / ".index-active-pointer"
+    pointer.unlink(missing_ok=True)
+    pointer.write_text(str(external) + "\n", encoding="utf-8")
+
+    assert backup_mod._all_archive_tiers(root)["index"] == external
+
+
+def test_backup_ignores_an_invalid_external_active_index_target(workspace_env: dict[str, Path], tmp_path: Path) -> None:
+    """A malformed external pointer cannot poison full-evidence backup input."""
+    root = workspace_env["archive_root"]
+    conventional = root / "index.db"
+    with sqlite3.connect(conventional) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO marker VALUES ('conventional')")
+    external = tmp_path / "external" / "index.db"
+    external.parent.mkdir()
+    external.write_bytes(b"not a sqlite database")
+    pointer = root / ".index-active-pointer"
+    pointer.unlink(missing_ok=True)
+    pointer.write_text(str(external) + "\n", encoding="utf-8")
+
+    assert backup_mod._all_archive_tiers(root)["index"] == conventional
+
+
+def test_backup_maps_a_retired_nested_active_index_without_recursive_search(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A moved-root active pointer uses only its bounded path suffixes.
+
+    Anti-vacuity: the real selector must map the retired nested conventional
+    link to its new generation file while recursive traversal is unavailable.
+    """
+    root = workspace_env["archive_root"]
+    nested = root / "nested"
+    generation = nested / ".index-generations" / "gen-retained" / "index.db"
+    generation.parent.mkdir(parents=True)
+    with sqlite3.connect(generation) as connection:
+        connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+    retired_root = root.parent / "retired-archive"
+    retired_index = retired_root / "nested" / "index.db"
+    nested_index = nested / "index.db"
+    nested_index.parent.mkdir(exist_ok=True)
+    nested_index.symlink_to(retired_index.parent / ".index-generations" / "gen-retained" / "index.db")
+    pointer = root / ".index-active-pointer"
+    pointer.unlink(missing_ok=True)
+    pointer.write_text(str(retired_index) + "\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "rglob", lambda *_args, **_kwargs: pytest.fail("fallback must remain bounded"))
+
+    assert backup_mod._all_archive_tiers(root)["index"] == generation
+
+
 def test_backup_retries_a_writer_commit_between_checkpoint_and_lock(
     workspace_env: dict[str, Path],
     tmp_path: Path,

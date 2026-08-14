@@ -75,6 +75,8 @@ def _maintenance_receipt_directory(archive_root: Path, directory_name: str, *, c
                 created_child = True
             except FileExistsError:
                 pass
+            except OSError as exc:
+                raise MaintenanceReceiptPathError(f"cannot create maintenance receipt directory: {child_name}") from exc
             child_fd = _open_directory(child_name, label="maintenance receipt directory", parent_fd=state_fd)
             if created_child:
                 child_metadata = os.fstat(child_fd)

@@ -88,6 +88,9 @@ class _NestedLazyGroup(_LazyGroup):
     """Lazy group whose newly-added nested routes dispatch through the proxy."""
 
     def invoke(self, ctx: click.Context) -> object:
+        resolved = self._resolve()
+        if isinstance(resolved, click.Group) and self.callback is None:
+            self.callback = resolved.callback
         return click.Group.invoke(self, ctx)
 
 

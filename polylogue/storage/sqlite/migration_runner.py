@@ -540,6 +540,7 @@ def _validated_receipt_artifacts(
     *,
     target_tier: str | None,
     live_tier_path: Path | None,
+    live_tier_paths: Mapping[str, Path] | None = None,
     file_evidence: dict[str, dict[str, object]],
 ) -> dict[str, dict[str, object]]:
     included = _json_str_list(manifest.get("included_tiers"))
@@ -564,7 +565,13 @@ def _validated_receipt_artifacts(
             backup_root,
             artifact,
             file_evidence=file_evidence,
-            live_tier_path=live_tier_path if target_tier is not None and tier == target_tier else None,
+            live_tier_path=(
+                live_tier_paths.get(tier)
+                if live_tier_paths is not None
+                else live_tier_path
+                if target_tier is not None and tier == target_tier
+                else None
+            ),
         )
         by_tier[tier] = artifact
     if set(by_tier) != {name.removesuffix(".db") for name in included}:
@@ -733,6 +740,7 @@ def _validate_closed_backup_package(
     *,
     target_tier: str | None,
     live_tier_path: Path | None,
+    live_tier_paths: Mapping[str, Path] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Re-hash the complete closed package bound by a successful receipt."""
     artifact_inventory = _cached_backup_artifact_inventory(backup_root)
@@ -748,6 +756,7 @@ def _validate_closed_backup_package(
         receipt,
         target_tier=target_tier,
         live_tier_path=live_tier_path,
+        live_tier_paths=live_tier_paths,
         file_evidence=file_evidence,
     )
     _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
@@ -851,6 +860,10 @@ def validate_full_evidence_backup_for_archive_root_relocation(
 ) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
     """Authenticate complete full-evidence backup at the moved archive root."""
     manifest_path, receipt_path, backup_root, manifest, receipt = _load_verified_backup_package(path)
+    resolved_backup_root = backup_root.resolve(strict=True)
+    resolved_archive_root = backup_archive_root.resolve(strict=True)
+    if resolved_backup_root == resolved_archive_root or resolved_backup_root.is_relative_to(resolved_archive_root):
+        raise MigrationError("archive-root relocation backup root must be separate from the moved archive root")
     if manifest.get("profile") != "full_evidence":
         raise MigrationError("archive-root relocation requires a verified full_evidence backup")
     expected_tiers = {f"{tier.value}.db" for tier in ArchiveTier}
@@ -867,16 +880,36 @@ def validate_full_evidence_backup_for_archive_root_relocation(
             raise MigrationError(
                 f"archive-root relocation moved-root authority failed for {tier.value}: {exc}"
             ) from exc
+    fingerprints = manifest.get("tier_source_fingerprints")
+    if not isinstance(fingerprints, dict):
+        raise MigrationError("archive-root relocation backup lacks complete tier evidence")
+    index_fingerprint = fingerprints.get("index.db")
+    if not isinstance(index_fingerprint, dict):
+        raise MigrationError("archive-root relocation backup lacks active index path authority")
+    recorded_index_path = index_fingerprint.get("path")
+    if not isinstance(recorded_index_path, str):
+        raise MigrationError("archive-root relocation backup lacks moved-tier path authority for index.db")
+    active_index_path = Path(recorded_index_path)
+    archive_root = backup_archive_root.resolve(strict=True)
+    if not active_index_path.is_absolute() or not active_index_path.resolve(strict=False).is_relative_to(archive_root):
+        raise MigrationError("archive-root relocation active index path escapes the moved archive root")
+    try:
+        active_index_metadata = active_index_path.lstat()
+    except OSError as exc:
+        raise MigrationError("archive-root relocation active index path is unavailable") from exc
+    if stat.S_ISLNK(active_index_metadata.st_mode) or not stat.S_ISREG(active_index_metadata.st_mode):
+        raise MigrationError("archive-root relocation active index path is not a real file")
     validated_artifacts = _validate_closed_backup_package(
         backup_root,
         manifest,
         receipt,
         target_tier=None,
         live_tier_path=None,
+        live_tier_paths={
+            tier.value: active_index_path if tier is ArchiveTier.INDEX else backup_archive_root / f"{tier.value}.db"
+            for tier in ArchiveTier
+        },
     )
-    fingerprints = manifest.get("tier_source_fingerprints")
-    if not isinstance(fingerprints, dict):
-        raise MigrationError("archive-root relocation backup lacks complete tier evidence")
     if set(fingerprints) != expected_tiers or set(validated_artifacts) != {tier.value for tier in ArchiveTier}:
         raise MigrationError("archive-root relocation backup tier evidence is incomplete")
     for filename, fingerprint in fingerprints.items():

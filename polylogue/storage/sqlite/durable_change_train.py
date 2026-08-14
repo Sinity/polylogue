@@ -1233,6 +1233,26 @@ def _validate_source_continuity_refresh_receipt(
     for digest, payload in refresh_payloads.items():
         if payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT:
             register_predecessor(_SourceContinuityAuthorityRef("refresh", digest), payload, required=False)
+    for digest, payload in refresh_payloads.items():
+        if payload.get("format") != _SOURCE_CONTINUITY_REFRESH_V1_FORMAT:
+            continue
+        ref = _SourceContinuityAuthorityRef("refresh", digest)
+        source_before = payload.get("source_before")
+        candidates = [
+            _SourceContinuityAuthorityRef("refresh", candidate_digest)
+            for candidate_digest, candidate_payload in refresh_payloads.items()
+            if candidate_digest != digest
+            and candidate_payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V1_FORMAT
+            and candidate_payload.get("source_after") == source_before
+        ]
+        if len(candidates) > 1:
+            raise DurableChangeTrainError("legacy source continuity authority has ambiguous predecessor evidence")
+        if candidates:
+            predecessor = candidates[0]
+            if predecessor in successor_by_authority:
+                raise DurableChangeTrainError("source continuity authority branches ambiguously")
+            predecessors[ref] = predecessor
+            successor_by_authority[predecessor] = ref
     for ref, payload in relocation_payloads.items():
         register_predecessor(ref, payload, required=True)
 
@@ -1240,8 +1260,11 @@ def _validate_source_continuity_refresh_receipt(
         **{
             _SourceContinuityAuthorityRef("refresh", digest): payload
             for digest, payload in refresh_payloads.items()
-            if payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT
-            and payload.get("predecessor_authority") is not None
+            if payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V1_FORMAT
+            or (
+                payload.get("format") == _SOURCE_CONTINUITY_REFRESH_V2_FORMAT
+                and payload.get("predecessor_authority") is not None
+            )
         },
         **relocation_payloads,
     }
