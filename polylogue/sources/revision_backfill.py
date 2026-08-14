@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Final, Literal, cast
+from typing import BinaryIO, Final, Literal, Protocol, cast
 
 import ijson
 from ijson.common import ObjectBuilder
@@ -85,6 +85,20 @@ from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, pr
 _LOGGER = _polylogue_logging.get_logger(__name__)
 _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
 _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES: Final[int] = 64 * 1024
+_REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES: Final[int] = 4096
+
+
+class _ReadableBinary(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
+class _LineReadableBinary(_ReadableBinary, Protocol):
+    def readline(self, size: int = -1) -> bytes: ...
+
+
+class _SeekableReadableBinary(_LineReadableBinary, Protocol):
+    def seek(self, offset: int, whence: int = 0) -> int: ...
+
 
 _DOCUMENT_PROBE_ROOT_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -170,7 +184,7 @@ def _document_probe_value(key: str, event: str, value: object) -> object | None:
 class _ScalarBoundedJSONReader:
     """Stream JSON while capping every scalar token before ijson sees it."""
 
-    def __init__(self, payload: BinaryIO) -> None:
+    def __init__(self, payload: _ReadableBinary) -> None:
         self._payload = payload
         self._output = bytearray()
         self._eof = False
@@ -254,6 +268,36 @@ class _ScalarBoundedJSONReader:
         if self._emit_utf8:
             self._output.append(byte)
             self._string_bytes += utf8_bytes
+
+
+class _BoundedJSONLRecordReader:
+    """Expose one JSONL record without exceeding the shared scan budget."""
+
+    def __init__(self, payload: _LineReadableBinary, byte_budget: int) -> None:
+        self._payload = payload
+        self._remaining = byte_budget
+        self.bytes_read = 0
+        self._done = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0 or self._done:
+            return b""
+        if self._remaining <= 0:
+            self._done = True
+            return b""
+        read_size = _REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES if size < 0 else size
+        read_size = min(read_size, _REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES, self._remaining)
+        chunk = self._payload.readline(read_size)
+        self.bytes_read += len(chunk)
+        self._remaining -= len(chunk)
+        if not chunk or chunk.endswith(b"\n") or self._remaining <= 0:
+            self._done = True
+        return chunk
+
+    def drain(self) -> None:
+        """Consume this physical record, subject to the remaining scan budget."""
+        while not self._done:
+            self.read(_REPLAY_PROVIDER_DETECTION_READ_CHUNK_BYTES)
 
 
 @dataclass(slots=True)
@@ -409,7 +453,7 @@ class _StreamingDocumentProviderProbe:
         return provider, f"bounded streaming JSON structure: {evidence}"
 
 
-def _detect_provider_from_bounded_document(payload: BinaryIO) -> tuple[Provider, str]:
+def _detect_provider_from_bounded_document(payload: _SeekableReadableBinary) -> tuple[Provider, str]:
     """Scan every document object while retaining fixed structural evidence."""
     payload.seek(0)
     bounded_payload = _ScalarBoundedJSONReader(payload)
@@ -491,18 +535,45 @@ def _detect_provider_from_bounded_prefix(
     return detected, f"bounded partial JSON structure: {partial_evidence}"
 
 
+def _detect_provider_from_bounded_record(
+    record: _BoundedJSONLRecordReader,
+) -> tuple[Provider, str]:
+    """Classify a streamed JSONL record from bounded structural evidence."""
+    bounded_record = _ScalarBoundedJSONReader(record)
+    probe = _StreamingDocumentProviderProbe()
+    last_evidence = "no bounded JSONL record structure identified a provider"
+    try:
+        for prefix, event, value in ijson.parse(bounded_record, use_float=True):
+            if prefix == "":
+                if event == "start_map":
+                    continue
+                if event == "end_map":
+                    provider, last_evidence = probe.classify(sequence_item=True)
+                    if provider is not Provider.UNKNOWN:
+                        return provider, last_evidence
+                    continue
+            elif prefix:
+                probe.feed(prefix, event, value)
+    except ijson.JSONError:
+        # A scan-budget cutoff or malformed JSON is expected for retained
+        # unknown bytes. Completed structural events are still valid evidence;
+        # an incomplete tail contributes nothing.
+        pass
+    provider, last_evidence = probe.classify(sequence_item=True)
+    return provider, last_evidence
+
+
 def _detect_unknown_retained_provider(
-    payload: BinaryIO,
+    payload: _SeekableReadableBinary,
     source_path: str,
 ) -> tuple[Provider, str]:
     """Detect retained UNKNOWN bytes without eagerly materializing JSONL.
 
     A byte prefix can end inside the first physical JSONL record.  For an
     oversized record stream that makes a prefix-only detector inconclusive
-    even when a later bounded record identifies a streaming provider.  Scan
-    complete records across the stream instead: each record is capped at the
-    same detection bound, oversized records are consumed in bounded chunks,
-    and the scan continues until positive provider evidence or EOF.
+    even when a later structural key in that record identifies a streaming
+    provider. Stream each record through the structural probe in bounded
+    chunks, stopping at positive evidence, the total scan envelope, or EOF.
 
     Non-JSONL documents first use the same prefix evidence, then continue a
     bounded structural event scan through every document object. Eager replay
@@ -521,48 +592,22 @@ def _detect_unknown_retained_provider(
         return _detect_provider_from_bounded_document(payload)
 
     last_evidence = "no bounded JSONL record identified a provider; used fallback_provider"
-    read_size = _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 1
-
     scanned_bytes = 0
 
-    def read_bounded_line() -> bytes:
-        nonlocal scanned_bytes
-        remaining_bytes = _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES - scanned_bytes
-        if remaining_bytes <= 0:
-            return b""
-        raw_line = payload.readline(min(read_size, remaining_bytes))
-        scanned_bytes += len(raw_line)
-        return raw_line
-
-    while raw_line := read_bounded_line():
-        has_newline = raw_line.endswith(b"\n")
-        oversized = not has_newline and len(raw_line) > _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
-        bounded_record = raw_line[:_REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
-        if oversized:
-            provider, last_evidence = _detect_provider_from_bounded_prefix(
-                bounded_record,
-                stream_name,
-                record_stream=True,
-            )
-            # Provider authority comes from the bounded structural prefix;
-            # draining the rest of an oversized physical record is needed
-            # only when that prefix was inconclusive.  In particular, do not
-            # replace positive evidence with UNKNOWN merely because the
-            # record itself extends beyond the total scan envelope.
-            if provider is not Provider.UNKNOWN:
-                return provider, last_evidence
-            while raw_line and not raw_line.endswith(b"\n"):
-                raw_line = read_bounded_line()
-            if not raw_line:
-                return Provider.UNKNOWN, "bounded JSONL provider scan exhausted; used fallback_provider"
-        else:
-            provider, last_evidence = detect_provider_from_raw_bytes_evidence(
-                bounded_record,
-                stream_name,
-                Provider.UNKNOWN,
-            )
+    while scanned_bytes < _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES:
+        record = _BoundedJSONLRecordReader(
+            payload,
+            _REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES - scanned_bytes,
+        )
+        provider, last_evidence = _detect_provider_from_bounded_record(record)
+        parsed_bytes = record.bytes_read
+        scanned_bytes += parsed_bytes
         if provider is not Provider.UNKNOWN:
             return provider, last_evidence
+        record.drain()
+        scanned_bytes += record.bytes_read - parsed_bytes
+        if record.bytes_read == 0:
+            break
     return Provider.UNKNOWN, last_evidence
 
 

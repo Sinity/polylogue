@@ -193,6 +193,81 @@ def test_unknown_retained_stream_replay_scans_past_oversized_first_record_withou
     assert [session.provider_session_id for session in sessions] == ["unknown-stream"]
 
 
+def test_unknown_retained_codex_record_scans_provider_key_past_8k_padding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A late Codex discriminator in one oversized record remains visible."""
+    initialize_active_archive_root(tmp_path)
+    late_session_meta = json.dumps(
+        {
+            "padding": "x" * (revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 512),
+            "type": "session_meta",
+            "payload": {"id": "late-codex", "timestamp": "2026-06-01T00:00:00Z"},
+        },
+        separators=(",", ":"),
+    ).encode()
+    payload = (
+        late_session_meta
+        + b"\n"
+        + b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+        + b'"content":[{"type":"input_text","text":"late discriminator"}]}}\n'
+    )
+    assert (
+        b'"type":"session_meta"' not in late_session_meta[: revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=payload,
+            source_path="late-codex.jsonl",
+            acquired_at_ms=1,
+        )
+
+        monkeypatch.setattr(
+            archive,
+            "raw_revision_material",
+            lambda *_args, **_kwargs: pytest.fail("late Codex evidence must select the streaming route"),
+        )
+        sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+
+    assert [session.provider_session_id for session in sessions] == ["late-codex"]
+
+
+def test_unknown_retained_malformed_huge_record_stays_unknown_inside_total_budget() -> None:
+    """Malformed data cannot make a discriminator beyond the scan envelope authoritative."""
+
+    class CountingReader:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = BytesIO(payload)
+            self.bytes_read = 0
+
+        def readline(self, size: int = -1) -> bytes:
+            chunk = self._payload.readline(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self._payload.read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+        def seek(self, offset: int, whence: int = 0) -> int:
+            return self._payload.seek(offset, whence)
+
+    payload = (
+        b'{"padding":"'
+        + b"x" * (revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES + 16_384)
+        + b'","type":"session_meta","payload":{"id":"outside-budget"}'
+    )
+    reader = CountingReader(payload)
+
+    provider, _evidence = revision_backfill._detect_unknown_retained_provider(reader, "huge.jsonl")
+
+    assert provider is Provider.UNKNOWN
+    assert reader.bytes_read <= revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES
+
+
 def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
