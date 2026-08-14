@@ -1598,6 +1598,40 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
     )
 
     assert relocated.exit_code == 0, relocated.output
+    relocation_payload = _maintenance_json_output(relocated.output)
+    relocation_digest = str(relocation_payload["plan_sha256"])
+    relocation_plan_payload = json.loads(relocation_plan.read_text(encoding="utf-8"))
+    source_trains = relocation_plan_payload["source_trains"]
+    assert isinstance(source_trains, list) and len(source_trains) == 1
+    assert source_trains[0]["requires_rebind"] is False
+
+    applied = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "archive-root-relocation",
+            "apply",
+            "--plan",
+            str(relocation_plan),
+            "--authorize",
+            relocation_digest,
+            "--output-format",
+            "json",
+        ],
+        env=command_env,
+        catch_exceptions=False,
+    )
+
+    assert applied.exit_code == 0, applied.output
+    applied_payload = _maintenance_json_output(applied.output)
+    assert applied_payload["state"] == "committed"
+    train = load_durable_change_train_manifest(Path(source_trains[0]["path"]))
+    relocation_refs = tuple(ref for ref in train.proof_refs if ref.startswith("proof:archive-root-relocation:"))
+    transition_refs = tuple(ref for ref in train.proof_refs if ref.startswith("proof:source-continuity-relocation:"))
+    assert len(relocation_refs) == 1
+    assert len(transition_refs) == 1
 
 
 def test_historical_continuity_recovery_resume_rejects_a_foreign_same_evidence_receipt(

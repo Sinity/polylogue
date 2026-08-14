@@ -1132,7 +1132,11 @@ def _validate_source_continuity_refresh_receipt(
         receipt_path = refresh_root / f"{digest}.json"
         payload = _read_source_continuity_refresh_receipt(receipt_path, digest=digest, train=train)
         refresh_payloads[digest] = payload
-    matches = sum(payload.get("source_after") == expected_after for payload in refresh_payloads.values())
+    matching_authorities = {
+        ("refresh", digest)
+        for digest, payload in refresh_payloads.items()
+        if payload.get("source_after") == expected_after
+    }
     for digest in relocation_refs:
         payload = _read_source_continuity_relocation_receipt(
             archive_root,
@@ -1146,8 +1150,9 @@ def _validate_source_continuity_refresh_receipt(
         if payload.get("source_before") != refresh_payloads[refresh_digest].get("source_after"):
             raise DurableChangeTrainError("source continuity relocation transition does not preserve refresh authority")
         if payload.get("source_after") == expected_after:
-            matches += 1
-    if matches != 1:
+            matching_authorities.discard(("refresh", refresh_digest))
+            matching_authorities.add(("relocation", digest))
+    if len(matching_authorities) != 1:
         raise DurableChangeTrainError(
             "source continuity evidence does not identify exactly one matching refresh receipt"
         )

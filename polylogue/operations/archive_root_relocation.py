@@ -757,12 +757,18 @@ def assert_no_prepared_archive_root_relocation(root: Path) -> None:
             )
 
 
+def _requires_train_update(item: RelocationSourceTrain) -> bool:
+    """Return whether relocation must CAS-revise this released train."""
+    return item.requires_rebind or bool(item.source_continuity_receipt_digests)
+
+
 def _validate_plan_continuity_binding(
     root: Path,
     *,
     plan: ArchiveRootRelocationPlan,
     item: RelocationSourceTrain,
     train: object,
+    before: bool,
     relocation_receipt: ArchiveRootRelocationReceipt | None,
 ) -> None:
     """Bind resumed continuity authority to this relocation plan and its CAS receipt."""
@@ -776,8 +782,7 @@ def _validate_plan_continuity_binding(
     )
     if refresh_refs != item.source_continuity_receipt_digests:
         raise ArchiveRootRelocationError("archive-root relocation exact refresh proof changed")
-    after = train.revision == item.before_revision + (1 if item.requires_rebind else 0)
-    if not after or train.source_continuity_evidence is None:
+    if before or train.source_continuity_evidence is None:
         return
     if relocation_receipt is None or relocation_receipt.plan_sha256 != plan.plan_sha256:
         raise ArchiveRootRelocationError("archive-root relocation exact receipt binding is missing")
@@ -873,7 +878,7 @@ def _revalidate_plan_live_state(
         )
         before = _sha256_file(path) == item.before_manifest_sha256
         after = (
-            train.revision == item.before_revision + (1 if item.requires_rebind else 0)
+            train.revision == item.before_revision + int(_requires_train_update(item))
             and train.apply_evidence is not None
             and train.apply_evidence.post.archive_identity_digest == item.after_archive_identity_digest
             and (
@@ -897,7 +902,12 @@ def _revalidate_plan_live_state(
                     f"archive-root relocation continuity receipt is invalid: {path}"
                 ) from exc
             _validate_plan_continuity_binding(
-                root, plan=plan, item=item, train=train, relocation_receipt=pending_receipt
+                root,
+                plan=plan,
+                item=item,
+                train=train,
+                before=before,
+                relocation_receipt=pending_receipt,
             )
 
 
@@ -1002,7 +1012,7 @@ def _apply_archive_root_relocation_locked(
         path = Path(item.path)
         train = load_durable_change_train_manifest(path)
         actual_hash = _sha256_file(path)
-        if actual_hash == item.before_manifest_sha256 and item.requires_rebind:
+        if actual_hash == item.before_manifest_sha256 and _requires_train_update(item):
             continuity_transition_ref = None
             if train.source_continuity_evidence is not None:
                 transition_digest = write_source_continuity_relocation_transition(
@@ -1027,7 +1037,7 @@ def _apply_archive_root_relocation_locked(
             )
             write_durable_change_train_manifest(path, updated, expected_revision=item.before_revision)
         elif (
-            train.revision != item.before_revision + (1 if item.requires_rebind else 0)
+            train.revision != item.before_revision + int(_requires_train_update(item))
             or train.apply_evidence is None
             or train.apply_evidence.post.archive_identity_digest != item.after_archive_identity_digest
         ):

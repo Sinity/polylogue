@@ -4113,16 +4113,18 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
     from polylogue.operations.archive_root_relocation import (
         ArchiveRootRelocationError,
         apply_archive_root_relocation,
+        assert_no_prepared_archive_root_relocation,
         prepare_archive_root_relocation,
     )
     from tests.unit.storage.test_archive_root_relocation import _released_moved_source_train
 
     old_root = workspace_env["archive_root"]
     _released_moved_source_train(old_root, monkeypatch)
-    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
-    assert backup.ok and backup.output_path is not None
     root = tmp_path / "relocated-archive"
     os.rename(old_root, root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
     plan = prepare_archive_root_relocation(
         old_root=old_root,
         new_root=root,
@@ -4138,7 +4140,12 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
         with pytest.raises(RuntimeError, match="leave prepared relocation receipt"):
             apply_archive_root_relocation(root=root, plan=plan, authorization=plan.plan_sha256)
     configure = Mock()
+    admission = Mock(wraps=assert_no_prepared_archive_root_relocation)
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: root)
+    monkeypatch.setattr(
+        "polylogue.operations.archive_root_relocation.assert_no_prepared_archive_root_relocation",
+        admission,
+    )
     monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", configure)
 
     with pytest.raises(ArchiveRootRelocationError, match="archive-root-relocation apply"):
@@ -4154,6 +4161,7 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
             )
         )
 
+    admission.assert_called_once_with(root)
     configure.assert_not_called()
 
 
