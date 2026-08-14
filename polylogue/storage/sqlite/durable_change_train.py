@@ -1404,73 +1404,73 @@ def _validate_archive_root_relocation_receipts(
         for ref in train.proof_refs
         if ref.startswith("proof:archive-root-relocation:")
     )
-    if not proof_digests:
-        return
-    from polylogue.operations.archive_root_relocation import (
-        ArchiveRootRelocationError,
-        ArchiveRootRelocationPlan,
-        _decode_receipt,
-        _verify_plan,
-    )
-
-    try:
-        with existing_maintenance_receipt_directory(archive_root, "archive-root-relocations") as receipt_fd:
-            receipt_rows = () if receipt_fd is None else tuple(iter_pinned_receipts(receipt_fd))
-        with existing_maintenance_receipt_directory(archive_root, "archive-root-relocation-plans") as plan_fd:
-            if plan_fd is None:
-                raise DurableChangeTrainError("archive-root relocation proof has no retained plan authority")
-            plan_rows = dict(iter_pinned_receipts(plan_fd))
-    except MaintenanceReceiptPathError as exc:
-        raise DurableChangeTrainError("archive-root relocation proof authority is unreadable") from exc
     transitions: list[tuple[str, str, str]] = []
-    for proof_digest in proof_digests:
-        matches = []
+    if proof_digests:
+        from polylogue.operations.archive_root_relocation import (
+            ArchiveRootRelocationError,
+            ArchiveRootRelocationPlan,
+            _decode_receipt,
+            _verify_plan,
+        )
+
         try:
-            for filename, encoded in receipt_rows:
-                receipt = _decode_receipt(
-                    encoded,
-                    path=archive_root / ".maintenance-state" / "archive-root-relocations" / filename,
+            with existing_maintenance_receipt_directory(archive_root, "archive-root-relocations") as receipt_fd:
+                receipt_rows = () if receipt_fd is None else tuple(iter_pinned_receipts(receipt_fd))
+            with existing_maintenance_receipt_directory(archive_root, "archive-root-relocation-plans") as plan_fd:
+                if plan_fd is None:
+                    raise DurableChangeTrainError("archive-root relocation proof has no retained plan authority")
+                plan_rows = dict(iter_pinned_receipts(plan_fd))
+        except MaintenanceReceiptPathError as exc:
+            raise DurableChangeTrainError("archive-root relocation proof authority is unreadable") from exc
+        for proof_digest in proof_digests:
+            matches = []
+            try:
+                for filename, encoded in receipt_rows:
+                    receipt = _decode_receipt(
+                        encoded,
+                        path=archive_root / ".maintenance-state" / "archive-root-relocations" / filename,
+                    )
+                    if (receipt.prepared_receipt_sha256 or receipt.receipt_sha256) == proof_digest and (
+                        receipt.state == "committed" or proof_digest == allowed_pending_relocation_receipt_sha256
+                    ):
+                        matches.append(receipt)
+            except ArchiveRootRelocationError as exc:
+                raise DurableChangeTrainError("archive-root relocation proof receipt is invalid") from exc
+            if len(matches) != 1:
+                raise DurableChangeTrainError(
+                    "archive-root relocation proof does not resolve exactly one committed receipt or the explicitly "
+                    "pending receipt"
                 )
-                if (receipt.prepared_receipt_sha256 or receipt.receipt_sha256) == proof_digest and (
-                    receipt.state == "committed" or proof_digest == allowed_pending_relocation_receipt_sha256
-                ):
-                    matches.append(receipt)
-        except ArchiveRootRelocationError as exc:
-            raise DurableChangeTrainError("archive-root relocation proof receipt is invalid") from exc
-        if len(matches) != 1:
-            raise DurableChangeTrainError(
-                "archive-root relocation proof does not resolve exactly one committed receipt or the explicitly pending receipt"
+            receipt = matches[0]
+            encoded_plan = plan_rows.get(f"{receipt.plan_sha256}.json")
+            if encoded_plan is None:
+                raise DurableChangeTrainError("archive-root relocation proof retained plan is missing")
+            try:
+                plan = ArchiveRootRelocationPlan.model_validate_json(encoded_plan)
+                _verify_plan(plan)
+            except (ArchiveRootRelocationError, ValueError) as exc:
+                raise DurableChangeTrainError("archive-root relocation proof retained plan is invalid") from exc
+            item_indexes = tuple(
+                index
+                for index, item in enumerate(plan.durable_trains)
+                if item.train_id == train.train_id and item.tier == train.tier.value
             )
-        receipt = matches[0]
-        encoded_plan = plan_rows.get(f"{receipt.plan_sha256}.json")
-        if encoded_plan is None:
-            raise DurableChangeTrainError("archive-root relocation proof retained plan is missing")
-        try:
-            plan = ArchiveRootRelocationPlan.model_validate_json(encoded_plan)
-            _verify_plan(plan)
-        except (ArchiveRootRelocationError, ValueError) as exc:
-            raise DurableChangeTrainError("archive-root relocation proof retained plan is invalid") from exc
-        item_indexes = tuple(
-            index
-            for index, item in enumerate(plan.durable_trains)
-            if item.train_id == train.train_id and item.tier == train.tier.value
-        )
-        if len(item_indexes) != 1:
-            raise DurableChangeTrainError("archive-root relocation proof does not bind this durable train")
-        expected_before = tuple(item.before_manifest_sha256 for item in plan.durable_trains)
-        if receipt.manifest_before_sha256 != expected_before or len(receipt.manifest_after_sha256) != len(
-            plan.durable_trains
-        ):
-            raise DurableChangeTrainError("archive-root relocation proof receipt does not bind its exact plan")
-        item_index = item_indexes[0]
-        item = plan.durable_trains[item_index]
-        transitions.append(
-            (
-                item.before_manifest_sha256,
-                receipt.manifest_after_sha256[item_index],
-                item.after_archive_identity_digest,
+            if len(item_indexes) != 1:
+                raise DurableChangeTrainError("archive-root relocation proof does not bind this durable train")
+            expected_before = tuple(item.before_manifest_sha256 for item in plan.durable_trains)
+            if receipt.manifest_before_sha256 != expected_before or len(receipt.manifest_after_sha256) != len(
+                plan.durable_trains
+            ):
+                raise DurableChangeTrainError("archive-root relocation proof receipt does not bind its exact plan")
+            item_index = item_indexes[0]
+            item = plan.durable_trains[item_index]
+            transitions.append(
+                (
+                    item.before_manifest_sha256,
+                    receipt.manifest_after_sha256[item_index],
+                    item.after_archive_identity_digest,
+                )
             )
-        )
     for ref in train.proof_refs:
         if not ref.startswith("proof:source-continuity-refresh:"):
             continue
@@ -1491,6 +1491,8 @@ def _validate_archive_root_relocation_receipts(
         _migration_runner._validate_sha256(before, label="source continuity refresh before manifest")
         _migration_runner._validate_sha256(identity, label="source continuity refresh archive identity")
         transitions.append((before, after, identity))
+    if not transitions:
+        return
     by_before = {before: (after, identity) for before, after, identity in transitions}
     if len(by_before) != len(transitions):
         raise DurableChangeTrainError("archive-root relocation and refresh proof chain branches ambiguously")
@@ -1513,7 +1515,7 @@ def _validate_archive_root_relocation_receipts(
             "archive-root relocation and refresh proof chain does not bind the exact current manifest"
         )
     if train.apply_evidence is None or latest_identity != train.apply_evidence.post.archive_identity_digest:
-        raise DurableChangeTrainError("archive-root relocation proof does not bind the latest durable identity")
+        raise DurableChangeTrainError("continuity transition proof does not bind the latest durable identity")
 
 
 def write_source_continuity_relocation_transition(
@@ -1707,10 +1709,8 @@ def _refresh_released_source_train_continuity_locked(
             for ref in train.proof_refs
             if ref.startswith("proof:source-continuity-refresh:")
         }
-        for existing_path in sorted(refresh_root.glob("*.json")) if refresh_root.is_dir() else ():
-            digest = existing_path.stem
-            if digest not in retained_refs:
-                continue
+        for digest in sorted(retained_refs):
+            existing_path = refresh_root / f"{digest}.json"
             existing = _read_source_continuity_refresh_receipt(archive_root, digest=digest, train=train)
             if existing.get("mutation_receipt_sha256") == mutation_digest:
                 retained_refreshes.append((existing_path, existing))
@@ -1817,41 +1817,20 @@ def _refresh_released_source_train_continuity_locked(
         }
         refresh_digest = _canonical_json_sha256(payload)
         updated = _finalize_source_continuity_refresh_intent(intent, refresh_digest=refresh_digest)
-        refresh_root_existed = refresh_root.is_dir()
-        refresh_root.mkdir(parents=True, exist_ok=True)
-        if not refresh_root_existed:
-            _migration_runner._fsync_manifest_directory(refresh_root.parent)
         refresh_path = refresh_root / f"{refresh_digest}.json"
-        if refresh_path.exists():
-            existing = _read_source_continuity_refresh_receipt(
-                archive_root,
-                digest=refresh_digest,
-                train=train,
-            )
-            if existing != payload:
-                raise DurableChangeTrainError("source continuity refresh receipt collision")
-        else:
-            encoded = (
-                json.dumps({**payload, "refresh_sha256": refresh_digest}, indent=2, sort_keys=True) + "\n"
-            ).encode("utf-8")
-            temporary: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    dir=refresh_root,
-                    prefix=f".{refresh_path.name}.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as stream:
-                    temporary = Path(stream.name)
-                    stream.write(encoded)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, refresh_path)
-                temporary = None
-                _migration_runner._fsync_manifest_directory(refresh_root)
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+        encoded = (json.dumps({**payload, "refresh_sha256": refresh_digest}, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+        try:
+            with maintenance_receipt_directory(archive_root, "source-continuity-refreshes") as directory_fd:
+                current_receipt = read_optional_receipt(directory_fd, refresh_path.name)
+                if current_receipt is not None:
+                    if current_receipt != encoded:
+                        raise DurableChangeTrainError("source continuity refresh receipt collision")
+                else:
+                    atomic_replace_receipt(directory_fd, refresh_path.name, encoded)
+        except MaintenanceReceiptPathError as exc:
+            raise DurableChangeTrainError("cannot persist source continuity refresh receipt") from exc
         write_durable_change_train_manifest(manifest_path, updated, expected_revision=train.revision)
     return refresh_path
 

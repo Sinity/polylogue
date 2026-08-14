@@ -216,12 +216,20 @@ def _json_str_list(value: object) -> list[str]:
 def _all_archive_tiers(root: Path) -> dict[str, Path]:
     tiers = archive_tier_paths(root)
     pointer = root / ".index-active-pointer"
-    if pointer.is_symlink() or not pointer.is_file():
-        return tiers
     try:
-        configured_target = Path(pointer.read_text(encoding="utf-8").strip())
+        pointer_metadata = pointer.lstat()
     except OSError:
         return tiers
+    try:
+        if stat.S_ISLNK(pointer_metadata.st_mode):
+            raw_target = os.readlink(pointer)
+        elif stat.S_ISREG(pointer_metadata.st_mode) and pointer_metadata.st_nlink == 1:
+            raw_target = pointer.read_text(encoding="utf-8").strip()
+        else:
+            return tiers
+    except (OSError, UnicodeDecodeError):
+        return tiers
+    configured_target = Path(raw_target)
     if not configured_target.is_absolute() or configured_target.name != "index.db":
         return tiers
     if (

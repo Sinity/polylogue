@@ -67,7 +67,7 @@ def archive_root_relocation_plan_command(
 @click.option("--authorize", required=True)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def archive_root_relocation_apply_command(plan_path: Path, authorize: str, output_format: str) -> None:
-    """Apply the plan by CAS-revising released source manifests only."""
+    """Apply the plan to durable trains and sealed index-generation topology."""
     root = archive_root()
     try:
         plan = load_archive_root_relocation_plan(plan_path)

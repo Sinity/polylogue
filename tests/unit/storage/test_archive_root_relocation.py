@@ -72,6 +72,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
     DurableChangeTrain,
     DurableChangeTrainError,
+    assert_source_continuity_apply_allowed,
     load_durable_change_train_manifest,
     rebind_released_durable_train_archive_identity,
     recover_released_source_train_continuity,
@@ -119,6 +120,13 @@ def test_archive_root_relocation_is_a_real_maintenance_route(cli_workspace: dict
     )
     assert nested.exit_code == 0, nested.output
     assert "--old-root" in nested.output
+    apply_help = CliRunner().invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "archive-root-relocation", "apply", "--help"],
+        catch_exceptions=False,
+    )
+    assert apply_help.exit_code == 0, apply_help.output
+    assert "durable trains and sealed index-generation topology" in apply_help.output
 
 
 def test_recovery_cli_reports_archive_ownership_conflicts(
@@ -982,6 +990,69 @@ def test_historical_source_delta_tags_sqlite_storage_classes_and_rejects_refresh
     assert not tuple(target.iterdir())
 
 
+def test_ordinary_source_continuity_refresh_rejects_symlink_receipt_directory(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary refresh writer cannot publish through a foreign directory.
+
+    Anti-vacuity: the real post-maintenance refresh route reaches receipt
+    publication with a released source train. A path-based mkdir/replace
+    implementation writes the new v2 authority into ``outside``.
+    """
+    root = workspace_env["archive_root"]
+    _released_moved_source_train(root, monkeypatch)
+    outside = tmp_path / "outside-refreshes"
+    outside.mkdir()
+    refresh_root = root / ".maintenance-state" / "source-continuity-refreshes"
+    refresh_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DurableChangeTrainError, match="cannot persist source continuity refresh receipt"):
+        _refresh_source_continuity_without_content_change(root, tmp_path / "refresh-evidence")
+
+    assert not tuple(outside.iterdir())
+
+
+def test_refresh_only_authority_chain_requires_exact_manifest_predecessors(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two retained v2 refreshes must form one exact manifest-hash chain.
+
+    Anti-vacuity: source-mutation admission invokes the production released
+    train validator. Without refresh-only transition validation, a terminal
+    receipt can preserve all evidence and final fields while substituting an
+    unrelated, well-formed predecessor manifest hash.
+    """
+    from polylogue.storage.sqlite import durable_change_train as trains
+
+    root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(root, monkeypatch)
+    _refresh_source_continuity_without_content_change(root, tmp_path / "first-refresh")
+    terminal_path = _refresh_source_continuity_without_content_change(root, tmp_path / "second-refresh")
+    train = load_durable_change_train_manifest(manifest)
+
+    terminal_receipt = json.loads(terminal_path.read_text(encoding="utf-8"))
+    old_digest = terminal_receipt.pop("refresh_sha256")
+    assert isinstance(old_digest, str)
+    terminal_receipt["train_before_sha256"] = "f" * 64
+    substituted_digest = _canonical_json_sha256(terminal_receipt)
+    substituted_receipt = {**terminal_receipt, "refresh_sha256": substituted_digest}
+    substituted_path = terminal_path.with_name(f"{substituted_digest}.json")
+    _write_refresh_receipt(substituted_path, substituted_receipt)
+
+    intent = trains._source_continuity_refresh_intent(terminal_receipt, train_id=train.train_id)
+    substituted_train = trains._finalize_source_continuity_refresh_intent(
+        intent,
+        refresh_digest=substituted_digest,
+    )
+    manifest.write_text(
+        json.dumps(durable_change_train_to_payload(substituted_train), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DurableChangeTrainError, match="proof chain has no unique predecessor"):
+        assert_source_continuity_apply_allowed(root)
+
+
 def test_receipt_directory_swap_cannot_redirect_either_operation_outside_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1805,8 +1876,12 @@ def test_relocation_remaps_generations_beside_a_nested_active_index(
     assert (new_root / "nested" / "index.db").resolve(strict=True) == Path(promoted.index_path)
 
 
+@pytest.mark.parametrize("pointer_kind", ["regular", "symlink"])
 def test_relocation_backup_maps_a_nested_regular_active_index(
-    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pointer_kind: str,
 ) -> None:
     """The moved-root backup follows a stale pointer to a regular in-root index.
 
@@ -1819,7 +1894,11 @@ def test_relocation_backup_maps_a_nested_regular_active_index(
     nested_index = old_root / "nested" / "index.db"
     nested_index.parent.mkdir()
     shutil.copy2(old_root / "index.db", nested_index)
-    (old_root / ".index-active-pointer").write_text(str(nested_index), encoding="utf-8")
+    pointer = old_root / ".index-active-pointer"
+    if pointer_kind == "regular":
+        pointer.write_text(str(nested_index), encoding="utf-8")
+    else:
+        pointer.symlink_to(nested_index)
     _attach_retained_source_continuity(old_root, manifest)
 
     new_root = tmp_path / "moved"
@@ -2286,7 +2365,7 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
         catch_exceptions=False,
     )
     assert rejected_plan.exit_code != 0
-    assert "source continuity authority is invalid" in rejected_plan.output
+    assert "relocation authority is invalid" in rejected_plan.output
 
     rejected_apply = CliRunner().invoke(
         cli,
@@ -2307,7 +2386,7 @@ def test_cli_runs_historical_recovery_then_uses_a_fresh_moved_root_backup_for_re
         catch_exceptions=False,
     )
     assert rejected_apply.exit_code != 0
-    assert "continuity receipt is invalid" in rejected_apply.output
+    assert "retained train authority is invalid" in rejected_apply.output
 
     from polylogue.daemon import cli as daemon_cli
     from polylogue.operations import durable_change_train as durable_operations

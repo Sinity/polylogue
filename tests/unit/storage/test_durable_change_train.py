@@ -475,7 +475,8 @@ def test_released_source_train_can_record_an_authorized_mutation_refresh(
         operation_id=_EMPTY_LIVENESS_DIGEST,
         evidence_ref="proof:mutation-1",
     )
-    assert tmp_path / ".maintenance-state" in refresh_fsync_calls
+    assert not refreshed_path.is_symlink()
+    assert refreshed_path.stat().st_nlink == 1
 
     refreshed = load_durable_change_train_manifest(manifest)
     assert refreshed.state is DurableChangeTrainState.RELEASED
