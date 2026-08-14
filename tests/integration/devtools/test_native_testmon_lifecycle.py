@@ -84,6 +84,9 @@ def _commit_all(root: Path, message: str) -> str:
 def _pytest_environment(repo: Path) -> dict[str, str]:
     (repo / TESTMON_DATA_RELPATH).parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_PLUGINS", None)
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env["TESTMON_DATAFILE"] = str(repo / TESTMON_DATA_RELPATH)
     env["PYTHONPATH"] = os.pathsep.join((str(repo), str(PROJECT_ROOT), env.get("PYTHONPATH", "")))
     env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
@@ -119,6 +122,7 @@ def _run_lane(
         "pytest",
         "-q",
         "--tb=short",
+        "--override-ini=addopts=",
         "--testmon",
         f"--testmon-env={environment_name}",
         selection,
@@ -126,6 +130,12 @@ def _run_lane(
         marker,
         "-p",
         "devtools.pytest_progress_plugin",
+        "-p",
+        "pytest-testmon",
+        "-p",
+        "pytest_jsonreport",
+        "-p",
+        "xdist",
         "--json-report",
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={artifact_dir / PYTEST_CANONICAL_REPORT_NAME}",
@@ -270,7 +280,13 @@ raise SystemExit(verify.main(sys.argv[2:]))
         pytest.fail(
             f"production verify wrote no invocation receipt\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
-    payload = json.loads(completed.stdout)
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"production verify emitted no JSON payload ({exc})\n"
+            f"returncode={completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
     if completed.returncode == 125 and not allow_rejection:
         pytest.fail(
             f"production verify rejected the fixture checkout\npayload:\n{completed.stdout}\nstderr:\n{completed.stderr}"
@@ -1338,6 +1354,25 @@ def test_neutralized_environment_and_declared_plugin_identity_are_owned(
     environment_unchanged = prepare_native_testmon_environment(repo)
     assert environment_unchanged.selection_mode == "affected"
     assert environment_unchanged.environment_name == initial.environment_name
+    test_file.write_text(
+        "import pytest\n\n"
+        "def test_parallel_body_must_run():\n"
+        "    assert False, 'ambient pytest controls suppressed the parallel body'\n\n"
+        "@pytest.mark.load_sensitive\n"
+        "def test_serial_body_must_run():\n"
+        "    assert False, 'ambient pytest controls suppressed the serial body'\n",
+        encoding="utf-8",
+    )
+    ambient_results = _run_plain_verify_corpus(
+        repo,
+        mode="bootstrap",
+        environment_name=environment_unchanged.environment_name,
+    )
+    assert [result.completed.returncode for result in ambient_results] == [1, 1]
+    assert _selected(*ambient_results) == {
+        "tests/test_identity.py::test_parallel_body_must_run",
+        "tests/test_identity.py::test_serial_body_must_run",
+    }
     monkeypatch.delenv("PYTEST_ADDOPTS")
     monkeypatch.delenv("PYTEST_PLUGINS")
 
@@ -1370,6 +1405,28 @@ def test_neutralized_environment_and_declared_plugin_identity_are_owned(
         result.completed.returncode
         for result in _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=plugin_mutated.environment_name)
     ] == [0, 0]
+
+
+def test_production_verify_reports_stdout_when_json_payload_is_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invalid_json_result(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        receipt = Path(environment["POLYLOGUE_VERIFICATION_RECEIPT_PATH"])
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text("{}\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 1, "not JSON", "verifier diagnostics")
+
+    monkeypatch.setattr(subprocess, "run", invalid_json_result)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        _run_production_verify(tmp_path)
+
+    assert "production verify emitted no JSON payload" in str(failure.value)
+    assert "stdout:\nnot JSON" in str(failure.value)
+    assert "stderr:\nverifier diagnostics" in str(failure.value)
 
 
 @pytest.mark.parametrize(

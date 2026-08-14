@@ -577,7 +577,11 @@ class CheckoutMutationMonitor:
         if self._git_index_path is not None:
             self._git_authority_paths[self._git_index_path] = ".git/index"
         self._git_authority_paths.update(self._resolve_git_head_paths())
-        self._git_authority_signatures = {path: self._authority_signature(path) for path in self._git_authority_paths}
+        for authority_path in self._git_authority_paths:
+            # The protected startup topology recheck discovers this set again.
+            # Retain each first baseline so it cannot adopt a write that the
+            # active watcher observed before processing its coalesced event.
+            self._git_authority_signatures.setdefault(authority_path, self._authority_signature(authority_path))
         for authority_path in self._git_authority_paths:
             watched_parent = authority_path.parent
             while not watched_parent.exists() and watched_parent != watched_parent.parent:

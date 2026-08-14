@@ -1489,6 +1489,22 @@ def test_checkout_mutation_monitor_keeps_coalesced_index_authority_event(
     assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
+def test_checkout_mutation_monitor_keeps_initial_authority_signature_across_topology_recheck(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor._watched_directories()
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    monitor._watched_directories()
+    monitor._record_change(tmp_path / ".git")
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
+
+
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a branch-ref replacement")
 def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)

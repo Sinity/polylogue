@@ -300,6 +300,33 @@ def test_environment_digest_stops_at_invocation_deadline(tmp_path: Path) -> None
         _testmon_environment_digest(tmp_path, deadline_monotonic=0.0)
 
 
+def test_plugin_declaration_discovery_stops_at_invocation_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_declaration = tmp_path / "tests" / "test_plugins.py"
+    plugin_declaration.parent.mkdir()
+    plugin_declaration.write_text('pytest_plugins = ("fixture_plugin",)\n', encoding="utf-8")
+    clock = {"value": 0.0}
+    original_read_text = Path.read_text
+
+    def expire_after_plugin_discovery(
+        path: Path,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> str:
+        source = original_read_text(path, encoding=encoding, errors=errors)
+        if path == plugin_declaration:
+            clock["value"] = 1.0
+        return source
+
+    monkeypatch.setattr("devtools.testmon_bootstrap.time.monotonic", lambda: clock["value"])
+    monkeypatch.setattr(Path, "read_text", expire_after_plugin_discovery)
+
+    with pytest.raises(NativeTestmonDeadlineError, match="invocation deadline"):
+        _testmon_environment_digest(tmp_path, deadline_monotonic=0.5)
+
+
 def test_invalid_cleanup_removes_only_owned_sqlite_and_sidecars(tmp_path: Path) -> None:
     state_dir = tmp_path / ".cache" / "testmon"
     state_dir.mkdir(parents=True)

@@ -181,12 +181,17 @@ def _indirect_pytest_plugins_declaration(node: ast.stmt) -> bool:
     return False
 
 
-def _declared_pytest_plugin_names(root: Path) -> set[str]:
+def _declared_pytest_plugin_names(
+    root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> set[str]:
     """Read static local plugin declarations that pytest loads at collection."""
     names: set[str] = set()
-    candidates = set(root.glob("tests/**/conftest.py"))
+    candidates: set[Path] = set()
     candidates.add(root / "conftest.py")
     for path in root.glob("tests/**/*.py"):
+        _ensure_deadline(deadline_monotonic)
         try:
             source = path.read_text(encoding="utf-8")
         except OSError:
@@ -194,7 +199,11 @@ def _declared_pytest_plugin_names(root: Path) -> set[str]:
         if "pytest_plugins" not in source:
             continue
         candidates.add(path)
-    for path in candidates:
+    for path in root.glob("tests/**/conftest.py"):
+        _ensure_deadline(deadline_monotonic)
+        candidates.add(path)
+    for path in sorted(candidates):
+        _ensure_deadline(deadline_monotonic)
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, SyntaxError, UnicodeDecodeError):
@@ -240,11 +249,16 @@ def _declared_pytest_plugin_names(root: Path) -> set[str]:
     return names
 
 
-def _active_local_pytest_plugin_paths(root: Path) -> set[str]:
+def _active_local_pytest_plugin_paths(
+    root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> set[str]:
     """Resolve collection-active local pytest plugins regardless of filename."""
     paths: set[str] = set()
-    plugin_names = _declared_pytest_plugin_names(root)
+    plugin_names = _declared_pytest_plugin_names(root, deadline_monotonic=deadline_monotonic)
     for raw_name in plugin_names:
+        _ensure_deadline(deadline_monotonic)
         module_name = raw_name.strip()
         if not module_name or any(part in {"", ".", ".."} for part in module_name.split(".")):
             continue
@@ -254,11 +268,18 @@ def _active_local_pytest_plugin_paths(root: Path) -> set[str]:
             paths.add(module_file.relative_to(root).as_posix())
         package = root / module_path
         if (package / "__init__.py").is_file():
-            paths.update(path.relative_to(root).as_posix() for path in package.rglob("*.py") if path.is_file())
+            for path in package.rglob("*.py"):
+                _ensure_deadline(deadline_monotonic)
+                if path.is_file():
+                    paths.add(path.relative_to(root).as_posix())
     return paths
 
 
-def _environment_input_paths(root: Path) -> tuple[str, ...]:
+def _environment_input_paths(
+    root: Path,
+    *,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, ...]:
     """Discover collection and managed-pytest harness inputs."""
     paths = set(_ENVIRONMENT_INPUTS)
     patterns = (
@@ -266,8 +287,11 @@ def _environment_input_paths(root: Path) -> tuple[str, ...]:
         "tests/**/conftest.py",
     )
     for pattern in patterns:
-        paths.update(path.relative_to(root).as_posix() for path in root.glob(pattern) if path.is_file())
-    paths.update(_active_local_pytest_plugin_paths(root))
+        for path in root.glob(pattern):
+            _ensure_deadline(deadline_monotonic)
+            if path.is_file():
+                paths.add(path.relative_to(root).as_posix())
+    paths.update(_active_local_pytest_plugin_paths(root, deadline_monotonic=deadline_monotonic))
     return tuple(sorted(paths))
 
 
@@ -304,7 +328,7 @@ def testmon_environment_digest(
         "distributions": _installed_distributions(),
         "inputs": _fingerprint_inputs(
             root,
-            _environment_input_paths(root),
+            _environment_input_paths(root, deadline_monotonic=deadline_monotonic),
             deadline_monotonic=deadline_monotonic,
         ),
         "pytest_environment": {
