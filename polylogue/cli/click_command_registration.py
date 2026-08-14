@@ -84,6 +84,16 @@ class _LazyGroup(_LazyCommand, click.Group):
         return resolved.list_commands(ctx)
 
 
+class _NestedLazyGroup(_LazyGroup):
+    """Lazy group whose newly-added nested routes dispatch through the proxy."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        resolved = self._resolve()
+        if isinstance(resolved, click.Group) and self.callback is None:
+            self.callback = resolved.callback
+        return click.Group.invoke(self, ctx)
+
+
 _SHORT_HELP: dict[str, str] = {
     "agent": "Install executable agent guidance.",
     "agents": "Inspect agent coordination state.",

@@ -1,0 +1,46 @@
+{
+  "$id": "https://polylogue.dev/schemas/cli-output/historical-source-continuity-recovery-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Result from the one-purpose pre-#3868 historical source continuity recovery apply command.\n\nGenerated from `polylogue.operations.historical_source_continuity_recovery.HistoricalSourceContinuityRecoveryResult` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "ok": {
+      "const": true,
+      "default": true,
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "plan_sha256": {
+      "title": "Plan Sha256",
+      "type": "string"
+    },
+    "receipt_path": {
+      "title": "Receipt Path",
+      "type": "string"
+    },
+    "refresh_receipt_path": {
+      "title": "Refresh Receipt Path",
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "prepared",
+        "committed"
+      ],
+      "title": "State",
+      "type": "string"
+    }
+  },
+  "required": [
+    "state",
+    "plan_sha256",
+    "receipt_path",
+    "refresh_receipt_path"
+  ],
+  "title": "Historical Source Continuity Recovery Result",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue ops maintenance source-continuity-recovery apply --output-format json"
+  ],
+  "x-polylogue-source-model": "HistoricalSourceContinuityRecoveryResult"
+}

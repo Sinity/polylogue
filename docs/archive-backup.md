@@ -14,7 +14,8 @@ The configured archive root contains these durable paths:
 | `index.db` | Parsed sessions, messages, FTS/search indexes, graph rows, and derived read models. | Rebuildable from `source.db`; include in full evidence backups for faster restore, but cache-exclude profiles may omit it. |
 | `embeddings.db` | Vector rows, embedding status, and catch-up metadata. | Back up when present. It is rebuildable, but expensive and may require provider cost. |
 | `user.db` | Human/user/agent overlays stored as assertions, immutable annotation schema definitions and batch provenance, settings, and context-delivery receipts. | Always back up. This tier is irreplaceable user state. |
-| `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable. Include only in diagnostics bundles or incident snapshots. |
+| `audit.db` | Append-only mutation authority, authorizations, attempts, receipts, and continuity heads. | Always back up. Relocation full-evidence backups require it. |
+| `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable for ordinary restore profiles, but required by the exact relocation full-evidence tier contract. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
 `polylogue ops maintenance archive-plan --output-format json` is the machine-readable
@@ -28,7 +29,7 @@ Use these profiles when choosing what to copy:
 
 | Profile | Include | Exclude | Use case |
 | --- | --- | --- | --- |
-| Full evidence | `source.db`, `index.db`, `embeddings.db`, `user.db`, referenced `blob/`, and optional `ops.db` snapshot. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | Fastest complete restore with raw evidence, read models, vectors, and overlays. |
+| Full evidence | All six archive tiers: `source.db`, `index.db`, `embeddings.db`, `user.db`, `ops.db`, and `audit.db`, plus referenced `blob/`. | Temporary SQLite `*-wal`/`*-shm` only after a clean checkpoint. | Complete relocation authority and the fastest restore with raw evidence, read models, vectors, overlays, audit authority, and operational state. |
 | User overlays | `user.db` and any assertion/note evidence blobs referenced by user-owned rows. | `index.db`, `ops.db`, rebuildable search/derived models. | Protect irreplaceable human/agent state before resets or schema rebuilds. |
 | Rebuildable-cache exclude | `source.db`, `user.db`, referenced `blob/`, optionally `embeddings.db`. | `index.db`, `ops.db`, derived/cache artifacts. | Small backup that can rebuild parsed/indexed data locally. |
 | Diagnostics bundle | `ops.db`, `archive-plan` JSON, `daemon-workload-probe` JSON, logs, and readonly status outputs. | Private raw blobs unless explicitly needed for the incident. | Bug reports and incident triage without over-sharing archive contents. |
@@ -36,6 +37,59 @@ Use these profiles when choosing what to copy:
 When SQLite WAL files are present, either stop the daemon or run an explicit
 checkpoint before copying. Copying only `*.db` while an uncheckpointed `*-wal`
 contains recent writes creates an incomplete backup.
+
+## Offline archive-root relocation
+
+An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon and move the complete root without copying its database files. Set `POLYLOGUE_ARCHIVE_ROOT` to the moved root before creating relocation backup evidence.
+
+If the current released source train lacks continuity authority for historical source changes, first run the `source-continuity-recovery` plan and apply sequence documented in [Maintenance Operations](maintenance.md#recovering-the-one-historical-liveness-receipt-shape). Its authenticated pre- and post-backup evidence belongs to the retired path and is used only for that bridge. After the bridge commits, or immediately after the move when no bridge is required, create and verify a fresh complete backup at the moved root:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
+  polylogue ops backup \
+  --output-dir /safe/operator/location/relocation-backup \
+  --profile full_evidence --verify
+```
+
+For relocation, the profile name alone is insufficient. The moved root must already contain every `ArchiveTier`, and the new backup manifest must contain this exact set with no omitted tiers:
+
+```json
+{
+  "profile": "full_evidence",
+  "included_tiers": [
+    "source.db",
+    "index.db",
+    "embeddings.db",
+    "user.db",
+    "ops.db",
+    "audit.db"
+  ],
+  "omitted_tiers": []
+}
+```
+
+The relocation validator compares `included_tiers` as a set, so JSON list order is not significant. It rejects a missing `audit.db`, a missing `ops.db`, any extra tier, or any non-empty `omitted_tiers` value. Use the `manifest.json` printed by the backup command to create the bound relocation plan. `--old-root` names the retired pre-move root only for the identity transition and active-index pointer mapping:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
+  polylogue ops maintenance archive-root-relocation plan \
+  --old-root /old/archive/root \
+  --backup-manifest /safe/operator/location/relocation-backup/PACKAGE/manifest.json \
+  --output /safe/operator/location/relocation-plan.json --output-format json
+```
+
+Apply only the exact self-hash printed in that plan:
+
+```bash
+POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
+  polylogue ops maintenance archive-root-relocation apply \
+  --plan /safe/operator/location/relocation-plan.json \
+  --authorize PLAN_SHA256 --output-format json
+```
+
+The route reads every SQLite file immutably and refuses copied files, WAL sidecars, moved-root backup receipts that do not authenticate the current tier paths, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, or any incomplete released durable-train chain. A live source train whose historical content differs from the current source must first carry receipt-backed source-continuity authority. For the one pre-#3868 liveness receipt shape, create that authority with `source-continuity-recovery` using authenticated pre/post backups and a fresh zero-orphan census. That bridge is a separate offline transition, not an exception inside relocation. Relocation records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver; the plan binds its resolved generation, every retained generation's absolute metadata and tier links, and apply remaps those exact objects before publishing the active pointer. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises released `source`, `user`, and `audit` train manifests when identity or continuity proof requires it, retains the exact plan, and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. Repeated relocations and intervening source refreshes must form one unbranched chain through typed predecessor authority and exact before/after manifest hashes. A prepared receipt blocks daemon startup and prints a shell-quoted exact retained-plan resume command. Live application and post-move observation remain operator evidence outside this code path.
+
+For a deployed archive, run these commands only from the Nix package built from the post-merge commit selected for deployment. Record that merge SHA and the resulting Nix store path in the operator receipt, verify the daemon executable resolves to that exact package, and keep `POLYLOGUE_ARCHIVE_ROOT` set to the configured deployed root. Do not resume a stopped daemon with an older deployed package or a branch checkout: its durable-train vocabulary may predate the relocation transition.
 
 ## Restore Rules
 
@@ -141,8 +195,9 @@ sqlite3 <restored>/source.db "PRAGMA user_version; SELECT count(*) FROM raw_sess
 
 # Sane-lag comparison against the live archive (restored counts must be <=
 # live counts, and the gap should track the age of the chosen archive):
-sqlite3 /realm/db/polylogue/user.db "SELECT count(*) FROM assertions;"
-sqlite3 /realm/db/polylogue/source.db "SELECT count(*) FROM raw_sessions;"
+archive_root="${POLYLOGUE_ARCHIVE_ROOT:?set the configured archive root}"
+sqlite3 "$archive_root/user.db" "SELECT count(*) FROM assertions;"
+sqlite3 "$archive_root/source.db" "SELECT count(*) FROM raw_sessions;"
 ```
 
 **Negative control (deliberately corrupted restore must fail loudly)** —
@@ -169,10 +224,10 @@ schema `user_version=4`, `source.db` carried 17,839 `raw_sessions` rows at
 snapshot's 17-day age. The corruption negative control correctly failed with
 `database disk image is malformed (11)`.
 
-**CRITICAL FINDING — the live durable tier currently has NO Borg coverage.**
-`/realm/db/polylogue` (where `source.db`/`user.db` actually live; `/realm/data/captures/polylogue/*.db`
-are symlinks to it) was converted to its own nested Btrfs subvolume on
-2026-07-06 (`btrfs subvolume list /realm` shows `ID 3862 ... path db/polylogue`).
+**CRITICAL FINDING — the durable tier then under review had NO Borg coverage.**
+The configured archive root (resolved from `POLYLOGUE_ARCHIVE_ROOT`) was a nested
+Btrfs subvolume at the time of the drill. Its location is configuration, not a
+fixed runtime path; inspect the resolved root before repeating this evidence.
 btrbk/Borg snapshot the **parent** `/realm` subvolume only; a nested
 subvolume shows up as an **empty directory** in every snapshot and archive —
 confirmed directly: `borg list <latest realm archive> db/polylogue` returns

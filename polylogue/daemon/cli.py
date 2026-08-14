@@ -2136,7 +2136,7 @@ async def run_live_watcher(
     *,
     sources: tuple[WatchSource, ...],
     debounce_s: float,
-) -> None:
+) -> bool:
     from polylogue.daemon.events import emit_catch_up_cycle
     from polylogue.paths import archive_root
     from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
@@ -2146,6 +2146,7 @@ async def run_live_watcher(
     with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
         coordinator = daemon_write_coordinator()
         watcher: LiveWatcher | None = None
+        writer_drained = False
         try:
             async with Polylogue() as polylogue:
                 watcher = LiveWatcher(
@@ -2163,11 +2164,12 @@ async def run_live_watcher(
                 if watcher is not None:
                     watcher.stop()
             finally:
-                await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
                     coordinator,
                     rebuild_exclusion,
                     timeout=5.0,
                 )
+        return writer_drained
 
 
 async def run_daemon_services(
@@ -2262,6 +2264,15 @@ async def _run_daemon_services_under_active_writer_lease(
     # validation rather than making fresh service startup depend on a separate
     # bootstrap invocation.
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    from polylogue.operations.archive_root_relocation import assert_no_prepared_archive_root_relocation
+    from polylogue.operations.historical_source_continuity_recovery import (
+        assert_no_prepared_historical_source_continuity_recovery,
+    )
+
+    # A prepared relocation is explicit operator work.  Check before runtime
+    # component registration so no daemon surface becomes observable first.
+    assert_no_prepared_archive_root_relocation(archive_root_path)
+    assert_no_prepared_historical_source_continuity_recovery(archive_root_path)
     from polylogue.storage.archive_identity import assert_writable_archive_identity
 
     # Identity precedes schema checks, pidfiles, HTTP startup, and every other
@@ -3393,6 +3404,16 @@ def run_command(
 )
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
     from polylogue.config import resolve_runtime_config
+    from polylogue.operations.archive_root_relocation import (
+        ArchiveRootRelocationError,
+        assert_no_prepared_archive_root_relocation,
+    )
+    from polylogue.operations.durable_change_train import ArchiveOwnershipError, acquire_durable_archive_ownership
+    from polylogue.operations.historical_source_continuity_recovery import (
+        HistoricalSourceContinuityRecoveryError,
+        assert_no_prepared_historical_source_continuity_recovery,
+    )
+    from polylogue.paths import archive_root
 
     runtime_source_paths = resolve_runtime_config().source_paths
     sources = _watch_sources_from_roots(
@@ -3401,11 +3422,32 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
         beads_roots=runtime_source_paths.beads,
     )
 
-    click.echo(
-        f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
-        err=True,
-    )
-    asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        archive_owner = acquire_durable_archive_ownership(
+            archive_root_path,
+            owner_id=f"watch:{os.getpid()}",
+        )
+    except ArchiveOwnershipError as exc:
+        raise click.ClickException(f"watch could not acquire exclusive archive ownership: {exc}") from exc
+    writer_drained = False
+    watcher_started = False
+    try:
+        try:
+            assert_no_prepared_archive_root_relocation(archive_root_path)
+            assert_no_prepared_historical_source_continuity_recovery(archive_root_path)
+        except (ArchiveRootRelocationError, HistoricalSourceContinuityRecoveryError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(
+            f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
+            err=True,
+        )
+        watcher_started = True
+        writer_drained = asyncio.run(run_live_watcher(sources=sources, debounce_s=debounce_s))
+    finally:
+        if not watcher_started or writer_drained:
+            archive_owner.release()
 
 
 __all__ = [

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.click_command_registration import _LazyCommand
+from polylogue.cli.click_command_registration import _LazyCommand, _NestedLazyGroup
 
 # (cli name, submodule, attribute, short_help)
 _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
@@ -45,6 +45,18 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_migrate_tier",
         "migrate_tier_command",
         "Apply additive migrations for one durable archive tier.",
+    ),
+    (
+        "archive-root-relocation",
+        "_archive_root_relocation",
+        "archive_root_relocation_command",
+        "Plan or apply one offline inode-preserving archive-root relocation.",
+    ),
+    (
+        "source-continuity-recovery",
+        "_source_continuity_recovery",
+        "source_continuity_recovery_command",
+        "Recover one authenticated pre-#3868 source liveness transition offline.",
     ),
     (
         "run-preview",
@@ -215,6 +227,8 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
     ),
 )
 
+_NESTED_GROUP_COMMANDS = frozenset({"archive-root-relocation", "source-continuity-recovery"})
+
 
 @click.group("maintenance")
 @click.pass_context
@@ -237,8 +251,9 @@ def maintenance_group(ctx: click.Context) -> None:
 
 
 for _cli_name, _submodule, _attr, _short_help in _COMMANDS:
+    _command_type = _NestedLazyGroup if _cli_name in _NESTED_GROUP_COMMANDS else _LazyCommand
     maintenance_group.add_command(
-        _LazyCommand(
+        _command_type(
             _cli_name,
             f"polylogue.cli.commands.maintenance.{_submodule}",
             _attr,

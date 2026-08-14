@@ -26,6 +26,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
@@ -2227,13 +2228,25 @@ def test_polylogued_run_rejects_empty_component_set() -> None:
     assert "at least one daemon component must be enabled" in result.output
 
 
-def test_polylogued_watch_uses_default_sources() -> None:
+def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -> None:
     runner = CliRunner()
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
+    observed_coroutine: object | None = None
+
+    def assert_owned(coroutine: object) -> None:
+        nonlocal observed_coroutine
+        observed_coroutine = coroutine
+        with pytest.raises(ArchiveOwnershipError):
+            OwnedArchiveLocation.acquire(
+                ArchiveLocation.resolve(workspace_env["archive_root"]),
+                owner_id="competing-maintenance",
+            )
+        assert inspect.iscoroutine(coroutine)
+        cast(Any, coroutine).close()
 
     with (
         patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
-        patch("polylogue.daemon.cli.asyncio.run") as run,
+        patch("polylogue.daemon.cli.asyncio.run", side_effect=assert_owned),
     ):
         result = runner.invoke(main, ["watch", "--debounce-s", "0.25"])
 
@@ -2241,13 +2254,26 @@ def test_polylogued_watch_uses_default_sources() -> None:
     assert default_sources.call_count == 1
     assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
     assert default_sources.call_args.kwargs["beads_roots"] == ()
-    coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
-    assert inspect.iscoroutine(coroutine)
-    coroutine.close()
+    assert observed_coroutine is not None
     assert "Watching 1 source(s); debounce=0.25s" in result.stderr
 
 
-def test_polylogued_watch_builds_sources_from_roots(tmp_path: Path) -> None:
+def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A competing daemon or maintenance owner must not escape the Click boundary."""
+    root = workspace_env["archive_root"]
+    with OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root), owner_id="competing-writer"):
+        result = CliRunner().invoke(main, ["watch"])
+
+    assert result.exit_code == 1
+    assert "Error: watch could not acquire exclusive archive ownership:" in result.output
+    assert "archive location already owned" in result.output
+    assert "Watching" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Path], tmp_path: Path) -> None:
     root_a = tmp_path / "claude-code"
     root_b = tmp_path / "codex"
 
@@ -2465,10 +2491,11 @@ def test_run_live_watcher_stops_on_keyboard_interrupt(
         patch.object(daemon_cli, "LiveWatcher", FakeWatcher),
         patch.object(daemon_cli, "daemon_write_coordinator", return_value=Coordinator()),
     ):
-        asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
+        writer_drained = asyncio.run(daemon_cli.run_live_watcher(sources=sources, debounce_s=1.0))
 
     assert stopped == [True]
     assert shutdown_timeouts == [5.0]
+    assert writer_drained is True
 
 
 def test_run_live_watcher_refuses_before_entry_while_rebuild_lease_is_held(
@@ -4102,6 +4129,115 @@ def test_run_daemon_services_checks_archive_identity_before_component_startup(tm
         )
 
     configure.assert_not_called()
+
+
+def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ordinary daemon startup preflight, not a test-only guard, blocks a prepared relocation."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.backup import backup_archive
+    from polylogue.operations.archive_root_relocation import (
+        ArchiveRootRelocationError,
+        apply_archive_root_relocation,
+        assert_no_prepared_archive_root_relocation,
+        prepare_archive_root_relocation,
+    )
+    from tests.unit.storage.test_archive_root_relocation import _released_moved_source_train
+
+    old_root = workspace_env["archive_root"]
+    _released_moved_source_train(old_root, monkeypatch)
+    root = tmp_path / "relocated-archive"
+    os.rename(old_root, root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            "polylogue.operations.archive_root_relocation.rebind_released_durable_train_archive_identity",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("leave prepared relocation receipt")),
+        )
+        with pytest.raises(RuntimeError, match="leave prepared relocation receipt"):
+            apply_archive_root_relocation(root=root, plan=plan, authorization=plan.plan_sha256)
+    configured_alias = tmp_path / "configured-archive-alias"
+    configured_alias.symlink_to(root, target_is_directory=True)
+    configure = Mock()
+    admission = Mock(wraps=assert_no_prepared_archive_root_relocation)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: configured_alias)
+    monkeypatch.setattr(
+        "polylogue.operations.archive_root_relocation.assert_no_prepared_archive_root_relocation",
+        admission,
+    )
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.configure_runtime_components", configure)
+
+    with pytest.raises(ArchiveRootRelocationError, match="prepared but incomplete"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    admission.assert_called_once_with(configured_alias)
+    configure.assert_not_called()
+
+    watcher = Mock()
+    monkeypatch.setattr(daemon_cli, "run_live_watcher", watcher)
+    watch_result = CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+    assert watch_result.exit_code == 1
+    assert "prepared but incomplete" in watch_result.output
+    assert "Watching " not in watch_result.output
+
+    assert admission.call_count == 2
+    admission.assert_called_with(configured_alias)
+    watcher.assert_not_called()
+
+    from polylogue.operations.historical_source_continuity_recovery import HistoricalSourceContinuityRecoveryError
+
+    continuity_admission = Mock(
+        side_effect=HistoricalSourceContinuityRecoveryError(
+            "historical source continuity recovery is prepared but incomplete; rerun resume-command"
+        )
+    )
+    monkeypatch.setattr(
+        "polylogue.operations.archive_root_relocation.assert_no_prepared_archive_root_relocation",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        "polylogue.operations.historical_source_continuity_recovery.assert_no_prepared_historical_source_continuity_recovery",
+        continuity_admission,
+    )
+
+    with pytest.raises(HistoricalSourceContinuityRecoveryError, match="prepared but incomplete"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+    watch_result = CliRunner().invoke(main, ["watch"], catch_exceptions=False)
+    assert watch_result.exit_code == 1
+    assert "prepared but incomplete" in watch_result.output
+    assert "Watching " not in watch_result.output
+
+    assert continuity_admission.call_count == 2
 
 
 def test_emit_daemon_lifecycle_event_carries_dev_loop_context(

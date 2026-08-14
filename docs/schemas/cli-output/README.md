@@ -31,6 +31,8 @@ devtools render cli-output-schemas --check # CI sync check
 | [`mutation-result.schema.json`](./mutation-result.schema.json) | `polylogue find <query> then delete --dry-run`<br>`polylogue find <query> then delete --yes`<br>`MCP mutation tools`<br>`daemon mutation endpoints` | `MutationResultPayload` |
 | [`action-affordance-list.schema.json`](./action-affordance-list.schema.json) | `polylogue config action-affordances`<br>`GET /api/action-affordances`<br>`MCP action_affordances` | `ActionAffordanceListPayload` |
 | [`migrate-tier-result.schema.json`](./migrate-tier-result.schema.json) | `polylogue ops maintenance migrate-tier --output-format json` | `MigrateTierResultPayload` |
+| [`archive-root-relocation-result.schema.json`](./archive-root-relocation-result.schema.json) | `polylogue ops maintenance archive-root-relocation apply --output-format json` | `ArchiveRootRelocationResult` |
+| [`historical-source-continuity-recovery-result.schema.json`](./historical-source-continuity-recovery-result.schema.json) | `polylogue ops maintenance source-continuity-recovery apply --output-format json` | `HistoricalSourceContinuityRecoveryResult` |
 | [`machine-error.schema.json`](./machine-error.schema.json) | `polylogue --format json find <query> (error path)` | `MachineErrorPayload` |
 | [`machine-success.schema.json`](./machine-success.schema.json) | `polylogue analyze --format json (success path)` | `MachineSuccessPayload` |
 | [`query-error.schema.json`](./query-error.schema.json) | `GET /api/sessions?query=... (error path)`<br>`daemon query/read error responses`<br>`MCP query/read error responses` | `QueryErrorPayload` |

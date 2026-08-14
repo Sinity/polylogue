@@ -26,6 +26,8 @@ from devtools.render_support import write_if_changed
 from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
 from polylogue.cli.commands.maintenance._migrate_tier import MigrateTierResultPayload
 from polylogue.operations.action_contracts import ActionAffordanceListPayload
+from polylogue.operations.archive_root_relocation import ArchiveRootRelocationResult
+from polylogue.operations.historical_source_continuity_recovery import HistoricalSourceContinuityRecoveryResult
 from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
     ImportExplainPayload,
@@ -269,6 +271,20 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
         ),
         model=MigrateTierResultPayload,
         surfaces=("polylogue ops maintenance migrate-tier --output-format json",),
+    ),
+    CliOutputSchema(
+        name="archive-root-relocation-result",
+        title="Archive Root Relocation Result",
+        description=("Result from the offline archive-root relocation apply command."),
+        model=ArchiveRootRelocationResult,
+        surfaces=("polylogue ops maintenance archive-root-relocation apply --output-format json",),
+    ),
+    CliOutputSchema(
+        name="historical-source-continuity-recovery-result",
+        title="Historical Source Continuity Recovery Result",
+        description=("Result from the one-purpose pre-#3868 historical source continuity recovery apply command."),
+        model=HistoricalSourceContinuityRecoveryResult,
+        surfaces=("polylogue ops maintenance source-continuity-recovery apply --output-format json",),
     ),
     CliOutputSchema(
         name="machine-error",

@@ -184,12 +184,42 @@ def _sqlite_user_version(path: Path) -> int:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
+def _readable_sqlite_index(path: Path) -> bool:
+    """Return whether an active-pointer candidate is a readable SQLite index.
+
+    Backup follows a genuinely live external index target, but a malformed or
+    stale pointer must not turn an otherwise valid backup into a copy of
+    arbitrary bytes. Relocation still authenticates that pointer separately.
+    """
+    try:
+        _sqlite_user_version(path)
+    except (OSError, sqlite3.Error):
+        return False
+    return True
+
+
 def _sqlite_source_fingerprint(path: Path) -> dict[str, object]:
+    metadata = path.stat()
     return {
         "path": str(path),
-        "size_bytes": path.stat().st_size,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "size_bytes": metadata.st_size,
         "sha256": _sha256_file(path),
         "user_version": _sqlite_user_version(path),
+    }
+
+
+def _archive_root_source_identity(root: Path) -> dict[str, object]:
+    """Capture the pre-move directory identity later authenticated by the receipt."""
+    configured = root.absolute()
+    resolved = root.resolve(strict=True)
+    metadata = resolved.stat()
+    return {
+        "configured_path": str(configured),
+        "resolved_path": str(resolved),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
     }
 
 
@@ -198,7 +228,83 @@ def _json_str_list(value: object) -> list[str]:
 
 
 def _all_archive_tiers(root: Path) -> dict[str, Path]:
-    return archive_tier_paths(root)
+    tiers = archive_tier_paths(root)
+    pointer = root / ".index-active-pointer"
+    try:
+        pointer_metadata = pointer.lstat()
+    except OSError:
+        return tiers
+    try:
+        if stat.S_ISLNK(pointer_metadata.st_mode):
+            raw_target = os.readlink(pointer)
+        elif stat.S_ISREG(pointer_metadata.st_mode) and pointer_metadata.st_nlink == 1:
+            raw_target = pointer.read_text(encoding="utf-8").strip()
+        else:
+            return tiers
+    except (OSError, UnicodeDecodeError):
+        return tiers
+    configured_target = Path(raw_target)
+    if not configured_target.is_absolute() or configured_target.name != "index.db":
+        return tiers
+    if (
+        not configured_target.is_relative_to(root.absolute())
+        and configured_target.is_file()
+        and not configured_target.is_symlink()
+        and _readable_sqlite_index(configured_target)
+    ):
+        tiers["index"] = configured_target
+        return tiers
+    if (
+        configured_target.is_relative_to(root.absolute())
+        and configured_target.is_file()
+        and configured_target.resolve().is_relative_to(root.resolve())
+    ):
+        tiers["index"] = configured_target
+        return tiers
+
+    # An inode-preserving root move leaves the absolute pointer and the
+    # promoted conventional symlink carrying the retired root until the
+    # relocation operation publishes their mapped forms. Locate the unique
+    # conventional symlink paired with that pointer, including a canonical
+    # index below the archive root rather than assuming ``root/index.db``.
+    mapped_candidates: list[tuple[int, Path]] = []
+    target_parts = configured_target.relative_to(configured_target.anchor).parts
+    conventional_candidates = tuple(root.joinpath(*target_parts[-depth:]) for depth in range(1, len(target_parts) + 1))
+    for conventional in dict.fromkeys(conventional_candidates):
+        relative_conventional = conventional.relative_to(root)
+        if ".index-generations" in relative_conventional.parts:
+            continue
+        relative_parts = relative_conventional.parts
+        if len(relative_parts) > len(configured_target.parts) or configured_target.parts[-len(relative_parts) :] != (
+            relative_parts
+        ):
+            continue
+        if conventional.is_file() and not conventional.is_symlink():
+            mapped_candidates.append((len(relative_parts), conventional))
+            continue
+        if conventional.is_symlink():
+            target = Path(os.readlink(conventional))
+            if not target.is_absolute():
+                continue
+            try:
+                relative = target.relative_to(configured_target.parent)
+            except ValueError:
+                continue
+            mapped = conventional.parent / relative
+            if (
+                len(relative.parts) >= 3
+                and relative.parts[0] == ".index-generations"
+                and relative.parts[-1] == "index.db"
+                and mapped.is_file()
+                and not mapped.is_symlink()
+                and _readable_sqlite_index(mapped)
+            ):
+                mapped_candidates.append((len(relative_parts), mapped))
+    longest_suffix = max((length for length, _path in mapped_candidates), default=0)
+    unique_candidates = tuple(dict.fromkeys(path for length, path in mapped_candidates if length == longest_suffix))
+    if len(unique_candidates) == 1:
+        tiers["index"] = unique_candidates[0]
+    return tiers
 
 
 def _profile_archive_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:
@@ -471,6 +577,7 @@ def _write_manifest(
     blob_count: int,
     blob_size: int,
     warnings: list[str],
+    archive_root_source_identity: dict[str, object],
     tier_source_fingerprints: dict[str, dict[str, object]],
     blob_reference_debt: BlobReferenceDebtReport | None = None,
 ) -> None:
@@ -485,6 +592,7 @@ def _write_manifest(
         "blob_count": blob_count,
         "blob_size_bytes": blob_size,
         "blob_inventory_file": "blob-inventory.json",
+        "archive_root_source_identity": archive_root_source_identity,
         "tier_source_fingerprints": tier_source_fingerprints,
         "warnings": warnings,
     }
@@ -604,6 +712,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         blob_count=blob_count,
         blob_size=blob_size,
         warnings=warnings,
+        archive_root_source_identity=_archive_root_source_identity(root),
         tier_source_fingerprints=tier_source_fingerprints,
         blob_reference_debt=blob_reference_debt,
     )
