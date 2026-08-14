@@ -2145,6 +2145,66 @@ async def run_daemon_services(
     api_auth_token: str | None = None,
     api_allow_no_auth: bool = False,
 ) -> None:
+    """Run the daemon while excluding every offline index rebuild.
+
+    The lease is intentionally process-lifetime authority rather than a
+    per-maintenance-call guard.  Startup readiness, reservation recovery,
+    live acquisition, and periodic convergence all mutate source or index
+    state; an offline rebuild must therefore refuse the daemon before any of
+    those routes can run, and the daemon must prevent a rebuild from starting
+    until its writer coordinator has drained.
+    """
+    from polylogue.paths import archive_root
+    from polylogue.storage.index_generation import ActiveWriterLease
+
+    archive_root_path = Path(archive_root())
+    archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    active_writer_lease = ActiveWriterLease(archive_root_path)
+    active_writer_lease.acquire()
+    try:
+        await _run_daemon_services_under_active_writer_lease(
+            sources=sources,
+            debounce_s=debounce_s,
+            enable_watch=enable_watch,
+            enable_source_catchup=enable_source_catchup,
+            enable_browser_capture=enable_browser_capture,
+            browser_capture_host=browser_capture_host,
+            browser_capture_port=browser_capture_port,
+            browser_capture_spool_path=browser_capture_spool_path,
+            browser_capture_allow_remote=browser_capture_allow_remote,
+            browser_capture_auth_token=browser_capture_auth_token,
+            browser_capture_allow_no_auth=browser_capture_allow_no_auth,
+            browser_capture_extra_origins=browser_capture_extra_origins,
+            enable_api=enable_api,
+            api_host=api_host,
+            api_port=api_port,
+            api_auth_token=api_auth_token,
+            api_allow_no_auth=api_allow_no_auth,
+        )
+    finally:
+        active_writer_lease.close()
+
+
+async def _run_daemon_services_under_active_writer_lease(
+    *,
+    sources: tuple[WatchSource, ...],
+    debounce_s: float,
+    enable_watch: bool,
+    enable_source_catchup: bool = True,
+    enable_browser_capture: bool,
+    browser_capture_host: str,
+    browser_capture_port: int,
+    browser_capture_spool_path: Path | None,
+    browser_capture_allow_remote: bool = False,
+    browser_capture_auth_token: str | None = None,
+    browser_capture_allow_no_auth: bool = False,
+    browser_capture_extra_origins: tuple[str, ...] = (),
+    enable_api: bool = False,
+    api_host: str = "127.0.0.1",
+    api_port: int = 8766,
+    api_auth_token: str | None = None,
+    api_allow_no_auth: bool = False,
+) -> None:
     """Run configured daemon components until interrupted."""
     from polylogue.daemon import process_start as _process_start
     from polylogue.daemon.status_snapshot import configure_runtime_components

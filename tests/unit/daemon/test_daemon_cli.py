@@ -3556,6 +3556,52 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
 
 
+def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An offline rebuild must refuse the daemon before durable startup writes."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+
+    source_db = archive_root_path / "source.db"
+    publisher = ArchiveBlobPublisher(source_db, BlobStore(archive_root_path / "blob").root)
+    publisher.write_from_bytes(b"startup-rebuild-refusal")
+    publisher.flush()
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+
+    with (
+        RebuildLease(archive_root_path),
+        pytest.raises(
+            RebuildLeaseUnavailableError,
+            match="offline index rebuild owns archive",
+        ),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    with sqlite3.connect(source_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+    assert not (archive_root_path / "daemon.pid").exists()
+
+
 def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     from polylogue.daemon import cli as daemon_cli
 
