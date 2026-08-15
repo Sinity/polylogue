@@ -47,6 +47,7 @@ from polylogue.operations.historical_source_continuity_recovery import (
     _assert_complete_source_semantic_delta,
     _assert_exact_liveness_delta,
     _current_evidence,
+    _immutable_read_connection,
     _sha256,
     _table_content_digest,
     _verify_historical_operation_evidence,
@@ -102,6 +103,30 @@ from polylogue.storage.sqlite.migration_runner import (
     release_durable_change_train,
     write_durable_change_train_manifest,
 )
+
+
+def test_historical_evidence_reads_keep_sqlite_temp_btrees_off_the_filesystem(tmp_path: Path) -> None:
+    """Read-only continuity evidence remains executable on constrained roots."""
+    source = tmp_path / "source.db"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_type TEXT NOT NULL,
+                ref_id TEXT NOT NULL
+            );
+            INSERT INTO blob_refs VALUES (X'01', 'raw_payload', 'raw-1');
+            INSERT INTO blob_refs VALUES (X'02', 'raw_payload', 'raw-2');
+            INSERT INTO blob_refs VALUES (X'03', 'attachment', 'att-1');
+            """
+        )
+
+    with _immutable_read_connection(source) as connection:
+        assert connection.execute("PRAGMA temp_store").fetchone() == (2,)
+        assert connection.execute(
+            "SELECT ref_type, COUNT(*) FROM blob_refs GROUP BY ref_type ORDER BY ref_type"
+        ).fetchall() == [("attachment", 1), ("raw_payload", 2)]
 
 
 @contextmanager
