@@ -2963,6 +2963,17 @@ def _reconcile_durable_change_train_startup_locked(
         tier_manifest_paths = tuple(
             path for path in manifest_root.glob(f"{tier.value}-*.json") if not _is_audit_continuity_receipt(path)
         )
+        if tier is ArchiveTier.AUDIT and not tier_manifest_paths:
+            # An established archive may have received audit.db through the
+            # verified adoption route before the source continuity half was
+            # published.  The adoption receipt is the authority for this
+            # narrow pre-train state; the ordinary audit train is admitted
+            # once source continuity exists and the audit migration route can
+            # publish its own released manifest.
+            from polylogue.operations.durable_change_train import audit_adoption_receipt_path
+
+            if audit_adoption_receipt_path(archive_root).is_file():
+                continue
         bootstrap_version = fresh_bootstrap_versions.get(tier)
         if bootstrap_version is not None and current_version < bootstrap_version:
             raise DurableChangeTrainError(
