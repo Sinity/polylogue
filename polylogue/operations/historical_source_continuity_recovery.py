@@ -77,6 +77,22 @@ RECEIPT_FORMAT: Literal["polylogue.historical-source-continuity-recovery-receipt
 _HISTORICAL_OPERATION_EVIDENCE_RESOURCE = "historical-source-continuity-operation-20260807.json"
 
 
+def _immutable_read_connection(path: Path) -> sqlite3.Connection:
+    """Open an immutable evidence DB without depending on filesystem temp space.
+
+    The continuity proof runs against large read-only SQLite images.  Several
+    of its deterministic joins and ordered digests need temporary b-trees;
+    SQLite's default temp-file mode can fail with ``disk I/O error`` when the
+    archive is being checked from a read-only overlay or a constrained tmpfs.
+    The proof is bounded by the caller's RAM budget and must not create
+    incidental files beside authenticated evidence, so keep those structures
+    in SQLite's memory temp store.
+    """
+    connection = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    connection.execute("PRAGMA temp_store=MEMORY")
+    return connection
+
+
 class HistoricalSourceContinuityRecoveryError(DurableChangeTrainError):
     """Historical evidence cannot prove this one recovery transition."""
 
@@ -334,7 +350,7 @@ def _backup_source_evidence(
     if any(fingerprint.get(key) != value or artifact.get(key) != value for key, value in actual.items()):
         raise HistoricalSourceContinuityRecoveryError("historical backup source bytes differ from its receipt")
     try:
-        with sqlite3.connect(f"file:{backup_source}?mode=ro&immutable=1", uri=True) as connection:
+        with _immutable_read_connection(backup_source) as connection:
             evidence = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
     except sqlite3.Error as exc:
         raise HistoricalSourceContinuityRecoveryError("historical backup source is unreadable") from exc
@@ -589,7 +605,7 @@ def _current_evidence(root: Path) -> DurableDatabaseEvidence:
                 "historical continuity recovery refuses source SQLite sidecars"
             )
     try:
-        with sqlite3.connect(f"file:{root / 'source.db'}?mode=ro&immutable=1", uri=True) as connection:
+        with _immutable_read_connection(root / "source.db") as connection:
             return capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
     except sqlite3.Error as exc:
         raise HistoricalSourceContinuityRecoveryError("cannot read current source evidence") from exc
@@ -673,8 +689,8 @@ def _assert_complete_source_semantic_delta(pre_source: Path, post_source: Path) 
     """Require every non-blob-ref schema object and relation to be identical."""
     try:
         with (
-            sqlite3.connect(f"file:{pre_source}?mode=ro&immutable=1", uri=True) as pre,
-            sqlite3.connect(f"file:{post_source}?mode=ro&immutable=1", uri=True) as post,
+            _immutable_read_connection(pre_source) as pre,
+            _immutable_read_connection(post_source) as post,
         ):
             if capture_durable_schema_inventory(pre) != capture_durable_schema_inventory(post):
                 raise HistoricalSourceContinuityRecoveryError("pre/post backups have source schema or object drift")
@@ -701,8 +717,8 @@ def _assert_exact_liveness_delta(
     candidate_keys = {(candidate.blob_hash.lower(), candidate.ref_type, candidate.ref_id) for candidate in candidates}
     try:
         with (
-            sqlite3.connect(f"file:{pre_source}?mode=ro&immutable=1", uri=True) as pre,
-            sqlite3.connect(f"file:{post_source}?mode=ro&immutable=1", uri=True) as post,
+            _immutable_read_connection(pre_source) as pre,
+            _immutable_read_connection(post_source) as post,
         ):
             pre_has_blob_refs = (
                 pre.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'blob_refs'").fetchone()
@@ -884,9 +900,7 @@ def prepare_historical_source_continuity_recovery(
         post_source=post_backup_manifest.parent / "source.db",
     )
     try:
-        with sqlite3.connect(
-            f"file:{pre_backup_manifest.parent / 'source.db'}?mode=ro&immutable=1", uri=True
-        ) as connection:
+        with _immutable_read_connection(pre_backup_manifest.parent / "source.db") as connection:
             prior = classify_blob_ref_liveness(connection)
     except sqlite3.Error as exc:
         raise HistoricalSourceContinuityRecoveryError("cannot recompute historical liveness candidates") from exc
