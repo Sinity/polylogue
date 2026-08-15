@@ -988,6 +988,27 @@ def _validate_audit_adoption_continuity(
     expected_initial_file_identity: tuple[int, int] | None,
 ) -> None:
     """Require the published audit path to retain its adopted live identity."""
+    # An adopted audit image can legitimately precede source v32: the source
+    # migration that publishes ``audit_continuity_control`` is what creates
+    # the first source-backed continuity head.  Do not make the startup
+    # validator prevent that migration from running.  Once the source claims
+    # the continuity schema, a missing control table remains a hard failure.
+    source_path = archive_root / "source.db"
+    try:
+        with closing(sqlite3.connect(f"file:{source_path}?mode=ro&immutable=1", uri=True)) as source:
+            source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
+            has_control = (
+                source.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit_continuity_control'"
+                ).fetchone()
+                is not None
+            )
+    except sqlite3.DatabaseError as exc:
+        raise MigrationError("cannot inspect source schema for audit adoption continuity") from exc
+    if not has_control:
+        if source_version < 32:
+            return
+        raise MigrationError("audit adoption continuity requires source audit_continuity_control")
     continuity = _latest_audit_adoption_continuity(archive_root)
     if continuity is None:
         _write_audit_adoption_continuity(
