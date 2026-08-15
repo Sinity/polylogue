@@ -1276,9 +1276,12 @@ def _revalidate(
     if not _evidence_matches_plan(current, plan.source_after) or current.content_sha256 != post.content_sha256:
         raise HistoricalSourceContinuityRecoveryError("historical continuity recovery current source changed")
     train = load_durable_change_train_manifest(Path(plan.source_train_path))
-    if expected_pre_identity is None:
+    if expected_pre_identity is None or plan.post_move_witness is not None:
         _require_legacy_destination_train_identity(
-            train, new_identity, old_configured_root=Path(plan.old_configured_root)
+            train,
+            new_identity,
+            old_configured_root=Path(plan.old_configured_root),
+            post_move_witness=plan.post_move_witness,
         )
     train_sha256 = _sha256(Path(plan.source_train_path))
     if train_sha256 == plan.source_train_sha256:
