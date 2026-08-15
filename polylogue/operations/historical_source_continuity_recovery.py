@@ -33,6 +33,7 @@ from polylogue.maintenance.receipt_fs import (
     maintenance_receipt_directory,
     read_optional_receipt,
 )
+from polylogue.operations.archive_root_relocation import RelocationPostMoveWitness
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import (
     ArchiveIdentity,
@@ -103,6 +104,7 @@ class HistoricalSourceContinuityRecoveryPlan(BaseModel):
     format: Literal["polylogue.historical-source-continuity-recovery-plan.v2"] = PLAN_FORMAT
     old_configured_root: str
     old_resolved_root: str
+    post_move_witness: RelocationPostMoveWitness | None = None
     new_configured_root: str
     new_resolved_root: str
     mutation_receipt_path: str
@@ -374,7 +376,11 @@ def _require_source_identity(root: Path, *, device: int, inode: int, label: str)
 
 
 def _require_legacy_destination_train_identity(
-    train: DurableChangeTrain, identity: TierFileIdentity, *, old_configured_root: Path
+    train: DurableChangeTrain,
+    identity: TierFileIdentity,
+    *,
+    old_configured_root: Path,
+    post_move_witness: RelocationPostMoveWitness | None = None,
 ) -> None:
     """Use the pre-existing released train to distinguish a move from a copy."""
     if train.apply_evidence is None:
@@ -382,10 +388,17 @@ def _require_legacy_destination_train_identity(
             "historical continuity recovery requires released source authority"
         )
     live_archive_identity = ArchiveIdentity.resolve(identity.configured_path.parent)
+    legacy_device = post_move_witness.legacy_device if post_move_witness is not None else identity.device
+    if legacy_device is None:
+        raise HistoricalSourceContinuityRecoveryError("historical continuity recovery lacks legacy device identity")
+    legacy_tiers = tuple(
+        TierFileIdentity(item.name, item.configured_path, item.resolved_path, legacy_device, item.inode)
+        for item in live_archive_identity.tiers
+    )
     relocated_legacy_identity = ArchiveIdentity(
         configured_root=old_configured_root,
-        tiers=live_archive_identity.tiers,
-        active_generation=live_archive_identity.active_generation,
+        tiers=legacy_tiers,
+        active_generation=next(item for item in legacy_tiers if item.name == "index").stable_id,
     )
     actual_identities = {
         hashlib.sha256(identity.stable_id.encode("utf-8")).hexdigest(),
@@ -854,6 +867,7 @@ def prepare_historical_source_continuity_recovery(
     post_backup_manifest: Path,
     stopped_daemon_evidence_ref: str,
     single_writer_evidence_ref: str,
+    post_move_witness: RelocationPostMoveWitness | None = None,
 ) -> HistoricalSourceContinuityRecoveryPlan:
     """Seal a read-only recovery plan for the one historical liveness receipt."""
     old_configured = old_root.absolute()
@@ -863,6 +877,13 @@ def prepare_historical_source_continuity_recovery(
         raise HistoricalSourceContinuityRecoveryError(
             "historical continuity recovery requires distinct old and new roots"
         )
+    if post_move_witness is not None and (
+        post_move_witness.old_configured_root != str(old_configured)
+        or post_move_witness.old_resolved_root != str(old_resolved)
+        or post_move_witness.new_configured_root != str(new_root.absolute())
+        or post_move_witness.new_resolved_root != str(root)
+    ):
+        raise HistoricalSourceContinuityRecoveryError("historical continuity post-move witness root binding changed")
     old_source = old_resolved / "source.db"
     pre_receipt, _pre_manifest, pre, pre_identity = _backup_source_evidence(
         pre_backup_manifest, old_source_path=old_source
@@ -880,10 +901,24 @@ def prepare_historical_source_continuity_recovery(
             raise HistoricalSourceContinuityRecoveryError("historical continuity recovery source.db is missing")
     else:
         assert post_identity is not None
-        new_source_identity = _require_source_identity(
-            root, device=pre_identity[0], inode=pre_identity[1], label="pre backup"
-        )
-        _require_source_identity(root, device=post_identity[0], inode=post_identity[1], label="post backup")
+        if post_move_witness is not None:
+            if (
+                pre_identity[0] != post_move_witness.legacy_device
+                or post_identity[0] != post_move_witness.legacy_device
+                or pre_identity[1] != post_move_witness.source_inode
+                or post_identity[1] != post_move_witness.source_inode
+            ):
+                raise HistoricalSourceContinuityRecoveryError(
+                    "historical continuity post-move witness differs from authenticated backup identity"
+                )
+            new_source_identity = TierFileIdentity.resolve("source", root / "source.db")
+            if new_source_identity.inode != post_move_witness.source_inode:
+                raise HistoricalSourceContinuityRecoveryError("historical continuity post-move source inode changed")
+        else:
+            new_source_identity = _require_source_identity(
+                root, device=pre_identity[0], inode=pre_identity[1], label="pre backup"
+            )
+            _require_source_identity(root, device=post_identity[0], inode=post_identity[1], label="post backup")
     assert new_source_identity.device is not None and new_source_identity.inode is not None
     candidates, candidate_digest = _legacy_liveness_receipt(
         mutation_receipt, old_source_path=old_source, pre_manifest=pre_backup_manifest.absolute()
@@ -946,8 +981,13 @@ def prepare_historical_source_continuity_recovery(
     train_path = manifest_root / f"source-{train.slot:03d}.json"
     _real_file(train_path, label="current released source train")
     _, source_before = _assert_pre_train_authority(train_path, pre)
-    if pre_identity is None:
-        _require_legacy_destination_train_identity(train, new_source_identity, old_configured_root=old_configured)
+    if pre_identity is None or post_move_witness is not None:
+        _require_legacy_destination_train_identity(
+            train,
+            new_source_identity,
+            old_configured_root=old_configured,
+            post_move_witness=post_move_witness,
+        )
     if train.source_continuity_evidence is not None:
         raise HistoricalSourceContinuityRecoveryError("current released source train already has continuity authority")
     census = _census(root)
@@ -993,6 +1033,7 @@ def prepare_historical_source_continuity_recovery(
     return _sealed_plan(
         old_configured_root=str(old_configured),
         old_resolved_root=str(old_resolved),
+        post_move_witness=post_move_witness,
         new_configured_root=str(new_root.absolute()),
         new_resolved_root=str(root),
         mutation_receipt_path=str(mutation_receipt.absolute()),

@@ -25,6 +25,7 @@ from polylogue.operations.archive_root_relocation import (
     ArchiveRootRelocationPlan,
     RelocationActiveIndexPointer,
     RelocationIndexGeneration,
+    RelocationPostMoveWitness,
     RelocationTierEvidence,
     _check_backup_against_live,
     apply_archive_root_relocation,
@@ -2960,6 +2961,47 @@ def test_plan_rejects_the_real_stale_source_train_shape_before_receipt_write(
 
     assert (new_root / manifest.relative_to(old_root)).read_bytes() == manifest_before
     assert not (new_root / ".maintenance-state" / "archive-root-relocations").exists()
+
+
+def test_relocation_accepts_a_mover_rewritten_pointer_only_with_a_bound_witness(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mover may rewrite absolute pointers before Polylogue plans the move."""
+    old_root = workspace_env["archive_root"]
+    manifest = _released_moved_source_train(old_root, monkeypatch)
+    _activate_movable_index_generation(old_root)
+    _attach_retained_source_continuity(old_root, manifest)
+    new_root = tmp_path / "moved"
+    source_inode = (old_root / "source.db").stat().st_ino
+    legacy_device = (old_root / "source.db").stat().st_dev
+    os.rename(old_root, new_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(new_root))
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok and backup.output_path is not None
+    (new_root / ".index-active-pointer").write_text(str(new_root / "index.db"), encoding="utf-8")
+    witness = RelocationPostMoveWitness(
+        format="polylogue.archive-root-relocation-post-move-witness.v1",
+        old_configured_root=str(old_root.absolute()),
+        old_resolved_root=str(old_root.absolute()),
+        new_configured_root=str(new_root.absolute()),
+        new_resolved_root=str(new_root.resolve()),
+        legacy_device=legacy_device,
+        source_inode=source_inode,
+        evidence_ref="test:mover-rewritten-pointer",
+    )
+
+    plan = prepare_archive_root_relocation(
+        old_root=old_root,
+        new_root=new_root,
+        backup_manifest=Path(backup.output_path) / "manifest.json",
+        stopped_daemon_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        post_move_witness=witness,
+    )
+
+    assert plan.post_move_witness == witness
+    assert plan.active_index_pointer is not None
+    assert plan.active_index_pointer.old_target == str(old_root / "index.db")
 
 
 def test_historical_continuity_recovery_cli_rejects_a_byte_identical_copied_archive(

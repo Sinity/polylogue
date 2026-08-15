@@ -8,6 +8,7 @@ from pathlib import Path
 
 import click
 
+from polylogue.operations.archive_root_relocation import RelocationPostMoveWitness
 from polylogue.operations.durable_change_train import ArchiveOwnershipError, acquire_durable_archive_ownership
 from polylogue.operations.historical_source_continuity_recovery import (
     HistoricalSourceContinuityRecoveryError,
@@ -29,6 +30,7 @@ def source_continuity_recovery_command() -> None:
 @click.option("--mutation-receipt", required=True, type=click.Path(path_type=Path, exists=True))
 @click.option("--pre-backup-manifest", required=True, type=click.Path(path_type=Path, exists=True))
 @click.option("--post-backup-manifest", required=True, type=click.Path(path_type=Path, exists=True))
+@click.option("--post-move-witness", type=click.Path(path_type=Path, exists=True), default=None)
 @click.option("--output", required=True, type=click.Path(path_type=Path))
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def source_continuity_recovery_plan_command(
@@ -36,6 +38,7 @@ def source_continuity_recovery_plan_command(
     mutation_receipt: Path,
     pre_backup_manifest: Path,
     post_backup_manifest: Path,
+    post_move_witness: Path | None,
     output: Path,
     output_format: str,
 ) -> None:
@@ -48,6 +51,16 @@ def source_continuity_recovery_plan_command(
             root, owner_id=f"historical-source-continuity-recovery-plan:{os.getpid()}"
         ):
             stopped = _require_stopped_daemon(root)
+            witness = None
+            if post_move_witness is not None:
+                try:
+                    witness = RelocationPostMoveWitness.model_validate_json(
+                        post_move_witness.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError) as exc:
+                    raise HistoricalSourceContinuityRecoveryError(
+                        "historical continuity post-move witness is invalid"
+                    ) from exc
             plan = prepare_historical_source_continuity_recovery(
                 old_root=old_root,
                 new_root=root,
@@ -56,6 +69,7 @@ def source_continuity_recovery_plan_command(
                 post_backup_manifest=post_backup_manifest,
                 stopped_daemon_evidence_ref=stopped,
                 single_writer_evidence_ref="proof:archive-ownership-lock",
+                post_move_witness=witness,
             )
             write_historical_source_continuity_recovery_plan(plan, output)
     except (ArchiveOwnershipError, HistoricalSourceContinuityRecoveryError, OSError) as exc:

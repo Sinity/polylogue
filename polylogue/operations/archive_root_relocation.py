@@ -122,6 +122,28 @@ class RelocationActiveIndexPointer(BaseModel):
     inode: int
 
 
+class RelocationPostMoveWitness(BaseModel):
+    """Evidence from a mover that rewrote paths before Polylogue could plan.
+
+    The normal route observes an old-root-owned pointer directly.  A managed
+    storage move may instead rewrite the pointer and remove the old path
+    first.  This witness does not waive identity checks: it supplies the
+    historical device identity and binds the two configured roots so the
+    released train and the current inodes must still agree.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    format: Literal["polylogue.archive-root-relocation-post-move-witness.v1"]
+    old_configured_root: str
+    old_resolved_root: str
+    new_configured_root: str
+    new_resolved_root: str
+    legacy_device: int
+    source_inode: int
+    evidence_ref: str
+
+
 class RelocationIndexGenerationSymlink(BaseModel):
     """One generation-owned tier link whose absolute target moves with the root."""
 
@@ -177,6 +199,7 @@ class ArchiveRootRelocationPlan(BaseModel):
     backup_tier_inventory: tuple[str, ...]
     tiers: tuple[RelocationTierEvidence, ...]
     active_index_pointer: RelocationActiveIndexPointer | None
+    post_move_witness: RelocationPostMoveWitness | None = None
     index_generations: tuple[RelocationIndexGeneration, ...]
     durable_trains: tuple[RelocationDurableTrain, ...]
     stopped_daemon_evidence_ref: str
@@ -404,7 +427,9 @@ def _read_active_index_pointer(root: Path) -> tuple[Path, Path] | None:
     return pointer, Path(os.path.abspath(target))
 
 
-def _active_index_pointer_evidence(*, old_root: Path, new_root: Path) -> RelocationActiveIndexPointer | None:
+def _active_index_pointer_evidence(
+    *, old_root: Path, new_root: Path, post_move_witness: RelocationPostMoveWitness | None = None
+) -> RelocationActiveIndexPointer | None:
     """Map an old-root-owned target before the relocation can publish it anew."""
     pointer = _read_active_index_pointer(new_root)
     if pointer is None:
@@ -413,9 +438,16 @@ def _active_index_pointer_evidence(*, old_root: Path, new_root: Path) -> Relocat
     try:
         relative_target = old_target.relative_to(old_root)
     except ValueError as exc:
-        raise ArchiveRootRelocationError(
-            "archive-root relocation active index pointer target is not owned by the old root"
-        ) from exc
+        try:
+            moved_relative_target = old_target.relative_to(new_root)
+        except ValueError:
+            moved_relative_target = None
+        if post_move_witness is None or moved_relative_target is None:
+            raise ArchiveRootRelocationError(
+                "archive-root relocation active index pointer target is not owned by the old root"
+            ) from exc
+        relative_target = moved_relative_target
+        old_target = old_root / relative_target
     new_target = new_root / relative_target
     conventional_old_target: str | None = None
     conventional_new_target: str | None = None
@@ -426,9 +458,12 @@ def _active_index_pointer_evidence(*, old_root: Path, new_root: Path) -> Relocat
             try:
                 conventional_relative = raw_conventional_target.relative_to(old_root)
             except ValueError as exc:
-                raise ArchiveRootRelocationError(
-                    "archive-root relocation conventional index target is not owned by the old root"
-                ) from exc
+                try:
+                    conventional_relative = raw_conventional_target.relative_to(new_root)
+                except ValueError:
+                    raise ArchiveRootRelocationError(
+                        "archive-root relocation conventional index target is not owned by the old root"
+                    ) from exc
             conventional_new_target = str(new_root / conventional_relative)
             new_resolved_target = Path(conventional_new_target).resolve(strict=True)
         else:
@@ -1058,6 +1093,7 @@ def _durable_trains(
     *,
     old_root: Path,
     snapshots: tuple[RelocationTierEvidence, ...],
+    post_move_witness: RelocationPostMoveWitness | None = None,
 ) -> tuple[RelocationDurableTrain, ...]:
     manifest_root = root / ".maintenance-state" / "durable-change-trains"
     _real_directory(root / ".maintenance-state", label="maintenance state")
@@ -1088,6 +1124,27 @@ def _durable_trains(
         active_generation=configured_index_identity.stable_id,
     ).authority_identity_digest
     accepted_legacy_identities = {legacy_active_identity, legacy_configured_identity}
+    if post_move_witness is not None:
+        witness_tier_identities = tuple(
+            TierFileIdentity(
+                item.tier,
+                old_root / Path(item.configured_path).relative_to(root),
+                old_root / Path(item.resolved_path).relative_to(root)
+                if Path(item.resolved_path).is_relative_to(root)
+                else Path(item.resolved_path),
+                post_move_witness.legacy_device,
+                item.inode,
+            )
+            for item in snapshots
+        )
+        witness_index = next(item for item in witness_tier_identities if item.name == "index")
+        accepted_legacy_identities.add(
+            ArchiveIdentity(
+                configured_root=old_root,
+                tiers=witness_tier_identities,
+                active_generation=witness_index.stable_id,
+            ).authority_identity_digest
+        )
     snapshots_by_tier = {item.tier: item for item in snapshots}
     trains: list[RelocationDurableTrain] = []
     for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
@@ -1235,6 +1292,7 @@ def prepare_archive_root_relocation(
     backup_manifest: Path,
     stopped_daemon_evidence_ref: str,
     single_writer_evidence_ref: str,
+    post_move_witness: RelocationPostMoveWitness | None = None,
 ) -> ArchiveRootRelocationPlan:
     """Capture immutable, read-only evidence for the one root transition."""
     old_configured = old_root.absolute()
@@ -1243,6 +1301,17 @@ def prepare_archive_root_relocation(
     new_resolved = _real_directory(new_root, label="new archive root")
     if old_resolved == new_resolved:
         raise ArchiveRootRelocationError("archive-root relocation requires distinct old and new roots")
+    if post_move_witness is not None:
+        if (
+            post_move_witness.old_configured_root != str(old_configured)
+            or post_move_witness.old_resolved_root != str(old_resolved)
+            or post_move_witness.new_configured_root != str(new_configured)
+            or post_move_witness.new_resolved_root != str(new_resolved)
+        ):
+            raise ArchiveRootRelocationError("archive-root relocation post-move witness root binding changed")
+        source_identity = TierFileIdentity.resolve("source", new_resolved / "source.db")
+        if source_identity.inode != post_move_witness.source_inode:
+            raise ArchiveRootRelocationError("archive-root relocation post-move witness source inode changed")
     _reject_sidecars(new_resolved)
     try:
         manifest_path, receipt_path, manifest, receipt = validate_full_evidence_backup_for_archive_root_relocation(
@@ -1256,7 +1325,9 @@ def prepare_archive_root_relocation(
         manifest.get("archive_root_source_identity"), label="archive root"
     )
     backup_tier_identities = _authenticated_backup_tier_identities(manifest)
-    active_index_pointer = _active_index_pointer_evidence(old_root=old_resolved, new_root=new_resolved)
+    active_index_pointer = _active_index_pointer_evidence(
+        old_root=old_resolved, new_root=new_resolved, post_move_witness=post_move_witness
+    )
     index_generations = _index_generation_evidence(
         old_root=old_resolved,
         new_root=new_resolved,
@@ -1277,6 +1348,7 @@ def prepare_archive_root_relocation(
         new_resolved,
         old_root=old_resolved,
         snapshots=snapshots,
+        post_move_witness=post_move_witness,
     )
     root_metadata = new_resolved.stat()
     _require_identity_continuity(
@@ -1303,6 +1375,7 @@ def prepare_archive_root_relocation(
         backup_tier_inventory=tuple(sorted(f"{tier}.db" for tier in _TIER_NAMES)),
         tiers=snapshots,
         active_index_pointer=active_index_pointer,
+        post_move_witness=post_move_witness,
         index_generations=index_generations,
         durable_trains=trains,
         stopped_daemon_evidence_ref=stopped_daemon_evidence_ref,
