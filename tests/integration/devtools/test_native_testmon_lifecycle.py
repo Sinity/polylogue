@@ -1223,6 +1223,12 @@ def test_unfinished():
         "-q",
         "-p",
         "no:randomly",
+        # _pytest_environment sets PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so every
+        # plugin this child needs must be named explicitly. Without this the
+        # child rejects --testmon as an unrecognized argument and the fixture
+        # under test never starts.
+        "-p",
+        "pytest-testmon",
         "--testmon",
         f"--testmon-env={environment_name}",
         "--testmon-noselect",
