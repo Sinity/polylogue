@@ -17,14 +17,52 @@ be effective here. For depth, read the referenced docs on demand (see
 The system has four rings; substrate owns meaning, surfaces are leaf adapters:
 
 ```
-sources/ ─detect→ pipeline/ ─hash+write→ storage/{5 tiers} ─materialize→ insights/
+sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materialize→ insights/
                                               │                              │
                             surfaces: cli/  mcp/  api/  daemon/  ─read-through─┘
                             verification:   devtools/  tests/  schemas/
 ```
 
-Package sizes (rough): `storage/` (largest), `daemon/`, `cli/`, `archive/`,
-`sources/`, `schemas/`, `insights/`. Entry points:
+That diagram names eleven of **33 top-level packages**. The rest are not cruft
+— they are two thirds of the tree by count and over 100k LOC — so the full map
+follows, with LOC and the number of production files importing each. Read it
+before concluding a package is dead: low importer counts here are usually
+*foundational or deliberately early*, not abandoned.
+
+| Package | LOC | importers | Role |
+| --- | --- | --- | --- |
+| `archive/` | 34,758 | 283 | Query DSL, `SessionFilter`, revision membership — the read-side model over storage |
+| `maintenance/` | 27,119 | 73 | Rebuild, remediation passes, verification gates, live proofs (the reindex campaign's machinery) |
+| `operations/` | 14,644 | 52 | High-level archive operations and their typed contracts |
+| `core/` | 7,063 | 483 | Enums, hashing, sources vocabulary — the most-imported package in the tree |
+| `surfaces/` | 5,256 | 54 | Wire payload classes shared by CLI/MCP/API |
+| `rendering/` | 4,440 | 19 | Transcript and view rendering |
+| `browser_capture/` | 4,430 | 10 | Receiver and spool for live browser capture |
+| `demo/` | 4,089 | 2 | Private-data-free seed/verify corpus |
+| `scenarios/` | 3,797 | 13 | Executable scenario definitions |
+| `annotations/` | 3,342 | 10 | Versioned annotation schemas and batch provenance |
+| `coordination/` | 3,147 | 7 | Cross-agent blackboard assertions |
+| `agent_integration/` | 2,529 | 7 | Hook and agent-harness installers |
+| `sinex/` | 2,495 | 8 | Sinex-backed mode — **built ahead of `polylogue-303r`, unfinished by design** |
+| `readiness/` | 2,162 | 20 | Archive readiness and schema-currency checks |
+| `security/` | 1,967 | 9 | Redaction and privacy boundaries |
+| `material_protocol/` | 1,864 | 9 | Normalized-session wire format — **also early, see `docs/material-protocol-v1.md`** |
+| `ui/` | 1,799 | 13 | Facade for the reader UIs |
+| `product/` | 1,505 | 3 | Product-level query/action workflows |
+| `context/` | 1,359 | 8 | Context packs and recall |
+| `hooks/` | 987 | 5 | Hook event ingestion |
+| `cost/` | 819 | 7 | Pricing catalog and cost attribution |
+| `declarations/` | 694 | 9 | Declarative registries |
+| `paths/` | 415 | 126 | XDG/archive root resolution — tiny, and second only to `core/` in fan-in |
+| `telemetry/` | 244 | 2 | OTel export (`api.export_otel` is a documented public method) |
+
+Two cautions this table exists to prevent, both of which have already cost
+this repo a real incident: `sinex/` and `material_protocol/` have single-digit
+importer counts because they are **built ahead of** a mode that has not
+shipped, not because they are dead; and `paths/`, at 415 LOC, is imported by
+126 production files, so "small" says nothing about blast radius.
+
+Entry points:
 
 | File | Role |
 | --- | --- |

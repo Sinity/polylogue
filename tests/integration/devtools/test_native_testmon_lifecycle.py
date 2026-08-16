@@ -29,6 +29,15 @@ from devtools.verify_runs import PYTEST_CANONICAL_REPORT_NAME
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 pytestmark = [
     pytest.mark.uses_real_clock("coordinates real pytest subprocesses and an interrupt deadline"),
+    # Every test here spawns a full production `devtools verify` subprocess.
+    # Two of those running concurrently contend over the same repo-level
+    # verification state, so under xdist this module fails roughly half its
+    # tests while passing completely when run serially -- measured at the
+    # merge base as 22 failed / 20 passed with `-n 2` against 42 passed with
+    # no xdist. That is exactly what `load_sensitive` exists for (#1775):
+    # route the test into the isolated single-process lane rather than let
+    # worker contention flake it.
+    pytest.mark.load_sensitive,
     pytest.mark.timeout(300),
 ]
 
