@@ -3343,6 +3343,23 @@ def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
     assert spaced != changed_literal
 
 
+def test_historical_source_inventory_removes_only_future_schema_objects() -> None:
+    """Historical parity keeps replaced v28 objects and removes v29+ additions."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
+        migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, 28)
+        inventory = migration_runner.capture_durable_schema_inventory(connection)
+    finally:
+        connection.close()
+
+    refs = {item.object_ref for item in inventory.objects}
+    assert "index:idx_raw_artifacts_source_identity" in refs
+    assert "index:idx_raw_artifacts_failure_identity" not in refs
+    assert "table:raw_container_coordinates" not in refs
+    assert "column:raw_sessions.detected_provider" not in refs
+
+
 def test_admission_rejects_stale_current_and_target_versions() -> None:
     train = _declared(ArchiveTier.SOURCE)
     with pytest.raises(DurableChangeTrainError, match="stale durable train current"):
