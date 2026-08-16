@@ -37,7 +37,17 @@ _XDG_STATE_HOME = os.environ.get("XDG_STATE_HOME", "").strip()
 DEVTOOLS_STATE_DIR = (
     (Path(_XDG_STATE_HOME) if _XDG_STATE_HOME else Path.home() / ".local" / "state") / "polylogue" / "devtools"
 )
-VERIFY_HISTORY_PATH = DEVTOOLS_STATE_DIR / "verify-history.jsonl"
+VERIFY_HISTORY_ENV = "POLYLOGUE_VERIFY_HISTORY_PATH"
+# The run history is the only verification artifact that outlives a checkout,
+# so where it lives is a deployment question, not a repo one. The XDG default
+# keeps a fresh clone and a cloud sandbox working with no configuration; an
+# operator whose machine has a canonical data lake points this at it instead.
+_VERIFY_HISTORY_OVERRIDE = os.environ.get(VERIFY_HISTORY_ENV, "").strip()
+VERIFY_HISTORY_PATH = (
+    Path(_VERIFY_HISTORY_OVERRIDE).expanduser()
+    if _VERIFY_HISTORY_OVERRIDE
+    else DEVTOOLS_STATE_DIR / "verify-history.jsonl"
+)
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 VERIFICATION_INVOCATION_ID_ENV = "POLYLOGUE_VERIFICATION_INVOCATION_ID"
 VERIFICATION_RECEIPT_PATH_ENV = "POLYLOGUE_VERIFICATION_RECEIPT_PATH"
