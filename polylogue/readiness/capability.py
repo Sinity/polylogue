@@ -177,7 +177,15 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     parser_census_incomplete_count = int(payload.get("raw_authority_parser_census_incomplete_count") or 0)
     parser_census_incomplete_blob_bytes = int(payload.get("raw_authority_parser_census_incomplete_blob_bytes") or 0)
     parser_census = payload.get("raw_authority_parser_census")
-    parser_census_present = "raw_authority_parser_census" in payload
+    # Presence means a census mapping actually arrived -- not merely that the
+    # key exists. RawMaterializationReadiness declares
+    # raw_authority_parser_census with a None default and always serialises it,
+    # so a key-existence test is unconditionally true and made EVERY payload
+    # without an explicit census resolve to UNKNOWN "source parser census
+    # unavailable", shadowing known blocked/degraded states (#3903 intended to
+    # block on a census that reports unavailable, not on the absence of census
+    # information).
+    parser_census_present = isinstance(parser_census, Mapping)
     parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
     raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
     materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
