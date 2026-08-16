@@ -1029,7 +1029,13 @@ def _source_v20_ddl_with_stale_origin_check() -> str:
     )
     assert capture_mode_declaration in stale
     stale = stale.replace(capture_mode_declaration, "")
-    raw_sessions_close = "        CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))\n) STRICT;\n"
+    # Anchor on the END of the raw_sessions CREATE TABLE rather than on one of
+    # its CHECK lines: the previous literal pinned whichever constraint
+    # happened to be last, so an unrelated column addition silently broke this
+    # fixture instead of the behaviour it tests.
+    raw_sessions_match = re.search(r"CREATE TABLE IF NOT EXISTS raw_sessions \(.*?\n\) STRICT;\n", stale, re.S)
+    assert raw_sessions_match is not None
+    raw_sessions_close = raw_sessions_match.group(0)[-len("\n) STRICT;\n") :]
     assert raw_sessions_close in stale
     stale = stale.replace(
         raw_sessions_close,
