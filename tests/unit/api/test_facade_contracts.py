@@ -54,7 +54,11 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.block_anchor import format_block_anchor
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
@@ -405,6 +409,7 @@ _HASH = b"x" * 32
 def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = None) -> tuple[str, str]:
     source_path = source_path or str(Path.home() / ".codex" / "sessions" / "session.jsonl")
     raw_id = "raw-import-1"
+    initialize_active_archive_root(tmp_path)
     source_conn = sqlite3.connect(tmp_path / "source.db")
     index_conn = sqlite3.connect(tmp_path / "index.db")
     try:
@@ -540,6 +545,7 @@ async def _seed_two_sessions(db_path: Path) -> None:
                 source_name=Provider.CLAUDE_AI,
                 provider_session_id="conv-alpha",
                 title="Alpha",
+                title_source="origin",
                 messages=[
                     ParsedMessage(
                         provider_message_id="alpha-m1",
@@ -807,6 +813,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         native_id="conv-alpha",
         origin="claude-ai-export",
         title="Alpha",
+        title_source="origin",
         created_at=None,
         updated_at=None,
         message_count=2,
