@@ -425,7 +425,21 @@ PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
-VERIFY_INVOCATION_BUDGET_S = 3600.0
+# A wall-clock ceiling on a whole verify invocation, in seconds. Zero
+# disables it, matching this module's ``timeout_s > 0`` convention.
+#
+# Disabled by default. It was applied as a hard per-step timeout, so a cold
+# full-corpus bootstrap -- about an hour on a developer host -- was killed at
+# exit 124 partway through, and its partial testmon graph was then discarded
+# as invalid, so the next invocation started from zero and died at the same
+# point. An hour of executed tests was thrown away on every attempt.
+#
+# Runaway protection does not need a wall-clock ceiling: a pytest lane already
+# carries its own runtime timeout (POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S) and, more
+# usefully, a stall timeout that fires when the run stops making progress
+# (POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S). Killing on stall catches a hang;
+# killing on wall clock only punishes a large corpus.
+VERIFY_INVOCATION_BUDGET_S = 0.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
@@ -2707,7 +2721,17 @@ def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str 
     return environment
 
 
-def _remaining_invocation_budget(started_at: float) -> float:
+def _native_preparation_deadline(started_at: float) -> float | None:
+    """Monotonic deadline for native preparation, or None when unbudgeted."""
+    if VERIFY_INVOCATION_BUDGET_S <= 0:
+        return None
+    return started_at + VERIFY_INVOCATION_BUDGET_S
+
+
+def _remaining_invocation_budget(started_at: float) -> float | None:
+    """Seconds left in the invocation budget, or None when it is disabled."""
+    if VERIFY_INVOCATION_BUDGET_S <= 0:
+        return None
     return max(0.0, VERIFY_INVOCATION_BUDGET_S - (time.monotonic() - started_at))
 
 
@@ -3008,7 +3032,7 @@ def _main(argv: list[str] | None = None) -> int:
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
-                deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
+                deadline_monotonic=_native_preparation_deadline(started_at),
             )
             if (
                 preparation.selection_mode == "bootstrap"
@@ -3020,7 +3044,7 @@ def _main(argv: list[str] | None = None) -> int:
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
-                    deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
+                    deadline_monotonic=_native_preparation_deadline(started_at),
                 )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
@@ -3114,7 +3138,7 @@ def _main(argv: list[str] | None = None) -> int:
     native_graph_touched = False
     for label, cmd in steps:
         remaining = _remaining_invocation_budget(started_at)
-        if remaining <= 0:
+        if remaining is not None and remaining <= 0:
             deadline_step = {
                 "name": label,
                 "duration_s": 0.0,
@@ -3235,7 +3259,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     total_duration = round(time.monotonic() - started_at, 2)
     deadline_recorded = any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in step_results)
-    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
+    if VERIFY_INVOCATION_BUDGET_S > 0 and total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
         step_results.append(
             {
                 "name": "verify invocation deadline",
@@ -3269,7 +3293,7 @@ def _main(argv: list[str] | None = None) -> int:
     finalized_duration = round(time.monotonic() - started_at, 2)
     if finalized_duration > total_duration:
         total_duration = finalized_duration
-    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
+    if VERIFY_INVOCATION_BUDGET_S > 0 and total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
         step_results.append(
             {
                 "name": "verify invocation deadline",
@@ -3284,8 +3308,10 @@ def _main(argv: list[str] | None = None) -> int:
     if pytest_aggregate is not None:
         pytest_aggregate["wall_s"] = total_duration
         pytest_aggregate["deadline"] = {
-            "budget_s": VERIFY_INVOCATION_BUDGET_S,
-            "met": total_duration <= VERIFY_INVOCATION_BUDGET_S,
+            # None reports "no budget", matching the invocation receipt; a
+            # numeric zero would read as a budget nothing can satisfy.
+            "budget_s": VERIFY_INVOCATION_BUDGET_S if VERIFY_INVOCATION_BUDGET_S > 0 else None,
+            "met": VERIFY_INVOCATION_BUDGET_S <= 0 or total_duration <= VERIFY_INVOCATION_BUDGET_S,
         }
 
     release_baseline_allowed = _release_baseline_allowed(

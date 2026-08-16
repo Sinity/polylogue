@@ -187,6 +187,10 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
     exit_code = entry.get("exit_code")
     raw_budget = entry.get("invocation_budget_s")
     invocation_budget = float(raw_budget) if isinstance(raw_budget, int | float) else None
+    # Zero (or negative) means the invocation budget is disabled, not that every
+    # run is overdue.
+    if invocation_budget is not None and invocation_budget <= 0:
+        invocation_budget = None
     raw_wall = entry.get("total_duration_s", entry.get("duration_s", 0.0))
     wall_s = float(raw_wall) if isinstance(raw_wall, int | float) else 0.0
     deadline_met = entry.get("diagnosis") != "verify_invocation_deadline_exceeded"

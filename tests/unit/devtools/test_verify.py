@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import itertools
 import json
 import os
 import platform
@@ -3865,7 +3866,7 @@ def test_verify_continues_after_failed_cheap_step(
     assert payload["verification_scope"] == "non-test"
     assert payload["release_baseline_allowed"] is False
     assert payload["pytest_aggregate"]["selection_mode"] == "none"
-    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": True}
+    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": None, "met": True}
     assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
 
 
@@ -4192,7 +4193,7 @@ def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
     receipt_payload = json.loads(receipt.read_text())
     assert receipt_payload["diagnosis"] == "checkout_import_mismatch"
     assert receipt_payload["pytest_aggregate"] == history["pytest_aggregate"]
-    assert receipt_payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": True}
+    assert receipt_payload["pytest_aggregate"]["deadline"] == {"budget_s": None, "met": True}
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_import_mismatch"
 
 
@@ -4551,7 +4552,7 @@ def test_collection_failure_still_persists_native_run_aggregate(
     assert aggregate["containment"]["complete"] is False
 
 
-def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
+def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class _StableMonitor:
@@ -4577,7 +4578,9 @@ def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
         environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
         missing_executable_paths=(),
     )
-    clock = iter((100.0, 3701.0, 3701.0, 3701.0))
+    # Repeat the final reading so the test does not depend on the exact number
+    # of monotonic() reads the implementation happens to make.
+    clock = itertools.chain(iter((100.0, 3701.0, 3701.0, 3701.0)), itertools.repeat(3701.0))
 
     def prepare(*_args: object, **_kwargs: object) -> object:
         assert time.monotonic() == 3701.0
@@ -4596,12 +4599,27 @@ def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
         patch("devtools.verify._save_history"),
         patch("devtools.verify._notify"),
     ):
-        assert main(["--json"]) == 124
+        assert main(["--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["total_duration_s"] == 3601.0
-    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": False}
-    assert any(step["diagnosis"] == "verify_invocation_deadline_exceeded" for step in payload["steps"])
+    # An hour of wall clock no longer terminates the invocation or discards the
+    # work it produced; the pytest runtime and stall timeouts remain the guard
+    # against a genuine hang.
+    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": None, "met": True}
+    assert not any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in payload["steps"])
+
+
+def test_invocation_budget_is_disabled_by_default_so_a_long_run_is_not_discarded() -> None:
+    """A wall-clock ceiling killed cold bootstraps and threw away their graph.
+
+    Runtime and stall timeouts still bound a pytest lane, so a hang is still
+    caught; only the invocation-wide ceiling is off.
+    """
+    from devtools.verify import VERIFY_INVOCATION_BUDGET_S, _native_preparation_deadline, _remaining_invocation_budget
+
+    assert VERIFY_INVOCATION_BUDGET_S == 0.0
+    assert _remaining_invocation_budget(0.0) is None
+    assert _native_preparation_deadline(0.0) is None
 
 
 def test_completion_notification_uses_pytest_count() -> None:
