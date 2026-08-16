@@ -904,7 +904,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
         ),
         cleanup_complete=True,
         notes=(
-            "Sanitized structural witness only; no live /realm/db/polylogue access.",
+            "Sanitized structural witness only; no live /realm/state/polylogue access.",
             "Fixture setup includes 804 on-disk payload revisions, schema hashing, and a canonical fixture manifest.",
             f"Serialized fixture manifest digest is sha256:{fixture_manifest_digest} and is bound into the receipt input identity.",
             "Replay and postflight subprocess RSS is unavailable because statm samples only the pytest parent; storage growth is not reported as write I/O.",
