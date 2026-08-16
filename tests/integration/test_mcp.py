@@ -27,7 +27,11 @@ def _seed_session(
 ) -> None:
     with ArchiveStore(archive_root):
         pass
-    message_id = f"{session_id}:m1"
+    # messages.message_id is generated as
+    #   session_id || ':' || ('n:' || native_id | 'p:' || position.variant)
+    # so a native-id message is ":n:m1"; the old spelling pointed the blocks
+    # FK at a row that never existed.
+    message_id = f"{session_id}:n:m1"
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         conn = archive._conn
         conn.execute(
