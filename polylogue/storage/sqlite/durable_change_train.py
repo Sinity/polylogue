@@ -2019,7 +2019,9 @@ def _runtime_consumer_results(
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_raw_failure_lifecycle(cast(Callable[..., object], value), archive_root)
+                    detail = _probe_raw_failure_lifecycle(
+                        cast(Callable[..., object], value), archive_root, train.target_version
+                    )
                 elif reference.endswith(":apply_raw_failure_dispositions"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -2050,6 +2052,18 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_record_hydration(cast(Callable[..., object], value))
+                elif reference.endswith(":upsert_raw_artifact"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_artifact_upsert(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":_raw_materialization_candidate_ids"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_materialization_candidates(cast(Callable[..., object], value))
                 elif reference.endswith(":AuditRepository.reconcile_continuity"):
                     from polylogue.operations.audit import AuditRepository
 
@@ -2162,6 +2176,75 @@ def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
     if hook_row != expected_hook_row or blob_ref_row != expected_blob_ref_row or raw_session_count != (0,):
         raise DurableChangeTrainError("source hook writer probe did not persist the expected hook payload contract")
     return "wrote and read back a hook payload in a fresh source tier"
+
+
+def _probe_raw_artifact_upsert(upsert: Callable[..., object], target_version: int) -> str:
+    """Exercise raw-artifact admission against the train's projected source schema."""
+    from polylogue.core.enums import ArtifactSupportStatus, Origin
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        ArchiveSourceArtifact,
+        deterministic_blob_hash,
+        write_source_raw_session_blob_ref,
+    )
+
+    source_path = "/durable-change-train/raw-artifact-probe.jsonl"
+    payload = b'{"probe":"raw-artifact"}'
+    raw_id = "durable-change-train-raw-artifact-raw"
+    blob_hash = deterministic_blob_hash(payload)
+    artifact = ArchiveSourceArtifact(
+        artifact_id="durable-change-train-raw-artifact",
+        origin=Origin.CODEX_SESSION,
+        source_path=source_path,
+        source_index=0,
+        artifact_kind="agent_transcript",
+        classification_reason="durable-change-train probe",
+        support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+        first_observed_at_ms=1_780_000_000_000,
+        last_observed_at_ms=1_780_000_000_000,
+    )
+    with _runtime_probe_source_connection(target_version) as probe:
+        write_source_raw_session_blob_ref(
+            probe,
+            origin=Origin.CODEX_SESSION,
+            source_path=source_path,
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=len(payload),
+            acquired_at_ms=1_780_000_000_000,
+            raw_id=raw_id,
+        )
+        upsert(probe, raw_id, artifact)
+        row = probe.execute(
+            "SELECT artifact_id, raw_id, origin, source_path, source_index, artifact_kind, support_status "
+            "FROM raw_artifacts"
+        ).fetchone()
+    expected = (
+        artifact.artifact_id,
+        raw_id,
+        Origin.CODEX_SESSION.value,
+        source_path,
+        0,
+        artifact.artifact_kind,
+        ArtifactSupportStatus.SUPPORTED_PARSEABLE.value,
+    )
+    if row != expected:
+        raise DurableChangeTrainError("raw-artifact upsert probe did not persist the expected artifact contract")
+    return "wrote and read back one raw artifact in the projected source tier"
+
+
+def _probe_raw_materialization_candidates(candidates: Callable[..., object]) -> str:
+    """Exercise the raw replay candidate query against an empty archive fixture."""
+    from polylogue.config import Config
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-probe-") as temporary:
+        root = Path(temporary)
+        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
+        result = candidates(Config(archive_root=root, render_root=root, sources=[]))
+    if getattr(result, "raw_ids", None) != [] or getattr(result, "missing_blobs", None) != 0:
+        raise DurableChangeTrainError("raw-materialization candidate probe found unexpected replay debt")
+    return "enumerated an empty source/index archive without replay debt"
 
 
 def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
@@ -2475,6 +2558,17 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
 def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
     """Exercise the source-tier failure lifecycle reader against live bytes."""
     snapshot = reader(archive_root / "source.db", sample_limit=1)
+def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path, target_version: int) -> str:
+    """Exercise the source-tier failure lifecycle reader against its projected schema."""
+    del archive_root
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-failure-") as directory:
+        source_path = Path(directory) / "source.db"
+        with sqlite3.connect(source_path) as connection:
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+            initialize_archive_tier(connection, ArchiveTier.SOURCE)
+            _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, target_version)
+        snapshot = reader(source_path, sample_limit=1)
     if not getattr(snapshot, "available", False):
         raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")
     return f"read raw failure lifecycle state={getattr(snapshot, 'state', 'unknown')}"

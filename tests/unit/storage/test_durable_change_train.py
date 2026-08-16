@@ -345,6 +345,20 @@ def test_source_v29_sidecar_proves_failure_lifecycle_consumers_against_fresh_sch
     assert results[1].detail == "validated one raw failure disposition without mutation"
 
 
+def test_source_v30_sidecar_proves_raw_artifact_upsert_against_fresh_schema(tmp_path: Path) -> None:
+    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 30)
+    assert sidecar is not None
+
+    results = _runtime_consumer_results(sidecar.train, tmp_path)
+
+    assert [(result.consumer_id, result.passed) for result in results] == [
+        ("raw-artifact-upsert", True),
+        ("raw-failure-lifecycle", True),
+        ("raw-materialization-replay", True),
+    ]
+    assert results[0].detail == "wrote and read back one raw artifact in the projected source tier"
+
+
 def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
