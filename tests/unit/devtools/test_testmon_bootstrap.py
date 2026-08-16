@@ -564,3 +564,36 @@ def test_preparation_still_removes_genuinely_unusable_state(tmp_path: Path) -> N
     assert preparation.selection_mode == "bootstrap"
     assert not data.exists()
     assert preparation.removed_paths != ()
+
+
+def test_probing_an_absent_environment_preserves_another_environments_graph(tmp_path: Path) -> None:
+    """A routine environment miss must not delete the shared database.
+
+    One verify invocation prepares twice when the hypothesis-profile fallback
+    engages: once for the default-profile digest, then again for the release
+    profile. Both names address the same testmon database. Treating "this
+    database does not carry my environment" as damaged state made the first
+    probe delete the second probe's graph, so the warm path could never engage
+    and every run bootstrapped from scratch.
+    """
+    covered = "polylogue/covered.py"
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / covered).write_text("value = 1\n", encoding="utf-8")
+    resident = "resident-environment"
+    data = _seed_partial_native_graph(tmp_path, environment_name=resident, fingerprinted=covered)
+
+    absent = inspect_native_testmon_environment(data, environment_name="some-other-environment")
+    assert absent.status == "absent"
+    assert "some-other-environment" in absent.reason
+
+    prepare_native_testmon_environment(
+        tmp_path,
+        required_executable_paths=(),
+        pytest_profile="default",
+        pytest_environment={"HYPOTHESIS_PROFILE": "default"},
+    )
+
+    assert data.exists(), "probing an absent environment deleted the shared database"
+    survivor = inspect_native_testmon_environment(data, environment_name=resident)
+    assert survivor.environment is not None
+    assert survivor.environment.nodeids == ("tests/test_recorded.py::test_recorded",)

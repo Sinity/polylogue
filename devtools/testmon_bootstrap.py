@@ -607,8 +607,15 @@ def inspect_native_testmon_environment(
             ).fetchall()
             _ensure_deadline(deadline_monotonic)
             if len(environment_rows) != 1:
-                reason = "native environment is absent" if not environment_rows else "native environment is ambiguous"
-                return NativeTestmonState("invalid", reason)
+                if not environment_rows:
+                    # A sound database that simply does not carry this
+                    # environment is not damaged state. The file is shared by
+                    # every environment name (the hypothesis-profile fallback
+                    # probes two in a single invocation), so reporting "invalid"
+                    # here invites the caller to delete another environment's
+                    # graph on a routine miss.
+                    return NativeTestmonState("absent", f"native environment {environment_name!r} is absent")
+                return NativeTestmonState("invalid", "native environment is ambiguous")
             environment_id = int(environment_rows[0][0])
             nodeids = tuple(
                 row[0]
@@ -881,8 +888,12 @@ def prepare_native_testmon_environment(
     # point -- a loop no number of retries escapes. Only genuinely unusable
     # state (corrupt, schema-incompatible, ambiguous environment, or replaced
     # on disk) is removed.
+    # Only genuinely damaged state is removed. A database that is merely
+    # missing this environment, or holds an interrupted bootstrap's partial
+    # graph, is left alone: deleting it discards work that belongs to another
+    # environment or to the run that was interrupted.
     removed: tuple[Path, ...] = ()
-    if not local.resumable:
+    if local.status == "invalid":
         removed = remove_invalid_native_testmon_state(root)
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
