@@ -28,7 +28,10 @@ _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET = 9
 
 
 def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root, sources=[], db_path=root / "archive.db")
+    # The index tier is index.db; "archive.db" is the pre-split-file monolith
+    # name, and pointing db_path at it made every reader attach an empty file
+    # and fail with "no such table: index_tier.sessions".
+    return Config(archive_root=root, render_root=root, sources=[], db_path=root / "index.db")
 
 
 def _tool_call_payload(native_id: str) -> bytes:
