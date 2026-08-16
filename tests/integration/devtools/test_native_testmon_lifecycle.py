@@ -362,7 +362,7 @@ def test_serial_owner():
     assert _selected(*second) == set()
 
 
-def test_production_plain_verify_owns_bootstrap_warm_selection_deadline_and_history(tmp_path: Path) -> None:
+def test_production_plain_verify_owns_bootstrap_warm_selection_and_history(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -412,8 +412,13 @@ def test_serial_owner():
         if isinstance(arg, str) and arg.startswith("--testmon-env=")
     }
     assert environments == {f"--testmon-env={bootstrap['testmon_environment']['name']}"}
+    # Each lane carries the pytest runtime timeout in full. The previous
+    # strictly-decreasing assertion held only because the invocation budget
+    # handed each lane whatever wall clock was left; with that gone, a lane is
+    # bounded by how long a lane may run, not by how much of an hour remains.
     lane_timeouts = [step["timeout_s"] for step in lane_steps]
-    assert 0 < lane_timeouts[1] < lane_timeouts[0] <= 3600
+    assert all(timeout > 0 for timeout in lane_timeouts)
+    assert lane_timeouts[0] == lane_timeouts[1]
     history_path = repo.parent / "repo-verify-state" / "xdg-state" / "polylogue" / "devtools" / "verify-history.jsonl"
     history = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
     assert history[-1]["pytest_aggregate"] == aggregate
