@@ -639,7 +639,7 @@ def default_sample_n(stratum: Stratum, *, target_sample_bytes: int = 2_000_000, 
 #: fidelity acceptance criterion (operator directive: a harness is
 #: trustworthy when its per-stage PROPORTIONS match this within a stated
 #: tolerance, not when absolute times match). Computed directly from
-#: ``/realm/state/polylogue/.index-rebuild-transactions/857984cb-b4cc-4537-
+#: ``/realm/db/polylogue/.index-rebuild-transactions/857984cb-b4cc-4537-
 #: b0fb-eae89ca3fa96.receipts/pass-000000.json`` (private-archive path, not
 #: readable from this public repo -- these are the derived aggregate
 #: numbers only, no raw content):
