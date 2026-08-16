@@ -429,8 +429,11 @@ class TestResetCommandDeletion:
         assert "1 archive row" in result.output
         with sqlite3.connect(active_index) as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
-        with sqlite3.connect(archive_root / "index.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        # The active index is redirected by .index-active-pointer, so the
+        # root-level index.db is not a second copy of the archive -- it simply
+        # does not exist. Connecting to it would CREATE an empty file and then
+        # fail on a missing table, which asserts nothing about reset.
+        assert not (archive_root / "index.db").exists()
         with sqlite3.connect(archive_root / "user.db") as conn:
             row = conn.execute(
                 "SELECT body_text, json_extract(value_json, '$.mode') FROM assertions WHERE kind = 'suppression' AND target_ref = ?",
