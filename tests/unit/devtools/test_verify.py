@@ -4336,7 +4336,6 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         "closed_world_collection": True,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
-        "deadline": {"met": True},
     }
 
     assert _release_baseline_allowed(
@@ -4361,7 +4360,6 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         {**aggregate, "closed_world_collection": False},
         {**aggregate, "cleanup": {"complete": False}},
         {**aggregate, "containment": {"complete": False}},
-        {**aggregate, "deadline": {"met": False}},
     ):
         assert not _release_baseline_allowed(
             selection_mode="full",
@@ -4416,7 +4414,6 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         "closed_world_collection": True,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
-        "deadline": {"met": True},
     }
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.setattr(

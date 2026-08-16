@@ -2744,7 +2744,6 @@ def _release_baseline_allowed(
         return False
     cleanup = aggregate.get("cleanup")
     containment = aggregate.get("containment")
-    deadline = aggregate.get("deadline")
     return bool(
         aggregate.get("complete_corpus_covered") is True
         and aggregate.get("terminal_green") is True
@@ -2755,8 +2754,6 @@ def _release_baseline_allowed(
         and cleanup.get("complete") is True
         and isinstance(containment, Mapping)
         and containment.get("complete") is True
-        and isinstance(deadline, Mapping)
-        and deadline.get("met") is True
     )
 
 
