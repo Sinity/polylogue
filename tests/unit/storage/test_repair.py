@@ -31,6 +31,36 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
+def _codex_conversation_bytes(session_id: str = "session") -> bytes:
+    """A minimal Codex session stream that carries real authored content.
+
+    Session metadata alone is not conversational evidence, so a meta-only
+    stream is refused by dispatch (polylogue-9ykn) and never reaches the
+    raw-materialization paths under test.
+    """
+    return (
+        b'{"type":"session_meta","payload":{"id":"' + session_id.encode() + b'"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m-' + session_id.encode() + b'",'
+        b'"role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+
+
+def _chatgpt_conversation_bytes(node: str = "node") -> bytes:
+    """A minimal ChatGPT export payload that carries real authored content.
+
+    ``dispatch`` refuses a session with no positive conversational evidence
+    (polylogue-9ykn), so a mapping of empty nodes never reaches the
+    raw-materialization paths these tests exercise. Keep the shape minimal but
+    genuine rather than asserting the refusal, which is a different contract.
+    """
+    return (
+        b'{"mapping":{"' + node.encode() + b'":{"id":"' + node.encode() + b'",'
+        b'"message":{"id":"m-' + node.encode() + b'","author":{"role":"user"},'
+        b'"content":{"content_type":"text","parts":["hi"]}},"parent":null,"children":[]}},'
+        b'"current_node":"' + node.encode() + b'"}'
+    )
+
+
 def _config(tmp_path: Path) -> Config:
     return Config(archive_root=tmp_path, render_root=tmp_path, sources=[])
 
@@ -472,8 +502,8 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
-    materialized_raw_id, materialized_size = blob_store.write_from_bytes(b'{"mapping":{"done":{}}}')
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("empty"))
+    materialized_raw_id, materialized_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("done"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
@@ -554,7 +584,7 @@ def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    replacement_raw_id, replacement_size = blob_store.write_from_bytes(b'{"mapping":{"replacement":{}}}')
+    replacement_raw_id, replacement_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("replacement"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
@@ -687,11 +717,11 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     payloads = {
-        "retryable": b'{"mapping":{}}',
-        "cas": b'{"mapping":{"cas":{}}}',
-        "membership": b'{"mapping":{"membership":{}}}',
-        "stale": b'{"mapping":{"stale":{}}}',
-        "sibling": b'{"mapping":{"sibling":{}}}',
+        "retryable": _chatgpt_conversation_bytes("empty"),
+        "cas": _chatgpt_conversation_bytes("cas"),
+        "membership": _chatgpt_conversation_bytes("membership"),
+        "stale": _chatgpt_conversation_bytes("stale"),
+        "sibling": _chatgpt_conversation_bytes("sibling"),
     }
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = {
@@ -1046,13 +1076,13 @@ def test_raw_replay_plan_marks_tied_validation_component_terminal(tmp_path: Path
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         parsed_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"parsed-member"}}\n',
+            payload=_codex_conversation_bytes("parsed-member"),
             source_path="parsed-member.jsonl",
             acquired_at_ms=1,
         )
         tied_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"tied-member"}}\n',
+            payload=_codex_conversation_bytes("tied-member"),
             source_path="tied-member.jsonl",
             acquired_at_ms=2,
         )
@@ -1271,7 +1301,7 @@ def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_p
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
-            payload=b'{"type":"session_meta","payload":{"id":"cas-frontier"}}\n',
+            payload=_codex_conversation_bytes("cas-frontier"),
             source_path="rollout.jsonl",
             acquired_at_ms=1,
         )
@@ -1300,7 +1330,7 @@ def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: P
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"stale-authority"}}\n',
+            payload=_codex_conversation_bytes("stale-authority"),
             source_path="stale-authority.jsonl",
             acquired_at_ms=1,
         )
@@ -1920,8 +1950,8 @@ def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     blob_store = BlobStore(tmp_path / "blob")
-    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
-    bad_raw_id, bad_size = blob_store.write_from_bytes(b'{"mapping":{"bad":{}}}')
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("empty"))
+    bad_raw_id, bad_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("bad"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
@@ -1972,7 +2002,7 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    raw_id, blob_size = blob_store.write_from_bytes(b'{"mapping":{"already-parsed":{}}}')
+    raw_id, blob_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("already-parsed"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
@@ -2009,8 +2039,8 @@ def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    remaining_raw_id, remaining_size = blob_store.write_from_bytes(b'{"mapping":{"remaining":{}}}')
-    done_raw_id, done_size = blob_store.write_from_bytes(b'{"mapping":{"done":{}}}')
+    remaining_raw_id, remaining_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("remaining"))
+    done_raw_id, done_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("done"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
@@ -2812,8 +2842,8 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     blob_store = BlobStore(tmp_path / "blob")
-    target_raw_id, target_size = blob_store.write_from_bytes(b'{"mapping":{"target":{}}}')
-    other_raw_id, other_size = blob_store.write_from_bytes(b'{"mapping":{"other":{}}}')
+    target_raw_id, target_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("target"))
+    other_raw_id, other_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("other"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
@@ -2860,8 +2890,8 @@ def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_p
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    replayable_raw_id, replayable_size = blob_store.write_from_bytes(b'{"mapping":{"pending":{}}}')
-    parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"mapping":{"parsed":{}}}')
+    replayable_raw_id, replayable_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("pending"))
+    parsed_raw_id, parsed_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("parsed"))
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
@@ -3222,7 +3252,7 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"oversized-stream"}}\n',
+            payload=_codex_conversation_bytes("oversized-stream"),
             source_path="/captures/codex/session.jsonl",
             acquired_at_ms=1,
         )
@@ -3304,8 +3334,8 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
-    small_payload = b'{"type":"session_meta","payload":{"id":"small-gap"}}\n'
-    large_payload = b'{"type":"session_meta","payload":{"id":"large-done"}}\n'
+    small_payload = _codex_conversation_bytes("small-gap")
+    large_payload = _codex_conversation_bytes("large-done")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         small_raw = archive.write_raw_payload(
             provider=Provider.CODEX, payload=small_payload, source_path="shared.json", acquired_at_ms=1
@@ -3402,7 +3432,7 @@ def test_raw_materialization_reuses_pre_envelope_deferred_receipt(tmp_path: Path
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"legacy-deferred"}}\n',
+            payload=_codex_conversation_bytes("legacy-deferred"),
             source_path="legacy-deferred.jsonl",
             acquired_at_ms=1,
         )
@@ -3449,7 +3479,7 @@ def test_raw_materialization_reports_the_active_custom_payload_envelope(tmp_path
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"custom-envelope"}}\n',
+            payload=_codex_conversation_bytes("custom-envelope"),
             source_path="custom-envelope.jsonl",
             acquired_at_ms=1,
         )
@@ -3707,7 +3737,7 @@ def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large
             # age-based ordering must select it on the very first pass.
             large_raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=b'{"type":"session_meta","payload":{"id":"large-valid"}}\n',
+                payload=_codex_conversation_bytes("large-valid"),
                 source_path="large-valid.jsonl",
                 acquired_at_ms=1,
             )
@@ -3988,7 +4018,7 @@ def test_raw_materialization_cas_conflict_outcome_is_typed_durable_and_non_mutat
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"cas-conflict-target"}}\n',
+            payload=_codex_conversation_bytes("cas-conflict-target"),
             source_path="cas-conflict-target.jsonl",
             acquired_at_ms=1,
         )
@@ -4835,7 +4865,7 @@ def test_raw_materialization_ordinary_pass_census_detail_distinguishes_escalatio
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         stream_safe_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"t93b-stream-safe"}}\n',
+            payload=_codex_conversation_bytes("t93b-stream-safe"),
             source_path="codex/t93b-stream-safe.jsonl",
             acquired_at_ms=1,
         )
