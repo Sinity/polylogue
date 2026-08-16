@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import os
+import shutil
 import sqlite3
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +91,80 @@ _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK = threading.RLock()
 def archive_tier_spec(tier: ArchiveTier) -> ArchiveTierSpec:
     """Return the database-file spec for one durability tier."""
     return ARCHIVE_TIER_SPECS[tier]
+
+
+# Creating an empty tier costs one ``executescript`` of that tier's whole DDL.
+# Profiling a single storage module (37 tests, 195s wall) attributed 171.8s of
+# self time to 207 such calls at ~830ms each -- 90% of the run -- because every
+# archive built from scratch re-parses hundreds of CREATE statements. The DDL is
+# deterministic, so the first materialised tier of a given (tier, version) is a
+# faithful prototype for every later one in the same process, and SQLite's own
+# backup API restores it as a page copy instead of re-parsing.
+#
+# Embeddings is deliberately excluded: its DDL creates ``vec0`` virtual tables
+# that require the sqlite-vec extension to be loaded on the connection doing the
+# creating, so a page copy would silently skip that requirement.
+_TIER_PROTOTYPE_LOCK = threading.Lock()
+_TIER_PROTOTYPES: dict[tuple[str, int], Path] = {}
+_TIER_PROTOTYPE_DIR: Path | None = None
+_PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier) - {ArchiveTier.EMBEDDINGS}
+
+
+def _tier_prototype_dir() -> Path:
+    global _TIER_PROTOTYPE_DIR
+    if _TIER_PROTOTYPE_DIR is None:
+        directory = Path(tempfile.mkdtemp(prefix="polylogue-tier-prototype-"))
+        atexit.register(shutil.rmtree, directory, True)
+        _TIER_PROTOTYPE_DIR = directory
+    return _TIER_PROTOTYPE_DIR
+
+
+def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> bool:
+    """Page-copy a cached empty tier onto ``conn``; False when unavailable or unfaithful."""
+    with _TIER_PROTOTYPE_LOCK:
+        prototype = _TIER_PROTOTYPES.get((tier.value, required_version))
+    if prototype is None or not prototype.is_file():
+        return False
+    try:
+        with contextlib.closing(sqlite3.connect(prototype)) as source:
+            source.backup(conn)
+        stored = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error:
+        return False
+    # Fail closed: a prototype that does not reproduce the expected version is
+    # discarded rather than trusted, and the caller falls back to real DDL.
+    if stored != required_version:
+        with _TIER_PROTOTYPE_LOCK:
+            _TIER_PROTOTYPES.pop((tier.value, required_version), None)
+        return False
+    return True
+
+
+def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> None:
+    """Snapshot a freshly materialised empty tier for reuse in this process."""
+    key = (tier.value, required_version)
+    with _TIER_PROTOTYPE_LOCK:
+        if key in _TIER_PROTOTYPES:
+            return
+    try:
+        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}.db"
+        with contextlib.closing(sqlite3.connect(destination)) as target:
+            conn.backup(target)
+    except (OSError, sqlite3.Error):
+        return
+    with _TIER_PROTOTYPE_LOCK:
+        _TIER_PROTOTYPES.setdefault(key, destination)
+
+
+def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> None:
+    """Materialise an empty tier, reusing this process's prototype when faithful."""
+    if tier not in _PROTOTYPE_CACHEABLE_TIERS:
+        initialize_archive_tier(conn, tier)
+        return
+    if _restore_tier_prototype(conn, tier, required_version):
+        return
+    initialize_archive_tier(conn, tier)
+    _record_tier_prototype(conn, tier, required_version)
 
 
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
@@ -313,7 +391,7 @@ def initialize_archive_database(
                 f"{path} schema version {current_version} is not the current {tier.value} tier version "
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
-        initialize_archive_tier(conn, tier)
+        initialize_fresh_archive_tier(conn, tier, required_version)
     finally:
         conn.close()
 
