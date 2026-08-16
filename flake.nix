@@ -405,7 +405,10 @@
 
         shellHook = ''
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
-          export PYTHONDONTWRITEBYTECODE=1
+          # No PYTHONDONTWRITEBYTECODE here: the cache prefix below already
+          # keeps bytecode out of the source tree, and forbidding writes also
+          # disables pytest's assertion-rewrite cache, which costs a full
+          # re-rewrite of every test module on every run in every xdist worker.
           export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
           export POLYLOGUE_REPO_ROOT="$PWD"
           mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"

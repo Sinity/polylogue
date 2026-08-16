@@ -2300,6 +2300,10 @@ def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str
     # lets sitecustomize alter pytest controls before the managed command runs.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONOPTIMIZE", None)
+    # Bytecode writing must stay enabled: PYTHONPYCACHEPREFIX below sends it to
+    # .cache/pycache, and without it pytest re-runs assertion rewriting over
+    # every test module in every worker on every run.
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONUSERBASE", None)
     env["PYTHONNOUSERSITE"] = "1"
