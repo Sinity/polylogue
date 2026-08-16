@@ -562,6 +562,5 @@ def test_preparation_still_removes_genuinely_unusable_state(tmp_path: Path) -> N
     preparation = prepare_native_testmon_environment(tmp_path)
 
     assert preparation.selection_mode == "bootstrap"
-    assert data not in (tmp_path / path for path in ())
     assert not data.exists()
     assert preparation.removed_paths != ()
