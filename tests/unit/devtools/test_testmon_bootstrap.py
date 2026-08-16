@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from devtools.testmon_bootstrap import (
+    TESTMON_DATA_RELPATH,
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
     _testmon_schema_version,
@@ -475,3 +476,92 @@ def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Pa
         "" if not suffix else f": {owned}"
     )
     assert outside.read_text(encoding="utf-8") == "external state"
+
+
+def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprinted: str) -> Path:
+    """Write a sound testmon database that covers only one executable path.
+
+    This is the shape an interrupted bootstrap leaves behind: real recorded
+    executions, a well-formed environment row, and a dependency graph that has
+    simply not reached every changed module yet.
+    """
+    import testmon.db
+
+    data = root / TESTMON_DATA_RELPATH
+    data.parent.mkdir(parents=True, exist_ok=True)
+    db = testmon.db.DB(str(data))
+    try:
+        con = db.con
+        environment_id = con.execute(
+            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, ?, ?)",
+            (environment_name, "", "3.14"),
+        ).lastrowid
+        execution_id = con.execute(
+            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
+            (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
+        ).lastrowid
+        fingerprint_id = con.execute(
+            "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES (?, ?, ?, ?)",
+            (fingerprinted, b"", 0.0, ""),
+        ).lastrowid
+        con.execute(
+            "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id) VALUES (?, ?)",
+            (execution_id, fingerprint_id),
+        )
+        con.commit()
+    finally:
+        db.con.close()
+    return data
+
+
+def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:
+    """An interrupted bootstrap is resumable state, not corruption."""
+    covered, uncovered = "polylogue/covered.py", "polylogue/uncovered.py"
+    (tmp_path / "polylogue").mkdir()
+    for relative in (covered, uncovered):
+        (tmp_path / relative).write_text("value = 1\n", encoding="utf-8")
+    environment_name = _testmon_environment_digest(tmp_path)
+    data = _seed_partial_native_graph(tmp_path, environment_name=environment_name, fingerprinted=covered)
+
+    state = inspect_native_testmon_environment(
+        data,
+        environment_name=environment_name,
+        required_executable_paths=(covered, uncovered),
+    )
+
+    assert state.status == "incomplete"
+    assert state.resumable is True
+    assert state.valid is False
+    assert state.missing_executable_paths == (uncovered,)
+
+
+def test_preparation_retains_a_resumable_graph_instead_of_restarting_the_bootstrap(tmp_path: Path) -> None:
+    """Removing a merely incomplete graph makes every interrupted bootstrap restart from zero."""
+    covered, uncovered = "polylogue/covered.py", "polylogue/uncovered.py"
+    (tmp_path / "polylogue").mkdir()
+    for relative in (covered, uncovered):
+        (tmp_path / relative).write_text("value = 1\n", encoding="utf-8")
+    environment_name = _testmon_environment_digest(tmp_path)
+    data = _seed_partial_native_graph(tmp_path, environment_name=environment_name, fingerprinted=covered)
+    recorded_bytes = data.read_bytes()
+
+    preparation = prepare_native_testmon_environment(tmp_path, required_executable_paths=(covered, uncovered))
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.removed_paths == ()
+    assert data.exists(), "an interrupted bootstrap's recorded work must survive into the next invocation"
+    assert data.read_bytes() == recorded_bytes
+
+
+def test_preparation_still_removes_genuinely_unusable_state(tmp_path: Path) -> None:
+    """Corruption is not resumable; only incompleteness is."""
+    data = tmp_path / TESTMON_DATA_RELPATH
+    data.parent.mkdir(parents=True, exist_ok=True)
+    data.write_bytes(b"not a sqlite database")
+
+    preparation = prepare_native_testmon_environment(tmp_path)
+
+    assert preparation.selection_mode == "bootstrap"
+    assert data not in (tmp_path / path for path in ())
+    assert not data.exists()
+    assert preparation.removed_paths != ()

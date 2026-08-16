@@ -40,7 +40,7 @@ from typing import Literal
 TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
 TESTMON_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
-NativeStateStatus = Literal["absent", "valid", "invalid"]
+NativeStateStatus = Literal["absent", "valid", "invalid", "incomplete"]
 NativeSelectionMode = Literal["bootstrap", "affected"]
 ASTClassification = Literal["declaration-only", "executable", "source-unreadable"]
 
@@ -88,6 +88,20 @@ class NativeTestmonState:
     @property
     def valid(self) -> bool:
         return self.status == "valid" and self.environment is not None
+
+    @property
+    def resumable(self) -> bool:
+        """A graph that holds real recorded work but does not yet cover every changed module.
+
+        Distinct from ``invalid``: the database is structurally sound and its
+        environment row is unambiguous, it simply has not fingerprinted every
+        executable path yet -- which is the normal state of a bootstrap that
+        was interrupted. Such a graph must not drive affected selection (that
+        would silently skip tests), but discarding it throws away every test
+        the interrupted run already recorded and guarantees the next
+        invocation starts from zero again.
+        """
+        return self.status == "incomplete" and self.environment is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,7 +666,7 @@ def inspect_native_testmon_environment(
     )
     if missing:
         return NativeTestmonState(
-            "invalid",
+            "incomplete",
             "changed executable modules are absent from the native dependency graph",
             environment,
             missing,
@@ -860,7 +874,16 @@ def prepare_native_testmon_environment(
     if local.valid:
         return NativeTestmonPreparation(environment_name, "affected", local, None, (), linked, main_checkout)
 
-    removed = remove_invalid_native_testmon_state(root)
+    # Retain a merely incomplete graph. An interrupted bootstrap leaves a
+    # sound database that simply has not fingerprinted every changed module
+    # yet; removing it discards every test the interrupted run recorded, so
+    # the next invocation bootstraps from zero and is interrupted at the same
+    # point -- a loop no number of retries escapes. Only genuinely unusable
+    # state (corrupt, schema-incompatible, ambiguous environment, or replaced
+    # on disk) is removed.
+    removed: tuple[Path, ...] = ()
+    if not local.resumable:
+        removed = remove_invalid_native_testmon_state(root)
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
