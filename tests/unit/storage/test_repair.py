@@ -2988,10 +2988,15 @@ def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_pat
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    # A gemini-cli document needs a sessionId and a non-empty messages list, or
-    # the parser yields no session at all and nothing can be selected.
+    # A gemini-cli checkpoint needs sessionId plus startTime/lastUpdated as well
+    # as a non-empty messages list. sessionId + messages alone is also one of
+    # Claude Code's strong session keys, so without the timestamps the document
+    # is detected as claude-code and this raw is classified non-session
+    # terminal, which removes it from materialization selection entirely.
     parsed_raw_id, parsed_size = blob_store.write_from_bytes(
-        b'{"sessionId":"gemini-parsed","messages":[{"role":"user","content":"hi"}]}'
+        b'{"sessionId":"gemini-parsed","startTime":"2026-01-01T00:00:00Z",'
+        b'"lastUpdated":"2026-01-01T00:01:00Z",'
+        b'"messages":[{"role":"user","content":"hi"}]}'
     )
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
