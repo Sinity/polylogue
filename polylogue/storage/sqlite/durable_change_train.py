@@ -2064,6 +2064,12 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_materialization_candidates(cast(Callable[..., object], value))
+                elif reference.endswith(":run_raw_authority_artifact_census"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_authority_artifact_census(train.target_version)
                 elif reference.endswith(":AuditRepository.reconcile_continuity"):
                     from polylogue.operations.audit import AuditRepository
 
@@ -2245,6 +2251,24 @@ def _probe_raw_materialization_candidates(candidates: Callable[..., object]) -> 
     if getattr(result, "raw_ids", None) != [] or getattr(result, "missing_blobs", None) != 0:
         raise DurableChangeTrainError("raw-materialization candidate probe found unexpected replay debt")
     return "enumerated an empty source/index archive without replay debt"
+
+
+def _probe_raw_authority_artifact_census(target_version: int) -> str:
+    """Exercise the read-only artifact census against the projected source tier."""
+    from polylogue.maintenance.raw_authority_artifact_census import run_raw_authority_artifact_census
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-census-probe-") as temporary:
+        root = Path(temporary)
+        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
+        with sqlite3.connect(root / "source.db") as source:
+            _migration_runner._prepare_fresh_connection_for_target(source, ArchiveTier.SOURCE, target_version)
+            source.commit()
+        report = run_raw_authority_artifact_census(root, receipt_path=root / "census-receipt.json")
+    if report.mode != "dry_run" or report.observations_written != 0:
+        raise DurableChangeTrainError("raw-authority artifact census probe changed the empty archive")
+    return "ran a read-only raw-authority artifact census against an empty projected source tier"
 
 
 def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
@@ -2555,9 +2579,6 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
     return "hydrated a raw record preserving both acquisition origin and detected provider"
 
 
-def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
-    """Exercise the source-tier failure lifecycle reader against live bytes."""
-    snapshot = reader(archive_root / "source.db", sample_limit=1)
 def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path, target_version: int) -> str:
     """Exercise the source-tier failure lifecycle reader against its projected schema."""
     del archive_root
