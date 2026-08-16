@@ -403,7 +403,6 @@ def test_serial_owner():
     assert aggregate["terminal_green"] is True
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
-    assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
     lane_steps = [step for step in bootstrap["steps"] if step.get("semantic_lane")]
     assert [step["semantic_lane"] for step in lane_steps] == ["parallel", "serial"]
     environments = {
@@ -494,7 +493,6 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["terminal_green"] is True
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
-    assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
 
 
 @pytest.mark.parametrize(("verify_args", "selection_mode"), [((), "bootstrap"), (("--all",), "full")])

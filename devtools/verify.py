@@ -425,21 +425,6 @@ PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
-# A wall-clock ceiling on a whole verify invocation, in seconds. Zero
-# disables it, matching this module's ``timeout_s > 0`` convention.
-#
-# Disabled by default. It was applied as a hard per-step timeout, so a cold
-# full-corpus bootstrap -- about an hour on a developer host -- was killed at
-# exit 124 partway through, and its partial testmon graph was then discarded
-# as invalid, so the next invocation started from zero and died at the same
-# point. An hour of executed tests was thrown away on every attempt.
-#
-# Runaway protection does not need a wall-clock ceiling: a pytest lane already
-# carries its own runtime timeout (POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S) and, more
-# usefully, a stall timeout that fires when the run stops making progress
-# (POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S). Killing on stall catches a hang;
-# killing on wall clock only punishes a large corpus.
-VERIFY_INVOCATION_BUDGET_S = 0.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
@@ -2721,20 +2706,6 @@ def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str 
     return environment
 
 
-def _native_preparation_deadline(started_at: float) -> float | None:
-    """Monotonic deadline for native preparation, or None when unbudgeted."""
-    if VERIFY_INVOCATION_BUDGET_S <= 0:
-        return None
-    return started_at + VERIFY_INVOCATION_BUDGET_S
-
-
-def _remaining_invocation_budget(started_at: float) -> float | None:
-    """Seconds left in the invocation budget, or None when it is disabled."""
-    if VERIFY_INVOCATION_BUDGET_S <= 0:
-        return None
-    return max(0.0, VERIFY_INVOCATION_BUDGET_S - (time.monotonic() - started_at))
-
-
 def _native_environment_after_run(
     preparation: NativeTestmonPreparation,
     *,
@@ -2847,7 +2818,6 @@ def _finalize_preflight_failure(
         final_worktree_fingerprint=final_worktree_fingerprint,
         checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
         checkout_diagnosis=checkout_diagnosis,
-        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     history_entry = {
         **payload,
@@ -2860,7 +2830,6 @@ def _finalize_preflight_failure(
         "final_worktree_fingerprint": final_worktree_fingerprint,
         "steps": [step] if step is not None else [],
         "total_duration_s": duration_s,
-        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": False,
@@ -3032,7 +3001,6 @@ def _main(argv: list[str] | None = None) -> int:
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
-                deadline_monotonic=_native_preparation_deadline(started_at),
             )
             if (
                 preparation.selection_mode == "bootstrap"
@@ -3044,7 +3012,6 @@ def _main(argv: list[str] | None = None) -> int:
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
-                    deadline_monotonic=_native_preparation_deadline(started_at),
                 )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
@@ -3137,21 +3104,9 @@ def _main(argv: list[str] | None = None) -> int:
     exit_code = 0
     native_graph_touched = False
     for label, cmd in steps:
-        remaining = _remaining_invocation_budget(started_at)
-        if remaining is not None and remaining <= 0:
-            deadline_step = {
-                "name": label,
-                "duration_s": 0.0,
-                "exit": 124,
-                "diagnosis": "verify_invocation_deadline_exceeded",
-                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
-            }
-            step_results.append(deadline_step)
-            exit_code = 124
-            break
         if label.startswith("pytest"):
             _warn_low_memory()
-        rc, elapsed, metadata = _run(label, cmd, run=verify_run, timeout_s=remaining)
+        rc, elapsed, metadata = _run(label, cmd, run=verify_run)
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         if label.startswith("pytest native parallel"):
@@ -3258,19 +3213,6 @@ def _main(argv: list[str] | None = None) -> int:
     _close_active_native_testmon_state()
 
     total_duration = round(time.monotonic() - started_at, 2)
-    deadline_recorded = any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in step_results)
-    if VERIFY_INVOCATION_BUDGET_S > 0 and total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
-        step_results.append(
-            {
-                "name": "verify invocation deadline",
-                "duration_s": 0.0,
-                "exit": 124,
-                "diagnosis": "verify_invocation_deadline_exceeded",
-                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
-            }
-        )
-        exit_code = 124
-        deadline_recorded = True
     pytest_aggregate: dict[str, Any] | None = None
     native_environment = native_state.environment if native_state is not None else None
     if preparation is not None:
@@ -3283,36 +3225,15 @@ def _main(argv: list[str] | None = None) -> int:
             environment_reason=native_state.reason if native_state is not None else "post-run inspection unavailable",
             selection_mode=testmon_mode or "affected",
             invocation_duration_s=total_duration,
-            budget_s=VERIFY_INVOCATION_BUDGET_S,
         )
 
-    # Aggregation and final graph inspection are part of the same invocation
-    # deadline as collection and execution. Recompute once after aggregation
-    # so a run cannot gain release authority by crossing the budget during
-    # finalization rather than during a pytest lane.
+    # Finalization can outlast the last pytest lane, so wall_s is taken here
+    # rather than from the lanes alone.
     finalized_duration = round(time.monotonic() - started_at, 2)
     if finalized_duration > total_duration:
         total_duration = finalized_duration
-    if VERIFY_INVOCATION_BUDGET_S > 0 and total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
-        step_results.append(
-            {
-                "name": "verify invocation deadline",
-                "duration_s": 0.0,
-                "exit": 124,
-                "diagnosis": "verify_invocation_deadline_exceeded",
-                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
-            }
-        )
-        exit_code = 124
-        deadline_recorded = True
     if pytest_aggregate is not None:
         pytest_aggregate["wall_s"] = total_duration
-        pytest_aggregate["deadline"] = {
-            # None reports "no budget", matching the invocation receipt; a
-            # numeric zero would read as a budget nothing can satisfy.
-            "budget_s": VERIFY_INVOCATION_BUDGET_S if VERIFY_INVOCATION_BUDGET_S > 0 else None,
-            "met": VERIFY_INVOCATION_BUDGET_S <= 0 or total_duration <= VERIFY_INVOCATION_BUDGET_S,
-        }
 
     release_baseline_allowed = _release_baseline_allowed(
         selection_mode=testmon_mode,
@@ -3355,7 +3276,6 @@ def _main(argv: list[str] | None = None) -> int:
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
-        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": release_baseline_allowed,
@@ -3385,7 +3305,6 @@ def _main(argv: list[str] | None = None) -> int:
         checkout_mutation_path=(preparation_mutation_observation.observed_path or mutation_observation.observed_path),
         checkout_diagnosis=checkout_diagnosis,
         pytest_aggregate=pytest_aggregate,
-        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     history_entry["pytest_aggregate"] = finalized_payload["pytest_aggregate"]
     if use_json:
@@ -3475,7 +3394,6 @@ def _finalize_verify_runner_exception(
         final_worktree_fingerprint=final_worktree_fingerprint,
         checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
         checkout_diagnosis=checkout_diagnosis,
-        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)

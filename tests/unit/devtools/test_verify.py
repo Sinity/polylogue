@@ -21,7 +21,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.checkout_guard import CheckoutImportMismatchError
-from devtools.testmon_bootstrap import NativeTestmonDeadlineError, NativeTestmonRepairError, executable_python_paths
+from devtools.testmon_bootstrap import NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
@@ -515,7 +515,6 @@ def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp
         corpus_nodeids=("a", "b"),
         selection_mode="bootstrap",
         invocation_duration_s=0.1,
-        budget_s=10.0,
     )
 
     assert result["external_addopts_neutralized"] is False
@@ -3492,6 +3491,10 @@ def test_pytest_run_heartbeat_reports_latest_test_node(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    # _pytest_env resolves the events path from ROOT, not the cwd, so chdir
+    # alone leaves this test writing into the real .cache/verify/ events file
+    # and racing whatever a previous run left there.
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
     nodeid = "tests/unit/example.py::test_slow_node"
     script = (
         "import json, os, pathlib, time; "
@@ -3866,7 +3869,6 @@ def test_verify_continues_after_failed_cheap_step(
     assert payload["verification_scope"] == "non-test"
     assert payload["release_baseline_allowed"] is False
     assert payload["pytest_aggregate"]["selection_mode"] == "none"
-    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": None, "met": True}
     assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
 
 
@@ -4193,7 +4195,6 @@ def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
     receipt_payload = json.loads(receipt.read_text())
     assert receipt_payload["diagnosis"] == "checkout_import_mismatch"
     assert receipt_payload["pytest_aggregate"] == history["pytest_aggregate"]
-    assert receipt_payload["pytest_aggregate"]["deadline"] == {"budget_s": None, "met": True}
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_import_mismatch"
 
 
@@ -4245,51 +4246,6 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "native_git_authority_unavailable"
 
 
-def test_native_preparation_uses_invocation_deadline_and_records_expiry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class _StableMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
-        def finish(self) -> CheckoutMutationObservation:
-            return CheckoutMutationObservation(changed=False, unavailable=False)
-
-    history: dict[str, Any] = {}
-    receipt = tmp_path / "invocation-receipt.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "preparation-deadline")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
-    monkeypatch.setattr(verify, "VERIFY_INVOCATION_BUDGET_S", 42.0)
-
-    def expire_preparation(*_args: object, **kwargs: object) -> object:
-        assert kwargs["deadline_monotonic"] == 142.0
-        raise NativeTestmonDeadlineError("verify invocation deadline expired during native testmon preparation")
-
-    with (
-        patch("devtools.verify.time.monotonic", return_value=100.0),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
-        patch("devtools.verify.prepare_native_testmon_environment", side_effect=expire_preparation),
-        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
-        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
-        patch("devtools.verify._notify"),
-    ):
-        assert main(["--json"]) == 124
-
-    normalized = verify_runs.normalize_verify_history_entry(history)
-    assert normalized["diagnosis"] == "verify_invocation_deadline_exceeded"
-    assert normalized["pytest_aggregate"]["deadline"] == {"budget_s": 42.0, "met": False}
-    assert json.loads(receipt.read_text())["exit_code"] == 124
-    assert json.loads(capsys.readouterr().out)["exit_code"] == 124
-
-
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4314,7 +4270,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[str] = []
-    lane_timeouts: list[float] = []
 
     class _StableMonitor:
         def __init__(self, _root: Path) -> None:
@@ -4342,7 +4297,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
 
     def fake_run(label: str, _command: list[str], **_kwargs: object) -> tuple[int, float, dict[str, object]]:
         calls.append(label)
-        lane_timeouts.append(cast(float, _kwargs["timeout_s"]))
         if "parallel" in label:
             return 1, 0.01, {"diagnosis": "pytest_failed"}
         return 0, 0.01, {"diagnosis": "pytest_passed"}
@@ -4361,7 +4315,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
             ],
         ),
         patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify._remaining_invocation_budget", side_effect=(3500.0, 3200.0)),
         patch("devtools.verify.aggregate_native_testmon_run", return_value={"terminal_green": False}),
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
@@ -4371,7 +4324,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         assert main(["--json"]) == 1
 
     assert calls == ["pytest native parallel (affected)", "pytest native serial (affected)"]
-    assert lane_timeouts == [3500.0, 3200.0]
     assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is False
 
 
@@ -4605,21 +4557,7 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
     # An hour of wall clock no longer terminates the invocation or discards the
     # work it produced; the pytest runtime and stall timeouts remain the guard
     # against a genuine hang.
-    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": None, "met": True}
     assert not any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in payload["steps"])
-
-
-def test_invocation_budget_is_disabled_by_default_so_a_long_run_is_not_discarded() -> None:
-    """A wall-clock ceiling killed cold bootstraps and threw away their graph.
-
-    Runtime and stall timeouts still bound a pytest lane, so a hang is still
-    caught; only the invocation-wide ceiling is off.
-    """
-    from devtools.verify import VERIFY_INVOCATION_BUDGET_S, _native_preparation_deadline, _remaining_invocation_budget
-
-    assert VERIFY_INVOCATION_BUDGET_S == 0.0
-    assert _remaining_invocation_budget(0.0) is None
-    assert _native_preparation_deadline(0.0) is None
 
 
 def test_completion_notification_uses_pytest_count() -> None:

@@ -185,17 +185,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
     no_pytest = not pytest_steps
     corpus_digest: str | None = None
     exit_code = entry.get("exit_code")
-    raw_budget = entry.get("invocation_budget_s")
-    invocation_budget = float(raw_budget) if isinstance(raw_budget, int | float) else None
-    # Zero (or negative) means the invocation budget is disabled, not that every
-    # run is overdue.
-    if invocation_budget is not None and invocation_budget <= 0:
-        invocation_budget = None
     raw_wall = entry.get("total_duration_s", entry.get("duration_s", 0.0))
     wall_s = float(raw_wall) if isinstance(raw_wall, int | float) else 0.0
-    deadline_met = entry.get("diagnosis") != "verify_invocation_deadline_exceeded"
-    if invocation_budget is not None:
-        deadline_met = deadline_met and wall_s <= invocation_budget
     return {
         "schema_version": 1,
         "environment": {
@@ -233,7 +224,6 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         },
         "cleanup": {"complete": True if no_pytest else cleanup_complete},
         "containment": {"complete": True if no_pytest else containment_complete},
-        "deadline": {"budget_s": invocation_budget, "met": deadline_met},
         "wall_s": wall_s,
     }
 
@@ -1252,7 +1242,6 @@ def aggregate_native_testmon_run(
     environment_reason: str | None = None,
     selection_mode: str,
     invocation_duration_s: float,
-    budget_s: float,
 ) -> dict[str, Any]:
     """Build one compact, durable aggregate for the two semantic pytest lanes."""
     lanes: list[dict[str, Any]] = []
@@ -1419,10 +1408,6 @@ def aggregate_native_testmon_run(
         },
         "cleanup": {"complete": cleanup_complete},
         "containment": {"complete": containment_complete},
-        "deadline": {
-            "budget_s": budget_s,
-            "met": invocation_duration_s <= budget_s,
-        },
     }
 
 
@@ -1660,7 +1645,6 @@ class VerifyRun:
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
         pytest_aggregate: Mapping[str, Any] | None = None,
-        invocation_budget_s: float | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -1675,8 +1659,6 @@ class VerifyRun:
             self._payload["checkout_mutation_path"] = checkout_mutation_path
         if checkout_diagnosis is not None:
             self._payload["checkout_diagnosis"] = checkout_diagnosis
-        if invocation_budget_s is not None:
-            self._payload["invocation_budget_s"] = invocation_budget_s
         if pytest_aggregate is not None:
             self._payload["pytest_aggregate"] = dict(pytest_aggregate)
         if verification_scope is not None:
