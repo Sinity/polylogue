@@ -1151,6 +1151,16 @@ def _durable_trains(
         snapshot = snapshots_by_tier[tier.value]
         manifests = _released_train_manifests_by_target(manifest_root, tier)
         expected_targets = set(range(DURABLE_MIGRATION_ADOPTION_FLOORS[tier] + 1, snapshot.user_version + 1))
+        if tier is ArchiveTier.AUDIT and not manifests:
+            # Established archives can carry a verified adopted audit image
+            # before source v32 publishes the source-backed continuity head.
+            # It has no train manifest to rebind yet; the adoption receipt and
+            # full-evidence tier check remain the authority for this narrow
+            # transitional state.
+            from polylogue.operations.durable_change_train import validate_audit_adoption_receipt
+
+            if validate_audit_adoption_receipt(root) is not None:
+                continue
         if set(manifests) != expected_targets:
             raise ArchiveRootRelocationError(f"archive-root relocation found an unexpected {tier.value} train target")
         if manifests:
