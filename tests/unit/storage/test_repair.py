@@ -716,12 +716,15 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
 
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
+    # Written below with Provider.CODEX, so these must be Codex-shaped streams:
+    # a ChatGPT mapping parses to no messages under the Codex parser and is
+    # refused for lack of conversational evidence (polylogue-9ykn).
     payloads = {
-        "retryable": _chatgpt_conversation_bytes("empty"),
-        "cas": _chatgpt_conversation_bytes("cas"),
-        "membership": _chatgpt_conversation_bytes("membership"),
-        "stale": _chatgpt_conversation_bytes("stale"),
-        "sibling": _chatgpt_conversation_bytes("sibling"),
+        "retryable": _codex_conversation_bytes("retryable"),
+        "cas": _codex_conversation_bytes("cas"),
+        "membership": _codex_conversation_bytes("membership"),
+        "stale": _codex_conversation_bytes("stale"),
+        "sibling": _codex_conversation_bytes("sibling"),
     }
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = {
@@ -2770,7 +2773,7 @@ def test_raw_materialization_dry_run_reports_limited_selection(
         raw_ids = [
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=f'{{"type":"session_meta","payload":{{"id":"dry-{index}"}}}}\n'.encode(),
+                payload=_codex_conversation_bytes(f"dry-{index}"),
                 source_path=f"dry-{index}.jsonl",
                 acquired_at_ms=index + 1,
             )
@@ -2985,7 +2988,11 @@ def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_pat
     config = _config(tmp_path)
     initialize_active_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
-    parsed_raw_id, parsed_size = blob_store.write_from_bytes(b'{"items":[]}')
+    # A gemini-cli document needs a sessionId and a non-empty messages list, or
+    # the parser yields no session at all and nothing can be selected.
+    parsed_raw_id, parsed_size = blob_store.write_from_bytes(
+        b'{"sessionId":"gemini-parsed","messages":[{"role":"user","content":"hi"}]}'
+    )
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
@@ -3385,7 +3392,7 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
         raw_ids = [
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=f'{{"type":"session_meta","payload":{{"id":"aggregate-{index}"}}}}\n'.encode(),
+                payload=_codex_conversation_bytes(f"aggregate-{index}"),
                 source_path="aggregate.json",
                 acquired_at_ms=index,
             )
@@ -3673,7 +3680,7 @@ def test_raw_materialization_fair_rotation_mutation_recreates_starvation(
             raw_ids = [
                 archive.write_raw_payload(
                     provider=Provider.CODEX,
-                    payload=f'{{"type":"session_meta","payload":{{"id":"fair-{index}"}}}}\n'.encode(),
+                    payload=_codex_conversation_bytes(f"fair-{index}"),
                     source_path=f"fair-{index}.jsonl",
                     acquired_at_ms=index + 1,
                 )
@@ -3744,7 +3751,7 @@ def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large
             for index in range(5):
                 archive.write_raw_payload(
                     provider=Provider.CODEX,
-                    payload=f'{{"type":"session_meta","payload":{{"id":"cheap-{index}"}}}}\n'.encode(),
+                    payload=_codex_conversation_bytes(f"cheap-{index}"),
                     source_path=f"cheap-{index}.jsonl",
                     acquired_at_ms=index + 2,
                 )
