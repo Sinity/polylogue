@@ -195,7 +195,12 @@ async def reset_parse_status(
         params.append(origin_filter_value(origin))
     predicate, scope_params = _build_source_scope_filter(
         source_names,
-        source_column="origin",
+        # Match the singular `origin` parameter above, which filters the
+        # parser-classified projection. Filtering the raw acquisition column
+        # here meant the two scoping parameters on one query disagreed about
+        # vocabulary, and an origin-scoped reset silently matched nothing for
+        # any row whose immutable acquisition origin is 'unknown-export'.
+        source_column=RAW_ORIGIN_FILTER_SQL,
     )
     if predicate:
         where_clauses.append(predicate)
@@ -223,7 +228,12 @@ async def reset_validation_status(
         params.append(origin_filter_value(origin))
     predicate, scope_params = _build_source_scope_filter(
         source_names,
-        source_column="origin",
+        # Match the singular `origin` parameter above, which filters the
+        # parser-classified projection. Filtering the raw acquisition column
+        # here meant the two scoping parameters on one query disagreed about
+        # vocabulary, and an origin-scoped reset silently matched nothing for
+        # any row whose immutable acquisition origin is 'unknown-export'.
+        source_column=RAW_ORIGIN_FILTER_SQL,
     )
     if predicate:
         where_clauses.append(predicate)
