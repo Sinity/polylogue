@@ -116,13 +116,13 @@ async def search_action_results(
     *,
     limit: int,
 ) -> list[Session]:
-    from polylogue.archive.query.retrieval_candidates import action_search_ready
-    from polylogue.core.errors import DatabaseError
-
     query = search_query_text(plan)
     origins = _canonical_origins(plan.origins)
-    if not await action_search_ready(plan, repository):
-        raise DatabaseError("Action search index is not fresh; daemon repair must complete before search.")
+    # Freshness is enforced where the index is actually read:
+    # `queries.search_action_session_hits` calls `check_fts_readiness`, which
+    # raises DatabaseError("Search index is incomplete") unless the surface is
+    # exactly ready. A second gate here was a hardcoded `True` and so read as
+    # protection that was not present.
     try:
         return await repository.search_actions(query, limit=limit, origins=origins)
     except Exception as exc:

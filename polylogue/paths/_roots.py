@@ -73,13 +73,6 @@ def embeddings_db_path() -> Path:
     return archive_root() / "embeddings.db"
 
 
-def archive_file_set_index_available_for_paths(*, archive_root_path: Path, db_anchor: Path) -> bool:
-    """Return whether routing is active."""
-    del archive_root_path
-    del db_anchor
-    return True
-
-
 def browser_capture_spool_root() -> Path:
     """Browser-capture source artifact spool, scoped under the archive root.
 

@@ -325,6 +325,25 @@ async def list_session_summaries(
     return [_row_to_session(row) for row in rows]
 
 
+async def count_actions(conn: aiosqlite.Connection, *, origin: str | None = None) -> int:
+    """Count rows in the derived ``actions`` relation, optionally scoped by origin.
+
+    ``actions`` is a view over tool_use/tool_result blocks, so this answers
+    "does this archive have any indexed actions at all" -- the question that
+    separates "no session matched your action filter" from "nothing in this
+    archive is action-indexed", which are very different answers to give
+    someone whose query returned nothing.
+    """
+    query = "SELECT COUNT(*) AS cnt FROM actions"
+    params: tuple[str, ...] = ()
+    if origin is not None:
+        query += " WHERE session_id IN (SELECT session_id FROM sessions WHERE origin = ?)"
+        params = (origin,)
+    cursor = await conn.execute(query, params)
+    row = await cursor.fetchone()
+    return int(row["cnt"]) if row is not None else 0
+
+
 async def count_sessions(
     conn: aiosqlite.Connection,
     *,

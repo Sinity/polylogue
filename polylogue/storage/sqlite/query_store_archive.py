@@ -94,6 +94,10 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await sessions_q.count_sessions(conn, **request.to_count_kwargs())
 
+    async def count_actions(self, *, origin: str | None = None) -> int:
+        async with self._connection_factory() as conn:
+            return await sessions_q.count_actions(conn, origin=origin)
+
     async def session_exists_by_hash(self, content_hash: str) -> bool:
         async with self._connection_factory() as conn:
             return await sessions_q.session_exists_by_hash(conn, content_hash)

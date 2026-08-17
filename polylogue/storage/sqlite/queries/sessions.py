@@ -14,6 +14,7 @@ from polylogue.storage.sqlite.queries.sessions_identity import (
     update_metadata_raw,
 )
 from polylogue.storage.sqlite.queries.sessions_reads import (
+    count_actions,
     count_sessions,
     get_session,
     get_sessions_batch,
@@ -35,6 +36,7 @@ from polylogue.storage.sqlite.queries.sessions_writes import (
 
 __all__ = [
     "count_session_ids",
+    "count_actions",
     "count_sessions",
     "delete_session_sql",
     "get_session",
