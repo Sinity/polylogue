@@ -74,6 +74,18 @@ def _tamper_receipt(manifest: Path) -> None:
     receipt.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _tamper_receipt_attestation(manifest: Path) -> None:
+    """Alter a receipt field the MAC covers while leaving the verdict valid.
+
+    _tamper_receipt flips the verdict, which the status check rejects before
+    the MAC is ever verified, so the MAC path needs its own case.
+    """
+    receipt = manifest.with_name("verification-receipt.json")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["verified_at"] = "1999-01-01T00:00:00Z"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _tamper_backup_tier(manifest: Path) -> None:
     conn = sqlite3.connect(manifest.with_name("user.db"))
     try:
@@ -598,6 +610,7 @@ ON raw_artifacts(origin, source_path, source_index);
     conn = sqlite3.connect(path)
     try:
         conn.executescript(v29_ddl)
+        _reset_source_fixture_to_version(conn, 29)
         conn.execute("PRAGMA user_version = 29")
         conn.executemany(
             """
@@ -640,7 +653,7 @@ ON raw_artifacts(origin, source_path, source_index);
     return ordinary_blob, failure_a_blob, failure_b_blob
 
 
-def test_source_tier_v29_applies_only_migration_030_and_preserves_failure_coordinates(
+def test_source_tier_v29_migration_030_splits_raw_artifact_indexes(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -650,11 +663,15 @@ def test_source_tier_v29_applies_only_migration_030_and_preserves_failure_coordi
     manifest = _verified_backup_manifest(tmp_path / "backup-source-v29")
 
     with sqlite3.connect(db_path) as conn:
+        # "Only migration 030" was true while 30 was the head version. The
+        # runner enforces canonical-DDL parity against the CURRENT head, so a
+        # pinned target cannot pass; assert that 030 ran and that the index
+        # split it performs is intact, which is what this test is really for.
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 29
-        assert result.to_version == 30
-        assert result.applied_versions == (30,)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 30
+        assert 30 in result.applied_versions
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
 
         index_names = {str(row[1]) for row in conn.execute("PRAGMA index_list('raw_artifacts')")}
         assert {"idx_raw_artifacts_source_identity", "idx_raw_artifacts_failure_identity"} <= index_names
@@ -805,17 +822,7 @@ def test_source_publication_backfill_requires_verified_backup(
     with sqlite3.connect(db_path) as conn:
         conn.execute("DROP TABLE raw_authority_parser_census")
         conn.execute("DROP TABLE raw_authority_blockers")
-        conn.execute("DROP TABLE raw_authority_census_post_plans")
-        conn.execute("DROP TABLE raw_authority_census_plans")
-        conn.execute("DROP TABLE raw_authority_plans")
-        conn.execute("DROP TABLE raw_authority_censuses")
-        conn.execute("DROP TABLE excised_content")
-        conn.execute("DROP TABLE sinex_publication_segments")
-        conn.execute("DROP TABLE sinex_publication_receipts")
-        conn.execute("DROP TABLE sinex_publication_payloads")
-        conn.execute("DROP TABLE sinex_publication_obligations")
-        conn.execute("DROP TABLE verified_blob_receipts")
-        conn.execute("ALTER TABLE raw_sessions DROP COLUMN revision_authority_evidence")
+        _reset_source_fixture_to_version(conn, 9)
         conn.execute("PRAGMA user_version = 9")
         conn.commit()
 
@@ -2194,7 +2201,8 @@ def test_failed_backup_verification_cannot_authorize_user_migration(
     ("label", "mutate", "match"),
     [
         ("manifest", _tamper_manifest, "does not match manifest"),
-        ("receipt", _tamper_receipt, "attestation MAC is invalid"),
+        ("receipt", _tamper_receipt, "receipt is not a successful verification"),
+        ("receipt-attestation", _tamper_receipt_attestation, "attestation MAC is invalid"),
         ("backup-tier", _tamper_backup_tier, "tier artifact .* mismatch"),
     ],
 )
