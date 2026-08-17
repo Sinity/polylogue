@@ -285,10 +285,25 @@ def import_command(
             "source_path": str(requested_source.expanduser().resolve()),
         }
     ).encode("utf-8")
+    # The daemon auto-mints a bearer token and rejects unauthenticated callers
+    # with 401, so this has to present it the same way every other daemon client
+    # does (daemon_client.DaemonClient, archive_query's fast paths). Without it
+    # `polylogue import` cannot reach an authenticated daemon at all.
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+
+    ingest_config = load_polylogue_config()
+    ingest_headers = {"Content-Type": "application/json"}
+    ingest_auth_token = resolve_api_auth_token(
+        getattr(ingest_config, "api_auth_token", None),
+        allow_no_auth=getattr(ingest_config, "api_allow_no_auth", False),
+    )
+    if ingest_auth_token:
+        ingest_headers["Authorization"] = f"Bearer {ingest_auth_token}"
     req = Request(
         f"{daemon_url}/api/ingest",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=ingest_headers,
         method="POST",
     )
 
