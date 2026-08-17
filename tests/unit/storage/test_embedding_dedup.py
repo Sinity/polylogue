@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.config import load_polylogue_config
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage
@@ -25,11 +26,17 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
+# The stub must embed under the model the archive is configured for: the
+# status projection and generation queries scope by the configured model,
+# so a stub naming a different one looks permanently unembedded. Deriving
+# it keeps these tests about dedup/rebuild rather than about model drift.
+_CONFIGURED_EMBEDDING_MODEL = load_polylogue_config().embedding_model
+
 _SHARED_TEXT = "This exact prose appears verbatim in two unrelated sessions."
 
 
 class _FakeVectorProvider:
-    model = "voyage-4"
+    model = _CONFIGURED_EMBEDDING_MODEL
     dimension = 1024
 
     def __init__(self) -> None:
