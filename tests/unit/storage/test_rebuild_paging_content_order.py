@@ -75,10 +75,13 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources import revision_backfill
+from polylogue.sources.parsers import codex as codex_parser
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -124,6 +127,7 @@ def _seed_duplicate_corpus(root: Path, *, group_count: int = 3) -> None:
     re-acquisition/re-export (same bytes, different acquisition evidence).
     """
     initialize_active_archive_root(root)
+    seeded: list[tuple[str, str]] = []
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for copy_index in range(2):
             for group_index in range(group_count):
@@ -131,12 +135,46 @@ def _seed_duplicate_corpus(root: Path, *, group_count: int = 3) -> None:
                     f"hord-group-{group_index}",
                     (("user", f"question {group_index}"), ("assistant", f"answer {group_index}")),
                 )
-                archive.write_raw_payload(
+                raw_id = archive.write_raw_payload(
                     provider=Provider.CODEX,
                     payload=payload,
                     source_path=f"hord-group-{group_index}-copy-{copy_index}.jsonl",
                     acquired_at_ms=copy_index * group_count + group_index,
                 )
+                seeded.append((raw_id, f"hord-group-{group_index}"))
+    # write_raw_payload records bytes only, so no current-parser census receipt
+    # exists and the inactive-candidate gate refuses the corpus.
+    with sqlite3.connect(root / "source.db") as source:
+        # The census compares parsed identities against the durable logical
+        # key, so that key has to exist before the receipt is recorded.
+        for raw_id, native_id in seeded:
+            source.execute(
+                "UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'full' WHERE raw_id = ?",
+                (f"codex-session:{native_id}", raw_id),
+            )
+        source.commit()
+        for raw_id, native_id in seeded:
+            records = json.loads(
+                "["
+                + ",".join(
+                    line
+                    for line in _codex_session(
+                        native_id,
+                        (
+                            ("user", f"question {native_id.rsplit('-', 1)[-1]}"),
+                            ("assistant", f"answer {native_id.rsplit('-', 1)[-1]}"),
+                        ),
+                    )
+                    .decode("utf-8")
+                    .splitlines()
+                    if line.strip()
+                )
+                + "]"
+            )
+            record_current_parser_source_census(
+                source, raw_id, parser_sessions=[codex_parser.parse(records, native_id)]
+            )
+        source.commit()
 
 
 def _canonical_snapshot(index_db: Path) -> dict[str, tuple[tuple[Any, ...], ...]]:
@@ -171,6 +209,9 @@ def _drive_rebuild_to_promotion(
     """
     receipts: list[Any] = []
     operation_id: str | None = None
+    # The rebuild preflight requires a fresh schema-inference receipt; without
+    # one it refuses before any paging happens.
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
     for _ in range(20):  # generous upper bound; promotion ends the loop early
         receipt = rebuild_index_from_source_sync(
             RebuildIndexRequest(
@@ -179,6 +220,7 @@ def _drive_rebuild_to_promotion(
                 raw_batch_size=raw_batch_size,
                 operation_id=operation_id,
                 prefetch_cache=prefetch_cache,
+                schema_inference_receipt_path=receipt_path,
             )
         )
         receipts.append(receipt)
