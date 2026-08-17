@@ -41,7 +41,16 @@ from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
+from polylogue.core.enums import (
+    AssertionKind,
+    AssertionStatus,
+    BlockType,
+    BranchType,
+    MaterialOrigin,
+    Origin,
+    Provider,
+    TitleSource,
+)
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import (
@@ -545,7 +554,7 @@ async def _seed_two_sessions(db_path: Path) -> None:
                 source_name=Provider.CLAUDE_AI,
                 provider_session_id="conv-alpha",
                 title="Alpha",
-                title_source="origin",
+                title_source=TitleSource.ORIGIN,
                 messages=[
                     ParsedMessage(
                         provider_message_id="alpha-m1",
@@ -813,7 +822,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         native_id="conv-alpha",
         origin="claude-ai-export",
         title="Alpha",
-        title_source="origin",
+        title_source=TitleSource.ORIGIN,
         created_at=None,
         updated_at=None,
         message_count=2,
