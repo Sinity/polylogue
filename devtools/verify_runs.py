@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ParamSpec, TextIO, TypeVar
+from typing import Any, Final, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
@@ -320,8 +320,20 @@ def _read_only_git_env() -> dict[str, str]:
     return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 
 
+#: Paths excluded from receipt evidence. A write here cannot change a test
+#: outcome, so it must not invalidate a run. ``.beads`` is the tracker JSONL,
+#: which nothing at runtime reads; watching it made the repository's own
+#: "export after every write" bead discipline destroy the testmon graph whenever
+#: tracker work overlapped a verify. Kept in one place so the mutation watcher
+#: and the endpoint fingerprint cannot drift apart.
+RECEIPT_EXCLUDED_PATHSPECS: Final[tuple[str, ...]] = (":(exclude).beads",)
+
+
 def worktree_fingerprint(root: Path | None = None) -> str:
-    """Fingerprint tracked changes plus exact non-ignored untracked content."""
+    """Fingerprint tracked changes plus exact non-ignored untracked content.
+
+    Excludes :data:`RECEIPT_EXCLUDED_PATHSPECS`; see that constant for why.
+    """
     checkout_root = (root or Path.cwd()).resolve()
     digest = hashlib.sha256()
     try:
@@ -345,8 +357,8 @@ def worktree_fingerprint(root: Path | None = None) -> str:
             # both status and diff, so Git cannot authorize exact evidence.
             return "unavailable"
     for command in (
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        ["git", "diff", "--binary", "HEAD", "--"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", *RECEIPT_EXCLUDED_PATHSPECS],
+        ["git", "diff", "--binary", "HEAD", "--", ".", *RECEIPT_EXCLUDED_PATHSPECS],
     ):
         try:
             result = subprocess.run(
@@ -415,8 +427,22 @@ class CheckoutMutationMonitor:
     invalidate themselves.
     """
 
+    #: Directories whose writes cannot invalidate a receipt. Everything here is
+    #: either verifier-owned scratch or non-executable data: no test outcome
+    #: depends on their contents, so a write during the interval is not evidence
+    #: that the tested tree differed from the attested one.
+    #:
+    #: ``.beads`` is tracked, unlike the rest, and is included deliberately. It
+    #: holds the issue-tracker JSONL, which nothing at runtime reads. Leaving it
+    #: watched made the repository's own documented workflow self-defeating: the
+    #: bead discipline is "export after every write", the pre-commit hook exports
+    #: too, so any tracker activity during a verify tripped
+    #: ``checkout_changed_during_verification`` and deleted the entire
+    #: pytest-testmon graph -- costing a full-corpus rebuild for a file that
+    #: cannot change a single test result.
     _IGNORED_TOP_LEVEL = frozenset(
         {
+            ".beads",
             ".cache",
             ".git",
             ".hypothesis",
