@@ -139,6 +139,7 @@ def _wait_for_ready(client: object, deadline_s: float = 2.0) -> None:
 def test_two_daemons_for_different_archives_never_collide_on_socket_path(
     tmp_path: Path,
     _short_runtime_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two daemons scoped to different archives must bind distinct sockets and
     neither may knock the other offline.
@@ -155,11 +156,18 @@ def test_two_daemons_for_different_archives_never_collide_on_socket_path(
     from polylogue.daemon.http import DaemonAPIHandler
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     archive_root_a = tmp_path / "archive-a"
     archive_root_b = tmp_path / "archive-b"
-    archive_root_a.mkdir()
-    archive_root_b.mkdir()
+    # The health handler resolves its archive from configuration, not from the
+    # server it is serving, so without an explicit root it reports on whatever
+    # archive the developer has configured -- answering 503 (and so failing the
+    # readiness poll) whenever that real archive is unhealthy. Scope both the
+    # env and the tiers so this stays a socket-scoping test.
+    initialize_active_archive_root(archive_root_a)
+    initialize_active_archive_root(archive_root_b)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_a))
 
     socket_path_a = daemon_socket_path(archive_root_a, runtime_dir=str(_short_runtime_dir))
     socket_path_b = daemon_socket_path(archive_root_b, runtime_dir=str(_short_runtime_dir))
