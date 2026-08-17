@@ -30,6 +30,25 @@ RESET_DELETION_CASES = [
 ]
 
 
+def _assert_no_suppression_recorded(archive_root: Path) -> None:
+    """Assert the reset recorded no durable user-tier mutation.
+
+    These cases used to assert ``user.db`` did not exist, reading a missing
+    tier file as proof that nothing happened. That stopped being a signal once
+    archive initialization began materializing all six tiers up front — the
+    seeding helper here calls ``initialize_active_archive_root`` itself, so the
+    file is present before the command under test even runs. Counting the
+    suppression rows the mutation would have written tests the actual contract
+    and matches how the positive cases in this module check the other side.
+    """
+    user_db = archive_root / "user.db"
+    if not user_db.exists():
+        return
+    with sqlite3.connect(user_db) as conn:
+        recorded = conn.execute("SELECT COUNT(*) FROM assertions WHERE kind = 'suppression'").fetchone()[0]
+    assert recorded == 0
+
+
 def _seed_archive_session(archive_root: Path, *, native_id: str, source_path: Path | None = None) -> str:
     initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
@@ -511,8 +530,7 @@ class TestResetIdentityMutationContract:
 
         assert result.exit_code == 0
         assert "No sessions found" in result.output
-        # No mutation happened at all -- user.db was never even created.
-        assert not (archive_root / "user.db").exists()
+        _assert_no_suppression_recorded(archive_root)
 
     def test_session_dry_run_previews_without_mutating(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--dry-run prints the resolved target and performs no mutation."""
@@ -530,7 +548,7 @@ class TestResetIdentityMutationContract:
         assert session_id in result.output
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
-        assert not (archive_root / "user.db").exists()
+        _assert_no_suppression_recorded(archive_root)
 
     def test_session_dry_run_json_envelope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--dry-run --json emits a stable MutationResultPayload preview."""
@@ -569,7 +587,7 @@ class TestResetIdentityMutationContract:
         assert result.exit_code == 0
         with sqlite3.connect(archive_root / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
-        assert not (archive_root / "user.db").exists()
+        _assert_no_suppression_recorded(archive_root)
 
     def test_session_yes_json_envelope_matches_mutation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--yes --json emits a stable envelope for the real mutation, matching dry-run's shape."""

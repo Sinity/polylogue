@@ -2031,6 +2031,12 @@ def _runtime_consumer_results(
 
                     AuditRepository.for_archive_root(archive_root).reconcile_continuity()
                     detail = "reconciled matching source/audit continuity heads"
+                elif reference.endswith(":compile_raw_state_update"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_state_update_compile(cast(Callable[..., object], value))
                 elif reference.endswith(":AuditContinuityCoordinator"):
                     from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
 
@@ -2231,6 +2237,34 @@ def _probe_hook_match_stage(match_stage: Callable[..., object], target_version: 
     if result != (1, 1, len(payload), 0):
         raise DurableChangeTrainError(f"hook match-stage probe produced unexpected counts for {ref_id}: {result!r}")
     return "staged one orphan with one unambiguous hook match"
+
+
+def _probe_raw_state_update_compile(compiler: Callable[..., object]) -> str:
+    """Exercise source v33's ``detected_provider`` rider on the write path.
+
+    The rider's behavior proof is ``preserve-acquisition-origin``: recording a
+    *detected* provider must never restate the acquisition origin, and a state
+    update that resolves no provider must leave any already-detected value
+    standing rather than nulling it. Both are properties of the compiled SQL,
+    so the probe compiles rather than writes and needs no archive.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.raw.models import RawSessionStateUpdate
+
+    resolved = compiler(RawSessionStateUpdate(payload_provider=Provider.CODEX), now_ms=0)
+    unresolved = compiler(RawSessionStateUpdate(payload_provider=None), now_ms=0)
+    if not isinstance(resolved, tuple) or not isinstance(unresolved, tuple):
+        raise DurableChangeTrainError("raw state update probe did not compile to a (clauses, params) pair")
+    resolved_clauses, resolved_params = cast(tuple[tuple[str, ...], tuple[object, ...]], resolved)
+    unresolved_clauses, _ = cast(tuple[tuple[str, ...], tuple[object, ...]], unresolved)
+    for clauses in (resolved_clauses, unresolved_clauses):
+        if any(clause.split("=", 1)[0].strip() == "origin" for clause in clauses):
+            raise DurableChangeTrainError("raw state update compiles a write to the immutable acquisition origin")
+    if not any("detected_provider = COALESCE(" in clause for clause in unresolved_clauses):
+        raise DurableChangeTrainError("raw state update would clobber detected_provider when no provider is resolved")
+    if Provider.CODEX.value not in resolved_params:
+        raise DurableChangeTrainError("raw state update did not bind the resolved detected provider")
+    return f"compiled detected_provider rider: {len(resolved_clauses)} clause(s), acquisition origin untouched"
 
 
 def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
