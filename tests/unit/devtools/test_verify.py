@@ -4318,6 +4318,9 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         selection_mode="affected",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4430,6 +4433,9 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         selection_mode="affected",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4495,6 +4501,13 @@ def test_collection_failure_still_persists_native_run_aggregate(
         selection_mode="bootstrap",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(
+            status="invalid",
+            reason="native environment has no unique collected corpus",
+            missing_executable_paths=(),
+        ),
     )
     invalid_state = SimpleNamespace(
         valid=False,
@@ -4551,6 +4564,9 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
         selection_mode="bootstrap",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
     )
     native_state = SimpleNamespace(
         valid=True,

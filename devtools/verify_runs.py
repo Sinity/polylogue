@@ -1512,6 +1512,72 @@ class PytestStepArtifacts:
     statistics_path: Path
 
 
+#: How many verification run directories to retain. Six days of ordinary work
+#: accumulated 623 directories and 3.0 GB with no policy at all, and nothing
+#: reads a receipt that old: `devtools why` wants the most recent, and the merge
+#: gate keeps its own self-contained receipts under `.cache/verify/merge-gate`.
+VERIFY_RUN_RETENTION: Final[int] = 100
+
+
+def _merge_gate_referenced_run_ids(root: Path) -> frozenset[str]:
+    """Run ids named anywhere in a merge-gate receipt.
+
+    Those receipts capture command output verbatim rather than referencing runs
+    by a typed field, so this scans their text. Over-retaining is the safe error
+    here: a gate whose evidence directory vanished is worse than a few extra
+    megabytes.
+    """
+    gate_dir = root / ".cache" / "verify" / "merge-gate"
+    if not gate_dir.is_dir():
+        return frozenset()
+    referenced: set[str] = set()
+    for path in gate_dir.glob("*.json"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r"runs/([0-9TZ]{16}-[A-Za-z0-9._-]+)", text):
+            referenced.add(match.group(1))
+    return frozenset(referenced)
+
+
+def prune_verify_runs(root: Path, *, keep: int = VERIFY_RUN_RETENTION) -> tuple[Path, ...]:
+    """Drop all but the ``keep`` most recent run directories.
+
+    Protects anything a merge-gate receipt names. Failures are swallowed on
+    purpose: retention is housekeeping, and a run must never fail because old
+    receipts could not be removed.
+    """
+    runs_dir = root / ".cache" / "verify" / "runs"
+    if not runs_dir.is_dir():
+        return ()
+    try:
+        candidates = [path for path in runs_dir.iterdir() if path.is_dir()]
+    except OSError:
+        return ()
+    if len(candidates) <= keep:
+        return ()
+    protected = _merge_gate_referenced_run_ids(root)
+
+    def _sort_key(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    ordered = sorted(candidates, key=_sort_key, reverse=True)
+    removed: list[Path] = []
+    for path in ordered[keep:]:
+        if path.name in protected:
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            continue
+        removed.append(path)
+    return tuple(removed)
+
+
 class VerifyRun:
     """A filesystem-backed verification run ledger."""
 
@@ -1752,6 +1818,9 @@ class VerifyRun:
             self._payload["release_baseline_allowed"] = release_baseline_allowed
         self._payload.setdefault("pytest_aggregate", _history_pytest_aggregate(self._payload))
         self.write()
+        # Housekeeping runs here rather than as a command an operator must
+        # remember: a retention policy nobody invokes is not a policy.
+        prune_verify_runs(self.root)
         return dict(self._payload)
 
 
