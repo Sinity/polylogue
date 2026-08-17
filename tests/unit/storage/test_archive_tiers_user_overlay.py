@@ -50,7 +50,9 @@ def test_archive_tiers_user_overlay_orphan_check_resolves_archive_targets(tmp_pa
             ],
         ),
     )
-    message_id = f"{session_id}:m1"
+    # messages.message_id is generated with an "n:" discriminator for a
+    # native-id message, and blocks.block_id derives from it.
+    message_id = f"{session_id}:n:m1"
     block_id = f"{message_id}:0"
     # Attachments are content-addressed; the stored attachment_id is the blob
     # hash, not a generated token. Read it back so the "ok" mark resolves.
