@@ -2026,6 +2026,30 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_failure_disposition_apply(cast(Callable[..., object], value), archive_root)
+                elif reference.endswith(":replace_raw_backed_blob_reference_debt_from_source"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_blob_source_replacement(cast(Callable[..., object], value), archive_root)
+                elif reference.endswith(":_record_zip_container_coordinate"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_zip_container_coordinate_write(cast(Callable[..., object], value))
+                elif reference.endswith(":raw_revision_descriptor"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_revision_provider_resolution(cast(Callable[..., object], value))
+                elif reference.endswith(":_row_to_raw_session"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_raw_record_hydration(cast(Callable[..., object], value))
                 elif reference.endswith(":AuditRepository.reconcile_continuity"):
                     from polylogue.operations.audit import AuditRepository
 
@@ -2265,6 +2289,187 @@ def _probe_raw_state_update_compile(compiler: Callable[..., object]) -> str:
     if Provider.CODEX.value not in resolved_params:
         raise DurableChangeTrainError("raw state update did not bind the resolved detected provider")
     return f"compiled detected_provider rider: {len(resolved_clauses)} clause(s), acquisition origin untouched"
+
+
+def _probe_raw_blob_source_replacement(replacer: Callable[..., object], archive_root: Path) -> str:
+    """Survey raw-backed blob reference debt against the migrated source tier.
+
+    Only the dry-run arm runs here: applying would rewrite durable blob
+    references, which a deployability probe must never do. The survey still
+    reads every column the consumer depends on, which is what the train needs
+    to know.
+    """
+    report = replacer(archive_root / "source.db", dry_run=True)
+    scanned = getattr(report, "scanned_rows", None)
+    candidates = getattr(report, "candidate_rows", None)
+    if scanned is None or candidates is None:
+        raise DurableChangeTrainError("raw blob source replacement probe returned no survey report")
+    if getattr(report, "replaced_rows", 0) or getattr(report, "written_blobs", 0):
+        raise DurableChangeTrainError("raw blob source replacement probe mutated durable blob references")
+    return f"surveyed raw-backed blob reference debt: {scanned} row(s), {candidates} candidate(s), dry run"
+
+
+def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
+    """Exercise the zip-member coordinate write against a migrated source tier.
+
+    The consumer decodes a v2 zip-member identity and forwards it to
+    ``record_raw_container_coordinate``, which writes the source tier. The
+    probe drives both arms: a raw whose id genuinely encodes its coordinate is
+    recorded, and one whose id does not is rejected without a write, which is
+    the guard that keeps legacy or unrelated identities out of the table.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_coordinate
+    from polylogue.storage.runtime.raw.records import RawSessionRecord
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    blob_hash = "b" * 64
+    source_path = "/durable-change-train/coordinate-probe.zip"
+    source_index = 1
+    entry_ordinal, split_index = zip_member_source_coordinate(source_index)
+    matching_raw_id = zip_member_raw_id(
+        source_path=source_path,
+        entry_ordinal=entry_ordinal,
+        split_index=split_index,
+        blob_hash=blob_hash,
+    )
+
+    def _record(raw_id: str) -> RawSessionRecord:
+        return RawSessionRecord(
+            raw_id=raw_id,
+            blob_hash=blob_hash,
+            source_name=Provider.CLAUDE_CODE.value,
+            source_path=source_path,
+            source_index=source_index,
+            blob_size=0,
+            acquired_at="2026-01-01T00:00:00+00:00",
+        )
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-coordinate-") as directory:
+        root = Path(directory) / "archive"
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            connection = archive._ensure_source_conn()
+            for raw_id in (matching_raw_id, "durable-change-train-unrelated-raw"):
+                connection.execute(
+                    """
+                    INSERT INTO raw_sessions (
+                        raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                    ) VALUES (?, 'claude-code-session', ?, ?, ?, 0, ?)
+                    """,
+                    (raw_id, source_path, source_index, bytes.fromhex(blob_hash), 1_780_000_000_000),
+                )
+            writer(archive, _record(matching_raw_id), source_raw_id=matching_raw_id, blob_hash=blob_hash)
+            writer(
+                archive,
+                _record("durable-change-train-unrelated-raw"),
+                source_raw_id="durable-change-train-unrelated-raw",
+                blob_hash=blob_hash,
+            )
+            recorded = {
+                str(row[0]) for row in connection.execute("SELECT raw_id FROM raw_container_coordinates").fetchall()
+            }
+    if matching_raw_id not in recorded:
+        raise DurableChangeTrainError("zip container coordinate write did not record a matching v2 identity")
+    if "durable-change-train-unrelated-raw" in recorded:
+        raise DurableChangeTrainError("zip container coordinate write recorded an identity it should have rejected")
+    return "recorded a v2 zip member coordinate and rejected an unrelated identity"
+
+
+def _probe_revision_provider_resolution(descriptor: Callable[..., object]) -> str:
+    """Prove replay routes on the detected provider, not the acquisition origin.
+
+    This is the read side of the same rider: when a parser has recorded which
+    provider it actually recognised, revision replay must route on that rather
+    than re-deriving a provider from the origin the bytes were acquired under.
+    The probe seeds a raw whose two values disagree so a descriptor that fell
+    back to the origin would resolve the wrong parser.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-revision-") as directory:
+        root = Path(directory) / "archive"
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=b'{"durable-change-train": "revision-probe"}\n',
+                source_path="/durable-change-train/revision-probe.jsonl",
+                acquired_at_ms=1_780_000_000_000,
+            )
+            archive._ensure_source_conn().execute(
+                "UPDATE raw_sessions SET detected_provider = ?, revision_kind = 'full' WHERE raw_id = ?",
+                (Provider.CODEX.value, raw_id),
+            )
+            resolved = descriptor(archive, raw_id)
+        if not isinstance(resolved, tuple) or not resolved:
+            raise DurableChangeTrainError("revision provider resolution did not return a descriptor tuple")
+        provider = resolved[0]
+        if getattr(provider, "value", provider) != Provider.CODEX.value:
+            raise DurableChangeTrainError(
+                f"revision provider resolution ignored the detected provider and routed on origin: {provider!r}"
+            )
+    return "resolved a revision descriptor on the detected provider over the acquisition origin"
+
+
+def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
+    """Prove hydration keeps v33's detected provider distinct from the origin.
+
+    The rider's point is that a parser may record the provider it actually
+    recognised without rewriting the immutable acquisition origin. A mapper
+    that collapsed the two would satisfy every column-level check while
+    silently destroying that distinction on read, so the probe hydrates a row
+    whose two values deliberately disagree.
+    """
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.core.sources import provider_from_origin
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-hydration-") as directory:
+        source_path = Path(directory) / "source.db"
+        with sqlite3.connect(source_path) as connection:
+            connection.row_factory = sqlite3.Row
+            initialize_archive_tier(connection, ArchiveTier.SOURCE)
+            connection.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                    acquired_at_ms, detected_provider
+                ) VALUES (?, ?, ?, 0, ?, 0, ?, ?)
+                """,
+                (
+                    "durable-change-train-hydration-raw",
+                    "claude-code-session",
+                    "/durable-change-train/hydration-probe.jsonl",
+                    b"\0" * 32,
+                    1_780_000_000_000,
+                    "codex",
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM raw_sessions WHERE raw_id = ?",
+                ("durable-change-train-hydration-raw",),
+            ).fetchone()
+        if row is None:
+            raise DurableChangeTrainError("raw record hydration probe could not read back its seeded row")
+        record = mapper(row)
+        # Hydration splits the two: ``source_name`` carries the provider derived
+        # from the immutable acquisition origin, ``payload_provider`` carries
+        # what the parser actually detected. Collapsing them is the regression
+        # this rider exists to prevent.
+        acquisition = provider_from_origin(Origin.CLAUDE_CODE_SESSION)
+        source_name = getattr(record, "source_name", None)
+        detected = getattr(record, "payload_provider", None)
+        if source_name != acquisition.value:
+            raise DurableChangeTrainError(
+                f"raw record hydration rewrote the acquisition origin: {source_name!r} (expected {acquisition.value!r})"
+            )
+        if getattr(detected, "value", detected) != Provider.CODEX.value:
+            raise DurableChangeTrainError(f"raw record hydration lost the detected provider: {detected!r}")
+    return "hydrated a raw record preserving both acquisition origin and detected provider"
 
 
 def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
