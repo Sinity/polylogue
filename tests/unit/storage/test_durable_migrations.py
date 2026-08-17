@@ -123,6 +123,21 @@ def _create_user_v3(path: Path) -> None:
         conn.close()
 
 
+def _tables_created_by_source_migrations_above(version: int) -> tuple[str, ...]:
+    """Tables created by numbered source migrations newer than *version*."""
+    migrations = Path(__file__).parents[3] / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
+    names: list[str] = []
+    for path in sorted(migrations.glob("*.sql")):
+        slot = int(path.name.split("_", 1)[0])
+        if slot <= version:
+            continue
+        for match in re.finditer(
+            r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)", path.read_text(encoding="utf-8")
+        ):
+            names.append(match.group(1))
+    return tuple(dict.fromkeys(names))
+
+
 def _create_user_v5(path: Path) -> None:
     """Create the exact pre-annotation durable user tier."""
 
@@ -899,30 +914,13 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
-        for table_name in (
-            "raw_capture_observations",
-            "verified_blob_receipts",
-            "raw_live_source_reconciliation_receipts",
-            "raw_membership_writeback_receipts",
-            "raw_append_chain_backfill_receipts",
-            "raw_authority_parser_census",
-            "raw_authority_plans",
-            "raw_authority_censuses",
-            "raw_authority_census_plans",
-            "raw_authority_census_post_plans",
-            "raw_authority_blockers",
-            "sinex_publication_obligations",
-            "sinex_publication_payloads",
-            "sinex_publication_receipts",
-            "sinex_publication_segments",
-            "excised_content",
-            "raw_byte_duplicate_supersession_receipts",
-            "raw_authority_verdicts",
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
+        # Derived, not hand-listed: every table a source migration ABOVE this
+        # fixture's version creates must be absent, or that migration's own
+        # CREATE TABLE fails with "table ... already exists". The previous
+        # literal tuple silently went stale each time a migration added a table
+        # (031's raw_authority_artifact_census_receipts was the one that broke
+        # this module).
+        for table_name in _tables_created_by_source_migrations_above(7):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.execute("PRAGMA user_version = 7")
         conn.execute(
@@ -1341,12 +1339,9 @@ def test_source_tier_v24_repairs_raw_hook_event_origin_check(
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SOURCE_DDL)
         _restore_source_pre_v30_raw_artifact_indexes(conn)
-        for table_name in (
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
+        # Same derivation as the v7 fixture: anything a migration above v24
+        # creates must not already exist here.
+        for table_name in _tables_created_by_source_migrations_above(24):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.executescript(
             """
@@ -1721,19 +1716,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             PRAGMA user_version = 13;
             """
         )
-        for table_name in (
-            "raw_capture_observations",
-            "verified_blob_receipts",
-            "raw_live_source_reconciliation_receipts",
-            "raw_membership_writeback_receipts",
-            "raw_append_chain_backfill_receipts",
-            "raw_byte_duplicate_supersession_receipts",
-            "raw_authority_verdicts",
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
+        for table_name in _tables_created_by_source_migrations_above(14):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
@@ -1834,19 +1817,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             PRAGMA user_version = 14;
             """
         )
-        for table_name in (
-            "raw_capture_observations",
-            "verified_blob_receipts",
-            "raw_live_source_reconciliation_receipts",
-            "raw_membership_writeback_receipts",
-            "raw_append_chain_backfill_receipts",
-            "raw_byte_duplicate_supersession_receipts",
-            "raw_authority_verdicts",
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
+        for table_name in _tables_created_by_source_migrations_above(14):
             conn.execute(f"DROP TABLE IF EXISTS {table_name}")
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
