@@ -5838,6 +5838,17 @@ def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_
     except Exception:
         # Cannot classify -> no positive evidence -> retain.
         return False
+    if observation.decode_error:
+        # A decode failure is *not* raised, it is reported on the observation
+        # with ``parse_as_session=False`` -- which the return below would read
+        # as positive evidence that this is not a session and delete the row.
+        # Unreadable bytes are the absence of evidence, and this function's
+        # contract (and the `except` above) is to retain in that case. The
+        # difference is destructive: inspection resolves the blob through the
+        # configured archive, so repairing any archive that is not the
+        # configured one fails to read every blob and would otherwise delete
+        # every message-less session it examined.
+        return False
     return not observation.parse_as_session
 
 
