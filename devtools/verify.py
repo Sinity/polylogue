@@ -78,6 +78,7 @@ from devtools.verify_runs import (
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
     CURRENT_STATISTICS_PATH,
+    DEFAULT_PYTEST_BASETEMP_ROOT,
     PYTEST_CANONICAL_REPORT_NAME,
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
@@ -2711,12 +2712,42 @@ def _pytest_profile() -> str:
     return "correctness=complete"
 
 
+#: The Hypothesis profile `.claude/settings.json` pins for the cloud sandbox lane.
+_CLOUD_HYPOTHESIS_PROFILE = "ci"
+
+
+def _resolved_hypothesis_profile(env: Mapping[str, str] | None = None) -> str:
+    """Return the Hypothesis profile, ignoring the cloud pin on a workstation.
+
+    `.claude/settings.json` sets HYPOTHESIS_PROFILE=ci so a cloud sandbox runs a
+    cheap profile, and agent subprocesses inherit it on the workstation. The
+    profiles are not equivalent: `ci` caps at 30 examples (5 under POLYLOGUE_CI)
+    where `default` runs 100, so the leak silently removed 70% of every property
+    test's search in the ordinary dev loop -- weaker coverage with nothing on
+    screen to say so.
+
+    Same treatment as the POLYLOGUE_PYTEST_WORKERS and POLYLOGUE_ARCHIVE_ROOT
+    sentinels: drop that exact value only where this is provably not CI and not a
+    sandbox -- POLYLOGUE_CI unset and the workstation scratch mount present. Any
+    other profile, and `ci` in real CI, is a deliberate choice and still wins.
+    """
+    values = os.environ if env is None else env
+    configured = (values.get("HYPOTHESIS_PROFILE") or "").strip()
+    if (
+        configured == _CLOUD_HYPOTHESIS_PROFILE
+        and not (values.get("POLYLOGUE_CI") or "").strip()
+        and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir()
+    ):
+        return "default"
+    return configured or "default"
+
+
 def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str | None]:
     environment = {
         # Hypothesis uses its default profile when the variable is absent.
         # Record that effective value in the testmon environment identity so a
         # bootstrap graph is reusable by the following affected invocation.
-        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE") or "default",
+        "HYPOTHESIS_PROFILE": _resolved_hypothesis_profile(),
         "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
     }
     if force_release_profile:
