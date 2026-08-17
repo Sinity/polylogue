@@ -502,10 +502,22 @@ def _initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
             and (root / archive_tier_spec(ArchiveTier.USER).filename).is_file()
         )
+        # A durable tier that is a symlink (or otherwise not a lone regular
+        # file) is a tamper/containment finding, and the change-train
+        # reconciliation below refuses startup for it by name. Announcing
+        # "missing audit.db, run migrate-tier --adopt-established-audit" first
+        # would both misreport that condition and invite an operator to run a
+        # durable migration against an archive whose tiers were replaced. Report
+        # the more severe finding first by deferring to the barrier below.
+        durable_tier_files_are_safe = all(
+            not (path := root / archive_tier_spec(tier).filename).is_symlink() and (path.is_file() or not path.exists())
+            for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
+        )
         if (
             durable_tier_exists
             and not recovering_fresh_durable_bootstrap
             and established_archive
+            and durable_tier_files_are_safe
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         ):
             raise RuntimeError(
