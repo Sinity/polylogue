@@ -498,7 +498,11 @@ def test_daemon_bulk_rebuild_equivalent_to_cli_rebuild(tmp_path: Path, monkeypat
     _seed_corpus(daemon_root)
     cli_receipt_path = write_valid_rebuild_receipt(cli_root, tmp_path / "cli-receipt.json")
     daemon_receipt_path = write_valid_rebuild_receipt(daemon_root, tmp_path / "daemon-receipt.json")
-    assert source_revision_snapshot(cli_root) == source_revision_snapshot(daemon_root)
+    # Compare the immutable source evidence, not every mutable column: parse
+    # and revision-governance state are post-acquisition interpretation that
+    # differs between two independently seeded corpora, which is precisely why
+    # rebuild_source_evidence_snapshot exists alongside the full-row hash.
+    assert rebuild_source_evidence_snapshot(cli_root) == rebuild_source_evidence_snapshot(daemon_root)
 
     # ArchiveStore.open_owned_inactive_generation validates generation
     # identity against the process-wide configured archive root (not merely
