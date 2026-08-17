@@ -64,6 +64,7 @@ from polylogue.storage.index_generation import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _RAW_COUNT = 6
@@ -101,17 +102,22 @@ def _config(root: Path) -> Config:
 
 def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
     initialize_active_archive_root(root)
+    seeded: dict[str, bytes] = {}
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(count):
-            archive.write_raw_payload(
+            payload = _codex_session(
+                f"gd6v-session-{index}",
+                (("user", f"question {index}"), ("assistant", f"searchable answer {index}")),
+            )
+            raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=_codex_session(
-                    f"gd6v-session-{index}",
-                    (("user", f"question {index}"), ("assistant", f"searchable answer {index}")),
-                ),
+                payload=payload,
                 source_path=f"gd6v-corpus-{index}.jsonl",
                 acquired_at_ms=index,
             )
+            seeded[raw_id] = payload
+    record_codex_parser_census(root, seeded)
+    decide_raw_revision_authority(root)
     backfill_historical_revision_evidence(root)
 
 
@@ -123,20 +129,36 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 def test_daemon_bulk_rebuild_refuses_unexplained_failures_before_generation_or_page_selection(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The real daemon route fails before creating state or selecting raws."""
     initialize_active_archive_root(tmp_path)
+    # Acquire real bytes and then mark the parse as failed. A hand-inserted row
+    # with a fabricated blob_hash fails the receipt's blob verification, so the
+    # run would refuse for a missing blob rather than for the unexplained parse
+    # failure this case is about.
+    payload = _codex_session("bulk-rebuild-failed", (("user", "question"), ("assistant", "answer")))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        failed_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="bulk-rebuild-failed.jsonl",
+            acquired_at_ms=100,
+        )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
-            """
-            INSERT INTO raw_sessions(
-                raw_id, origin, native_id, source_path, blob_hash, blob_size,
-                acquired_at_ms, parse_error
-            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, 10, 100, 'parser failed')
-            """,
-            (b"f" * 32,),
+            "UPDATE raw_sessions SET parse_error = 'parser failed' WHERE raw_id = ?",
+            (failed_raw_id,),
         )
         conn.commit()
+
+    # Written after seeding: the receipt binds to a source snapshot, so one
+    # taken earlier is rejected for not matching source.db and the run refuses
+    # on the receipt instead of on the failure lifecycle this case is about.
+    monkeypatch.setenv(
+        "POLYLOGUE_SCHEMA_INFERENCE_RECEIPT",
+        str(write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-failure-receipt.json")),
+    )
 
     parse_stage = Mock()
     with pytest.raises(RuntimeError, match="raw failure lifecycle preflight"):
