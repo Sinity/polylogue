@@ -2013,7 +2013,9 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
             )
 
         initialize_archive_database(archive.config.archive_root / "user.db", ArchiveTier.USER)
-        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        # blocks.block_id derives from messages.message_id, which is generated
+        # with an "n:" discriminator for a native-id message.
+        instruction_block_id = f"{parent_session_id}:n:dispatch:0"
         with sqlite3.connect(archive.config.archive_root / "user.db") as conn:
             upsert_assertion(
                 conn,
@@ -3543,7 +3545,9 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
                 )
             )
 
-        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        # blocks.block_id derives from messages.message_id, which is generated
+        # with an "n:" discriminator for a native-id message.
+        instruction_block_id = f"{parent_session_id}:n:dispatch:0"
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -3680,7 +3684,7 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
                 )
             )
 
-        instruction_block_id = f"{parent_session_id}:dispatch-a:0"
+        instruction_block_id = f"{parent_session_id}:n:dispatch-a:0"
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -6014,7 +6018,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
                     branch_type=BranchType.SUBAGENT,
                 )
             )
-        delegation_ref = f"delegation:{parent_session_id}:dispatch:0"
+        delegation_ref = f"delegation:{parent_session_id}:n:dispatch:0"
         request = AnnotationBatchImportRequest(
             jsonl=json.dumps(
                 {
