@@ -1817,7 +1817,16 @@ class LiveBatchProcessor:
         ingested: list[Path] = []
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-        acquisition_capture_mode = fallback_provider
+        # A capture mode is an assertion about how the bytes were captured, and
+        # a watch source whose name resolves to no provider (a generic inbox,
+        # say) is not in a position to make it. Recording UNKNOWN here rather
+        # than None asserted it anyway, and because ``Provider.UNKNOWN`` is
+        # truthy the downstream ``record.capture_mode or provider`` then let it
+        # outrank the provider this pass had actually detected -- a ChatGPT
+        # browser capture dropped in a generic inbox persisted as
+        # origin='unknown-export' with detected_provider='unknown' no matter how
+        # often it was re-captured.
+        acquisition_capture_mode = None if fallback_provider is Provider.UNKNOWN else fallback_provider
 
         source_only = _source_tier_acquisition_required()
         source_db = archive_root / "source.db"
@@ -2498,6 +2507,13 @@ class LiveBatchProcessor:
                     record_timings: dict[str, float] = {}
                     t0 = time.perf_counter()
                     provider = record.payload_provider or Provider.from_string(record.source_name)
+                    # ``Provider.UNKNOWN`` is truthy, so a plain ``or`` lets an
+                    # explicitly-unknown capture mode outrank the provider this
+                    # acquisition actually detected. That is how a browser
+                    # capture whose provider resolved to chatgpt still landed as
+                    # origin='unknown-export' with detected_provider='unknown':
+                    # the capture mode, not the detection, decided the identity.
+                    #
                     acquisition_provider = record.capture_mode or provider
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
