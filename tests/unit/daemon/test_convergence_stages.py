@@ -472,7 +472,18 @@ def test_archive_missing_profile_selector_limits_after_stale_filter(tmp_path: Pa
         assert stages._schema_archive_session_ids_missing_profiles(conn, limit=2) == session_ids[1:]
 
 
-def test_fts_stage_skips_archive_source_path_backlog_repair(tmp_path: Path) -> None:
+def test_fts_stage_converges_archive_source_path_sessions(tmp_path: Path) -> None:
+    """Foreground source-path convergence indexes the path's sessions.
+
+    This previously asserted the opposite -- that the archive-backed stage
+    reports "nothing to do" and "done" while leaving the index empty -- on the
+    premise that archive writes already index newly changed rows. Live full
+    ingest breaks that premise: it defers the write-time ``fts_insert`` to
+    preserve writer availability, so a skipping stage strands rows that were
+    just written rather than merely declining historical backlog. FTS coverage
+    is an unconditional convergence invariant, so the stage must answer for the
+    sessions belonging to the paths it is given.
+    """
     archive_db = tmp_path / "index.db"
     (tmp_path / "index.db").touch()
     source_path = tmp_path / "codex.jsonl"
@@ -480,10 +491,12 @@ def test_fts_stage_skips_archive_source_path_backlog_repair(tmp_path: Path) -> N
 
     stage = make_fts_stage(tmp_path / "index.db")
 
-    assert stage.check(source_path) is False
+    assert stage.check(source_path) is True
     assert stage.execute(source_path) is True
     with sqlite3.connect(archive_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
+    # Converged: a second pass has nothing left to do.
+    assert stage.check(source_path) is False
 
 
 def test_fts_session_debt_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None:

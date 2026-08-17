@@ -1770,26 +1770,62 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
 
 
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
-    del db_path, path
-    return False
+    return bool(_archive_fts_check_many(db_path, (path,)))
 
 
 def _archive_fts_execute(db_path: Path, path: Path) -> bool:
-    del db_path
-    logger.info("fts: archive source-path foreground repair skipped path=%s", path)
-    return True
+    return _archive_fts_execute_many(db_path, (path,))
+
+
+def _archive_session_ids_for_source_paths(db_path: Path, paths: Sequence[Path]) -> dict[Path, list[str]]:
+    """Sessions written from each source path, read-only."""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            return _session_ids_for_source_paths(conn, paths)
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "convergence freshness probe %s errored; treating as needs-work",
+            "_archive_session_ids_for_source_paths",
+            exc_info=True,
+        )
+        return {path: [] for path in paths}
 
 
 def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
-    del db_path, paths
-    return set()
+    # FTS coverage is an unconditional convergence invariant: there is no state in
+    # which the index is legitimately behind the blocks table. These archive-backed
+    # entry points used to answer "nothing to do" (check) and "done" (execute)
+    # without touching the index, so a live batch -- which defers the write-time
+    # fts_insert to preserve writer availability -- converged with the index empty
+    # and no debt, failed attempt or missing trigger to show for it.
+    if not paths:
+        return set()
+    sessions_by_path = _archive_session_ids_for_source_paths(db_path, paths)
+    stale: set[Path] = set()
+    for path, session_ids in sessions_by_path.items():
+        if session_ids and _archive_fts_check_sessions(db_path, session_ids):
+            stale.add(path)
+    return stale
 
 
 def _archive_fts_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
-    del db_path
-    if paths:
-        logger.info("fts: archive batch source-path foreground repair skipped paths=%d", len(paths))
-    return True
+    if not paths:
+        return True
+    sessions_by_path = _archive_session_ids_for_source_paths(db_path, paths)
+    candidates = tuple(dict.fromkeys(sid for ids in sessions_by_path.values() for sid in ids))
+    if not candidates:
+        return True
+    # Repair only the sessions that are actually behind. Foreground convergence
+    # must leave no gap, but it should not re-index a path's already-coherent
+    # sessions -- that bounded-work concern is why this route used to skip
+    # entirely, and it is satisfiable without giving up the invariant.
+    stale = _archive_fts_check_sessions(db_path, candidates)
+    if not stale:
+        return True
+    return _archive_fts_execute_sessions(db_path, tuple(stale))
 
 
 def _archive_fts_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
