@@ -3005,7 +3005,8 @@ async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(
         created_at_ms=123,
     )
     try:
-        with ArchiveStore.open_existing(tmp_path) as store:
+        # open_existing defaults to read-only; saving a batch is a user.db write.
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
             store.save_annotation_batch(batch)
 
         payload = await archive.resolve_ref(batch.batch_ref)
@@ -3151,7 +3152,8 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
     )
     archive = _archive(tmp_path)
     try:
-        with ArchiveStore.open_existing(tmp_path) as store:
+        # open_existing defaults to read-only; saving a batch is a user.db write.
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
             store.save_annotation_batch(batch)
             persisted = store.get_annotation_batch(batch.batch_id)
             assert persisted is not None
@@ -3227,7 +3229,8 @@ async def test_resolve_ref_byte_bounds_opaque_annotation_refs_and_scalars(tmp_pa
     )
     archive = _archive(tmp_path)
     try:
-        with ArchiveStore.open_existing(tmp_path) as store:
+        # open_existing defaults to read-only; saving a batch is a user.db write.
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
             store.save_annotation_batch(batch)
             persisted = store.get_annotation_batch(batch.batch_id)
             assert persisted is not None
