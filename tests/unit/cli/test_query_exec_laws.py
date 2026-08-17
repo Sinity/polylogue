@@ -2848,18 +2848,32 @@ def test_async_execute_query_archive_deletes_session_by_id(
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    asyncio.run(
-        _execute_query_params(
-            env,
-            {
-                "archive": True,
-                "conv_id": "codex-session:native-1",
-                "delete_matched": True,
-                "force": True,
-                "output_format": "json",
-            },
+    # Delete has no non-daemon route: `_emit_delete` refuses outright when the
+    # daemon does not answer the prepare call. Stub the three-step handshake and
+    # keep this case's real claim -- that the resolved session id is the one
+    # carried into the delete -- by asserting it at the daemon boundary, which
+    # is where the write now happens.
+    def _daemon_delete(_config: object, path: str, *, body: dict[str, object]) -> dict[str, object]:
+        if path.endswith("/prepare"):
+            assert body["session_ids"] == ["codex-session:native-1"]
+            return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["codex-session:native-1"]}
+        if path.endswith("/authorize"):
+            return {"status": "authorized", "authorization_token": "test-authorization"}
+        return {"status": "deleted", "affected_count": 1, "session_ids": ["codex-session:native-1"]}
+
+    with patch("polylogue.cli.archive_query._submit_daemon_mutation", side_effect=_daemon_delete):
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "conv_id": "codex-session:native-1",
+                    "delete_matched": True,
+                    "force": True,
+                    "output_format": "json",
+                },
+            )
         )
-    )
 
     assert json.loads(capsys.readouterr().out) == {
         "status": "deleted",

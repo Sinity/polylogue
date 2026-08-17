@@ -15,7 +15,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import click
@@ -799,6 +799,33 @@ class TestDeleteCardinalityLargeNonMocked:
     def _bind_capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._capsys = capsys
 
+    @staticmethod
+    def _daemon_delete_route(archive_root: Path) -> Any:
+        """Stand in for the daemon's three-step delete, doing the real delete.
+
+        `_emit_delete` has no non-daemon route: it refuses outright when the
+        daemon does not answer the prepare call. This test is about cardinality
+        -- that the previewed set, the deleted set and the guard set are the
+        same unlimited set -- not about which process performs the write, so
+        the stub prepares from the caller's own resolved ids and then deletes
+        them through the real ArchiveStore.
+        """
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        prepared: dict[str, list[str]] = {}
+
+        def _route(_config: Any, path: str, *, body: dict[str, object]) -> dict[str, object]:
+            if path.endswith("/prepare"):
+                prepared["ids"] = [str(item) for item in cast(list[Any], body["session_ids"])]
+                return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
+            if path.endswith("/authorize"):
+                return {"status": "authorized", "authorization_token": "test-authorization"}
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                affected = archive.delete_sessions(tuple(prepared["ids"]))
+            return {"status": "deleted", "affected_count": affected, "session_ids": prepared["ids"]}
+
+        return _route
+
     def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
         from tests.infra.app_env import make_app_env
@@ -831,7 +858,11 @@ class TestDeleteCardinalityLargeNonMocked:
         assert len(resolve_session_ids_for_verb(env, request)) == self.COUNT
 
         # 3. Deleted set: --yes --all removes the entire matched set.
-        result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
+        with patch(
+            "polylogue.cli.archive_query._submit_daemon_mutation",
+            side_effect=self._daemon_delete_route(workspace_env["archive_root"]),
+        ):
+            result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
         assert result["session_count"] == self.COUNT
         assert result["affected_count"] == self.COUNT, (
             f"delete truncated to {result['affected_count']} (expected {self.COUNT})"
