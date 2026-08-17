@@ -212,7 +212,12 @@ def _assert_existing_raw_observation_identity(
         # classification already on the row.
         return True
     if stored_origin == unknown:
-        conn.execute("UPDATE raw_sessions SET origin = ? WHERE raw_id = ?", (incoming_origin, raw_id))
+        # A better-informed re-observation of bytes admitted under the placeholder.
+        # The mutation goes through the declared source-tier writer rather than
+        # being issued here.
+        from polylogue.storage.sqlite.archive_tiers.source_write import refine_raw_origin
+
+        refine_raw_origin(conn, raw_id=raw_id, origin=origin)
         return True
     raise ValueError(
         f"raw id is already bound to a conflicting origin: {raw_id} "

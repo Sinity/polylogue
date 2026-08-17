@@ -1734,7 +1734,10 @@ class TestNoArchiveStatus:
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
-        assert "daemon status unavailable" in combined
+        # Direct status deliberately does not measure FTS coverage (the query
+        # assertions above are this test's subject); it must say so rather than
+        # render a 0% that reads as a genuinely empty index.
+        assert "not measured without the daemon" in combined
         assert any("SUM(message_count)" in query for query in queries)
         assert not any("messages_fts_docsize" in query for query in queries)
 

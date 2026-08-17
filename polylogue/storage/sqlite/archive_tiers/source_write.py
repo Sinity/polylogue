@@ -444,8 +444,21 @@ def _assert_existing_raw_identity(
     if row is None:
         raise RuntimeError(f"raw insert conflict lost its retained row: {raw_id}")
     values = tuple(row)
-    if values[:6] != (origin, native_id, source_path, source_index, blob_hash, blob_size):
+    # Bytes and provenance coordinates are the acquisition evidence and must match
+    # exactly. ``origin`` is a derived classification: a decoded ingest can sniff a
+    # ZIP as a whole and stamp every member, while a source-only replay of the same
+    # bytes sees one opaque member and can only say ``unknown-export``. Comparing it
+    # as evidence made those routes mutually exclusive over identical bytes. A
+    # refinement away from ``unknown-export`` is admitted; two confident but
+    # different origins remain a genuine contradiction.
+    if values[1:6] != (native_id, source_path, source_index, blob_hash, blob_size):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    stored_origin = values[0]
+    unknown_origin = Origin.UNKNOWN_EXPORT.value
+    if stored_origin != origin and unknown_origin not in (stored_origin, origin):
+        raise ValueError(
+            f"raw id is already bound to a conflicting origin: {raw_id} (stored={stored_origin!r}, incoming={origin!r})"
+        )
     if revision is not None and values[6:] != _revision_values(revision):
         raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
 
@@ -473,6 +486,26 @@ def apply_source_raw_state_update(
         )
         if cursor.rowcount != 1:
             raise KeyError(raw_id)
+
+
+def refine_raw_origin(conn: sqlite3.Connection, *, raw_id: str, origin: Origin | str) -> None:
+    """Replace a placeholder ``unknown-export`` origin with a confident one.
+
+    Origin is a derived classification rather than acquisition evidence, and
+    routes derive it with different information: a decoded ingest sniffs a ZIP
+    archive as a whole, while a source-only replay of the same bytes sees one
+    opaque member. When the better-informed route re-observes bytes already
+    admitted under the placeholder, the row converges upward. Guarded on the
+    placeholder so a confident origin is never silently overwritten; a genuine
+    contradiction is raised by the identity assertions instead.
+    """
+    origin_value = _enum_value(origin)
+    if origin_value is None or origin_value == Origin.UNKNOWN_EXPORT.value:
+        return
+    conn.execute(
+        "UPDATE raw_sessions SET origin = ? WHERE raw_id = ? AND origin = ?",
+        (origin_value, raw_id, Origin.UNKNOWN_EXPORT.value),
+    )
 
 
 def write_source_blob_refs(
