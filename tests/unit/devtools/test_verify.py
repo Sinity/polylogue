@@ -202,6 +202,34 @@ def test_lab_verify_delegates_to_lab_smoke() -> None:
     )
 
 
+def test_receipt_records_why_a_bootstrap_happened_not_just_that_it_did(tmp_path: Path) -> None:
+    """A bootstrap costs ~9.5x a warm run, so the receipt must name its cause.
+
+    `diagnosis: native_testmon_graph_invalid` records the outcome alone, which
+    cannot distinguish a digest change (nothing was reusable) from an
+    incomplete graph (better selection could have avoided most of the work).
+    Telling them apart previously meant reading the testmon SQLite by hand.
+    """
+    run = VerifyRun(tier="testmon", argv=[], git_head="head", root=tmp_path)
+
+    run.record_selection(
+        selection_mode="bootstrap",
+        state_status="incomplete",
+        state_reason="changed executable modules are absent from the native dependency graph",
+        missing_executable_paths=("polylogue/daemon/http.py", "tests/unit/daemon/test_http.py"),
+        runtime_data_paths=(),
+        copied_from=None,
+    )
+
+    recorded = json.loads((run.run_dir / "run.json").read_text(encoding="utf-8"))["testmon_selection"]
+    assert recorded["state_status"] == "incomplete", "the addressable case must be distinguishable from 'absent'"
+    assert recorded["missing_executable_path_count"] == 2
+    assert "polylogue/daemon/http.py" in recorded["missing_executable_paths"], (
+        "the specific uncovered files are what a smarter selection would need"
+    )
+    assert recorded["selection_mode"] == "bootstrap"
+
+
 def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
     run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
 

@@ -1588,6 +1588,48 @@ class VerifyRun:
             self._payload["worktree_fingerprint"] = worktree_fingerprint
         self.write()
 
+    def record_selection(
+        self,
+        *,
+        selection_mode: str,
+        state_status: str,
+        state_reason: str,
+        missing_executable_paths: Sequence[str] = (),
+        runtime_data_paths: Sequence[str] = (),
+        copied_from: str | None = None,
+    ) -> None:
+        """Record WHY this run selected the tests it did.
+
+        A bootstrap costs roughly 9.5x a warm run, so the reason one happened is
+        the single most useful fact a receipt can carry -- and until now it
+        carried none of it. `diagnosis: native_testmon_graph_invalid` named the
+        outcome without the cause, so telling apart the two very different
+        bootstrap triggers meant opening the testmon SQLite by hand:
+
+        * ``absent``     -- the environment digest itself changed, so no graph
+          for it exists. Caused by a dependency bump, a conftest or harness
+          edit, an interpreter change, or one of the two environment variables
+          in the digest (HYPOTHESIS_PROFILE, POLYLOGUE_CI). Nothing is
+          reusable; the cost is unavoidable for that digest.
+        * ``incomplete`` -- a sound graph for this digest exists but has not
+          fingerprinted every changed module yet. ``missing_executable_paths``
+          names exactly which, and those are the only files for which affected
+          selection would be unsafe.
+
+        Only the second is addressable by smarter selection. Recording both
+        makes that split measurable across runs instead of assumed.
+        """
+        self._payload["testmon_selection"] = {
+            "selection_mode": selection_mode,
+            "state_status": state_status,
+            "state_reason": state_reason,
+            "missing_executable_paths": list(missing_executable_paths),
+            "missing_executable_path_count": len(tuple(missing_executable_paths)),
+            "runtime_data_paths": list(runtime_data_paths),
+            "copied_from": copied_from,
+        }
+        self.write()
+
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         index = len(self._payload["steps"]) + 1
         step_id = f"{index:02d}-{_slug(label)}"

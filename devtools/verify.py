@@ -3097,6 +3097,17 @@ def _main(argv: list[str] | None = None) -> int:
                 initial_worktree_fingerprint=checkout_fingerprint,
             )
         testmon_mode = "full" if full_requested or runtime_data_paths else preparation.selection_mode
+        # Record the cause, not just the outcome. A bootstrap is ~9.5x a warm
+        # run; which of the two triggers fired decides whether better selection
+        # could have avoided it, and the receipt previously said neither.
+        _ACTIVE_VERIFY_RUN.run.record_selection(
+            selection_mode=testmon_mode,
+            state_status=preparation.local_state.status,
+            state_reason=preparation.local_state.reason,
+            missing_executable_paths=preparation.local_state.missing_executable_paths,
+            runtime_data_paths=runtime_data_paths,
+            copied_from=str(preparation.copied_from) if preparation.copied_from is not None else None,
+        )
         if preparation.removed_paths:
             sys.stderr.write(
                 "verify: repaired invalid native pytest-testmon state by removing only "
