@@ -612,3 +612,46 @@ def test_probing_an_absent_environment_preserves_another_environments_graph(tmp_
     survivor = inspect_native_testmon_environment(data, environment_name=resident)
     assert survivor.environment is not None
     assert survivor.environment.nodeids == ("tests/test_recorded.py::test_recorded",)
+
+
+def test_an_interrupted_bootstrap_does_not_delete_every_environments_graph(tmp_path: Path) -> None:
+    """A killed bootstrap must not cost the next run its graph -- or anyone else's.
+
+    pytest writes the environment row at startup, so a bootstrap interrupted
+    before its first test completes leaves a row with zero recorded executions.
+    Classifying that as damaged made the caller delete the whole shared SQLite
+    file, and the file is shared by every environment name -- the
+    hypothesis-profile fallback alone probes two per invocation. One interrupted
+    run therefore reset every graph in the checkout, which is the loop no number
+    of retries escapes.
+    """
+    import sqlite3
+
+    data = tmp_path / TESTMON_DATA_RELPATH
+    data.parent.mkdir(parents=True, exist_ok=True)
+    environment_name = _testmon_environment_digest(tmp_path)
+    import testmon.db
+
+    db = testmon.db.DB(str(data))
+    try:
+        db.con.execute(
+            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, '', '')",
+            (environment_name,),
+        )
+        db.con.commit()
+    finally:
+        db.con.close()
+
+    state = inspect_native_testmon_environment(data, environment_name=environment_name)
+
+    assert state.status == "absent", "an empty environment is nothing to reuse, not damage to repair"
+    assert not state.valid
+
+    preparation = prepare_native_testmon_environment(tmp_path)
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.removed_paths == (), "the shared database must survive an interrupted bootstrap"
+    assert data.exists()
+    with sqlite3.connect(data) as connection:
+        rows = connection.execute("SELECT COUNT(*) FROM environment").fetchone()
+    assert rows[0] == 1, "other environments' rows must be untouched"

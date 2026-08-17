@@ -642,7 +642,21 @@ def inspect_native_testmon_environment(
                 if isinstance(row[0], str) and row[0]
             )
             _ensure_deadline(deadline_monotonic)
-            if not nodeids or len(nodeids) != len(set(nodeids)):
+            if not nodeids:
+                # An environment row with no recorded executions is EMPTY, not
+                # damaged. pytest creates the row at startup, so this is exactly
+                # what a bootstrap interrupted before its first test completes
+                # leaves behind -- and calling it "invalid" makes the caller
+                # delete the whole shared SQLite file, taking every OTHER
+                # environment's graph with it. That is the loop no number of
+                # retries escapes: kill a bootstrap once, and the next run starts
+                # from zero, and so does the one after.
+                #
+                # Reported as absent instead: there is nothing here to reuse, so
+                # this environment bootstraps, while graphs belonging to other
+                # environment names survive untouched.
+                return NativeTestmonState("absent", f"native environment {environment_name!r} has no recorded tests")
+            if len(nodeids) != len(set(nodeids)):
                 return NativeTestmonState("invalid", "native environment has no unique collected corpus")
             uncovered = connection.execute(
                 """
