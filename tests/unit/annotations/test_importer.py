@@ -245,7 +245,7 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
                 branch_type=BranchType.SUBAGENT,
             )
         )
-    instruction_block_id = f"{parent_session_id}:dispatch:0"
+    instruction_block_id = f"{parent_session_id}:n:dispatch:0"
     target_ref = f"delegation:{instruction_block_id}"
     evidence_ref = f"block:{instruction_block_id}"
     evidence_span = f"{parent_session_id}::{parent_session_id}:dispatch::0"
