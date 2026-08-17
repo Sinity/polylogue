@@ -138,12 +138,22 @@ def _reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> 
     migrations = Path(__file__).parents[3] / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
     table_pattern = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     index_pattern = re.compile(r"CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
+    rebuild_pattern = re.compile(
+        r"(?:DROP TABLE (?:IF EXISTS )?([A-Za-z_][A-Za-z0-9_]*)"
+        r"|ALTER TABLE ([A-Za-z_][A-Za-z0-9_]*)\s+RENAME)",
+        re.I,
+    )
     below: set[str] = set()
     above: list[tuple[str, str]] = []
     for path in sorted(migrations.glob("*.sql")):
         slot = int(path.name.split("_", 1)[0])
         text = path.read_text(encoding="utf-8")
-        created = [("table", m.group(1)) for m in table_pattern.finditer(text)]
+        # A create-copy-drop-rename rebuild issues CREATE TABLE for a table it
+        # does not introduce. Treat a name the same file also drops or renames
+        # as a rebuild, not an introduction, or the reset deletes a table the
+        # fixture is required to have (raw_sessions is rebuilt this way).
+        rebuilt = {name for m in rebuild_pattern.finditer(text) for name in m.groups() if name}
+        created = [("table", m.group(1)) for m in table_pattern.finditer(text) if m.group(1) not in rebuilt]
         created += [("index", m.group(1)) for m in index_pattern.finditer(text)]
         if slot <= version:
             below.update(name for _kind, name in created)
@@ -1105,11 +1115,10 @@ def _create_source_v20_with_stale_origin_check(path: Path, *, archive_root: Path
     try:
         conn.executescript(_source_v20_ddl_with_stale_origin_check())
         _restore_source_pre_v30_raw_artifact_indexes(conn)
-        # v29 is not present in a v20 archive.  The broad origin-check rewrite
-        # above intentionally affects every current table, so remove this
-        # later table explicitly instead of handing migration 029 a malformed
-        # pre-existing copy that CREATE IF NOT EXISTS would preserve.
-        conn.execute("DROP TABLE raw_failure_disposition_receipts")
+        # Nothing a migration above v20 creates may already exist here: the
+        # broad origin-check rewrite above copies every CURRENT table, so those
+        # later objects would otherwise be handed to their own migration.
+        _reset_source_fixture_to_version(conn, 20)
         conn.execute("PRAGMA user_version = 20")
         conn.execute(
             """
