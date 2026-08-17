@@ -102,6 +102,7 @@ from devtools.verify_runs import (
     normalize_pytest_basetemp_env,
     pytest_basetemp_path,
     pytest_command_worker_request,
+    pytest_step_run_id,
     pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     start_checkout_mutation_monitor,
@@ -1853,6 +1854,16 @@ def _run_step(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env(native_testmon_data=native_testmon_data)
+    if is_pytest and run is not None and artifacts is not None:
+        # Stamp this step's pytest identity before basetemp admission, not just
+        # before launch. The identity names the basetemp directory, so a
+        # preflight run against an inherited one admits (or refuses) a tree this
+        # step will never use. It refuses whenever the ambient environment
+        # belongs to another managed run — a nested `verify.main()` inside a
+        # test inherits the enclosing run's id, resolves to a basetemp that run
+        # already claimed, and exits 125 on a claim it should never have
+        # contended for.
+        env["POLYLOGUE_PYTEST_RUN_ID"] = pytest_step_run_id(run.run_id, artifacts.step_id)
     external_addopts_neutralized = False
     external_plugins_neutralized = False
     if owns_pytest_environment:
