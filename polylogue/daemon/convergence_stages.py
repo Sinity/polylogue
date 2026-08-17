@@ -453,6 +453,10 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
 
             return claude_workflow_materialization_needed(archive_root())
         except FileNotFoundError:
+            # No archive to materialize from is genuinely "no work", but it is the
+            # one place in convergence where a swallowed exception still answers
+            # "converged" -- say so rather than deciding it silently.
+            logger.info("claude-workflow freshness probe found no archive; treating as no work")
             return False
         except Exception:
             logger.warning("claude-workflow freshness probe failed", exc_info=True)
