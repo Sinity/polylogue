@@ -96,6 +96,27 @@ _NON_PATH_VALUE_OPTIONS = frozenset(
 )
 
 
+def _verbose_output() -> bool:
+    """Whether the caller asked for the full preamble and artifact footer."""
+    return "--verbose" in sys.argv[1:] or bool(os.environ.get("POLYLOGUE_DEVTOOLS_VERBOSE"))
+
+
+def _import_path_is_unsurprising(polylogue_import_path: Path | str) -> bool:
+    """Whether the resolved package is the one this checkout owns.
+
+    Fails toward announcing. An empty or unresolvable path is NOT evidence that
+    the environment is fine -- and it would otherwise read as unsurprising,
+    because ``Path("").resolve()`` is the current directory, which normally sits
+    inside the checkout.
+    """
+    if not str(polylogue_import_path).strip():
+        return False
+    try:
+        return Path(polylogue_import_path).resolve().is_relative_to(ROOT.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def _absolute_option_path(
     value: str,
     *,
@@ -277,7 +298,14 @@ def main(argv: list[str] | None = None) -> int:
         return 125
     polylogue_import_path = fingerprint.polylogue_import_path
     environment_fingerprint = fingerprint.as_dict()
-    sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
+    # Announce the resolved package ONLY when it is surprising. This line exists
+    # for the 2026-07-31 wrong-checkout incident, where a worktree silently ran
+    # the main checkout's code; it earns its place when it contradicts the
+    # checkout, and is pure noise on the overwhelming majority of runs where it
+    # does not. The fact itself is never lost -- it is recorded as
+    # polylogue_import_path in the run receipt either way.
+    if _verbose_output() or not _import_path_is_unsurprising(polylogue_import_path):
+        sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
@@ -385,9 +413,14 @@ def main(argv: list[str] | None = None) -> int:
         append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    sys.stderr.write(
-        f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
-        f"output={PYTEST_OUTPUT_PATH}\n"
-    )
+    # The artifact-path footer is reference material, not a result. Printing six
+    # paths after every green run trains the reader to skip the tail of the
+    # output, which is exactly where a failure summary appears. `devtools why`
+    # reaches the same artifacts on demand.
+    if _verbose_output() or rc != 0:
+        sys.stderr.write(
+            f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
+            f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
+            f"output={PYTEST_OUTPUT_PATH}\n"
+        )
     return rc
