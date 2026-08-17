@@ -81,7 +81,12 @@ class TestMCPRealRepositoryPaths:
         )
 
         server = build_server()
-        result = await invoke_surface_async(server._tool_manager._tools["search"].fn, query="needle", limit=10)
+        # The 103->10 consolidation replaced `search`/`list_sessions` with the
+        # `query` dispatcher; projection="sessions" is the session-level view
+        # those tools used to serve, and the payload shape is unchanged.
+        result = await invoke_surface_async(
+            server._tool_manager._tools["query"].fn, expression="needle", limit=10, projection="sessions"
+        )
 
         parsed = json.loads(result)
         assert parsed["total"] == 1
@@ -114,9 +119,10 @@ class TestMCPRealRepositoryPaths:
 
         server = build_server()
         result = await invoke_surface_async(
-            server._tool_manager._tools["list_sessions"].fn,
+            server._tool_manager._tools["query"].fn,
             origin="claude-ai-export",
             limit=10,
+            projection="sessions",
         )
 
         parsed = json.loads(result)
@@ -148,7 +154,7 @@ class TestMCPRealRepositoryPaths:
         )
 
         server = build_server()
-        result = await invoke_surface_async(server._tool_manager._tools["list_sessions"].fn, limit=-1)
+        result = await invoke_surface_async(server._tool_manager._tools["query"].fn, limit=-1, projection="sessions")
 
         parsed = json.loads(result)
         assert parsed["total"] == 2
@@ -170,29 +176,43 @@ class TestMCPRealRepositoryPaths:
         )
         server = build_server(capabilities=MCPCapabilities(write=True))
 
-        initial_tags = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, origin="chatgpt-export"))
-        assert initial_tags.get("important", 0) == 0
+        # `list_tags`/`add_tag`/`remove_tag` were folded into the dispatcher by
+        # the 103->10 consolidation: writes go through `write(operation=...)`
+        # and tags are read back as a `query` filter rather than their own tool.
+        def _tagged_total() -> int:
+            payload = json.loads(
+                invoke_surface(
+                    server._tool_manager._tools["query"].fn,
+                    tag="important",
+                    origin="chatgpt-export",
+                    projection="sessions",
+                )
+            )
+            return int(payload["total"])
+
+        assert _tagged_total() == 0
 
         add_payload = json.loads(
             invoke_surface(
-                server._tool_manager._tools["add_tag"].fn,
+                server._tool_manager._tools["write"].fn,
+                operation="add_tag",
                 session_id=conv_id,
                 tag="important",
             )
         )
         assert add_payload["status"] == "ok"
-
-        list_payload = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, origin="chatgpt-export"))
-        assert list_payload.get("important", 0) == 1
+        assert _tagged_total() == 1
 
         remove_payload = json.loads(
             invoke_surface(
-                server._tool_manager._tools["remove_tag"].fn,
+                server._tool_manager._tools["write"].fn,
+                operation="remove_tag",
                 session_id=conv_id,
                 tag="important",
+                # The dispatcher guards destructive writes; removal without
+                # confirm=true is refused rather than silently applied.
+                confirm=True,
             )
         )
         assert remove_payload["status"] == "ok"
-
-        list_after = json.loads(invoke_surface(server._tool_manager._tools["list_tags"].fn, origin="chatgpt-export"))
-        assert list_after.get("important", 0) == 0
+        assert _tagged_total() == 0
