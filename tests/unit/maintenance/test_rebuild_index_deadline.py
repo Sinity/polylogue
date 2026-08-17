@@ -51,6 +51,7 @@ from polylogue.sources.revision_backfill import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
@@ -77,6 +78,7 @@ def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
     """Write ``count`` raws that each parse to their own logical cohort."""
     initialize_active_archive_root(root)
     raw_ids: list[str] = []
+    seeded: dict[str, bytes] = {}
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(count):
             payload = _codex_session(f"sess-{index}", (("user", f"hello {index}"), ("assistant", f"hi {index}")))
@@ -88,6 +90,9 @@ def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
                     acquired_at_ms=index + 1,
                 )
             )
+            seeded[raw_ids[-1]] = payload
+    record_codex_parser_census(root, seeded)
+    decide_raw_revision_authority(root)
     return raw_ids
 
 

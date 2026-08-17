@@ -22,7 +22,48 @@ from pathlib import Path
 from polylogue.sources.parsers import codex as codex_parser
 from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
 
-__all__ = ["record_codex_parser_census"]
+__all__ = ["decide_raw_revision_authority", "record_codex_parser_census"]
+
+
+def decide_raw_revision_authority(root: Path) -> None:
+    """Derive revision authority for every seeded logical source key.
+
+    ``write_raw_payload`` records bytes; it does not run admission, so a raw
+    seeded that way keeps the default ``quarantined`` authority forever. The
+    inactive-candidate gate then refuses the corpus with "N raw(s) remain
+    quarantined or undecided" -- correctly, because nothing ever decided them.
+
+    This runs the same classifier live ingest runs, so authority is derived
+    from the bytes rather than fabricated with an UPDATE. That distinction is
+    load-bearing: a rebuild re-derives byte authority for every frozen raw and
+    rejects a patched value with "re-derived different byte authority".
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with sqlite3.connect(root / "source.db") as source:
+        # The classifier only considers raws carrying acquisition evidence
+        # (``source_revision IS NOT NULL``); real admission sets it, seeding
+        # does not. Supplying a content-derived token is fixture *evidence*,
+        # not a fabricated verdict -- authority itself is still derived below.
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET source_revision = lower(hex(blob_hash))
+            WHERE logical_source_key IS NOT NULL AND source_revision IS NULL
+            """
+        )
+        source.commit()
+        keys = [
+            str(row[0])
+            for row in source.execute(
+                "SELECT DISTINCT logical_source_key FROM raw_sessions WHERE logical_source_key IS NOT NULL"
+            ).fetchall()
+        ]
+    if not keys:
+        return
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for key in keys:
+            archive.classify_raw_revision_cohort_for_live_watch(key)
 
 
 def _records(payload: bytes) -> list[object]:

@@ -34,7 +34,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
-from tests.infra.rebuild_preconditions import record_codex_parser_census
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 if TYPE_CHECKING:
@@ -72,6 +72,7 @@ def _seed_one_codex_session(root: Path) -> None:
             acquired_at_ms=1,
         )
     record_codex_parser_census(root, {raw_id: payload})
+    decide_raw_revision_authority(root)
 
 
 def _receipt(root: Path) -> Path:
@@ -101,6 +102,7 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
         session_ids: tuple[str, ...] | None = None,
         archive_root_override: Path | None = None,
         owned_inactive_generation: tuple[str, str] | None = None,
+        resolve_convergence_debt: bool = True,
     ) -> RepairResult:
         # This terminal stage runs strictly AFTER replay has already
         # committed rows into the owned inactive generation, and strictly
