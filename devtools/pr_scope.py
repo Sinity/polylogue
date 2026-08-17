@@ -523,8 +523,30 @@ def render_carrier(carrier: dict[str, Any]) -> str:
     return f"<!-- {_CARRIER_PREFIX}:v{version}\n{json.dumps(carrier, indent=2, ensure_ascii=False, sort_keys=True)}\n{_CARRIER_END}"
 
 
-def build_carrier(input_payload: dict[str, Any], *, head_sha: str, beads_path: Path = _BEADS_PATH) -> dict[str, Any]:
+def build_carrier(
+    input_payload: dict[str, Any],
+    *,
+    head_sha: str,
+    beads_path: Path = _BEADS_PATH,
+    base_sha: str | None = None,
+) -> dict[str, Any]:
+    """Build a carrier from hand-authored scope intent.
+
+    ``mutated_beads`` is derived, not authored, when ``base_sha`` is supplied.
+    :func:`validate_carrier` already computes the authoritative set with
+    :func:`changed_bead_ids` and rejects any carrier that disagrees, so asking an
+    author to restate it by hand only created a field that goes stale on the next
+    bead write. Measured on one branch in one session: 9 -> 105 -> 117 entries,
+    three re-renders and a merge-gate refusal, none of which carried judgement.
+
+    The genuinely authored fields -- scope kind, assigned beads, dispositions,
+    evidence, successors -- are untouched: those state intent that no diff can
+    infer. An explicitly supplied ``mutated_beads`` still wins, so a caller can
+    override the derivation.
+    """
     carrier = dict(input_payload)
+    if base_sha is not None and "mutated_beads" not in input_payload:
+        carrier["mutated_beads"] = changed_bead_ids(base_sha=base_sha, head_sha=head_sha)
     version = carrier.get("version", _VERSION if "scope_kind" in carrier else _V1)
     if type(version) is not int or version not in {_V1, _VERSION}:
         raise ValueError(f"input version must be {_V1} or {_VERSION}")
@@ -908,6 +930,11 @@ def main(argv: list[str] | None = None) -> int:
     render.add_argument("--input", required=True, type=Path, help="JSON with assigned_beads and dispositions")
     render.add_argument("--head-sha", default=None, help="v1 transition head SHA (default: current git HEAD)")
     render.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
+    render.add_argument(
+        "--base-sha",
+        default=None,
+        help="derive mutated_beads from base..head instead of requiring it in --input",
+    )
 
     check = sub.add_parser("check", help="validate a PR's embedded carrier")
     check_source = check.add_mutually_exclusive_group(required=True)
@@ -936,7 +963,12 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(args.input.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("input must be a JSON object")
-            carrier = build_carrier(payload, head_sha=args.head_sha or _git_head_sha(), beads_path=args.beads_path)
+            carrier = build_carrier(
+                payload,
+                head_sha=args.head_sha or _git_head_sha(),
+                beads_path=args.beads_path,
+                base_sha=args.base_sha,
+            )
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
             print(f"REFUSING to render pr-scope carrier: {exc}", file=sys.stderr)
             return 2

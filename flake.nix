@@ -445,10 +445,7 @@
             else
               # Transitional fallback for a common checkout that predates
               # the helper. Keep the same worktree-config invariant.
-              desired_hooks_path="$git_common_root/.githooks"
-              if [ -d "$git_common_root/.beads-hooks" ]; then
-                desired_hooks_path="$git_common_root/.beads-hooks"
-              fi
+              desired_hooks_path="$git_common_root/.beads-hooks"
               git -C "$git_common_root" config --local extensions.worktreeConfig true
               git -C "$git_common_root" config --local core.hooksPath "$desired_hooks_path"
               while IFS= read -r worktree_path; do

@@ -19,7 +19,6 @@ repository tools. For the Python package itself, see
 | `.dockerignore` | Container build exclusions | repo |
 | `.envrc` | direnv entrypoint for the Nix devshell | repo |
 | `.gitattributes` | Git path and diff attributes | repo |
-| `.githooks/` | Fallback repository hooks when the Beads composite hooks are unavailable | repo |
 | `.github/` | GitHub Actions, issue/PR templates, Dependabot, and project-page assets | GitHub / repo |
 | `.gitignore` | Git ignore policy | repo |
 | `.release-please-manifest.json` | Release Please component-version manifest | release tooling |
