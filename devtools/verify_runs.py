@@ -1679,6 +1679,35 @@ class VerifyRun:
         return dict(self._payload)
 
 
+def pytest_step_run_id(run_id: str, step_id: str) -> str:
+    """Return the pytest-invocation identity for one step of a verify run.
+
+    A verify run drives more than one pytest invocation — the parallel lane
+    and then the ``load_sensitive`` serial lane — and the basetemp directory
+    is named from this identity. Sharing it across both lanes made them share
+    one basetemp: the serial lane's ``TempPathFactory.getbasetemp`` then tried
+    to ``rm_rf`` the parallel lane's 20k-test tree and ``mkdir`` it again, and
+    any single undeletable leaf turned every test in that lane into a setup
+    ``FileExistsError`` (59 of them on run 20260817T054610Z). The verify run
+    keeps its own identity in ``POLYLOGUE_VERIFY_RUN_ID``; this one names the
+    invocation, so each lane owns a private tree.
+    """
+    step_index = step_id.split("-", 1)[0]
+    return f"{run_id}-s{step_index}" if step_index.isdigit() else f"{run_id}-{step_id}"
+
+
+def pytest_run_id_belongs_to_verify_run(pytest_run_id: str | None, verify_run_id: str | None) -> bool:
+    """Report whether a pytest identity was issued by this verify run.
+
+    Pytest identities are lane-scoped (:func:`pytest_step_run_id`), so they are
+    no longer equal to the verify run id they descend from. Callers recognising
+    "our own supervisor set this basetemp" must test descent, not equality.
+    """
+    if not pytest_run_id or not verify_run_id:
+        return False
+    return pytest_run_id == verify_run_id or pytest_run_id.startswith(f"{verify_run_id}-")
+
+
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
     # The merge-gate invocation receipt belongs to the top-level devtools
@@ -1687,7 +1716,7 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
     updated.pop(VERIFICATION_INVOCATION_ID_ENV, None)
     updated.pop(VERIFICATION_RECEIPT_PATH_ENV, None)
     updated["POLYLOGUE_VERIFY_RUN_ID"] = run.run_id
-    updated["POLYLOGUE_PYTEST_RUN_ID"] = run.run_id
+    updated["POLYLOGUE_PYTEST_RUN_ID"] = pytest_step_run_id(run.run_id, artifacts.step_id)
     updated["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(artifacts.events_dir)
     updated["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(artifacts.events_merged_path)
     updated["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(artifacts.selection_path)

@@ -3374,7 +3374,11 @@ def test_bench_slo_forces_nested_pytest_to_managed_scratch(
     assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in policy_input
     env = subprocess_run.call_args.kwargs["env"]
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
-    assert env["POLYLOGUE_PYTEST_RUN_ID"] == run.run_id
+    # The pytest identity names one invocation, not the whole run: it derives
+    # from the run id but carries a per-step suffix, so the parallel and serial
+    # lanes of one run cannot land on the same basetemp directory.
+    assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(f"{run.run_id}-")
+    assert env["POLYLOGUE_PYTEST_RUN_ID"] != run.run_id
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
     assert "PYTEST_ADDOPTS" not in env

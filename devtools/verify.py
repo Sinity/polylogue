@@ -1212,7 +1212,10 @@ def _run_pytest_with_heartbeat(
         if artifacts is not None
         else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
-    pytest_run_id = run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(os.getpid()))
+    # Prefer the value pytest itself will read: the basetemp directory is named
+    # from it, and it is lane-scoped so the parallel and serial lanes of one
+    # verify run do not share a tree.
+    pytest_run_id = env.get("POLYLOGUE_PYTEST_RUN_ID") or (run.run_id if run is not None else str(os.getpid()))
     tmpfs_cleanup_path = _supervised_tmpfs_cleanup_path(
         root=Path(cwd) if cwd is not None else Path.cwd(),
         run_id=pytest_run_id,
@@ -1404,7 +1407,7 @@ def _run_pytest_with_heartbeat(
     sampler = (
         ResourceSampler(
             root_pid=process.pid,
-            run_id=run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(process.pid)),
+            run_id=env.get("POLYLOGUE_PYTEST_RUN_ID") or (run.run_id if run is not None else str(process.pid)),
             root=Path(cwd) if cwd is not None else Path.cwd(),
             env=env,
             output_path=artifacts.resources_path if artifacts is not None else Path.cwd() / CURRENT_RESOURCES_PATH,
