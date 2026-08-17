@@ -389,6 +389,46 @@ testmon-affected set.
 
 Don't treat CI as the first verification pass — anticipate failures locally.
 
+**`devtools test` forwards arbitrary pytest arguments, and it is FASTER than
+bare pytest.** Nothing said so, so an agent reaches for `pytest` directly and
+silently opts out of the checkout guard, containment, and receipts. Measured on
+the same 1342 tests: 124s through `devtools test` (managed xdist) versus 393s
+bare single-process. Node ids, `-k`, `-x`, `-q` all pass through. There is no
+case where bare `pytest` is the right call in this repo.
+
+**Editing the working tree during a run is now safe.** `devtools verify` runs
+against a frozen reflink snapshot bind-mounted at the checkout's own path, by
+default — not behind a flag. Edit, commit, run `bd`, start another agent; none
+of it reaches the running verify. `--no-isolated` opts out for debugging.
+Concurrent verifies were always safe: they serialize on
+`.cache/native-testmon-lifecycle.lock`.
+
+**A bootstrap costs ~9.5x a warm run (2701s vs 285s, measured over 1233 recorded
+runs), and two very different things cause it.** `devtools why` now names which:
+  - `absent` — the *environment digest* changed, so no graph for it exists.
+    Digest inputs include the installed distribution set, `tests/**/conftest.py`,
+    `devtools/pytest*.py`, the interpreter, and the `HYPOTHESIS_PROFILE` /
+    `POLYLOGUE_CI` environment variables. **Consequence worth planning around:
+    touching conftest or bumping a dependency invalidates every graph.** Batch
+    such changes rather than dribbling them across days.
+  - `incomplete` — a sound graph exists but has not fingerprinted every changed
+    module; the receipt names exactly which files.
+
+**`devtools why`** explains the most recent run — diagnosis, cause, what to do,
+the selection decision, non-green tests, failing steps. Reach for it before
+opening receipt JSON or the testmon SQLite by hand.
+
+**Verify in the context that was failing, and say which context you verified
+in.** A test that fails only inside a full `devtools verify` will pass when run
+standalone; "I ran it and it passed" is then not evidence the fix works. This
+session claimed three supervisor-test fixes on exactly that mistake, and the
+gate failed identically afterwards.
+
+**Record disproved hypotheses on the bead.** When an investigation eliminates a
+cause, write it down (`bd update --append-notes`) so the next session does not
+re-run it. `polylogue-b9yw7` carries three; `polylogue-gibn1`'s notes eliminated
+two candidates and made the third finding cheap.
+
 ### Schema-touching changes
 
 See [Schema regimes](#schema-regimes-durability-keyed). Durable tiers → numbered
@@ -606,7 +646,11 @@ Core loop:
   don't trust the tail line.
 - `devtools verify [--quick|--all|--lab]` — see
   [Verification](#verification--testmon-inner-loop-never-blanket-run).
-- `devtools test <sel>` — focused pytest through the managed harness.
+- `devtools test <sel>` — focused pytest through the managed harness. Forwards
+  arbitrary pytest args and is faster than bare pytest; see Verification.
+- `devtools why [--run <id>]` — explain the most recent run: diagnosis, cause,
+  remedy, why it selected what it did, non-green tests, failing steps. Use it
+  before hand-reading receipt JSON.
 - `devtools lab …` — executable schema/provider/pipeline/lane checks.
 - `devtools workspace …` — task history, worktree-gc, evidence.
 
@@ -614,7 +658,10 @@ Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.
 
 Local state: `.cache/` (disposable) and `.local/` (untracked outputs). Keep new
-outputs there, not new top-level roots.
+outputs there, not new top-level roots. Verification receipts under
+`.cache/verify/runs` are pruned automatically to the 100 most recent (anything a
+merge-gate receipt names is retained regardless) — before that policy existed
+they reached 623 directories and 3.0 GB in six days.
 
 ---
 
@@ -656,6 +703,21 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - Committing from a linked worktree: a hook aborts if you `cd`'d into the main
   checkout from inside a worktree (worktree-escape detector, #1211); set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree flows.
+- **Do NOT diagnose a wrong-checkout problem with `python -c "import
+  polylogue"` — that probe lies.** `sys.path` leads with the current directory,
+  so running it from inside a worktree reports that worktree's own source and
+  "confirms" a correct environment while the active one belongs to a different
+  checkout entirely. Verified the hard way 2026-08-17: the probe printed the
+  worktree path, the `.pth` was correct, and the real fault was an inherited
+  `VIRTUAL_ENV` still pointing at the main checkout. **Check `VIRTUAL_ENV` and
+  the `.pth` in the active venv's `site-packages` instead.** Note also that the
+  guard's own remediation text ("remove `.venv` and run `direnv allow`") is
+  wrong for that case: it cannot tell a stale inherited environment from a
+  missing venv, and following it reprovisions a venv that was never broken. To
+  run tooling in a lane, set `VIRTUAL_ENV` and `PATH` to that lane's `.venv`.
+- **Committing from a worktree requires `git -C /absolute/path`.** A bare
+  `git commit` from inside a linked worktree is refused by the wrong-checkout
+  guard even when the cwd is correct.
 - **Worktree running against the wrong checkout's `polylogue` (2026-07-31,
   guarded)**: a linked git worktree without its own `.venv` reuses the main
   checkout's shared venv on PATH. That venv's editable install (a `.pth` in
