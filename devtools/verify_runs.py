@@ -264,6 +264,14 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     durable index used to find and compare them.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        # Deployments point this at a data lake via a symlink, and the target's
+        # directory is swept on a different schedule than the link's. Creating
+        # only the link's own parent leaves ``os.open`` following a dangling
+        # link, which fails the whole verification run over a bookkeeping file.
+        link_target = Path(os.readlink(path))
+        resolved_target = link_target if link_target.is_absolute() else path.parent / link_target
+        resolved_target.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(normalize_verify_history_entry(entry), ensure_ascii=False) + "\n").encode()
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
     try:
