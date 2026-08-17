@@ -1246,7 +1246,25 @@ def test_unfinished():
         "--testmon-noselect",
         "tests",
     ]
-    process = subprocess.Popen(command, cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def _restore_default_sigint() -> None:
+        # SIG_IGN is inherited across exec, and this suite runs under a harness
+        # that ignores SIGINT (verified: signal.getsignal(SIGINT) is SIG_IGN
+        # inside an ordinary pytest run here). Without resetting it the child
+        # ignored the interrupt, ran its full sleep, and exited 0 -- so this test
+        # asserted resume behaviour against a COMPLETED run rather than an
+        # interrupted one, and the "unfinished" test was simply finished.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    process = subprocess.Popen(
+        command,
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        preexec_fn=_restore_default_sigint,
+    )
     deadline = time.monotonic() + 10
     while not started.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
