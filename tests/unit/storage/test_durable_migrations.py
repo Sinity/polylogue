@@ -123,19 +123,68 @@ def _create_user_v3(path: Path) -> None:
         conn.close()
 
 
-def _tables_created_by_source_migrations_above(version: int) -> tuple[str, ...]:
-    """Tables created by numbered source migrations newer than *version*."""
+def _reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> None:
+    """Remove every schema object a source migration above *version* creates.
+
+    The fixtures build a "stale" tier from the CURRENT DDL, so they start out
+    carrying tables, indexes and triggers that a later migration will create
+    again. Hand-maintained removal lists went stale every time a migration was
+    added; this derives the set from the migration files themselves.
+
+    Only objects INTRODUCED above the version are removed: a later migration
+    that rebuilds an existing table issues its own CREATE TABLE, and dropping
+    that would delete a table the fixture must still have.
+    """
     migrations = Path(__file__).parents[3] / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
-    names: list[str] = []
+    table_pattern = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
+    index_pattern = re.compile(r"CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
+    below: set[str] = set()
+    above: list[tuple[str, str]] = []
     for path in sorted(migrations.glob("*.sql")):
         slot = int(path.name.split("_", 1)[0])
+        text = path.read_text(encoding="utf-8")
+        created = [("table", m.group(1)) for m in table_pattern.finditer(text)]
+        created += [("index", m.group(1)) for m in index_pattern.finditer(text)]
         if slot <= version:
+            below.update(name for _kind, name in created)
+        else:
+            above.extend(created)
+    # Columns a later migration adds are present in the current DDL too, so an
+    # ALTER TABLE ADD COLUMN above the fixture version fails with "duplicate
+    # column name" unless the column is removed first.
+    column_pattern = re.compile(r"ALTER TABLE ([A-Za-z_][A-Za-z0-9_]*)\s+ADD COLUMN\s+([A-Za-z_][A-Za-z0-9_]*)", re.I)
+    columns_below: set[tuple[str, str]] = set()
+    columns_above: list[tuple[str, str]] = []
+    for path in sorted(migrations.glob("*.sql")):
+        slot = int(path.name.split("_", 1)[0])
+        found = [(m.group(1), m.group(2)) for m in column_pattern.finditer(path.read_text(encoding="utf-8"))]
+        if slot <= version:
+            columns_below.update(found)
+        else:
+            columns_above.extend(found)
+
+    seen: set[str] = set()
+    for kind, name in above:
+        if name in below or name in seen:
             continue
-        for match in re.finditer(
-            r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)", path.read_text(encoding="utf-8")
-        ):
-            names.append(match.group(1))
-    return tuple(dict.fromkeys(names))
+        seen.add(name)
+        if kind == "table":
+            for dependent_kind in ("trigger", "index"):
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = ? AND sql LIKE ?", (dependent_kind, f"%{name}%")
+                ).fetchall()
+                for (object_name,) in rows:
+                    conn.execute(f"DROP {dependent_kind.upper()} IF EXISTS {object_name}")
+            conn.execute(f"DROP TABLE IF EXISTS {name}")
+        else:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+    dropped_tables = {name for kind, name in above if kind == "table" and name not in below}
+    for table, column in dict.fromkeys(columns_above):
+        if (table, column) in columns_below or table in dropped_tables:
+            continue
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column in existing:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
 
 def _create_user_v5(path: Path) -> None:
@@ -920,8 +969,7 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         # literal tuple silently went stale each time a migration added a table
         # (031's raw_authority_artifact_census_receipts was the one that broke
         # this module).
-        for table_name in _tables_created_by_source_migrations_above(7):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        _reset_source_fixture_to_version(conn, 7)
         conn.execute("PRAGMA user_version = 7")
         conn.execute(
             """
@@ -1341,8 +1389,7 @@ def test_source_tier_v24_repairs_raw_hook_event_origin_check(
         _restore_source_pre_v30_raw_artifact_indexes(conn)
         # Same derivation as the v7 fixture: anything a migration above v24
         # creates must not already exist here.
-        for table_name in _tables_created_by_source_migrations_above(24):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        _reset_source_fixture_to_version(conn, 24)
         conn.executescript(
             """
             ALTER TABLE raw_hook_events RENAME TO raw_hook_events_v24;
@@ -1716,8 +1763,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             PRAGMA user_version = 13;
             """
         )
-        for table_name in _tables_created_by_source_migrations_above(14):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        _reset_source_fixture_to_version(conn, 14)
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" not in indexes_before
@@ -1817,8 +1863,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             PRAGMA user_version = 14;
             """
         )
-        for table_name in _tables_created_by_source_migrations_above(14):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        _reset_source_fixture_to_version(conn, 14)
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" not in indexes_before
