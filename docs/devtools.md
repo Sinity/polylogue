@@ -83,6 +83,8 @@ These are the commands worth remembering during normal repo work:
 
 - `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
+- `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
+  Common forms: `devtools why`, `devtools why --run 20260817T213631Z-testmon-2709409-d5c6e72c`, `devtools why --json`.
 - `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render all`, `devtools render all --check`.
 - `devtools verify`: Run format, lint, mypy, render all, and test checks locally before pushing.
@@ -97,6 +99,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools status` | Render the devshell status view. |
+| `devtools why` | Explain the most recent verification run: what happened, why, and what to do. |
 
 ### Generated Surfaces
 

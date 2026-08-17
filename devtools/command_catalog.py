@@ -76,6 +76,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "why",
+        "core",
+        "Explain the most recent verification run: what happened, why, and what to do.",
+        "devtools.why",
+        use_when="A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.",
+        examples=(
+            "devtools why",
+            "devtools why --run 20260817T213631Z-testmon-2709409-d5c6e72c",
+            "devtools why --json",
+        ),
+        featured=True,
+    ),
+    CommandSpec(
         "render all",
         "generated surfaces",
         "Refresh or verify generated docs and agent files.",
