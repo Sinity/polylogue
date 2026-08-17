@@ -46,8 +46,12 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
         "tier_0_check_count": archive["tier_0_check_count"],
     }
     assert archive["tier_0_check_count"] > 0
+    # The listing reports the live command and nothing precomputed: #3950
+    # removed the baseline ``artifact_count`` because the artifacts are produced
+    # into a report directory when the scenario actually runs. Asserting a count
+    # here is what this case's name rules out.
     assert visual["command"]
-    assert visual["artifact_count"] > 0
+    assert "artifact_count" not in visual
     assert storage == {
         "name": "storage-correctness",
         "kind": "archive-storage",
