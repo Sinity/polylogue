@@ -79,6 +79,19 @@ def looks_like_session_document(payload: JSONDocument) -> bool:
         return True
     if isinstance(payload.get("chunks"), list):
         return True
+    # An Antigravity language-server markdown export carries its whole
+    # conversation in one `markdown` string rather than a message list, so
+    # every value is a scalar and `looks_metadataish_dict` would otherwise
+    # classify it as a metadata document. Raw replay wraps the single document
+    # in a one-item list before classifying, so that verdict reached
+    # `looks_metadataish_list` and made replay drop the session -- every
+    # antigravity raw in the live archive is quarantined for this reason.
+    if (
+        payload.get("source") == "antigravity_language_server"
+        and isinstance(payload.get("cascadeId"), str)
+        and isinstance(payload.get("markdown"), str)
+    ):
+        return True
 
     messages = payload.get("messages")
     return isinstance(messages, list) and any(looks_like_message_entry(item) for item in messages[:12])

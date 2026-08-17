@@ -499,7 +499,7 @@ def _write_generated_members(root: Path, *, indexes: tuple[int, ...] | None = No
                             title=f"Synthetic Antigravity {cascade_id}",
                             last_modified_time="2026-01-01T00:00:00Z",
                         ),
-                        "### User Input\\n\\nSynthetic prompt\\n\\n### Planner Response\\n\\nSynthetic response\\n",
+                        "### User Input\n\nSynthetic prompt\n\n### Planner Response\n\nSynthetic response\n",
                     )
                 ),
                 encoding="utf-8",
