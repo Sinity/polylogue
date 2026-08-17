@@ -10,6 +10,7 @@ links without interpreting prose.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -523,6 +524,28 @@ def render_carrier(carrier: dict[str, Any]) -> str:
     return f"<!-- {_CARRIER_PREFIX}:v{version}\n{json.dumps(carrier, indent=2, ensure_ascii=False, sort_keys=True)}\n{_CARRIER_END}"
 
 
+def _default_base_sha() -> str | None:
+    """Resolve the integration base without being asked.
+
+    Requiring `--base-sha` to enable derivation would leave the default path
+    exactly as it was -- a hand-authored list that goes stale on the next bead
+    write. The base is discoverable: this repository integrates into `master`, so
+    resolve its remote-tracking ref and fall back to the local branch. Returns
+    None only when neither exists, in which case the caller must supply the field
+    and the validator will say so.
+    """
+    for candidate in ("origin/master", "master"):
+        resolved = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if resolved.returncode == 0 and resolved.stdout.strip():
+            return resolved.stdout.strip()
+    return None
+
+
 def build_carrier(
     input_payload: dict[str, Any],
     *,
@@ -545,8 +568,16 @@ def build_carrier(
     override the derivation.
     """
     carrier = dict(input_payload)
-    if base_sha is not None and "mutated_beads" not in input_payload:
-        carrier["mutated_beads"] = changed_bead_ids(base_sha=base_sha, head_sha=head_sha)
+    if "mutated_beads" not in input_payload:
+        resolved_base = base_sha or _default_base_sha()
+        if resolved_base is not None:
+            # Derivation is a convenience, not a semantic. When the range cannot
+            # be resolved -- a synthetic head, a detached checkout, no reachable
+            # base -- fall through and let the validator ask for the field
+            # explicitly, rather than failing a render for a reason that has
+            # nothing to do with the carrier's contents.
+            with contextlib.suppress(ValueError, OSError, subprocess.SubprocessError):
+                carrier["mutated_beads"] = changed_bead_ids(base_sha=resolved_base, head_sha=head_sha)
     version = carrier.get("version", _VERSION if "scope_kind" in carrier else _V1)
     if type(version) is not int or version not in {_V1, _VERSION}:
         raise ValueError(f"input version must be {_V1} or {_VERSION}")

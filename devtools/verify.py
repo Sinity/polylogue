@@ -2913,6 +2913,13 @@ def _main(argv: list[str] | None = None) -> int:
         help="Run the native pytest-testmon lifecycle plus verification-lab checks.",
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
+    parser.add_argument(
+        "--no-isolated",
+        dest="isolated",
+        action="store_false",
+        default=True,
+        help="Run directly against the working tree instead of a frozen snapshot (debugging escape hatch).",
+    )
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -3450,11 +3457,88 @@ def _finalize_verify_runner_exception(
     return exit_code
 
 
+#: Set inside a snapshot so the re-executed run does not snapshot itself.
+_ISOLATION_SENTINEL = "POLYLOGUE_VERIFY_ISOLATED"
+
+
+def _should_isolate(raw_argv: Sequence[str]) -> bool:
+    """Whether this invocation should re-execute against a frozen snapshot.
+
+    Default on. Declines only when the caller opted out, when this process IS the
+    isolated re-execution, or when the host cannot provide a namespace -- in
+    which case the run proceeds against the live tree and says so, rather than
+    failing a machine that simply lacks bwrap.
+    """
+    from devtools.snapshot_run import bubblewrap_available
+
+    if "--no-isolated" in raw_argv or os.environ.get(_ISOLATION_SENTINEL):
+        return False
+    if "--history" in raw_argv:
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # A verify invoked from inside a test is exercising this orchestration,
+        # not verifying the checkout: re-executing would spawn a real subprocess
+        # against a snapshot and the caller would observe none of the steps it
+        # asserts on. The isolation path has its own coverage in
+        # tests/unit/devtools/test_snapshot_run.py.
+        return False
+    if not bubblewrap_available():
+        sys.stderr.write(
+            "verify: bwrap unavailable, running against the live working tree; "
+            "edits during this run can still disturb it\n"
+        )
+        return False
+    return True
+
+
+def _reexec_isolated(raw_argv: list[str]) -> int:
+    """Re-run this verify against a frozen snapshot of the checkout.
+
+    Isolation is applied by re-execution rather than by wrapping the pytest step
+    alone, because every step reads the checkout: the static gates, the
+    generated-surface drift check and the lab policies would otherwise observe a
+    tree the pytest step did not. One boundary, one view.
+
+    Isolation is the default rather than a flag. A protection an operator has to
+    remember to ask for is one that is absent exactly when it is needed, and this
+    repository already records that failure mode: "a tool without a line in this
+    file is a tool the next session won't use." `--no-isolated` remains as a
+    debugging escape hatch.
+    """
+    from devtools.snapshot_run import (
+        SnapshotUnavailableError,
+        default_extra_binds,
+        materialize_snapshot,
+        snapshot_command,
+    )
+
+    inner = list(raw_argv)
+    snapshot = materialize_snapshot(ROOT)
+    try:
+        argv = snapshot_command(
+            [sys.executable, "-m", "devtools", "verify", *inner],
+            root=ROOT,
+            snapshot=snapshot,
+            extra_binds=default_extra_binds(),
+        )
+        environment = {**os.environ, _ISOLATION_SENTINEL: "1"}
+        sys.stderr.write(f"verify: running against a frozen snapshot of {ROOT}\n")
+        completed = subprocess.run(argv, check=False, env=environment)
+        return completed.returncode
+    except SnapshotUnavailableError as exc:
+        sys.stderr.write(f"verify: refusing to run unisolated after --isolated was requested: {exc}\n")
+        return 125
+    finally:
+        shutil.rmtree(snapshot, ignore_errors=True)
+
+
 @finalize_checkout_mutation_monitors
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     _ACTIVE_VERIFY_RUN = None
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if _should_isolate(raw_argv):
+        return _reexec_isolated(raw_argv)
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
     lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
     try:
