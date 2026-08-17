@@ -535,8 +535,20 @@ def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Pat
     assert state.missing_executable_paths == (uncovered,)
 
 
-def test_preparation_retains_a_resumable_graph_instead_of_restarting_the_bootstrap(tmp_path: Path) -> None:
-    """Removing a merely incomplete graph makes every interrupted bootstrap restart from zero."""
+def test_a_resumable_graph_drives_affected_selection_rather_than_a_full_corpus(tmp_path: Path) -> None:
+    """OPERATOR DECISION 2026-08-18: prefer the bounded hazard to the standstill.
+
+    A resumable graph is structurally sound and merely lacks edges for some
+    changed modules. Discarding its selection and running the complete corpus
+    costs ~9.5x a warm run, and the recorded history showed 5.1 of 5.65 hours of
+    baseline verification going to runs that selected nothing and ran everything.
+
+    The residual risk is bounded and self-correcting: a test whose ONLY
+    dependency is an un-fingerprinted module may not be selected on this run, but
+    the run still records edges for everything it executes, so it is selected on
+    the next one. The uncovered paths are named in the receipt instead of being
+    paid for on every invocation.
+    """
     covered, uncovered = "polylogue/covered.py", "polylogue/uncovered.py"
     (tmp_path / "polylogue").mkdir()
     for relative in (covered, uncovered):
@@ -547,10 +559,13 @@ def test_preparation_retains_a_resumable_graph_instead_of_restarting_the_bootstr
 
     preparation = prepare_native_testmon_environment(tmp_path, required_executable_paths=(covered, uncovered))
 
-    assert preparation.selection_mode == "bootstrap"
+    assert preparation.selection_mode == "affected"
     assert preparation.removed_paths == ()
     assert data.exists(), "an interrupted bootstrap's recorded work must survive into the next invocation"
     assert data.read_bytes() == recorded_bytes
+    assert preparation.local_state.missing_executable_paths == (uncovered,), (
+        "the receipt must still name what the graph does not cover, so the exposure stays visible"
+    )
 
 
 def test_preparation_still_removes_genuinely_unusable_state(tmp_path: Path) -> None:

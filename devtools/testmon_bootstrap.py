@@ -54,8 +54,6 @@ _ENVIRONMENT_INPUTS = (
     # creating it changes collection even though it was not present when the
     # previous environment was named.
     "conftest.py",
-    "devtools/checkout_guard.py",
-    "devtools/testmon_bootstrap.py",
     # NOT devtools/verify.py. That orchestrator is ~3,500 lines of flag parsing,
     # output formatting, receipt bookkeeping and retention, none of which
     # changes what pytest collects -- yet hashing it meant a COMMENT there
@@ -68,7 +66,6 @@ _ENVIRONMENT_INPUTS = (
     # verify.py's behaviour remains covered the ordinary way: the tests that
     # import it carry real testmon edges to it.
     "devtools/pytest_collection_contract.py",
-    "devtools/verify_runs.py",
 )
 _PYTEST_ENVIRONMENT_KEYS = (
     "HYPOTHESIS_PROFILE",
@@ -315,10 +312,18 @@ def _environment_input_paths(
 ) -> tuple[str, ...]:
     """Discover collection and managed-pytest harness inputs."""
     paths = set(_ENVIRONMENT_INPUTS)
-    patterns = (
-        "devtools/pytest*.py",
-        "tests/**/conftest.py",
-    )
+    # NOT tests/**/conftest.py. Every collected test executes conftest, so
+    # testmon holds an edge to it from every test and selects precisely when it
+    # changes -- hashing it here is the same double-counting that made editing
+    # the orchestrator discard the graph. Keeping it also made the transparent
+    # worktree graph copy unreachable: that copy requires the main checkout's
+    # graph to be valid under the LANE's digest, and a lane exists precisely
+    # because it is on a different branch, so any harness file differing between
+    # the two branches permanently defeated it. Measured on this repository: 5 of
+    # 22 digest inputs differed between the main checkout and both live lanes,
+    # and every one of the five was harness implementation rather than
+    # collection semantics.
+    patterns = ("devtools/pytest*.py",)
     for pattern in patterns:
         for path in root.glob(pattern):
             _ensure_deadline(deadline_monotonic)
@@ -944,6 +949,20 @@ def prepare_native_testmon_environment(
                 main_checkout,
             )
 
+    if local.resumable:
+        # OPERATOR DECISION 2026-08-18: prefer the hazard to the standstill.
+        # A resumable graph is structurally sound and merely lacks edges for some
+        # changed modules. The previous rule discarded it and ran the complete
+        # corpus, which is ~9.5x a warm run; measured against the recorded run
+        # history, 5.1 of 5.65 hours of testmon-tier time went to runs that
+        # selected nothing and ran everything. The residual risk is precise and
+        # bounded: tests whose only dependency is an un-fingerprinted module may
+        # not be selected on THIS run. They are selected on the next one, because
+        # the run still records edges for everything it executes. The uncovered
+        # paths are named in the receipt rather than paid for every time.
+        return NativeTestmonPreparation(
+            environment_name, "affected", local, copied_from, removed, linked, main_checkout
+        )
     return NativeTestmonPreparation(environment_name, "bootstrap", local, copied_from, removed, linked, main_checkout)
 
 

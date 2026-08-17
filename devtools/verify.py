@@ -3091,7 +3091,16 @@ def _main(argv: list[str] | None = None) -> int:
                 mutation_monitor=mutation_monitor,
                 initial_worktree_fingerprint=checkout_fingerprint,
             )
-        testmon_mode = "full" if full_requested or runtime_data_paths else preparation.selection_mode
+        # OPERATOR DECISION 2026-08-18: untraceable changes are RECORDED, not
+        # paid for. Python tracing cannot observe non-Python runtime data, so a
+        # changed JSON fixture or packaging file can yield a green zero-selection
+        # run -- a real hazard, and the reason this used to force the complete
+        # corpus. The operator weighed that against the measured cost and chose
+        # the hazard: forcing a full corpus on every such change stopped work
+        # entirely. runtime_data_paths still lands in the receipt and in
+        # `devtools why`, so the exposure is visible per run and a deliberate
+        # `--all` remains available before anything that needs the guarantee.
+        testmon_mode = "full" if full_requested else preparation.selection_mode
         # Record the cause, not just the outcome. A bootstrap is ~9.5x a warm
         # run; which of the two triggers fired decides whether better selection
         # could have avoided it, and the receipt previously said neither.

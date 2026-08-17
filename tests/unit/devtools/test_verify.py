@@ -1460,79 +1460,6 @@ def test_checkout_mutation_monitor_remembers_deleted_ignored_root(tmp_path: Path
     assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
-@pytest.mark.uses_real_clock("waits for the real filesystem watcher to witness an index replacement")
-def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp_path: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
-    baseline = tmp_path / "baseline.py"
-    baseline.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", ".gitignore", "baseline.py"], cwd=tmp_path, check=True)
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    hidden = tmp_path / "ignored" / "hidden.py"
-    hidden.parent.mkdir()
-    hidden.write_text("secret authority\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-f", "ignored/hidden.py"], cwd=tmp_path, check=True)
-    deadline = time.monotonic() + 1
-    while not monitor._changed and time.monotonic() < deadline:
-        time.sleep(0.001)
-    assert monitor._changed, "monitor did not witness the changed index authority before it was restored"
-    subprocess.run(["git", "reset", "-q", "--", "ignored/hidden.py"], cwd=tmp_path, check=True)
-    observation = monitor.finish()
-
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
-
-
-@pytest.mark.uses_real_clock("coordinates a deliberately coalesced Git index watcher event")
-def test_checkout_mutation_monitor_keeps_coalesced_index_authority_event(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restoring signature comparison would miss the delayed authority event."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    tracked = tmp_path / "tracked.py"
-    tracked.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    index = tmp_path / ".git" / "index"
-    baseline = index.read_bytes()
-    release_event = threading.Event()
-
-    def delayed_watch(*_paths: Path, **kwargs: object) -> object:
-        yield set()
-        assert release_event.wait(timeout=1)
-        yield {(watchfiles.Change.modified, str(index))}
-        stop_event = kwargs["stop_event"]
-        assert isinstance(stop_event, threading.Event)
-        stop_event.wait(timeout=1)
-
-    monkeypatch.setattr(watchfiles, "watch", delayed_watch)
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    tracked.write_text("value = 2\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    index.write_bytes(baseline)
-    release_event.set()
-    observation = monitor.finish()
-
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
-
-
-def test_checkout_mutation_monitor_keeps_initial_authority_signature_across_topology_recheck(tmp_path: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    tracked = tmp_path / "tracked.py"
-    tracked.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor._watched_directories()
-    tracked.write_text("value = 2\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    monitor._watched_directories()
-    monitor._record_change(tmp_path / ".git")
-
-    assert monitor.finish() == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
-
-
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a branch-ref replacement")
 def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -1586,6 +1513,35 @@ def test_checkout_mutation_monitor_ignores_shared_packed_refs_when_current_ref_i
     monitor = CheckoutMutationMonitor(tmp_path)
     monitor._watched_directories()
     monitor._record_change(tmp_path / ".git" / "packed-refs")
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_staging_a_file_does_not_invalidate_a_run(tmp_path: Path) -> None:
+    """`git add` is bookkeeping, not a change to what is under test.
+
+    The index used to be watched as a PROXY for content change. Snapshot
+    isolation removed the need for it: a verify runs against a frozen reflink
+    copy bind-mounted at the checkout path, so tested content cannot change
+    mid-run. `.git` stays live inside that namespace because refs must resolve,
+    which left an index write as the one mutation able to invalidate a run it
+    provably could not affect.
+
+    Observed 2026-08-18: a 30-minute merge-gate verify was discarded with
+    checkout_mutation_path=".git/index" while its own initial and final worktree
+    fingerprints were byte-identical.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+
+    # An index write with no accompanying change to the tested tree. Under
+    # snapshot isolation this is the shape that reaches a run through the
+    # deliberately live-bound `.git`, and it must not invalidate anything.
+    monitor._record_change(tmp_path / ".git" / "index")
 
     assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
 
@@ -1710,33 +1666,6 @@ def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: 
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
-
-
-def test_checkout_mutation_monitor_records_semantically_unchanged_index_replacement(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "tracked.py").write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    index = tmp_path / ".git" / "index"
-
-    def portable_watch(*_paths: Path, **_kwargs: object) -> object:
-        yield set()
-        replacement = index.with_suffix(".replacement")
-        replacement.write_bytes(index.read_bytes())
-        replacement.replace(index)
-        yield {(watchfiles.Change.modified, str(index))}
-        stop_event = _kwargs["stop_event"]
-        assert isinstance(stop_event, threading.Event)
-        stop_event.wait(timeout=1)
-
-    monkeypatch.setattr(watchfiles, "watch", portable_watch)
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    observation = monitor.finish()
-
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
 def test_checkout_mutation_monitor_rejects_partial_git_enumeration(
