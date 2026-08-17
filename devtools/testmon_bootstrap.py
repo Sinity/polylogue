@@ -56,7 +56,18 @@ _ENVIRONMENT_INPUTS = (
     "conftest.py",
     "devtools/checkout_guard.py",
     "devtools/testmon_bootstrap.py",
-    "devtools/verify.py",
+    # NOT devtools/verify.py. That orchestrator is ~3,500 lines of flag parsing,
+    # output formatting, receipt bookkeeping and retention, none of which
+    # changes what pytest collects -- yet hashing it meant a COMMENT there
+    # discarded every graph and forced a full-corpus bootstrap (~9.5x a warm
+    # run). On the branch that introduced this split, 16 of 132 commits touched
+    # a digest input, most of them fixes to the verification harness itself.
+    # The collection-affecting values it used to carry now live in
+    # pytest_collection_contract, which IS hashed, so a genuine change to
+    # markers, plugins, ini overrides or collection roots still invalidates.
+    # verify.py's behaviour remains covered the ordinary way: the tests that
+    # import it carry real testmon edges to it.
+    "devtools/pytest_collection_contract.py",
     "devtools/verify_runs.py",
 )
 _PYTEST_ENVIRONMENT_KEYS = (

@@ -46,6 +46,16 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
+from devtools.pytest_collection_contract import (
+    CLEAR_CONFIGURED_ADDOPTS,
+    CLOSED_WORLD_COLLECTION_ARGS,
+    IGNORED_COLLECTION_ARGS,
+    MANAGED_PLUGIN_ARGS,
+    MANAGED_PLUGIN_NAMES,
+    PARALLEL_MARKER_EXPRESSION,
+    PROGRESS_PLUGIN_NAME,
+    SERIAL_MARKER_EXPRESSION,
+)
 from devtools.pytest_progress_plugin import merge_worker_collection_payloads
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
@@ -124,29 +134,14 @@ from polylogue.scenarios.workload import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-_PYTEST_CLEAR_CONFIGURED_ADDOPTS = "--override-ini=addopts="
-_PYTEST_MANAGED_PLUGIN_NAMES = (
-    "anyio",
-    "asyncio",
-    "hypothesispytest",
-    "benchmark",
-    "pytest_cov",
-    "pytest_jsonreport",
-    "randomly",
-    "syrupy",
-    "timeout",
-    "xdist",
-    "pytest-testmon",
-)
-_PYTEST_MANAGED_PLUGIN_ARGS = tuple(argument for name in _PYTEST_MANAGED_PLUGIN_NAMES for argument in ("-p", name))
-_PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
-    _PYTEST_CLEAR_CONFIGURED_ADDOPTS,
-    "--override-ini=python_files=test_*.py *_test.py fuzz_*.py",
-    "--override-ini=python_classes=Test",
-    "--override-ini=python_functions=test",
-    "--override-ini=norecursedirs=",
-    "tests",
-)
+_PYTEST_CLEAR_CONFIGURED_ADDOPTS = CLEAR_CONFIGURED_ADDOPTS
+# Collection-affecting values live in devtools/pytest_collection_contract.py and
+# are re-exported here under their historical names. That module -- not this
+# one -- is the testmon environment-digest input, so editing this orchestrator
+# no longer discards every recorded dependency graph.
+_PYTEST_MANAGED_PLUGIN_NAMES = MANAGED_PLUGIN_NAMES
+_PYTEST_MANAGED_PLUGIN_ARGS = MANAGED_PLUGIN_ARGS
+_PYTEST_CLOSED_WORLD_COLLECTION_ARGS = CLOSED_WORLD_COLLECTION_ARGS
 NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
 
 
@@ -2355,14 +2350,14 @@ def _native_pytest_steps(
         "pytest",
         "-q",
         "--tb=short",
-        "--ignore=tests/benchmarks",
+        *IGNORED_COLLECTION_ARGS,
         "--durations=10",
         f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
         "--json-report",
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={PYTEST_REPORT_PATH}",
         "-p",
-        "devtools.pytest_progress_plugin",
+        PROGRESS_PLUGIN_NAME,
     ]
     pytest_cmd.extend(_PYTEST_MANAGED_PLUGIN_ARGS)
     pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
@@ -2375,7 +2370,7 @@ def _native_pytest_steps(
     parallel_cmd = [
         *pytest_cmd,
         "-m",
-        "not load_sensitive",
+        PARALLEL_MARKER_EXPRESSION,
         *native_args,
         *parallel_worker_args,
     ]
@@ -2391,7 +2386,7 @@ def _native_pytest_steps(
     serial_cmd.extend(
         [
             "-m",
-            "load_sensitive",
+            SERIAL_MARKER_EXPRESSION,
             *native_args,
             "-p",
             "no:randomly",
