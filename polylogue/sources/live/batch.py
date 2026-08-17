@@ -2514,7 +2514,17 @@ class LiveBatchProcessor:
                     # origin='unknown-export' with detected_provider='unknown':
                     # the capture mode, not the detection, decided the identity.
                     #
-                    acquisition_provider = record.capture_mode or provider
+                    # ... and the `or` alone does not fix it, because
+                    # ``Provider.UNKNOWN`` is exactly the truthy value that has to
+                    # lose. Treat an unknown capture mode as absent: a ZIP member
+                    # inheriting its archive's sniffed provider, or a browser
+                    # capture that detected cleanly, must not be overruled by a
+                    # capture mode that asserts nothing.
+                    acquisition_provider = (
+                        provider
+                        if record.capture_mode is None or Provider.from_string(record.capture_mode) is Provider.UNKNOWN
+                        else record.capture_mode
+                    )
                     payload = raw_payloads.get(record.raw_id)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem

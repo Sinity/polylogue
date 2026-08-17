@@ -877,7 +877,16 @@ def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
 def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplicate_coordinates(
     tmp_path: Path,
 ) -> None:
-    """Recovery, not acquisition, resolves UNKNOWN ZIP bytes and replays each coordinate."""
+    """Recovery, not acquisition, resolves UNKNOWN ZIP bytes and replays each coordinate.
+
+    The two origin expectations below differ deliberately. Source-only replay sees
+    an opaque ZIP member and can honestly say no more than ``unknown-export``,
+    while a live re-observation sniffs the archive as a whole and knows it is a
+    ChatGPT export. Origin is a derived classification, not acquisition evidence,
+    so that divergence is a refinement rather than a conflict: the raw ids and
+    container coordinates are identical across both routes, and re-observing with
+    better evidence upgrades the stored origin in place.
+    """
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     initialize_active_archive_root(tmp_path)
@@ -983,8 +992,8 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
     assert reobserved.failed == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT origin, detected_provider FROM raw_sessions ORDER BY source_index").fetchall() == [
-            ("unknown-export", "chatgpt"),
-            ("unknown-export", "chatgpt"),
+            ("chatgpt-export", "chatgpt"),
+            ("chatgpt-export", "chatgpt"),
         ]
         assert conn.execute(
             "SELECT raw_id, coordinate_format, entry_ordinal, split_index "
