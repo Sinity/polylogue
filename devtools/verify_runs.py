@@ -1950,6 +1950,8 @@ def checkout_hash(root: Path) -> str:
 
 DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
 _CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
+#: Worker count `.claude/settings.json` pins for the cloud lane.
+_CLOUD_PYTEST_WORKERS = "2"
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
 _PYTEST_BASETEMP_CLAIM_PREFIX = ".polylogue-pytest-claim-"
 
@@ -2345,8 +2347,20 @@ def apply_managed_pytest_runtime_policy(
 
 
 def adaptive_pytest_worker_count(env: Mapping[str, str]) -> int:
-    """Return an explicit worker override or the current adaptive count."""
+    """Return an explicit worker override or the current adaptive count.
+
+    ``.claude/settings.json`` pins two workers so a cloud sandbox does not
+    oversubscribe its small runner, and agent subprocesses inherit that on the
+    workstation, where it caps every run at two workers on a 24-thread machine
+    and turns a bounded suite into an hours-long one. Same leak class as
+    POLYLOGUE_ARCHIVE_ROOT and POLYLOGUE_PYTEST_BASETEMP_ROOT, and the same
+    treatment: drop that exact cloud value where the workstation scratch mount
+    proves this is not a sandbox, and let the adaptive policy size the run.
+    Any other value is a deliberate operator override and still wins.
+    """
     configured = env.get("POLYLOGUE_PYTEST_WORKERS", "").strip()
+    if configured == _CLOUD_PYTEST_WORKERS and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+        configured = ""
     if configured:
         try:
             return max(0, int(configured))
