@@ -460,6 +460,35 @@ class TestSimilarEndpoint:
         assert payload["status"] == "not_embedded"
         assert payload["reason"] is None
 
+    def test_unresolvable_embedding_hits_report_inconsistent_not_ready(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neighbors that match no indexed message are a broken join, not "nothing similar".
+
+        A stale embedding generation, or a reindex that changed message-identity
+        derivation, leaves the embeddings tier pointing at message ids the index
+        no longer carries. Ranking over that join yields zero survivors, and
+        answering ``ready`` with an empty list is indistinguishable from a
+        healthy archive that simply holds nothing similar.
+        """
+        _enable_embeddings(monkeypatch)
+        seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
+
+        # Break the join the way a reindex would: keep the vectors, drop the rows
+        # they point at.
+        with sqlite3.connect(archive_root() / "index.db") as conn:
+            conn.execute("DELETE FROM messages WHERE session_id != ?", (seed_session_id,))
+
+        handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["status"] == "inconsistent"
+        assert payload["reason"] == "embedded_messages_missing_from_index"
+        assert payload["results"] == []
+        assert payload["unresolved_message_hits"] > 0
+
     def test_ready_route_preserves_provider_query_by_session_order(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
