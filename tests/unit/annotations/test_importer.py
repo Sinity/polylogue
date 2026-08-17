@@ -248,7 +248,10 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
     instruction_block_id = f"{parent_session_id}:n:dispatch:0"
     target_ref = f"delegation:{instruction_block_id}"
     evidence_ref = f"block:{instruction_block_id}"
-    evidence_span = f"{parent_session_id}::{parent_session_id}:dispatch::0"
+    # Mirrors instruction_block_id above: the message id carries the `n:`
+    # native-id discriminator, so a span built without it resolves to nothing
+    # and every row is rejected as unresolvable evidence.
+    evidence_span = f"{parent_session_id}::{parent_session_id}:n:dispatch::0"
     valid_rows = [
         {
             "row_key": f"delegation-{index}",
