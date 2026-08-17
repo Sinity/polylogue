@@ -37,7 +37,15 @@ pytestmark = pytest.mark.uses_real_clock(
 )
 
 
-def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> None:
+# These helpers wait for a spawned, supervised child to reach a state (write a
+# ready marker, appear in a cgroup, publish a receipt). 5s was enough on an idle
+# machine and not enough inside `devtools verify`, where the serial lane runs
+# right after a full-corpus parallel lane -- the run that exposed this peaked at
+# 12.7 GB tree RSS with 2.5 GB swap, and three cgroup-cleanup tests failed purely
+# on `_wait_for(ready_path.exists)` while passing standalone. The property under
+# test is cleanup after SIGKILL, never startup latency, so the budget is raised
+# rather than the assertion weakened; a passing wait still returns immediately.
+def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 60.0) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
