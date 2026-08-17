@@ -592,6 +592,11 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     classified_path = root / "subagents" / "worker" / "agent-degraded.meta.json"
     classified_path.parent.mkdir(parents=True)
     classified_path.write_bytes(b'{"mapping":{"root":{"message":{"author":{"role":"user"}}}}}')
+    # Source-only acquisition writes source.db and refuses outright when the
+    # durable tier is absent ("source-only acquisition refused because the
+    # durable source tier is missing"), so this case has to stand up a real
+    # archive rather than only naming an index path.
+    initialize_active_archive_root(tmp_path)
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
