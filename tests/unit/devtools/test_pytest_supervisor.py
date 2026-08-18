@@ -207,6 +207,12 @@ def _xdist_controller_cmd(path: Path) -> list[str]:
         "no:testmon",
         "-p",
         "no:randomly",
+        # Neutralize configured addopts, exactly as the managed command does.
+        # Without this the child inherits PYTEST_DISABLE_PLUGIN_AUTOLOAD from an
+        # outer managed run, never loads pytest-benchmark, and then dies on the
+        # benchmark flags pyproject's addopts still supply -- so the test passes
+        # standalone and fails only inside `devtools verify`.
+        "--override-ini=addopts=",
         "-p",
         "devtools.pytest_progress_plugin",
         f"--rootdir={ROOT}",
@@ -502,6 +508,12 @@ def test_managed_runner_retains_responsible_node_for_per_test_timeout(
         sys.executable,
         "-m",
         "pytest",
+        # Neutralize configured addopts, exactly as the managed command does.
+        # Without this the child inherits PYTEST_DISABLE_PLUGIN_AUTOLOAD from an
+        # outer managed run, never loads pytest-benchmark, and then dies on the
+        # benchmark flags pyproject's addopts still supply -- so the test passes
+        # standalone and fails only inside `devtools verify`.
+        "--override-ini=addopts=",
         "-p",
         "devtools.pytest_progress_plugin",
         "-p",
