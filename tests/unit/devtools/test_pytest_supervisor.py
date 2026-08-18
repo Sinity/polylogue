@@ -31,6 +31,7 @@ from devtools.pytest_supervisor import (
 )
 from devtools.verify import PYTEST_CONTAINMENT_PATH, PYTEST_REPORT_PATH, ROOT, _run
 from devtools.verify_runs import VerifyRun
+from tests.infra.nested_pytest import nested_pytest_env
 
 pytestmark = pytest.mark.uses_real_clock(
     "Process-containment regressions poll real PIDs and cgroups across SIGKILL delivery; a frozen clock cannot advance kernel process state."
@@ -331,7 +332,7 @@ def test_supervisor_rejects_owner_identity_captured_before_launch(tmp_path: Path
     if owner_start_ticks is None:
         pytest.skip("kernel process start identity is unavailable")
     receipt_path = tmp_path / "owner-reuse-containment.json"
-    env = os.environ.copy()
+    env = nested_pytest_env()
     env[CGROUP_MODE_ENV] = "off"
     launch = build_supervisor_launch(
         [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -391,7 +392,7 @@ def test_supervisor_kills_controller_when_receipt_publication_fails(tmp_path: Pa
         "    runtime_cap_s=None,\n"
         "))\n"
     )
-    env = os.environ.copy()
+    env = nested_pytest_env()
     env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
     process = subprocess.run(
@@ -734,7 +735,7 @@ def test_controller_sigkill_clears_exact_owned_xdist_cgroup(tmp_path: Path) -> N
     hanging_test = tmp_path / "test_deliberate_controller_kill.py"
     _write_hanging_xdist_test(hanging_test)
     receipt_path = tmp_path / "containment.json"
-    env = os.environ.copy()
+    env = nested_pytest_env()
     env[CGROUP_MODE_ENV] = "require"
     env["POLYLOGUE_STUBBORN_READY"] = str(ready_path)
     env["PYTHONPATH"] = str(ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -845,7 +846,7 @@ def test_owner_sigkill_clears_exact_owned_xdist_cgroup(tmp_path: Path) -> None:
     hanging_test = tmp_path / "test_deliberate_owner_kill.py"
     receipt_path = tmp_path / "owner-containment.json"
     _write_hanging_xdist_test(hanging_test)
-    env = os.environ.copy()
+    env = nested_pytest_env()
     env[CGROUP_MODE_ENV] = "require"
     env["POLYLOGUE_STUBBORN_READY"] = str(ready_path)
     env["POLYLOGUE_OWNER_RECEIPT"] = str(receipt_path)
