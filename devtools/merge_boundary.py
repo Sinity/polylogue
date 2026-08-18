@@ -37,27 +37,24 @@ which:
   6. Runs the actual ``gh pr merge --squash``.
   7. Appends a merge-train ledger entry (``.cache/verify/merge-gate/merge-train-ledger.json``)
      and, unless ``--with-verify`` was given, prints a reminder that the
-     ledger's terminal step -- one release-baseline ``devtools verify --all``
-     since the last one -- has not yet been
-     recorded for this train.
+     ledger's terminal step -- one release-baseline ``devtools verify``
+     since the last merge -- has not yet been recorded for this train.
 
 ``devtools workspace merge train-status`` inspects the ledger and reports
-(exit 1 if so) any PRs merged since the last recorded full-suite verify --
-this is the structural stand-in for "a merge-train run records the full-
-suite verify as its terminal ledger step": the train is not clean until this
-reports OK.
+(exit 1 if so) any PRs merged since the last recorded terminal verify --
+the train is not clean until this reports OK.
 
-``devtools workspace merge record-full-verify --command "devtools verify --all"``
-runs that command now and records it as the train's terminal step, clearing
-every pending PR in the ledger.
+The terminal step records itself: any plain ``devtools verify`` that earns
+release-baseline authority at origin/master writes the ledger entry
+(``record_accepted_terminal_verify``). ``--with-verify`` runs it inline at
+merge time.
 
 Usage:
     devtools workspace merge 3517
     devtools workspace merge 3517 --command "devtools test tests/unit/foo.py"
     devtools workspace merge 3517 --dry-run
-    devtools workspace merge 3517 --with-verify --verify-command "devtools verify --all"
+    devtools workspace merge 3517 --with-verify
     devtools workspace merge train-status
-    devtools workspace merge record-full-verify --command "devtools verify --all"
 """
 
 from __future__ import annotations
@@ -815,9 +812,9 @@ def cmd_merge(
         return _run_post_merge_terminal_verify(verify_command, target_sha, ledger_snapshot=ledger_snapshot)
 
     print(
-        "REMINDER: this merge-train's terminal ledger step (one full-suite verify since the last "
-        "merge) is not yet recorded -- run `devtools workspace merge record-full-verify "
-        '--command "devtools verify --all"` before declaring the train done, or check '
+        "REMINDER: this merge-train's terminal ledger step (one green complete-corpus verify since "
+        "the last merge) is not yet recorded -- run `devtools verify` on merged master before "
+        "declaring the train done (an accepted run records itself), or check "
         "`devtools workspace merge train-status`."
     )
     return 0
@@ -854,13 +851,56 @@ def cmd_train_status(as_json: bool) -> int:
     for entry in pending:
         print(f"  PR #{entry['pr']} @ {entry['head_sha'][:8]}: {entry['title']}")
     print(
-        'Run `devtools workspace merge record-full-verify --command "devtools verify --all"` '
-        "before declaring this merge-train session done. A narrower successful selection does not "
-        "grant the release-baseline authority this ledger requires. "
+        "Run `devtools verify` on merged master before declaring this merge-train session done "
+        "(an accepted release-baseline run records itself into this ledger). "
         "per-PR CI skips the heavy suite, so nothing else will catch a master-red class only "
         "visible on the merged whole."
     )
     return 1
+
+
+def record_accepted_terminal_verify(*, git_head: str, duration_s: float) -> bool:
+    """Ledger the merge-train terminal step from an accepted plain verify.
+
+    Called by ``devtools verify`` when a run finished green with typed
+    release-baseline authority. The entry is recorded only when the verified
+    head IS the local origin/master ref: the merge wrapper fetches at merge
+    time, so that ref is current in the ordinary end-of-train flow, and a
+    stale ref merely leaves the ledger pending (train-status stays honest)
+    rather than recording authority for the wrong commit.
+    """
+    master = subprocess.run(
+        ["git", "rev-parse", "origin/master"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.strip()
+    if not master or master != git_head:
+        return False
+    now = time.time()
+    try:
+        with _ledger_lock():
+            ledger = _read_ledger_unlocked()
+            ledger["last_full_verify"] = {
+                "command": "devtools verify",
+                "exit_code": 0,
+                "duration_s": round(duration_s, 2),
+                "at": now,
+                "verification_started_at": now - duration_s,
+                "verification_scope": VerificationScope.RELEASE_BASELINE.value,
+                "release_baseline_allowed": True,
+                "verified_head_sha": git_head,
+                "target_sha": git_head,
+                "merged_master_sha": git_head,
+                "merge_sequence": _merge_sequence(ledger),
+                "accepted": True,
+            }
+            _write_ledger_unlocked(ledger)
+    except (LedgerStateError, OSError) as exc:
+        sys.stderr.write(f"verify: could not record merge-train terminal ledger entry: {exc}\n")
+        return False
+    sys.stderr.write("verify: recorded merge-train terminal ledger entry (release-baseline at origin/master)\n")
+    return True
 
 
 def cmd_record_full_verify(
@@ -991,17 +1031,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Immediately run and record the merge-train's terminal full-suite verify after merging",
     )
-    merge_p.add_argument("--verify-command", default="devtools verify --all", help="Command for --with-verify")
+    merge_p.add_argument("--verify-command", default="devtools verify", help="Command for --with-verify")
 
     status_p = sub.add_parser(
         "train-status", help="Report whether the merge-train's terminal full-suite verify is recorded"
     )
     status_p.add_argument("--json", action="store_true", dest="as_json")
-
-    record_p = sub.add_parser(
-        "record-full-verify", help="Run and record the merge-train's terminal full-suite verify now"
-    )
-    record_p.add_argument("--command", default="devtools verify --all")
 
     args = parser.parse_args(raw_argv)
 
@@ -1018,16 +1053,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.action == "train-status":
         return cmd_train_status(args.as_json)
-    try:
-        ledger_snapshot = _reconciled_terminal_verify_snapshot()
-    except LedgerStateError as exc:
-        print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
-        return 1
-    target_sha = _fetched_current_default_branch_sha()
-    if target_sha is None:
-        print("REFUSING terminal verify: could not fetch the current default branch", file=sys.stderr)
-        return 1
-    return _run_post_merge_terminal_verify(args.command, target_sha, ledger_snapshot=ledger_snapshot)
+    raise AssertionError(f"unhandled action {args.action!r}")
 
 
 if __name__ == "__main__":

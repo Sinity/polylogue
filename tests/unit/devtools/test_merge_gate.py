@@ -257,13 +257,12 @@ def test_check_rejects_successful_non_test_receipt(monkeypatch: pytest.MonkeyPat
     assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
 
 
-@pytest.mark.parametrize("command", ["devtools verify --all", "devtools verify --full"])
 def test_check_blocks_full_receipt_without_release_baseline_permission(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
-    _record(monkeypatch, pr_view, command=command)
+    _record(monkeypatch, pr_view, command="devtools verify")
     receipt_path = merge_gate._receipt_path(42)
     receipt = json.loads(receipt_path.read_text())
     receipt["verification_scope"] = "release-baseline"
@@ -656,7 +655,7 @@ def test_check_rejects_command_text_without_typed_scope_or_permission(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
-    _record(monkeypatch, pr_view, command="devtools verify --all")
+    _record(monkeypatch, pr_view, command="devtools verify")
     receipt_path = merge_gate._receipt_path(42)
     receipt = json.loads(receipt_path.read_text())
     receipt["verification_scope"] = None

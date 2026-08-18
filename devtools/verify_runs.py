@@ -1305,6 +1305,7 @@ def aggregate_native_testmon_run(
     environment_reason: str | None = None,
     selection_mode: str,
     invocation_duration_s: float,
+    attestation_sound: bool = True,
 ) -> dict[str, Any]:
     """Build one compact, durable aggregate for the two semantic pytest lanes."""
     lanes: list[dict[str, Any]] = []
@@ -1413,8 +1414,11 @@ def aggregate_native_testmon_run(
     # attested by recording. A bootstrap (no graph) still executes everything,
     # making the attested set empty and the condition equivalent to the old
     # exhaustive one. Selection fidelity, closed-world collection, lane shape
-    # and duplicate checks are unchanged.
-    attested_unchanged = tuple(sorted(corpus_set - executed_nodes)) if complete_mode else ()
+    # and duplicate checks are unchanged. Attestation is withheld entirely
+    # (attestation_sound=False) when the pre-run graph carried named exposure:
+    # changed modules with no recorded edges, or changed non-Python runtime
+    # data no trace can see -- recorded greens predate those changes.
+    attested_unchanged = tuple(sorted(corpus_set - executed_nodes)) if complete_mode and attestation_sound else ()
     complete_corpus_covered = (
         complete_mode
         and selection_complete
@@ -1423,6 +1427,7 @@ def aggregate_native_testmon_run(
         and external_plugins_neutralized
         and closed_world_collection
         and selected_union == executed_nodes
+        and (attestation_sound or corpus_set <= executed_nodes)
         and not duplicate_outcomes
         and len(lane_names) == 2
         and lane_names.count("parallel") == 1

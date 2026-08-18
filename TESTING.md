@@ -22,8 +22,8 @@ POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # override workers
 # Raw pytest still works for ad-hoc needs the wrapper does not cover:
 pytest -x tests/unit/storage/test_hybrid_laws.py
 
-# Complete correctness corpus (unit/property/fuzz/integration; benchmarks excluded)
-devtools verify --all
+# Complete-corpus baseline (unit/property/fuzz/integration; benchmarks excluded)
+devtools verify
 
 # Full Nix/CI parity
 nix flake check
@@ -166,9 +166,10 @@ on completion or termination, with startup stale-root cleanup as recovery
 after an uncatchable process kill or reboot.
 
 The default path does not replay cached verify results. Every invocation runs
-the static gates and then invokes pytest-testmon for affected-test selection.
-There is no seed, repair, shard, or registry command. `devtools verify --all`
-forces a complete diagnostic in the current native environment.
+the static gates and then invokes pytest-testmon over the complete corpus:
+changed-dependency, never-recorded, and previously-failing tests execute, and
+the rest is attested from unchanged recorded greens. There is no seed,
+repair, shard, or registry command, and no separate full-corpus flag.
 
 `devtools verify` and `devtools test` treat pytest as a bounded, supervised
 child workload, not an unowned shell. Each pytest step gets a run directory
