@@ -1,7 +1,7 @@
 """Staged-content secret-candidate scan for the pre-commit gate (polylogue-t9xd).
 
-Leak-surfaces audit finding L5/L11 (2026-07-31): the existing
-``.githooks/pre-commit`` ran ``ruff format``/``ruff check`` on staged
+Leak-surfaces audit finding L5/L11 (2026-07-31): the pre-commit hook then in
+place ran ``ruff format``/``ruff check`` on staged
 ``*.py`` files only -- no gate anywhere scanned staged content, of any file
 type, for credential-shaped spans before it became a git commit. This module
 is what the hook now invokes: it scans the *staged (index) blob* of every

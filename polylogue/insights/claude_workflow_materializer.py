@@ -306,7 +306,18 @@ def _ensure_current_artifact_inventory(conn: sqlite3.Connection, *, blob_store: 
         rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(row["source_path"]))
         if rule is None:
             continue
-        if _raw_payload_has_session_evidence(blob_store, row):
+        # Session-shaped content only disqualifies a rule that did not expect it.
+        # A `parse_policy="session"` rule (agent_transcript,
+        # coordinator_session_stream) declares that its artifacts ARE sessions --
+        # `raw_artifacts.parse_as_session` exists to record exactly that, and the
+        # live archive carries 8201 and 3915 such rows. Deleting them here made
+        # this module fight the artifact-observation sweep, which writes the same
+        # rows from the same taxonomy: the durable table ended up reflecting
+        # whichever pass ran last, and `_SESSION_KINDS` at the top of this file --
+        # summed into `session_parser_raw_reads_if_authorship_or_event_semantics_change`
+        # -- could never be anything but zero. Content evidence still overrides a
+        # `fact` rule, which is the case the original guard was written for.
+        if rule.parse_policy != "session" and _raw_payload_has_session_evidence(blob_store, row):
             conn.execute(
                 "DELETE FROM raw_artifacts WHERE origin = ? AND source_path = ? AND source_index = ?",
                 (row["origin"], row["source_path"], row["source_index"]),

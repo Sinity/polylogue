@@ -29,6 +29,15 @@ from devtools.verify_runs import PYTEST_CANONICAL_REPORT_NAME
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 pytestmark = [
     pytest.mark.uses_real_clock("coordinates real pytest subprocesses and an interrupt deadline"),
+    # Every test here spawns a full production `devtools verify` subprocess.
+    # Two of those running concurrently contend over the same repo-level
+    # verification state, so under xdist this module fails roughly half its
+    # tests while passing completely when run serially -- measured at the
+    # merge base as 22 failed / 20 passed with `-n 2` against 42 passed with
+    # no xdist. That is exactly what `load_sensitive` exists for (#1775):
+    # route the test into the isolated single-process lane rather than let
+    # worker contention flake it.
+    pytest.mark.load_sensitive,
     pytest.mark.timeout(300),
 ]
 
@@ -362,7 +371,7 @@ def test_serial_owner():
     assert _selected(*second) == set()
 
 
-def test_production_plain_verify_owns_bootstrap_warm_selection_deadline_and_history(tmp_path: Path) -> None:
+def test_production_plain_verify_owns_bootstrap_warm_selection_and_history(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -403,7 +412,6 @@ def test_serial_owner():
     assert aggregate["terminal_green"] is True
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
-    assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
     lane_steps = [step for step in bootstrap["steps"] if step.get("semantic_lane")]
     assert [step["semantic_lane"] for step in lane_steps] == ["parallel", "serial"]
     environments = {
@@ -413,8 +421,13 @@ def test_serial_owner():
         if isinstance(arg, str) and arg.startswith("--testmon-env=")
     }
     assert environments == {f"--testmon-env={bootstrap['testmon_environment']['name']}"}
+    # Each lane carries the pytest runtime timeout in full. The previous
+    # strictly-decreasing assertion held only because the invocation budget
+    # handed each lane whatever wall clock was left; with that gone, a lane is
+    # bounded by how long a lane may run, not by how much of an hour remains.
     lane_timeouts = [step["timeout_s"] for step in lane_steps]
-    assert 0 < lane_timeouts[1] < lane_timeouts[0] <= 3600
+    assert all(timeout > 0 for timeout in lane_timeouts)
+    assert lane_timeouts[0] == lane_timeouts[1]
     history_path = repo.parent / "repo-verify-state" / "xdg-state" / "polylogue" / "devtools" / "verify-history.jsonl"
     history = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
     assert history[-1]["pytest_aggregate"] == aggregate
@@ -494,7 +507,6 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["terminal_green"] is True
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
-    assert aggregate["deadline"] == {"budget_s": 3600.0, "met": True}
 
 
 @pytest.mark.parametrize(("verify_args", "selection_mode"), [((), "bootstrap"), (("--all",), "full")])
@@ -877,7 +889,7 @@ def test_production_verify_all_owns_complete_test_root_over_configured_testpaths
     assert "outside configured discovery executed" in completed.stderr
 
 
-def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: Path) -> None:
+def test_runtime_json_only_mutation_is_recorded_but_not_caught(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -921,22 +933,37 @@ def test_runtime_json_only_mutation_forces_complete_native_selection(tmp_path: P
     pricing_data.write_text('{"test-model": {"input_cost_per_token": 0}}\n', encoding="utf-8")
     completed, mutated = _run_production_verify(repo)
 
-    assert completed.returncode == 1
-    assert mutated["testmon_environment"]["selection_mode"] == "full"
+    # ACCEPTED EXPOSURE, operator decision 2026-08-18. This assertion used to read
+    # `completed.returncode == 1`, and it is the honest record of what changed.
+    #
+    # Python tracing cannot observe a JSON data file, so testmon holds no edge
+    # from this test to the pricing fixture it reads. Forcing the COMPLETE corpus
+    # whenever an untraceable file changed was how that gap was covered. Measured
+    # against the recorded run history, that rule was a dominant cost: 5.1 of 5.65
+    # hours of baseline verification went to runs that selected nothing and ran
+    # everything, and a single syrupy snapshot file was observed forcing a
+    # 20,000-test run. The operator weighed the hazard against the standstill and
+    # chose the hazard.
+    #
+    # So this now documents the real consequence rather than a fixed one: the
+    # mutation is NOT caught, and the run is green.
+    assert completed.returncode == 0, (
+        "if this fails, untraceable changes are being caught again -- revisit the decision, not the test"
+    )
+    assert "assert 0 == 42" not in completed.stderr
+
+    # What remains enforced is that the exposure is VISIBLE. The changed path is
+    # recorded on the receipt and surfaced by `devtools why`, so a reviewer can
+    # see exactly which untraceable file went unverified and run `--all` when the
+    # guarantee is wanted. Silence here would make the tradeoff undiscoverable,
+    # which is the part that would be indefensible.
     assert mutated["testmon_environment"]["runtime_data_paths"] == [
         "polylogue/archive/semantic/data/litellm_model_prices.json"
     ]
-    assert mutated["pytest_aggregate"]["selected_union_count"] == 2
-    assert mutated["pytest_aggregate"]["terminal_union_count"] == 2
     assert mutated["release_baseline_allowed"] is False
-    assert [step["semantic_lane"] for step in mutated["steps"] if step.get("semantic_lane")] == [
-        "parallel",
-        "serial",
-    ]
-    assert "assert 0 == 42" in completed.stderr
 
 
-def test_production_verify_test_runtime_data_mutation_executes_and_fails(tmp_path: Path) -> None:
+def test_production_verify_test_runtime_data_mutation_is_recorded_but_not_caught(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -972,12 +999,34 @@ def test_production_verify_test_runtime_data_mutation_executes_and_fails(tmp_pat
     data.write_text("0\n", encoding="utf-8")
     completed, mutated = _run_production_verify(repo)
 
-    assert completed.returncode == 1
-    assert mutated["testmon_environment"]["selection_mode"] == "full"
+    # ACCEPTED EXPOSURE, operator decision 2026-08-18 -- this read
+    # `completed.returncode == 1` and is the honest record of what changed.
+    #
+    # Python tracing cannot observe a text fixture, so testmon holds no edge from
+    # the dependent test to tests/data/expected.txt. Forcing the COMPLETE corpus
+    # whenever an untraceable file changed was how that gap was covered, and it
+    # was measured as the dominant cost of verification: 5.1 of 5.65 hours of
+    # baseline runs selected nothing and ran everything. The operator weighed the
+    # hazard against the standstill and chose the hazard.
+    #
+    # So the mutation is NOT caught and the run is green.
+    assert completed.returncode == 0, (
+        "if this fails, untraceable changes are being caught again -- revisit the decision, not the test"
+    )
+
+    # What stays enforced is that the exposure is VISIBLE: the changed path is on
+    # the receipt and surfaced by `devtools why`, so a reviewer can see which
+    # untraceable file went unverified and run `--all` when the guarantee matters.
     assert mutated["testmon_environment"]["runtime_data_paths"] == ["tests/data/expected.txt"]
-    assert mutated["pytest_aggregate"]["selected_union_count"] == 2
-    assert mutated["pytest_aggregate"]["terminal_union_count"] == 2
-    assert "assert 0 == 42" in completed.stderr
+    # Nothing is selected, which is the exposure stated plainly: the fixture that
+    # changed has no traced edge, so no test is chosen and the failing assertion
+    # never executes. Both facts are asserted so a future change in either
+    # direction is visible rather than silent.
+    assert mutated["pytest_aggregate"]["selected_union_count"] == 0
+    assert "assert 0 == 42" not in completed.stderr
+    assert mutated["release_baseline_allowed"] is False, (
+        "a run that skipped an untraceable change must never carry release authority"
+    )
 
 
 def test_production_verify_deleted_module_rebuilds_and_fails_dependents(tmp_path: Path) -> None:
@@ -1008,7 +1057,10 @@ def test_production_verify_deleted_module_rebuilds_and_fails_dependents(tmp_path
     completed, mutated = _run_production_verify(repo)
 
     assert completed.returncode == 1
-    assert mutated["testmon_environment"]["selection_mode"] == "bootstrap"
+    # OPERATOR DECISION 2026-08-18: a sound-but-incomplete graph now drives
+    # affected selection rather than discarding it for a bootstrap. The property
+    # under test -- that the dependent is selected and fails -- is asserted
+    # directly above and below and is unaffected.
     assert mutated["testmon_environment"]["required_executable_paths"] == []
     assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == ["polylogue/app.py"]
     assert mutated["pytest_aggregate"]["selected_union_count"] == 1
@@ -1044,7 +1096,10 @@ def test_production_verify_moved_module_rebuilds_and_fails_dependents(tmp_path: 
     completed, mutated = _run_production_verify(repo)
 
     assert completed.returncode == 1
-    assert mutated["testmon_environment"]["selection_mode"] == "bootstrap"
+    # OPERATOR DECISION 2026-08-18: a sound-but-incomplete graph now drives
+    # affected selection rather than discarding it for a bootstrap. The property
+    # under test -- that the dependent is selected and fails -- is asserted
+    # directly above and below and is unaffected.
     assert mutated["testmon_environment"]["required_executable_paths"] == ["polylogue/renamed.py"]
     assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == [
         "polylogue/app.py",
@@ -1086,6 +1141,9 @@ def test_production_verify_deleted_module_with_updated_imports_rebuilds_successf
 
     assert completed.returncode == 0, completed.stderr
     environment = rebuilt["testmon_environment"]
+    # A DELETED path stays a bootstrap trigger: there is no graph edge to reuse
+    # for a module that no longer exists, so this case is untouched by the
+    # incomplete-graph decision.
     assert environment["selection_mode"] == "bootstrap"
     assert environment["required_executable_paths"] == ["polylogue/app.py"]
     assert environment["bootstrap_trigger_paths"] == ["polylogue/app.py", "polylogue/old.py"]
@@ -1125,14 +1183,33 @@ def test_production_verify_moved_module_with_updated_imports_rebuilds_successful
 
     assert completed.returncode == 0, completed.stderr
     environment = rebuilt["testmon_environment"]
-    assert environment["selection_mode"] == "bootstrap"
+    # OPERATOR DECISION 2026-08-18: a sound-but-incomplete graph now DRIVES
+    # affected selection rather than being discarded for a bootstrap. The
+    # residual risk is bounded and self-correcting -- a test whose only
+    # dependency is an un-fingerprinted module may be missed on this run and is
+    # selected on the next, because the run still records edges for everything it
+    # executes -- and the uncovered paths are named on the receipt either way.
+    assert environment["selection_mode"] == "affected"
     assert environment["required_executable_paths"] == ["polylogue/renamed.py", "tests/test_app.py"]
     assert environment["bootstrap_trigger_paths"] == [
         "polylogue/old.py",
         "polylogue/renamed.py",
         "tests/test_app.py",
     ]
-    assert rebuilt["pytest_aggregate"]["terminal_green"] is True
+    # "rebuilds successfully" is asserted directly: the dependent was selected,
+    # executed, and nothing failed.
+    assert rebuilt["pytest_aggregate"]["non_green_count"] == 0
+    assert rebuilt["pytest_aggregate"]["selected_union_count"] == 1
+    # terminal_green stays False here, and correctly so. It is defined as
+    # `complete_corpus_covered and not missing_terminal and not non_green` -- a
+    # RELEASE-AUTHORITY signal meaning the whole corpus ran green, not "this run
+    # passed". It was True before only because a moved module forced a bootstrap
+    # over the complete corpus; with affected selection driving a
+    # sound-but-incomplete graph (operator decision 2026-08-18) the corpus is
+    # deliberately not fully covered, so claiming release authority here would be
+    # the bug.
+    assert rebuilt["pytest_aggregate"]["terminal_green"] is False
+    assert rebuilt["pytest_aggregate"]["complete_corpus_covered"] is False
 
 
 def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -> None:
@@ -1223,12 +1300,36 @@ def test_unfinished():
         "-q",
         "-p",
         "no:randomly",
+        # _pytest_environment sets PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so every
+        # plugin this child needs must be named explicitly. Without this the
+        # child rejects --testmon as an unrecognized argument and the fixture
+        # under test never starts.
+        "-p",
+        "pytest-testmon",
         "--testmon",
         f"--testmon-env={environment_name}",
         "--testmon-noselect",
         "tests",
     ]
-    process = subprocess.Popen(command, cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def _restore_default_sigint() -> None:
+        # SIG_IGN is inherited across exec, and this suite runs under a harness
+        # that ignores SIGINT (verified: signal.getsignal(SIGINT) is SIG_IGN
+        # inside an ordinary pytest run here). Without resetting it the child
+        # ignored the interrupt, ran its full sleep, and exited 0 -- so this test
+        # asserted resume behaviour against a COMPLETED run rather than an
+        # interrupted one, and the "unfinished" test was simply finished.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    process = subprocess.Popen(
+        command,
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        preexec_fn=_restore_default_sigint,
+    )
     deadline = time.monotonic() + 10
     while not started.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -1303,7 +1404,16 @@ def test_collection_only_executable_dependency_blocks_until_test_executes_it(tmp
         encoding="utf-8",
     )
     repaired = prepare_native_testmon_environment(repo, required_executable_paths=("app.py",))
-    assert repaired.selection_mode == "bootstrap"
+    # OPERATOR DECISION 2026-08-18: a sound-but-incomplete graph now DRIVES
+    # affected selection rather than being discarded for a bootstrap. The
+    # residual risk is bounded and self-correcting -- a test whose only
+    # dependency is an un-fingerprinted module may be missed on this run and is
+    # selected on the next, because the run still records edges for everything it
+    # executes -- and the uncovered paths are named on the receipt either way.
+    assert repaired.selection_mode == "affected"
+    assert repaired.local_state.missing_executable_paths, (
+        "the uncovered paths must still be named, or the exposure becomes invisible"
+    )
     _run_plain_verify_corpus(repo, mode="bootstrap", environment_name=repaired.environment_name)
     assert inspect_native_testmon_environment(
         repo / TESTMON_DATA_RELPATH,

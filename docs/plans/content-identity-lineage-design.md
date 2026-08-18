@@ -105,7 +105,9 @@ Attachment records are first-class and attachment metadata plus acquired byte co
 
 All commands in this section were read-only. SQLite was opened with `-readonly` or URI read-only mode.
 
-The live archive at `/realm/db/polylogue` contained:
+The live archive contained, when these were taken (the archive sat at
+`/realm/db/polylogue` then and has since moved to `/realm/state/polylogue`,
+which is the path the commands below now use):
 
 | Relation | Rows |
 | --- | ---: |
@@ -151,7 +153,7 @@ SELECT
 Command:
 
 ```text
-sqlite3 -readonly /realm/db/polylogue/index.db '<query above>'
+sqlite3 -readonly /realm/state/polylogue/index.db '<query above>'
 ```
 
 Result:
@@ -664,9 +666,9 @@ The design evidence was gathered with read-only Beads inspection, `rg`, `git log
 ```text
 bd --readonly show polylogue-a7xr.25 polylogue-6e7m polylogue-4ts polylogue-nas1 polylogue-2qx polylogue-qj5x polylogue-a7xr.23 polylogue-a7xr.24 polylogue-83u
 git log --all --oneline --decorate -- polylogue/pipeline/ids.py polylogue/storage/sqlite/archive_tiers/write.py polylogue/sources/origin_specs.py
-sqlite3 -readonly /realm/db/polylogue/index.db 'SELECT count(*) FROM sessions; SELECT count(*) FROM messages; SELECT count(*) FROM blocks; SELECT count(*) FROM session_events; SELECT count(*) FROM session_links;'
-sqlite3 -readonly /realm/db/polylogue/source.db 'SELECT revision_kind, count(*), round(sum(size_bytes)/1048576.0,1), sum(append_end_offset IS NOT NULL) FROM raw_sessions GROUP BY revision_kind;'
-sqlite3 -readonly /realm/db/polylogue/index.db '<bounded duplicate-block query from section 2>'
+sqlite3 -readonly /realm/state/polylogue/index.db 'SELECT count(*) FROM sessions; SELECT count(*) FROM messages; SELECT count(*) FROM blocks; SELECT count(*) FROM session_events; SELECT count(*) FROM session_links;'
+sqlite3 -readonly /realm/state/polylogue/source.db 'SELECT revision_kind, count(*), round(sum(size_bytes)/1048576.0,1), sum(append_end_offset IS NOT NULL) FROM raw_sessions GROUP BY revision_kind;'
+sqlite3 -readonly /realm/state/polylogue/index.db '<bounded duplicate-block query from section 2>'
 ```
 
 No design choice remains open for implementation. The following operations require later operator authorization because they are destructive changes to durable evidence:

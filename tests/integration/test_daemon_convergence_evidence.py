@@ -261,6 +261,18 @@ def test_daemon_convergence_evidence_full_archive_state(
     # consistent with the FTS triggers throughout convergence.
     with sqlite3.connect(db_path) as conn:
         (fts_rows,) = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()
+        fts_state = dict(conn.execute("SELECT surface, state FROM fts_freshness_state").fetchall())
     assert fts_rows >= expected_messages, (
         f"FTS index under-populated: {fts_rows} rows vs {expected_messages} expected messages"
+    )
+    # FTS coverage is an unconditional convergence invariant, and the durable
+    # marker has to agree with the rows. Live ingest defers the write-time insert
+    # to preserve writer availability and marks `messages_fts` stale on the index
+    # connection inside the same transaction as the session write -- so a crash
+    # before convergence leaves a durable "index is behind" record in the same
+    # database as the data, and nothing can mistake it for a converged archive.
+    # A settled pass must end `ready`; a stale marker here means convergence
+    # reported success without clearing the staleness it was there to resolve.
+    assert fts_state.get("messages_fts") == "ready", (
+        f"messages_fts surface not converged after a settled ingest pass: {fts_state!r}"
     )

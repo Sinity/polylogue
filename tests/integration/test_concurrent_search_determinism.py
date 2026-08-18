@@ -26,7 +26,10 @@ def _content_hash(value: str) -> bytes:
 def _insert_session_with_message(conn: sqlite3.Connection, native_id: str, position: int, text: str) -> str:
     session_id = f"codex-session:{native_id}"
     message_native_id = f"m{position}"
-    message_id = f"{session_id}:{message_native_id}"
+    # messages.message_id is generated as
+    # session_id || ':' || COALESCE('n:'||native_id, 'p:'||position...), so a
+    # block referencing it without the n: discriminator fails the foreign key.
+    message_id = f"{session_id}:n:{message_native_id}"
     conn.execute(
         "INSERT INTO sessions (native_id, origin, title, content_hash, updated_at_ms) VALUES (?, ?, ?, ?, ?)",
         (native_id, "codex-session", native_id, _content_hash(f"session:{native_id}"), position),

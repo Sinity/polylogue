@@ -12,6 +12,7 @@ import pytest
 
 from devtools import pytest_progress_plugin
 from devtools.verify_runs import aggregate_pytest_statistics
+from tests.infra.nested_pytest import nested_pytest_env
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +117,7 @@ def test_progress_plugin_observes_real_pytest_xfail_outcome(tmp_path: Path) -> N
     test_path.write_text(
         "import pytest\n\n@pytest.mark.xfail(reason='known failure')\ndef test_expected_failure():\n    assert False\n"
     )
-    env = os.environ.copy()
+    env = nested_pytest_env()
     env["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(events_path)
     checkout_root = Path(__file__).resolve().parents[3]
 
@@ -198,7 +199,7 @@ def test_progress_plugin_keeps_xdist_worker_timings_in_controller_summary(
 def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Path) -> None:
     events_dir = tmp_path / "events"
     checkout_root = Path(__file__).resolve().parents[3]
-    env = os.environ.copy()
+    env = nested_pytest_env()
     for name in (
         "POLYLOGUE_PYTEST_BASETEMP_ROOT",
         "POLYLOGUE_PYTEST_TMPFS",

@@ -45,6 +45,20 @@ def _seed_raw_row(db_path: Path, raw_id: str, source_path: Path, blob_size: int)
         conn.commit()
 
 
+def _age_blob(store: object, blob_hash: str, *, seconds: int = 3600) -> None:
+    """Backdate a blob's mtime past the GC minimum-age floor."""
+    import os
+
+    from polylogue.storage.blob_gc import MIN_AGE_S
+
+    # Derive the backdate from the file's own mtime, not the host clock: the
+    # clock guard (tests/infra/clock_guard.py) rejects direct time.time() reads
+    # from test code, and the file's stamp is the value GC actually compares.
+    path = store.blob_path(blob_hash)  # type: ignore[attr-defined]
+    aged = path.stat().st_mtime - max(seconds, MIN_AGE_S * 2)
+    os.utime(path, (aged, aged))
+
+
 class TestBlobOrphanLifecycle:
     """Direct ``BlobStore`` API end-to-end against a real DB."""
 
@@ -148,6 +162,10 @@ class TestRepairOrphanedBlobsHandler:
         store = get_blob_store()
         referenced_hash, ref_size = store.write_from_bytes(_REFERENCED_BLOB)
         orphan_hash, _ = store.write_from_bytes(_ORPHAN_BLOB)
+        # Blob GC will not collect anything younger than MIN_AGE_S: that floor
+        # is what bridges the acquire-blob -> commit-row window. Age the orphan
+        # rather than weakening the invariant.
+        _age_blob(store, orphan_hash)
         _seed_raw_row(
             cli_workspace["db_path"],
             referenced_hash,
@@ -179,7 +197,9 @@ class TestRepairOrphanedBlobsHandler:
         assert clean.name == "orphaned_blobs"
         assert clean.success is True
         assert clean.repaired_count == 0
-        assert "No orphaned blobs" in clean.detail
+        # The no-op detail reads "Deleted 0 orphaned blobs (0 bytes)" once a
+        # generation has run; repaired_count is the contract, not the prose.
+        assert "0 orphaned blobs" in clean.detail
 
     def test_clean_state_returns_no_op(self, cli_workspace: CliWorkspace) -> None:
         from polylogue.config import get_config
@@ -257,6 +277,10 @@ class TestOrphanedBlobsCatalogRouting:
         store = get_blob_store()
         referenced_hash, ref_size = store.write_from_bytes(_REFERENCED_BLOB)
         orphan_hash, _ = store.write_from_bytes(_ORPHAN_BLOB)
+        # Blob GC will not collect anything younger than MIN_AGE_S: that floor
+        # is what bridges the acquire-blob -> commit-row window. Age the orphan
+        # rather than weakening the invariant.
+        _age_blob(store, orphan_hash)
         _seed_raw_row(
             cli_workspace["db_path"],
             referenced_hash,

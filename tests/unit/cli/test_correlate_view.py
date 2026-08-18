@@ -136,7 +136,7 @@ def test_run_correlation_view_github_enrichment_does_not_crash() -> None:
     at runtime while only importing it under ``TYPE_CHECKING`` -- the default
     ``github_api=True`` path raised ``NameError`` on every session carrying
     any issue/PR ref, silently breaking ``read --view correlation`` for the
-    live archive (verified against /realm/db/polylogue/index.db)."""
+    live archive (verified against /realm/state/polylogue/index.db)."""
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])

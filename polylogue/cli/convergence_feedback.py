@@ -5,9 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from polylogue.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 def convergence_warning_line(active_archive: Path | None = None) -> str | None:
-    """Return a concise warning when archive results may be partial."""
+    """Return a concise warning when archive results may be partial.
+
+    ``None`` means "checked, and results are complete". Failing to determine
+    readiness is not that: this used to swallow every exception and return
+    ``None``, so a missing table, an unreadable ops tier, or a schema drift
+    rendered exactly like a healthy archive and partial results were presented as
+    complete. An unanswerable check now says so.
+    """
     try:
         from polylogue.paths import archive_root
         from polylogue.storage.archive_readiness import (
@@ -26,7 +37,8 @@ def convergence_warning_line(active_archive: Path | None = None) -> str | None:
             return None
         return _raw_materialization_warning(raw_readiness)
     except Exception:
-        return None
+        logger.warning("convergence warning probe failed; reporting readiness as undetermined", exc_info=True)
+        return "Archive convergence state could not be determined; results may be partial."
 
 
 def _active_rebuild_warning(attempts: list[dict[str, object]]) -> str:

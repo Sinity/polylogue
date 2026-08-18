@@ -8,6 +8,7 @@ detection — rather than inspecting an intermediate counts envelope.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -825,8 +826,34 @@ class TestValidationService:
     ) -> None:
         from polylogue.storage.blob_store import get_blob_store
 
-        raw_content = (
-            b'{"type":"session_meta"}\n{"type":"response_item","payload":{"type":"message"}}\n{"record_type":"state"}'
+        # A realistic Codex session: the artifact classifier must recognise the
+        # payload as a session stream before validation runs at all, and the
+        # previous degenerate stub (a session_meta with no payload) classified
+        # as kind "unknown", so the record was skipped as schema-ineligible and
+        # the validator this case is about was never reached.
+        raw_content = b"".join(
+            json.dumps(row, sort_keys=True).encode() + b"\n"
+            for row in (
+                {"type": "session_meta", "payload": {"id": "val-1", "timestamp": "2026-07-20T00:00:00Z"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "val-1-m0",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello"}],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "val-1-m1",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hi"}],
+                    },
+                },
+            )
         )
         blob_store = get_blob_store()
         raw_id, blob_size = blob_store.write_from_bytes(raw_content)

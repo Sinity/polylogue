@@ -174,17 +174,55 @@ def _assert_existing_raw_observation_identity(
     blob_hash: bytes,
     blob_size: int,
 ) -> bool:
-    """Return whether an explicit raw id already names the same observation."""
+    """Return whether an explicit raw id already names the same observation.
+
+    Acquisition evidence is what was observed and where: the bytes
+    (``blob_hash``/``blob_size``) and the provenance coordinates
+    (``native_id``/``source_path``/``source_index``). Those must match exactly --
+    a raw id bound to different bytes or a different location is a substitution
+    hazard and stays fatal.
+
+    ``origin`` is not acquisition evidence. It is a derived classification, and
+    routes legitimately derive it with different amounts of information: a
+    decoded ZIP ingest can sniff the archive as a whole and stamp every member
+    ``chatgpt-export``, while a source-only replay of the same bytes sees only an
+    opaque member and can honestly say no more than ``unknown-export``. Treating
+    that as an evidence conflict made the two routes mutually exclusive over
+    identical bytes. A refinement away from ``unknown-export`` is therefore
+    admitted and upgrades the stored row; only a contradiction between two
+    confident origins is fatal.
+    """
     row = conn.execute(
         "SELECT origin, native_id, source_path, source_index, blob_hash, blob_size FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
     ).fetchone()
     if row is None:
         return False
-    expected = (_enum_value(origin), native_id, source_path, source_index, blob_hash, blob_size)
-    if tuple(row) != expected:
+    stored_origin = row[0]
+    if tuple(row[1:]) != (native_id, source_path, source_index, blob_hash, blob_size):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
-    return True
+
+    incoming_origin = _enum_value(origin)
+    if stored_origin == incoming_origin:
+        return True
+
+    unknown = Origin.UNKNOWN_EXPORT.value
+    if incoming_origin == unknown:
+        # The less-informed route re-observing the same bytes. Keep the sharper
+        # classification already on the row.
+        return True
+    if stored_origin == unknown:
+        # A better-informed re-observation of bytes admitted under the placeholder.
+        # The mutation goes through the declared source-tier writer rather than
+        # being issued here.
+        from polylogue.storage.sqlite.archive_tiers.source_write import refine_raw_origin
+
+        refine_raw_origin(conn, raw_id=raw_id, origin=origin)
+        return True
+    raise ValueError(
+        f"raw id is already bound to a conflicting origin: {raw_id} "
+        f"(stored={stored_origin!r}, incoming={incoming_origin!r})"
+    )
 
 
 def admit_raw_observation(

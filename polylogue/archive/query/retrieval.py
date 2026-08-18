@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from polylogue.archive.query.retrieval_candidates import (
-    action_search_ready,
-    actions_ready,
     can_use_action_stats_with,
     candidate_batch_limit,
     candidate_record_query,
@@ -27,8 +25,6 @@ from polylogue.archive.query.retrieval_search import (
 )
 
 __all__ = [
-    "action_search_ready",
-    "actions_ready",
     "can_use_action_stats_with",
     "candidate_batch_limit",
     "candidate_record_query",

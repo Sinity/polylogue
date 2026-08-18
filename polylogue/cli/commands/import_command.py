@@ -143,6 +143,23 @@ def _verify_demo_now(*, require_overlays: bool = False) -> DemoVerifyResult:
     return result
 
 
+#: Seconds to wait for the daemon to accept an ingest submission. Staging a
+#: corpus and admitting it is real work -- the previous 5s cap timed out on an
+#: ordinary `import --demo` and reported the working daemon as unreachable.
+_INGEST_SUBMIT_TIMEOUT_S = 120.0
+
+
+def _daemon_submit_timeout_message(daemon_url: str, *, staged: object, exc: BaseException) -> str:
+    del exc
+    return (
+        f"Daemon at {daemon_url} accepted the connection but did not answer the ingest "
+        f"submission within {_INGEST_SUBMIT_TIMEOUT_S:g}s.\n"
+        "  The daemon is running; it is busy or stalled admitting this submission. "
+        "Check `polylogue ops status` and the daemon log rather than restarting it.\n"
+        f"  Staged content is preserved at: {staged}"
+    )
+
+
 def _daemon_unreachable_message(daemon_url: str, reason: str) -> str:
     """Build an actionable error when the daemon is unreachable."""
     return (
@@ -285,22 +302,44 @@ def import_command(
             "source_path": str(requested_source.expanduser().resolve()),
         }
     ).encode("utf-8")
+    # The daemon auto-mints a bearer token and rejects unauthenticated callers
+    # with 401, so this has to present it the same way every other daemon client
+    # does (daemon_client.DaemonClient, archive_query's fast paths). Without it
+    # `polylogue import` cannot reach an authenticated daemon at all.
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+
+    ingest_config = load_polylogue_config()
+    ingest_headers = {"Content-Type": "application/json"}
+    ingest_auth_token = resolve_api_auth_token(
+        getattr(ingest_config, "api_auth_token", None),
+        allow_no_auth=getattr(ingest_config, "api_allow_no_auth", False),
+    )
+    if ingest_auth_token:
+        ingest_headers["Authorization"] = f"Bearer {ingest_auth_token}"
     req = Request(
         f"{daemon_url}/api/ingest",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=ingest_headers,
         method="POST",
     )
 
     try:
-        with urlopen(req, timeout=5) as resp:
+        with urlopen(req, timeout=_INGEST_SUBMIT_TIMEOUT_S) as resp:
             raw = json.loads(resp.read())
     except HTTPError as exc:
         # Daemon responded but rejected the request. Surface the status
         # code so the operator knows it's a contract problem, not a
         # transport problem.
         fail("import", _daemon_http_error_message(exc, daemon_url=daemon_url, staged=staged))
+    except TimeoutError as exc:
+        # A daemon that accepted the connection but has not finished replying is
+        # busy, not absent. Saying "could not reach" sends the operator to check
+        # whether polylogued is running, which it demonstrably is.
+        fail("import", _daemon_submit_timeout_message(daemon_url, staged=staged, exc=exc))
     except URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            fail("import", _daemon_submit_timeout_message(daemon_url, staged=staged, exc=exc.reason))
         fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
     except OSError as exc:
         fail("import", _daemon_unreachable_message(daemon_url, str(exc)))

@@ -92,7 +92,7 @@ def _seed_delegation(archive_root: Path) -> tuple[str, str]:
                 branch_type=BranchType.SUBAGENT,
             )
         )
-    block_id = f"{parent}:dispatch:0"
+    block_id = f"{parent}:n:dispatch:0"
     return f"delegation:{block_id}", f"block:{block_id}"
 
 
@@ -137,7 +137,7 @@ def _seed_unresolved_delegation(archive_root: Path) -> tuple[str, str]:
                 branch_type=BranchType.SUBAGENT,
             )
         )
-    block_id = f"{parent}:dispatch-a:0"
+    block_id = f"{parent}:n:dispatch-a:0"
     return f"delegation:{block_id}", f"block:{block_id}"
 
 

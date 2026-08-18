@@ -374,7 +374,29 @@ def _check_raw_materialization_backlog(root: Path) -> ScaleRegressionCheck:
     raw_root = root / "raw-materialization"
     _init_archive(raw_root)
     blob_store = BlobStore(raw_root / "blob")
-    raw_id, blob_size = blob_store.write_from_bytes(b'{"mapping":{}}')
+    # A ChatGPT export with an EMPTY mapping carries no conversational
+    # evidence, so raw materialization refuses to plan it and the probe sees a
+    # candidate with no plan outcome. Seed one real message instead.
+    raw_id, blob_size = blob_store.write_from_bytes(
+        json.dumps(
+            {
+                "title": "scale probe",
+                "mapping": {
+                    "m1": {
+                        "id": "m1",
+                        "message": {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": 1700000000.0,
+                            "content": {"content_type": "text", "parts": ["hello from the scale probe"]},
+                        },
+                        "parent": None,
+                        "children": [],
+                    }
+                },
+            }
+        ).encode("utf-8")
+    )
     with sqlite3.connect(raw_root / "source.db") as conn:
         conn.execute(
             """

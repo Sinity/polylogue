@@ -1,5 +1,25 @@
 [
   {
+    "target": "polylogue",
+    "file": "polylogue/cli/click_app.py",
+    "import": "devtools.checkout_guard"
+  },
+  {
+    "target": "polylogue",
+    "file": "polylogue/cli/commands/diagnostics.py",
+    "import": "devtools.archive_space_report"
+  },
+  {
+    "target": "polylogue",
+    "file": "polylogue/cli/commands/diagnostics.py",
+    "import": "devtools.daemon_workload_probe"
+  },
+  {
+    "target": "polylogue",
+    "file": "polylogue/scenarios/execution.py",
+    "import": "devtools.command_catalog"
+  },
+  {
     "target": "polylogue/api",
     "file": "polylogue/api/__init__.py",
     "import": "polylogue.storage.embeddings.materialization"

@@ -125,11 +125,13 @@ class ResponsivenessProbe:
         endpoints: tuple[str, ...] = _DEFAULT_PROBE_ENDPOINTS,
         interval_seconds: float = _DEFAULT_PROBE_INTERVAL_SECONDS,
         timeout_seconds: float = _DEFAULT_PROBE_TIMEOUT_SECONDS,
+        auth_token: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._endpoints = endpoints
         self._interval_seconds = interval_seconds
         self._timeout_seconds = timeout_seconds
+        self._auth_token = auth_token
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="raw-authority-daemon-health-probe", daemon=True)
         self._samples: list[ProbeSample] = []
@@ -169,7 +171,14 @@ class ResponsivenessProbe:
         status_code: int | None = None
         error: str | None = None
         try:
-            request = Request(f"{self._base_url}{endpoint}", headers={"Accept": "application/json"}, method="GET")
+            headers = {"Accept": "application/json"}
+            if self._auth_token:
+                # `/healthz/*` is unauthenticated, but every `/api/*` route requires
+                # the bearer token the daemon auto-mints on first start. Probing
+                # without it measured a 401 on every sample and reported it as the
+                # endpoint being unresponsive under load.
+                headers["Authorization"] = f"Bearer {self._auth_token}"
+            request = Request(f"{self._base_url}{endpoint}", headers=headers, method="GET")
             with urlopen(request, timeout=self._timeout_seconds) as response:
                 response.read()
                 status_code = response.status
@@ -399,12 +408,19 @@ def run_raw_authority_daemon_health_proof(
 
     try:
         _wait_for_daemon_ready(base_url, process=daemon, timeout_seconds=readiness_timeout_seconds)
+        # The daemon auto-mints and persists a bearer token under the archive root on
+        # first start; every `/api/*` route requires it, including from loopback.
+        # Read it after readiness so the probe measures the endpoint rather than the
+        # auth rejection.
+        api_token_path = archive_root / "api-auth-token"
+        api_auth_token = api_token_path.read_text(encoding="utf-8").strip() if api_token_path.exists() else None
         drain_started = time.perf_counter()
         with ResponsivenessProbe(
             base_url,
             endpoints=probe_endpoints,
             interval_seconds=probe_interval_seconds,
             timeout_seconds=probe_timeout_seconds,
+            auth_token=api_auth_token,
         ) as probe:
             final_profile = _wait_for_drain(config, timeout_seconds=max_drain_seconds)
             # Keep sampling briefly past the drain so the burst-to-idle tail is

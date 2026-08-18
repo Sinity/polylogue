@@ -3494,9 +3494,35 @@ def _write_attachments(
         )
         _write_attachment_native_ids(conn, ref_id, attachment)
     affected_attachment_ids = touched_attachment_ids | (refresh_attachment_ids or set())
-    if not affected_attachment_ids:
+    # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
+    # can no longer be matched to a message via the shared owner key, e.g.
+    # the owning message became a duplicate-native-id exclusion or dropped
+    # out of this ingest's message set) drops a previously-written
+    # attachment_refs row for `refresh_attachment_ids` without this
+    # function ever writing a replacement ref. The refresh below reflects
+    # that as ref_count 0 and sweeps the now ref-less `attachments` row --
+    # it would otherwise survive, unreachable from any session/message read
+    # path (get_attachments/get_attachments_batch both INNER JOIN
+    # attachment_refs), while still reporting acquisition_status='acquired'
+    # and real fetched bytes.
+    _refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
+
+
+def _refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids: set[str]) -> None:
+    """Recompute ``attachments.ref_count`` from live refs and sweep zero-ref rows.
+
+    Every path that deletes ``attachment_refs`` rows outside a message-FK
+    cascade must call this with the affected attachment ids, mirroring the
+    cleanup ``prune_attachments`` and ``delete_session_sql`` perform after
+    their own ref deletions -- otherwise an acquired ``attachments`` row
+    survives with a stale ref_count and no canonical ref, which
+    ``attachment-acquisition-debt`` / ``blob-reference-closure`` report as
+    archive-verification errors.
+    """
+    if not attachment_ids:
         return
-    placeholders = ",".join("?" for _ in affected_attachment_ids)
+    placeholders = ",".join("?" for _ in attachment_ids)
+    params = tuple(sorted(attachment_ids))
     conn.execute(
         f"""
         UPDATE attachments
@@ -3505,24 +3531,11 @@ def _write_attachments(
         )
         WHERE attachment_id IN ({placeholders})
         """,
-        tuple(sorted(affected_attachment_ids)),
+        params,
     )
-    # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
-    # can no longer be matched to a message via the shared owner key, e.g.
-    # the owning message became a duplicate-native-id exclusion or dropped
-    # out of this ingest's message set) drops a previously-written
-    # attachment_refs row for `refresh_attachment_ids` without this
-    # function ever writing a replacement ref. The ref_count UPDATE above
-    # correctly reflects that as 0, but nothing previously swept the now
-    # ref-less `attachments` row -- it survived, unreachable from any
-    # session/message read path (get_attachments/get_attachments_batch both
-    # INNER JOIN attachment_refs), while still reporting
-    # acquisition_status='acquired' and real fetched bytes. Sweep it here,
-    # mirroring the identical cleanup `prune_attachments` and
-    # `delete_session_sql` already perform after their own ref deletions.
     conn.execute(
         f"DELETE FROM attachments WHERE ref_count <= 0 AND attachment_id IN ({placeholders})",
-        tuple(sorted(affected_attachment_ids)),
+        params,
     )
 
 
@@ -6254,7 +6267,9 @@ def _delete_all_session_message_dependents(
         """,
         (session_id,),
     )
+    orphaned_attachment_ids = _session_attachment_ids(conn, session_id)
     conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
+    _refresh_and_sweep_attachment_rows(conn, orphaned_attachment_ids)
     conn.execute("DELETE FROM paste_spans WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -6276,11 +6291,19 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
         """,
         params,
     )
+    orphaned_attachment_ids = {
+        str(row[0])
+        for row in conn.execute(
+            f"SELECT DISTINCT attachment_id FROM attachment_refs WHERE message_id IN ({placeholders})",
+            params,
+        )
+    }
     for table in ("web_content_constructs", "attachment_refs", "paste_spans", "blocks"):
         conn.execute(
             f"DELETE FROM {table} WHERE message_id IN ({placeholders})",
             params,
         )
+    _refresh_and_sweep_attachment_rows(conn, orphaned_attachment_ids)
 
 
 def _remap_session_event_prefix_refs(

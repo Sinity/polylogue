@@ -22,6 +22,7 @@ from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_ind
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_preconditions import record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
@@ -60,18 +61,21 @@ def _payload(native_id: str, text: str, *, parent_native_id: str | None = None) 
 
 def _seed(root: Path, *, monkeypatch: pytest.MonkeyPatch) -> None:
     initialize_active_archive_root(root)
+    seeded: dict[str, bytes] = {}
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index, native_id, parent_native_id in (
             (0, "resume-parent", None),
             (1, "resume-child", "resume-parent"),
             (2, "resume-standalone", None),
         ):
-            archive.write_raw_payload(
+            payload = _payload(native_id, f"resume-token-{index}", parent_native_id=parent_native_id)
+            raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=_payload(native_id, f"resume-token-{index}", parent_native_id=parent_native_id),
+                payload=payload,
                 source_path=f"resume/{index}.jsonl",
                 acquired_at_ms=index + 1,
             )
+            seeded[raw_id] = payload
     with sqlite3.connect(root / "source.db") as source:
         source.execute(
             """
@@ -89,6 +93,9 @@ def _seed(root: Path, *, monkeypatch: pytest.MonkeyPatch) -> None:
             """
         )
         source.commit()
+    # The census compares each parsed identity against the durable logical key
+    # the UPDATE above sets, so it has to run after it.
+    record_codex_parser_census(root, seeded)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 

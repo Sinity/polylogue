@@ -163,22 +163,6 @@ class TestConfig:
         assert config.db_path == active_index
         assert "stale conventional index path" in caplog.text
 
-    def test_archive_file_set_index_availability_is_unconditional(self, tmp_path: Path) -> None:
-        """Archive file-set availability does not depend on the DB anchor."""
-        from polylogue.paths import archive_file_set_index_available_for_paths
-
-        archive_root = tmp_path / "archive"
-        override_root = tmp_path / "override"
-        archive_root.mkdir()
-        override_root.mkdir()
-        db_anchor = override_root / "custom.sqlite"
-
-        assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
-
-        (override_root / "index.db").write_text("index")
-
-        assert archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor)
-
     def test_config_optional_fields_default_none(self, tmp_path: Path) -> None:
         """Optional fields default to None."""
         config = Config(

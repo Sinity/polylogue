@@ -292,7 +292,19 @@ def _validate_active_revision_chain(
             raise RawRetentionSafetyError(f"active index raw is missing from source tier: {current_raw_id}")
         kind = str(row["revision_kind"])
         if kind == "full":
-            if str(row["revision_authority"]) != "byte_proven":
+            authority = str(row["revision_authority"])
+            # A baseline full raw -- the first-ever observation of a logical
+            # source key -- is admitted as FULL/ASSERTED by design: the
+            # BASELINE outcome in archive_tiers/raw_admission.py has no prior
+            # head to compare bytes against, so there is nothing for a byte
+            # proof to be over. Demanding byte_proven of every full head
+            # therefore reported a violation for every source seen exactly
+            # once, which is the entire content of a freshly ingested archive
+            # -- `ops status` called it "raw frontier integrity violated" and
+            # handed out a repair hint. Require the byte proof only where a
+            # predecessor actually exists for it to be a proof about.
+            has_predecessor = row["predecessor_raw_id"] is not None
+            if authority != "byte_proven" and not (authority == "asserted" and not has_predecessor):
                 raise RawRetentionSafetyError(f"active full raw lacks byte-proven authority: {current_raw_id}")
             if chain_baseline_raw_id is not None and current_raw_id != chain_baseline_raw_id:
                 raise RawRetentionSafetyError(f"active append chain terminates at the wrong baseline: {current_raw_id}")

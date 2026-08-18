@@ -556,7 +556,8 @@ async def test_registered_read_transactions_match_production_goldens(tmp_path: P
         message_get = json.loads(
             await invoke_surface_async(
                 tools["get"].fn,
-                ref=f"message:{session_id}:m1",
+                # message_id is generated with an "n:" discriminator.
+                ref=f"message:{session_id}:n:m1",
             )
         )
 
@@ -578,7 +579,7 @@ async def test_registered_read_transactions_match_production_goldens(tmp_path: P
     assert results["read"]["payload"]["message_count"] == 1
     assert results["read"]["payload"]["target_ref"]["identity_key"] == f"session:{session_id}"
     assert message_get["payload_kind"] == "message"
-    assert message_get["payload"]["id"] == f"{session_id}:m1"
+    assert message_get["payload"]["id"] == f"{session_id}:n:m1"
     assert message_get["payload"]["text"] == "read contract golden needle"
     assert message_get["payload"]["content_blocks"][0]["text"] == "read contract golden needle"
     assert results["explain"]["subject"] == "query"

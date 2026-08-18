@@ -32,7 +32,11 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
-from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.index_generation import (
+    IndexGenerationStore,
+    rebuild_source_evidence_snapshot,
+    source_revision_snapshot,
+)
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.repair import repair_session_insights
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -449,7 +453,10 @@ def _derivation_key(root: Path, index_path: Path) -> DerivationKeyWitness:
         )
     return DerivationKeyWitness(
         subject_source_bindings=bindings,
-        source_snapshot=source_revision_snapshot(root),
+        # Immutable evidence, not the full mutable row hash: this witness is
+        # compared ACROSS roots, and parse/validation columns are rebuild
+        # outputs that legitimately differ between two routes.
+        source_snapshot=rebuild_source_evidence_snapshot(root),
         source_evidence=_source_evidence(root),
         parser_census=_parser_census(root),
         recipe_identity=recipe_identity,
@@ -1037,6 +1044,7 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
     assert restarted_insights.detail == "Session insights ready"
 
     final_source_snapshot = source_revision_snapshot(tmp_path)
+    final_source_evidence = rebuild_source_evidence_snapshot(tmp_path)
     incremental_path = tmp_path / "index.db"
     incremental_key = _derivation_key(tmp_path, incremental_path)
     incremental_facts = _collect_canonical_facts(tmp_path, incremental_path)
@@ -1052,7 +1060,7 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
     )
     _assert_planted_contract(tmp_path, incremental_path, raw_ids)
     assert _overlay_assertions(tmp_path) == overlay_receipt
-    assert incremental_key.source_snapshot == final_source_snapshot
+    assert incremental_key.source_snapshot == final_source_evidence
     assert {row[1] for row in incremental_key.parser_census} == {PARSER_RECIPE}
     assert incremental_key.recipe_identity[0] == (
         "index_schema",
