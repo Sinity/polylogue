@@ -213,8 +213,17 @@ def _xdist_controller_cmd(path: Path) -> list[str]:
         # benchmark flags pyproject's addopts still supply -- so the test passes
         # standalone and fails only inside `devtools verify`.
         "--override-ini=addopts=",
+        # Name every plugin this command's own flags require. Autoload supplies
+        # them standalone, but a managed run disables autoload by design, so
+        # --json-report-file and -n become "unrecognized arguments" there.
         "-p",
         "devtools.pytest_progress_plugin",
+        "-p",
+        "xdist",
+        "-p",
+        "pytest_jsonreport",
+        "-p",
+        "timeout",
         f"--rootdir={ROOT}",
         "-n",
         "2",
@@ -514,8 +523,17 @@ def test_managed_runner_retains_responsible_node_for_per_test_timeout(
         # benchmark flags pyproject's addopts still supply -- so the test passes
         # standalone and fails only inside `devtools verify`.
         "--override-ini=addopts=",
+        # Name every plugin this command's own flags require. Autoload supplies
+        # them standalone, but a managed run disables autoload by design, so
+        # --json-report-file and -n become "unrecognized arguments" there.
         "-p",
         "devtools.pytest_progress_plugin",
+        "-p",
+        "xdist",
+        "-p",
+        "pytest_jsonreport",
+        "-p",
+        "timeout",
         "-p",
         "no:testmon",
         "-p",
