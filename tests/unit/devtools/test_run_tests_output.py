@@ -29,3 +29,23 @@ def test_package_from_another_checkout_is_surprising_and_must_be_announced() -> 
 def test_unresolvable_path_is_treated_as_surprising() -> None:
     """Fail toward announcing. An unreadable path is not evidence of correctness."""
     assert not _import_path_is_unsurprising("")
+
+
+def test_focused_runs_do_not_inherit_the_cloud_worker_pin(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`.claude/settings.json` pins two workers for cloud sandboxes, and that
+    value leaks into workstation sessions. `devtools verify` already scrubs it;
+    reading the variable raw gave focused runs two processes where the policy
+    deliberately intends one."""
+    from devtools.run_tests import _worker_args
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "2")
+
+    assert _worker_args(["tests/unit/example.py"]) == ["-n", "0"]
+
+
+def test_a_deliberate_worker_override_still_wins(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from devtools.run_tests import _worker_args
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "6")
+
+    assert _worker_args(["tests/unit/example.py"]) == ["-n", "6"]

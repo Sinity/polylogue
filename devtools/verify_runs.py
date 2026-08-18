@@ -2481,15 +2481,33 @@ def adaptive_pytest_worker_count(env: Mapping[str, str]) -> int:
     proves this is not a sandbox, and let the adaptive policy size the run.
     Any other value is a deliberate operator override and still wins.
     """
+    configured = configured_pytest_worker_request(env)
+    if configured is not None:
+        return configured
+    return adaptive_pytest_runtime_policy().workers
+
+
+def configured_pytest_worker_request(env: Mapping[str, str]) -> int | None:
+    """The worker count the environment asked for, scrubbed and validated.
+
+    One resolver for one fact. Callers differ in what they do when the
+    environment asks for nothing -- `devtools verify` sizes the run adaptively,
+    a focused `devtools test` stays single-process on purpose -- but they must
+    agree on what "asked for" MEANS, including that the cloud pin is not an
+    answer on this workstation. Reading the variable directly, as run_tests once
+    did, silently reinstates that pin for focused runs.
+
+    Returns None when the environment expresses no usable preference.
+    """
     configured = env.get("POLYLOGUE_PYTEST_WORKERS", "").strip()
     if configured == _CLOUD_PYTEST_WORKERS and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
         configured = ""
-    if configured:
-        try:
-            return max(0, int(configured))
-        except ValueError as exc:
-            raise PytestResourceError(f"invalid POLYLOGUE_PYTEST_WORKERS={configured!r}") from exc
-    return adaptive_pytest_runtime_policy().workers
+    if not configured:
+        return None
+    try:
+        return max(0, int(configured))
+    except ValueError as exc:
+        raise PytestResourceError(f"invalid POLYLOGUE_PYTEST_WORKERS={configured!r}") from exc
 
 
 def _is_tmpfs_dir(path: Path) -> bool:

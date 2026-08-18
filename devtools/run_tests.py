@@ -52,6 +52,7 @@ from devtools.verify_runs import (
     CheckoutMutationObservation,
     VerifyRun,
     append_verify_history,
+    configured_pytest_worker_request,
     finalize_checkout_mutation_monitors,
     finish_checkout_mutation_monitor,
     git_head,
@@ -220,11 +221,17 @@ def _has_worker_flag(selection: list[str]) -> bool:
 
 
 def _worker_args(selection: list[str]) -> list[str]:
-    """Default focused runs to a single process; honor an explicit override."""
+    """Default focused runs to a single process; honor an explicit override.
+
+    The override is read through the shared resolver rather than straight from
+    the environment, so the cloud worker pin is scrubbed here exactly as it is
+    for `devtools verify`. Reading it raw gave focused runs two processes where
+    the policy intends one.
+    """
     if _has_worker_flag(selection):
         return []
-    workers = os.environ.get("POLYLOGUE_PYTEST_WORKERS", "0").strip() or "0"
-    return ["-n", workers]
+    requested = configured_pytest_worker_request(os.environ)
+    return ["-n", str(requested if requested is not None else 0)]
 
 
 def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> list[str]:
