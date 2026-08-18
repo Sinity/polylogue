@@ -190,6 +190,21 @@ rules:
       from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
       baseline: docs/plans/layering-surface-baseline.json
 
+  - target: polylogue
+    description: >-
+      Production must not depend on the repo control plane. `devtools` exists to
+      verify and release this package; a production import inverts that, so a
+      developer tool becomes a runtime dependency that escapes the catalog's own
+      doc/CI discipline. This direction had NO rule at all until now, which is
+      how `polylogue ops diagnostics workload` came to be implemented by
+      devtools/daemon_workload_probe.py (3,165 lines) without appearing in the
+      devtools command catalog. The three existing importers are an audited
+      allowlist, not an accepted pattern: new ones fail, and the right fix for
+      an entry is to move the code into polylogue/ where its caller lives.
+    disallow:
+      from: [devtools]
+      baseline: docs/plans/layering-surface-baseline.json
+
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
     disallow:
