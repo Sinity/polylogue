@@ -2472,7 +2472,18 @@ def _native_pytest_steps(
     pytest_cmd.extend(_PYTEST_MANAGED_PLUGIN_ARGS)
     pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
     native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
-    if testmon_mode == "affected":
+    if testmon_mode in ("affected", "full"):
+        # "full" (--all) used to re-execute every test unconditionally, which
+        # made every terminal validation a from-scratch ~45-minute run even
+        # when a green recording of the identical content existed minutes
+        # earlier (2026-08-18: a cap-killed 93%-complete run was followed by
+        # two complete reruns of the same bytes). forceselect executes what
+        # changed or was never recorded; a recorded test testmon deselects is
+        # BY MECHANISM one whose recorded deps all match and whose last
+        # outcome was green (failures are always reselected) -- the same
+        # soundness premise every affected-gated merge already trusts. A
+        # digest change (deps, harness, profile) voids the recording and
+        # falls back to executing everything, unchanged.
         native_args.append("--testmon-forceselect")
     else:
         native_args.append("--testmon-noselect")

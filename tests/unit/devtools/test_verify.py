@@ -108,7 +108,9 @@ def test_quick_verify_omits_pytest() -> None:
 
 @pytest.mark.parametrize(
     ("mode", "selection_flag"),
-    [("affected", "--testmon-forceselect"), ("bootstrap", "--testmon-noselect"), ("full", "--testmon-noselect")],
+    # "full" selects incrementally since the 2026-08-18 overhaul: recorded
+    # unchanged-green tests are attested coverage, not re-execution fodder.
+    [("affected", "--testmon-forceselect"), ("bootstrap", "--testmon-noselect"), ("full", "--testmon-forceselect")],
 )
 def test_native_testmon_uses_exactly_two_semantic_lanes(
     monkeypatch: pytest.MonkeyPatch,
