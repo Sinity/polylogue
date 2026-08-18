@@ -737,3 +737,25 @@ class TestAccessTokenQueryRejected:
         raw = "/api/sessions?query=normal&unknown_name=must-not-surface"
         assert _public_route_from_request_path(raw) == "/api/sessions"
         assert _request_path_for_log(raw) == "/api/sessions"
+
+
+def test_emitter_converges_ops_tier_once_per_process(workspace_env, monkeypatch) -> None:
+    # The multi-statement tier initialization can wait out SQLite lock
+    # timeouts statement by statement; running it on every emit put that
+    # aggregate wait inside the daemon's SIGTERM exit window
+    # (polylogue-b9oi8). First emit converges, later emits reuse it.
+    from polylogue.daemon import events as events_module
+
+    calls: list[object] = []
+    real_initialize = events_module.initialize_archive_database
+
+    def counting_initialize(path, tier, **kwargs):
+        calls.append(path)
+        return real_initialize(path, tier, **kwargs)
+
+    monkeypatch.setattr(events_module, "initialize_archive_database", counting_initialize)
+    events_module._CONVERGED_EVENT_DBS.clear()
+    events_module.emit_daemon_event("test-event", payload={"n": 1})
+    events_module.emit_daemon_event("test-event", payload={"n": 2})
+
+    assert len(calls) == 1
