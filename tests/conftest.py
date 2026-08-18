@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -487,6 +488,35 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                 clear_managed_pytest_basetemp_claim(basetemp_path)
     finally:
         _release_basetemp_claim_lock(basetemp_path)
+
+
+@pytest.fixture
+def tmp_path(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[Path]:
+    """Redirect ``storage_scale``-marked tests' private trees to NVMe scratch.
+
+    One incident-scale test can hold >2 GiB live inside a single tmp_path
+    (the codex-804 proof measured 2.3 GiB), which no per-test reclaim can
+    help -- the tree is live while the test runs. Placing whole runs on NVMe
+    because one whale MIGHT be selected forfeits the tmpfs lane for the other
+    ~20,000 tests, so the whale itself moves instead: marked tests write
+    under the NVMe scratch root and everything else keeps tmpfs. Falls back
+    to the run's normal basetemp where the NVMe root is unavailable (cloud
+    sandboxes).
+    """
+    if request.node.get_closest_marker("storage_scale") is None:
+        yield tmp_path
+        return
+    root = verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        private = Path(tempfile.mkdtemp(prefix=f"{request.node.name[:40]}-", dir=root))
+    except OSError:
+        yield tmp_path
+        return
+    try:
+        yield private
+    finally:
+        shutil.rmtree(private, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
