@@ -654,7 +654,15 @@ class TestBackfillCommand:
                 return_value=pending,
             ),
             patch("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed),
-            patch("polylogue.cli.commands.embed.time.monotonic", side_effect=[0.0, 0.0, 2.0]),
+            # A finite side_effect list here raised StopIteration whenever the
+            # command read the clock one more time than the script predicted
+            # (an intermittent gate failure twice on 2026-08-18). The deadline
+            # semantics only need "started at 0, past the limit from the third
+            # read onward" -- hold the final value instead of running dry.
+            patch(
+                "polylogue.cli.commands.embed.time.monotonic",
+                side_effect=lambda _readings=iter([0.0, 0.0]): next(_readings, 2.0),
+            ),
         ):
             result = cli_runner.invoke(
                 embed_command,
