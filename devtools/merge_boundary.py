@@ -895,7 +895,12 @@ def cmd_record_full_verify(
         env[merge_gate.VERIFICATION_INVOCATION_ID_ENV] = invocation_id
         env[merge_gate.VERIFICATION_RECEIPT_PATH_ENV] = str(receipt_path)
         try:
-            result = subprocess.run(argv, capture_output=True, text=True, cwd=checkout_root, env=env)
+            # Stream, don't capture: a 40-minute terminal verify previously
+            # produced ZERO live output (the 2026-08-18 train watched a blank
+            # task file while the run died at its cap), and the tail-print on
+            # failure showed 4000 chars an hour too late. The child's own
+            # receipts retain the durable record.
+            result = subprocess.run(argv, text=True, cwd=checkout_root, env=env)
         except OSError as exc:
             print(f"REFUSING: could not run {command!r}: {exc}", file=sys.stderr)
             return 2
@@ -955,8 +960,6 @@ def cmd_record_full_verify(
                 file=sys.stderr,
             )
     if result.returncode != 0:
-        print(result.stdout[-4000:])
-        print(result.stderr[-4000:], file=sys.stderr)
         print(
             "POST-MERGE BROAD VERIFY FAILED -- this is the master-red drift-latch class (an "
             "unrelated change breaking something only visible on the merged whole); investigate "
