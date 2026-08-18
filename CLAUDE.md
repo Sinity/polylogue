@@ -322,6 +322,17 @@ source-origin public filters or payloads.
 
 These override default agent behavior.
 
+### Active campaign: devtools/harness overhaul → reindex readiness
+
+A multi-week campaign is coordinated from a gitignored control plane at
+`.agent/campaigns/2026-08-overhaul/` (`INDEX.md` first — reload protocol,
+workstream table, next action). If asked to continue "the campaign" or "the
+overhaul," read that before anything else; it supersedes the reindex plan and
+raw bead scanning for sequencing. The one rule that changes default behavior:
+**for this campaign, individual Beads are references, not units of work** —
+ship large thematic PRs per workstream and close many beads at once with
+evidence, rather than one bead per PR.
+
 ### Beads issue tracking
 
 This repo uses `bd` (Beads) for durable task state AND as the devloop: `bd
@@ -677,7 +688,8 @@ Core loop:
   changing docs, CLI help, or schema. **Gotcha:** `render all --check` can print
   per-surface `sync OK` yet still exit 1 — grep the output for `out of sync`,
   don't trust the tail line.
-- `devtools verify [--quick|--all|--lab]` — see
+- `devtools verify [--quick|--lab]` — plain (no flag) is the complete-corpus
+  attested gate; see
   [Verification](#verification--testmon-inner-loop-never-blanket-run).
 - `devtools test <sel>` — focused pytest through the managed harness. Forwards
   arbitrary pytest args and is faster than bare pytest; see Verification.
