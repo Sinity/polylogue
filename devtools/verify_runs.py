@@ -1419,6 +1419,19 @@ def aggregate_native_testmon_run(
     # changed modules with no recorded edges, or changed non-Python runtime
     # data no trace can see -- recorded greens predate those changes.
     attested_unchanged = tuple(sorted(corpus_set - executed_nodes)) if complete_mode and attestation_sound else ()
+    lanes_exited_normally = bool(lanes) and all(lane.get("exit_code") in (0, 1) for lane in lanes)
+    # Under xdist, per-worker selection artifacts are written BEFORE the
+    # controller applies testmon's per-test deselection, so selected_union
+    # overcounts by exactly the stable recorded tests testmon then deselected
+    # -- which is the attested set. For attested runs, "everything selected
+    # ran to terminal" therefore means: nothing selected is outside executed
+    # plus attested, and both lanes completed normally (a crashed lane cannot
+    # launder its unfinished tests into attestation: normal completion is
+    # what proves the survivors were deselected, not dropped).
+    if complete_mode and attestation_sound:
+        selection_accounted = lanes_exited_normally and selected_union <= (executed_nodes | corpus_set)
+    else:
+        selection_accounted = selected_union == executed_nodes
     complete_corpus_covered = (
         complete_mode
         and selection_complete
@@ -1426,14 +1439,20 @@ def aggregate_native_testmon_run(
         and external_addopts_neutralized
         and external_plugins_neutralized
         and closed_world_collection
-        and selected_union == executed_nodes
+        and selection_accounted
         and (attestation_sound or corpus_set <= executed_nodes)
         and not duplicate_outcomes
         and len(lane_names) == 2
         and lane_names.count("parallel") == 1
         and lane_names.count("serial") == 1
     )
-    missing_terminal = tuple(sorted(selected_union - executed_nodes)) if complete_mode else ()
+    missing_terminal = (
+        tuple(sorted(selected_union - executed_nodes - corpus_set))
+        if complete_mode and attestation_sound
+        else tuple(sorted(selected_union - executed_nodes))
+        if complete_mode
+        else ()
+    )
     non_green = tuple(
         sorted(nodeid for nodeid, outcome in outcome_by_node.items() if outcome not in _GREEN_TERMINAL_OUTCOMES)
     )
