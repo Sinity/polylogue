@@ -190,7 +190,14 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_lifecycle_start(proc: subprocess.Popen[bytes], ops_db: Path, *, timeout_s: float = 30.0) -> None:
+# Deadline calibration: the managed harness runs every subprocess in an
+# idle-scheduled containment slice, so under host load a daemon that needs
+# ~1s of CPU can take 20-30s of wall clock (measured 2026-08-18: 1.7s clean
+# vs 23.7s inside the slice, and SIGTERM exits of 0.16s CPU photographed
+# "stuck" in tier DDL by the stack dump). Deadlines here distinguish
+# "eventually completes" from "hangs forever" -- they are hang detectors,
+# not latency budgets, and must survive starvation (polylogue-b9oi8).
+def _wait_for_lifecycle_start(proc: subprocess.Popen[bytes], ops_db: Path, *, timeout_s: float = 120.0) -> None:
     """Wait for the real daemon entry point to persist its lifecycle start row."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -271,7 +278,7 @@ def test_sigterm_read_only_daemon_records_forensics(
         try:
             _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
             daemon.send_signal(signal.SIGTERM)
-            assert daemon.wait(timeout=15) == 128 + signal.SIGTERM
+            assert daemon.wait(timeout=90) == 128 + signal.SIGTERM
         finally:
             if daemon.poll() is None:
                 _cleanup_process(daemon)
@@ -322,8 +329,11 @@ def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
         lock.execute("BEGIN EXCLUSIVE")
         started = time.monotonic()
         daemon.send_signal(signal.SIGTERM)
-        assert daemon.wait(timeout=12) == 128 + signal.SIGTERM
-        assert time.monotonic() - started < 8.0
+        assert daemon.wait(timeout=90) == 128 + signal.SIGTERM
+        # The contract is "well under the normal 30s SQLite wait"; the bound
+        # leaves headroom for the harness's idle-scheduled containment slice
+        # (see the deadline-calibration note at _wait_for_lifecycle_start).
+        assert time.monotonic() - started < 25.0
     finally:
         lock.rollback()
         lock.close()
@@ -375,7 +385,7 @@ def _wait_for_sessions(
     )
 
 
-def _wait_for_daemon_ready(proc: subprocess.Popen[bytes], *, timeout_s: float = 30.0) -> bool:
+def _wait_for_daemon_ready(proc: subprocess.Popen[bytes], *, timeout_s: float = 120.0) -> bool:
     """Wait for daemon process to be alive and responding.
 
     Uses ``proc.poll() is None`` to check liveness rather than
@@ -556,7 +566,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
         )
         try:
             _assert_daemon_alive(restart)
-            assert _wait_for_daemon_ready(restart, timeout_s=30.0), "Daemon did not reach ready state after restart"
+            assert _wait_for_daemon_ready(restart, timeout_s=120.0), "Daemon did not reach ready state after restart"
 
             # Let it catch up.
             _wait_for_sessions(db, min_count=N_SESSIONS, timeout_s=60.0)
@@ -677,7 +687,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
             )
             try:
                 _assert_daemon_alive(restart)
-                assert _wait_for_daemon_ready(restart, timeout_s=30.0)
+                assert _wait_for_daemon_ready(restart, timeout_s=120.0)
                 # Give it a moment to checkpoint.
                 time.sleep(3)
 
@@ -980,7 +990,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
             ],
             env=env,
             capture_output=True,
-            timeout=15,
+            timeout=90,
         )
         assert result.returncode != 0, (
             f"Second daemon should exit non-zero; got {result.returncode}\n"
@@ -993,7 +1003,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
             [polylogue, "--plain", "status"],
             env=env,
             capture_output=True,
-            timeout=30,
+            timeout=120,
         )
         assert status_result.returncode == 0, (
             f"polylogue ops status failed: {status_result.returncode}\n"
@@ -1005,7 +1015,7 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
             [polylogue, "--plain", "analyze", "--count"],
             env=env,
             capture_output=True,
-            timeout=30,
+            timeout=120,
         )
         assert count_result.returncode == 0, (
             f"polylogue analyze --count failed: {count_result.returncode}\n"
