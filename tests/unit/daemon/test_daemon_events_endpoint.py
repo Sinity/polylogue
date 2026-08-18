@@ -739,19 +739,23 @@ class TestAccessTokenQueryRejected:
         assert _request_path_for_log(raw) == "/api/sessions"
 
 
-def test_emitter_converges_ops_tier_once_per_process(workspace_env, monkeypatch) -> None:
+def test_emitter_converges_ops_tier_once_per_process(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The multi-statement tier initialization can wait out SQLite lock
     # timeouts statement by statement; running it on every emit put that
     # aggregate wait inside the daemon's SIGTERM exit window
     # (polylogue-b9oi8). First emit converges, later emits reuse it.
+    from typing import Any
+
     from polylogue.daemon import events as events_module
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 
     calls: list[object] = []
-    real_initialize = events_module.initialize_archive_database
 
-    def counting_initialize(path, tier, **kwargs):
+    def counting_initialize(path: Path, tier: Any, **kwargs: Any) -> None:
         calls.append(path)
-        return real_initialize(path, tier, **kwargs)
+        initialize_archive_database(path, tier, **kwargs)
 
     monkeypatch.setattr(events_module, "initialize_archive_database", counting_initialize)
     events_module._CONVERGED_EVENT_DBS.clear()
