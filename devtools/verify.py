@@ -58,7 +58,7 @@ from devtools.pytest_collection_contract import (
     PROGRESS_PLUGIN_NAME,
     SERIAL_MARKER_EXPRESSION,
 )
-from devtools.pytest_progress_plugin import merge_worker_collection_payloads
+from devtools.pytest_progress_plugin import merge_worker_collection_payloads, read_progress_counts
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
@@ -441,20 +441,24 @@ def _estimate_duration_from_history(
     """
     mode = selection.get("selection_mode") if isinstance(selection, Mapping) else None
     state = selection.get("state_status") if isinstance(selection, Mapping) else None
-    durations: list[float] = []
+    exact: list[float] = []
+    tier_only: list[float] = []
     for entry in reversed(_load_history()[-200:]):
         if entry.get("tier") != tier or entry.get("exit_code") != 0:
+            continue
+        duration = entry.get("duration_s") or entry.get("total_duration_s")
+        if not isinstance(duration, int | float) or duration <= 0:
             continue
         entry_selection = entry.get("testmon_selection")
         entry_mode = entry_selection.get("selection_mode") if isinstance(entry_selection, dict) else None
         entry_state = entry_selection.get("state_status") if isinstance(entry_selection, dict) else None
-        if (entry_mode, entry_state) != (mode, state):
-            continue
-        duration = entry.get("duration_s") or entry.get("total_duration_s")
-        if isinstance(duration, int | float) and duration > 0:
-            durations.append(float(duration))
-        if len(durations) >= 10:
+        if (entry_mode, entry_state) == (mode, state) and len(exact) < 10:
+            exact.append(float(duration))
+        elif len(tier_only) < 10:
+            tier_only.append(float(duration))
+        if len(exact) >= 10:
             break
+    durations = exact or tier_only
     if not durations:
         return None
     durations.sort()
@@ -1238,6 +1242,18 @@ def _run_pytest_with_heartbeat(
     events_dir = Path(env.get("POLYLOGUE_PYTEST_EVENTS_DIR", str(PYTEST_EVENTS_DIR)))
     runner_subreaper_enabled = enable_child_subreaper()
     preserved_runner_descendants = tuple(descendant_process_identities(os.getpid()))
+    # Cadence progress state: the legacy "still running" block lives in the
+    # no-output selector branch, so a busy pytest emitting dots starved it
+    # forever -- a 45-minute run's console was dots and nothing else. These
+    # drive an UNCONDITIONAL interval line with counts, ETA, and an overrun
+    # warning against the historical expectation.
+    last_cadence_line = time.monotonic()
+    selection_announced = False
+    expected_wall_s: float | None = None
+    with contextlib.suppress(ValueError, TypeError):
+        raw_expected = env.get("POLYLOGUE_VERIFY_EXPECTED_S")
+        expected_wall_s = float(raw_expected) if raw_expected else None
+    overrun_warned = False
     receipt_path = (
         artifacts.containment_path
         if artifacts is not None
@@ -1674,24 +1690,22 @@ def _run_pytest_with_heartbeat(
                 controller_text = f", controller={controller_pid}" if isinstance(controller_pid, int) else ""
                 progress_counts_text = ""
                 if events_dir is not None:
-                    from devtools.pytest_progress_plugin import read_progress_counts
-
                     done_count, failed_count = read_progress_counts(events_dir)
                     if done_count:
-                        selected_total: int | None = None
+                        idle_selected_total: int | None = None
                         if artifacts is not None:
                             selection_artifact = _read_json_artifact(artifacts.selection_path)
                             if isinstance(selection_artifact, dict):
                                 raw_selected = selection_artifact.get("selected_count")
                                 if isinstance(raw_selected, int) and raw_selected >= done_count:
-                                    selected_total = raw_selected
+                                    idle_selected_total = raw_selected
                         rate = done_count / max(sample_now - t0, 1e-6)
                         eta_text = (
-                            f", eta~{(selected_total - done_count) / rate:.0f}s"
-                            if selected_total is not None and rate > 0
+                            f", eta~{(idle_selected_total - done_count) / rate:.0f}s"
+                            if idle_selected_total is not None and rate > 0
                             else ""
                         )
-                        total_text = f"/{selected_total}" if selected_total is not None else ""
+                        total_text = f"/{idle_selected_total}" if idle_selected_total is not None else ""
                         fail_text = f", failed={failed_count}" if failed_count else ""
                         progress_counts_text = f", tests={done_count}{total_text}{fail_text}{eta_text}"
                 sys.stderr.write(
@@ -1716,6 +1730,41 @@ def _run_pytest_with_heartbeat(
                     events_path=events_path,
                     events_dir=events_dir,
                 )
+            cadence_now = time.monotonic()
+            if heartbeat_s > 0 and cadence_now - last_cadence_line >= heartbeat_s:
+                last_cadence_line = cadence_now
+                done_count, failed_count = read_progress_counts(events_dir) if events_dir.is_dir() else (0, 0)
+                selected_total: int | None = None
+                selection_artifact = _read_json_artifact(
+                    artifacts.selection_path if artifacts is not None else PYTEST_SELECTION_PATH
+                )
+                if isinstance(selection_artifact, dict):
+                    raw_selected = selection_artifact.get("selected_count")
+                    if isinstance(raw_selected, int) and raw_selected > 0:
+                        selected_total = raw_selected
+                    if not selection_announced:
+                        selection_announced = True
+                        deselected = selection_artifact.get("deselected_count")
+                        sys.stderr.write(
+                            f"\nverify: selection materialized -- {raw_selected} selected"
+                            + (f", {deselected} deselected" if isinstance(deselected, int) else "")
+                            + "\n"
+                        )
+                elapsed_line = cadence_now - t0
+                parts = [f"progress: {elapsed_line:.0f}s elapsed"]
+                if done_count:
+                    total_text = f"/{selected_total}" if selected_total and selected_total >= done_count else ""
+                    parts.append(f"tests {done_count}{total_text}")
+                    if failed_count:
+                        parts.append(f"failed {failed_count}")
+                    rate = done_count / max(elapsed_line, 1e-6)
+                    if selected_total and rate > 0 and selected_total >= done_count:
+                        parts.append(f"eta ~{(selected_total - done_count) / rate:.0f}s")
+                if expected_wall_s is not None and elapsed_line > 1.3 * expected_wall_s and not overrun_warned:
+                    overrun_warned = True
+                    parts.append(f"OVERRUNNING comparable median ({expected_wall_s:.0f}s) by >30%")
+                sys.stderr.write("\nverify: " + ", ".join(parts) + "\n")
+                sys.stderr.flush()
             sample_now = time.monotonic()
             if (
                 sampler is not None
@@ -3195,15 +3244,40 @@ def _main(argv: list[str] | None = None) -> int:
     assert _ACTIVE_VERIFY_RUN is not None
     _ACTIVE_VERIFY_RUN.verification_scope = planned_scope
 
+    recorded_selection_banner = _ACTIVE_VERIFY_RUN.run.testmon_selection if preparation is not None else None
+    estimate = _estimate_duration_from_history(tier=tier, selection=recorded_selection_banner)
+    if estimate is not None:
+        median_s, comparable = estimate
+        os.environ["POLYLOGUE_VERIFY_EXPECTED_S"] = f"{median_s:.0f}"
+    if not os.environ.get(PYTEST_TIMEOUT_ENV):
+        # The fixed 45-minute cap killed a LEGITIMATE 42-minute complete-corpus
+        # run at 2700s on 2026-08-18 -- a budget that never consulted the
+        # recorded history it sat next to. Derive it: generous multiple of the
+        # comparable median, floored at the old default, ceilinged sanely.
+        if estimate is not None:
+            derived_budget = min(max(2.5 * estimate[0], DEFAULT_PYTEST_TIMEOUT_S), 3 * 3600.0)
+        elif tier in ("full", "release"):
+            derived_budget = 2 * DEFAULT_PYTEST_TIMEOUT_S
+        else:
+            derived_budget = DEFAULT_PYTEST_TIMEOUT_S
+        if derived_budget != DEFAULT_PYTEST_TIMEOUT_S:
+            os.environ[PYTEST_TIMEOUT_ENV] = f"{derived_budget:.0f}"
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
-        estimate = _estimate_duration_from_history(
-            tier=tier,
-            selection=_ACTIVE_VERIFY_RUN.run.testmon_selection if preparation is not None else None,
-        )
+        if isinstance(recorded_selection_banner, Mapping):
+            sys.stderr.write(
+                "verify: selection "
+                f"{recorded_selection_banner.get('selection_mode')} ({recorded_selection_banner.get('state_status')})"
+                f" -- {recorded_selection_banner.get('state_reason')}\n"
+            )
         if estimate is not None:
-            median_s, comparable = estimate
-            sys.stderr.write(f"verify: expecting ~{median_s:.0f}s based on {comparable} comparable green run(s)\n")
+            sys.stderr.write(f"verify: expecting ~{estimate[0]:.0f}s based on {estimate[1]} comparable green run(s)\n")
+        effective_budget = os.environ.get(PYTEST_TIMEOUT_ENV)
+        if effective_budget:
+            sys.stderr.write(
+                f"verify: pytest runtime budget {float(effective_budget):.0f}s"
+                " (history-derived; POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S overrides)\n"
+            )
     if pytest_enabled:
         _warn_low_memory()
 

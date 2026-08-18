@@ -391,14 +391,18 @@ def _record_phase_report(report: Any, *, write_event: bool = True) -> None:
     if payload["outcome"] == "failed":
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
     _remember_report(payload)
-    global _COMPLETED_COUNT, _FAILED_COUNT
-    if outcome == "failed":
-        _FAILED_COUNT += 1
-        _flush_counts(force=True)
-    if when == "teardown":
-        _COMPLETED_COUNT += 1
-        _flush_counts()
     if write_event:
+        # Count only the authoritative record: the xdist controller also sees
+        # every worker's forwarded report (write_event=False there), and
+        # counting both sides doubled the tallies (observed: 40,904 "completed"
+        # for a 20,452-test lane).
+        global _COMPLETED_COUNT, _FAILED_COUNT
+        if outcome == "failed":
+            _FAILED_COUNT += 1
+            _flush_counts(force=True)
+        if when == "teardown":
+            _COMPLETED_COUNT += 1
+            _flush_counts()
         _write_event(payload)
 
 
