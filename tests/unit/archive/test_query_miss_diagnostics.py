@@ -146,3 +146,50 @@ def test_named_source_miss_diagnostics_distinguish_pipeline_stage(stage: str, co
     assert "source_raw_revision_sample_count=1" in detail
     assert diagnostics.archive_session_count is None
     assert diagnostics.raw_session_count is None
+
+
+@pytest.mark.asyncio
+async def test_action_scoped_miss_attributes_an_empty_action_read_model() -> None:
+    """An action filter over an archive with no indexed actions is attributable.
+
+    ``actions`` is a view over tool_use/tool_result blocks. An archive holding
+    sessions but no tool blocks makes every action-scoped query miss for a reason
+    the predicate breakdown cannot express -- the filter is not too narrow, the
+    relation is empty. This producer returned ``None`` unconditionally, so that
+    miss was silently unattributable.
+    """
+    repo = MagicMock()
+    repo.get_archive_stats = AsyncMock(return_value=ArchiveStats(total_sessions=12, total_messages=340))
+    repo.get_raw_session_count = AsyncMock(return_value=12)
+    repo.count_actions = AsyncMock(return_value=0)
+
+    diagnostics = await diagnose_query_miss(repo, SessionQuerySpec(action_terms=("Edit",)))
+
+    assert "action_read_model_empty" in _codes(diagnostics)
+    repo.count_actions.assert_awaited_once_with(origin=None)
+
+
+@pytest.mark.asyncio
+async def test_action_read_model_reason_is_silent_when_actions_exist() -> None:
+    repo = MagicMock()
+    repo.get_archive_stats = AsyncMock(return_value=ArchiveStats(total_sessions=12, total_messages=340))
+    repo.get_raw_session_count = AsyncMock(return_value=12)
+    repo.count_actions = AsyncMock(return_value=57)
+
+    diagnostics = await diagnose_query_miss(repo, SessionQuerySpec(action_terms=("Edit",)))
+
+    assert "action_read_model_empty" not in _codes(diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_action_read_model_reason_skipped_for_non_action_queries() -> None:
+    """A plain text query must not pay for -- or be explained by -- the action relation."""
+    repo = MagicMock()
+    repo.get_archive_stats = AsyncMock(return_value=ArchiveStats(total_sessions=12, total_messages=340))
+    repo.get_raw_session_count = AsyncMock(return_value=12)
+    repo.count_actions = AsyncMock(return_value=0)
+
+    diagnostics = await diagnose_query_miss(repo, SessionQuerySpec(query_terms=("needle",)))
+
+    assert "action_read_model_empty" not in _codes(diagnostics)
+    repo.count_actions.assert_not_awaited()

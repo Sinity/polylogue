@@ -77,9 +77,19 @@ ON CONFLICT(artifact_id) DO UPDATE SET
 WHERE excluded.last_observed_at_ms > raw_artifacts.last_observed_at_ms
    OR (
        excluded.last_observed_at_ms = raw_artifacts.last_observed_at_ms
+       -- ``>=``, not ``>``: this tie-break exists to make ownership
+       -- deterministic when two DIFFERENT raws contend for one artifact at the
+       -- same observation time, and for distinct raws the two spellings agree.
+       -- What ``>`` additionally forbade was a raw updating its OWN artifact at
+       -- an unchanged timestamp -- a lifecycle transition, not a competing
+       -- observation. That silently dropped every
+       -- ``supersede_deferred_cas_evidence`` write, because the superseding row
+       -- carries the same raw and the same acquisition timestamp as the
+       -- deferred carrier it retires, so stale CAS replay authority was never
+       -- actually revoked.
        AND (
            SELECT rowid FROM raw_sessions WHERE raw_id = excluded.raw_id
-       ) > (
+       ) >= (
            SELECT rowid FROM raw_sessions WHERE raw_id = raw_artifacts.raw_id
        )
    )

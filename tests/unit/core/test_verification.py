@@ -524,8 +524,15 @@ class TestInspectRawArtifactCoverage:
             raw_content=b'{"id":"one","mapping":{}}',
         )
 
+        from polylogue.core.enums import Provider
+        from polylogue.core.sources import origin_from_provider
+
+        # Keyed on the origin, matching how inspect_raw_artifact derives it.
+        # Seeding a provider-keyed id makes the refresh miss this row and insert
+        # a second observation for the same (origin, source_path, source_index),
+        # which the source-identity UNIQUE index rejects.
         observation_id = artifact_observation_id(
-            source_name=source_name,
+            source_name=origin_from_provider(Provider.from_string(source_name)).value,
             source_path=source_path,
             source_index=0,
         )

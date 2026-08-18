@@ -37,6 +37,12 @@ _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
 _SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b", re.IGNORECASE)
+_CREATE_SCHEMA_OBJECT_RE = re.compile(
+    r"\bCREATE\s+(?:UNIQUE\s+)?(?P<kind>TABLE|INDEX|TRIGGER|VIEW)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?:\"(?P<double>[^\"]+)\"|`(?P<backtick>[^`]+)`|\[(?P<bracket>[^\]]+)\]|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))",
+    re.IGNORECASE,
+)
 DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v1"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -264,9 +270,41 @@ def _prepare_fresh_connection_for_target(
         for rider in sidecar.train.riders
         for schema_object in rider.schema_objects
     }
+
+    # A later train may *replace* an object which already existed at the
+    # historical target.  Such an object must remain in the projected
+    # historical schema: dropping it would turn a v30 index replacement into
+    # a fictitious "object introduced at v30".  The train carrier lists the
+    # post-train object, so recover the earlier existence from the numbered
+    # migration SQL itself.  Objects that have no earlier CREATE are genuinely
+    # future-only and can be removed below.
+    historical_create_sql: dict[str, str] = {}
+    for step in steps:
+        if step.version > target_version:
+            continue
+        for match in _CREATE_SCHEMA_OBJECT_RE.finditer(step.sql):
+            name = next(value for value in match.group("double", "backtick", "bracket", "bare") if value is not None)
+            object_ref = f"{match.group('kind').lower()}:{name}"
+            statement_end = step.sql.find(";", match.start())
+            if statement_end >= 0:
+                historical_create_sql[object_ref] = step.sql[match.start() : statement_end + 1]
+    historically_created = set(historical_create_sql)
+    replaced_refs = future_refs & historically_created
+    future_refs.difference_update(historically_created)
+
+    # ALTER TABLE ... ADD COLUMN is represented in a train as a column
+    # object, while SQLite's canonical DDL necessarily contains the newest
+    # table definition.  Remove those future columns from the in-memory
+    # projection before inventory capture.  This is deliberately confined to
+    # the fresh connection used for parity; it never mutates an archive.
+    future_columns = {
+        schema_object.removeprefix("column:")
+        for schema_object in future_refs
+        if schema_object.startswith("column:") and "." in schema_object.removeprefix("column:")
+    }
     drop_order = {"index": 0, "trigger": 0, "view": 0, "table": 1}
     for schema_object in sorted(
-        future_refs,
+        future_refs | replaced_refs,
         key=lambda item: (drop_order.get(item.partition(":")[0], 2), item),
     ):
         object_type, separator, object_name = schema_object.partition(":")
@@ -274,7 +312,28 @@ def _prepare_fresh_connection_for_target(
             continue
         quoted_name = '"' + object_name.replace('"', '""') + '"'
         connection.execute(f"DROP {object_type.upper()} IF EXISTS {quoted_name}")
-    if future_refs:
+    # Reapply the historical definition for a later train that replaced an
+    # object which was already present at this target.  In particular, v30
+    # replaces this index with a partial uniqueness domain; v28 must retain
+    # the earlier unconditional uniqueness definition.
+    for schema_object in sorted(replaced_refs):
+        statement = historical_create_sql.get(schema_object)
+        if statement is not None:
+            connection.execute(statement)
+    for qualified_column in sorted(future_columns):
+        table_name, _, column_name = qualified_column.partition(".")
+        if not table_name or not column_name:
+            continue
+        table_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        if table_exists is None:
+            continue
+        quoted_table = '"' + table_name.replace('"', '""') + '"'
+        quoted_column = '"' + column_name.replace('"', '""') + '"'
+        connection.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
+    if future_refs or replaced_refs or future_columns:
         connection.execute(f"PRAGMA user_version = {target_version}")
         connection.commit()
 

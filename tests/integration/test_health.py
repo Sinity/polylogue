@@ -42,7 +42,9 @@ def _insert_session(
     )
 
 
-def _write_raw_artifact(archive_root: Path, *, native_id: str, source_path: str, content: bytes) -> str:
+def _write_raw_artifact(
+    archive_root: Path, *, native_id: str, source_path: str, content: bytes, origin: str = TEST_ORIGIN
+) -> str:
     """Write blob bytes plus a matching ``raw_sessions`` row; return the raw_id.
 
     ``repair_empty_sessions`` (polylogue-ne6k) re-classifies each message-less
@@ -61,7 +63,7 @@ def _write_raw_artifact(archive_root: Path, *, native_id: str, source_path: str,
                 raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
             ) VALUES (?, ?, ?, ?, 0, ?, ?, 1)
             """,
-            (raw_id, TEST_ORIGIN, native_id, source_path, bytes.fromhex(raw_id), blob_size),
+            (raw_id, origin, native_id, source_path, bytes.fromhex(raw_id), blob_size),
         )
         conn.commit()
     return raw_id
@@ -86,6 +88,12 @@ def _write_legit_raw(archive_root: Path, native_id: str) -> str:
         native_id=native_id,
         source_path=f"{native_id}.jsonl",
         content=f'{{"type":"summary","sessionId":"{native_id}"}}\n'.encode(),
+        # The retained class is Claude Code hook sessions. Labelling this
+        # Claude-Code-shaped record with the module's generic codex origin makes
+        # the classifier refuse it ("Codex record stream contains unsupported
+        # session records"), so the session this case exists to protect was
+        # being deleted for a mislabelled origin rather than kept.
+        origin="claude-code-session",
     )
 
 

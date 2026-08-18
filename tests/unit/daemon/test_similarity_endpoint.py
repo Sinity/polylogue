@@ -138,8 +138,16 @@ def _unit_vector(*, axis0: float, axis1: float) -> list[float]:
     return vector
 
 
-def _seed_ready_similarity_archive() -> tuple[str, Path]:
-    """Seed canonical index and embedding tiers for the route parity test."""
+def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
+    """Seed canonical index and embedding tiers for the route parity test.
+
+    Embeddings must reference the message ids the index actually generates.
+    ``messages.message_id`` is a generated column -- ``session_id || ':' ||
+    ('n:' || native_id)`` when a native id exists -- so hand-writing
+    ``<session>:<native_id>`` produces ids that match no row, and the route
+    silently drops every vector hit while still reporting ``ready``. Read the
+    generated ids back and seed against those.
+    """
     root = archive_root()
     index_db = root / "index.db"
     with sqlite3.connect(index_db) as conn:
@@ -159,15 +167,23 @@ def _seed_ready_similarity_archive() -> tuple[str, Path]:
                 """,
                 (session_id, "m1", b"x" * 32),
             )
+        message_id_by_session = {
+            str(row[1]): str(row[0]) for row in conn.execute("SELECT message_id, session_id FROM messages")
+        }
+    session_by_message_id = {message_id: session for session, message_id in message_id_by_session.items()}
 
     embeddings_db = root / "embeddings.db"
     try:
         with sqlite3.connect(embeddings_db) as conn:
             initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
             for session_id, message_id, vector in (
-                ("codex-session:seed", "codex-session:seed:m1", _unit_vector(axis0=1.0, axis1=0.0)),
-                ("codex-session:near", "codex-session:near:m1", _unit_vector(axis0=0.99, axis1=0.141)),
-                ("codex-session:far", "codex-session:far:m1", _unit_vector(axis0=0.0, axis1=1.0)),
+                ("codex-session:seed", message_id_by_session["codex-session:seed"], _unit_vector(axis0=1.0, axis1=0.0)),
+                (
+                    "codex-session:near",
+                    message_id_by_session["codex-session:near"],
+                    _unit_vector(axis0=0.99, axis1=0.141),
+                ),
+                ("codex-session:far", message_id_by_session["codex-session:far"], _unit_vector(axis0=0.0, axis1=1.0)),
             ):
                 upsert_message_embedding(
                     conn,
@@ -183,7 +199,7 @@ def _seed_ready_similarity_archive() -> tuple[str, Path]:
         if "sqlite-vec" in str(exc) or "vec0" in str(exc):
             pytest.skip("sqlite-vec extension is unavailable")
         raise
-    return "codex-session:seed", embeddings_db
+    return "codex-session:seed", embeddings_db, session_by_message_id
 
 
 def _init_archive() -> None:
@@ -444,17 +460,53 @@ class TestSimilarEndpoint:
         assert payload["status"] == "not_embedded"
         assert payload["reason"] is None
 
+    def test_unresolvable_embedding_hits_report_inconsistent_not_ready(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neighbors that match no indexed message are a broken join, not "nothing similar".
+
+        A stale embedding generation, or a reindex that changed message-identity
+        derivation, leaves the embeddings tier pointing at message ids the index
+        no longer carries. Ranking over that join yields zero survivors, and
+        answering ``ready`` with an empty list is indistinguishable from a
+        healthy archive that simply holds nothing similar.
+        """
+        _enable_embeddings(monkeypatch)
+        seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
+
+        # Break the join the way a reindex would: keep the vectors, drop the rows
+        # they point at.
+        with sqlite3.connect(archive_root() / "index.db") as conn:
+            conn.execute("DELETE FROM messages WHERE session_id != ?", (seed_session_id,))
+
+        handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["status"] == "inconsistent"
+        assert payload["reason"] == "embedded_messages_missing_from_index"
+        assert payload["results"] == []
+        assert payload["unresolved_message_hits"] > 0
+
     def test_ready_route_preserves_provider_query_by_session_order(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The live route projects the provider's session-seeded KNN order."""
         _enable_embeddings(monkeypatch)
-        seed_session_id, embeddings_db = _seed_ready_similarity_archive()
+        seed_session_id, embeddings_db, session_by_message_id = _seed_ready_similarity_archive()
         provider = SqliteVecProvider(voyage_key="test-key", db_path=embeddings_db, model="voyage-4")
         expected_message_hits = provider.query_by_session(seed_session_id, limit=3)
+        # Resolve message -> session through the index's own mapping. Splitting the
+        # id on ':' assumes a positional shape and mangles the `n:<native_id>` form.
         expected_session_order = list(
-            dict.fromkeys(message_id.rsplit(":", 1)[0] for message_id, _distance in expected_message_hits)
+            dict.fromkeys(
+                session_by_message_id[message_id]
+                for message_id, _distance in expected_message_hits
+                if message_id in session_by_message_id
+            )
         )
+        assert expected_session_order, "provider returned no resolvable session hits to compare against"
 
         handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
         _, send_json = _capture_responses(handler)

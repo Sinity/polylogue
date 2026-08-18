@@ -17,14 +17,52 @@ be effective here. For depth, read the referenced docs on demand (see
 The system has four rings; substrate owns meaning, surfaces are leaf adapters:
 
 ```
-sources/ ─detect→ pipeline/ ─hash+write→ storage/{5 tiers} ─materialize→ insights/
+sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materialize→ insights/
                                               │                              │
                             surfaces: cli/  mcp/  api/  daemon/  ─read-through─┘
                             verification:   devtools/  tests/  schemas/
 ```
 
-Package sizes (rough): `storage/` (largest), `daemon/`, `cli/`, `archive/`,
-`sources/`, `schemas/`, `insights/`. Entry points:
+That diagram names eleven of **33 top-level packages**. The rest are not cruft
+— they are two thirds of the tree by count and over 100k LOC — so the full map
+follows, with LOC and the number of production files importing each. Read it
+before concluding a package is dead: low importer counts here are usually
+*foundational or deliberately early*, not abandoned.
+
+| Package | LOC | importers | Role |
+| --- | --- | --- | --- |
+| `archive/` | 34,758 | 283 | Query DSL, `SessionFilter`, revision membership — the read-side model over storage |
+| `maintenance/` | 27,119 | 73 | Rebuild, remediation passes, verification gates, live proofs (the reindex campaign's machinery) |
+| `operations/` | 14,644 | 52 | High-level archive operations and their typed contracts |
+| `core/` | 7,063 | 483 | Enums, hashing, sources vocabulary — the most-imported package in the tree |
+| `surfaces/` | 5,256 | 54 | Wire payload classes shared by CLI/MCP/API |
+| `rendering/` | 4,440 | 19 | Transcript and view rendering |
+| `browser_capture/` | 4,430 | 10 | Receiver and spool for live browser capture |
+| `demo/` | 4,089 | 2 | Private-data-free seed/verify corpus |
+| `scenarios/` | 3,797 | 13 | Executable scenario definitions |
+| `annotations/` | 3,342 | 10 | Versioned annotation schemas and batch provenance |
+| `coordination/` | 3,147 | 7 | Cross-agent blackboard assertions |
+| `agent_integration/` | 2,529 | 7 | Hook and agent-harness installers |
+| `sinex/` | 2,495 | 8 | Sinex-backed mode — **built ahead of `polylogue-303r`, unfinished by design** |
+| `readiness/` | 2,162 | 20 | Archive readiness and schema-currency checks |
+| `security/` | 1,967 | 9 | Redaction and privacy boundaries |
+| `material_protocol/` | 1,864 | 9 | Normalized-session wire format — **also early, see `docs/material-protocol-v1.md`** |
+| `ui/` | 1,799 | 13 | Facade for the reader UIs |
+| `product/` | 1,505 | 3 | Product-level query/action workflows |
+| `context/` | 1,359 | 8 | Context packs and recall |
+| `hooks/` | 987 | 5 | Hook event ingestion |
+| `cost/` | 819 | 7 | Pricing catalog and cost attribution |
+| `declarations/` | 694 | 9 | Declarative registries |
+| `paths/` | 415 | 126 | XDG/archive root resolution — tiny, and second only to `core/` in fan-in |
+| `telemetry/` | 244 | 2 | OTel export (`api.export_otel` is a documented public method) |
+
+Two cautions this table exists to prevent, both of which have already cost
+this repo a real incident: `sinex/` and `material_protocol/` have single-digit
+importer counts because they are **built ahead of** a mode that has not
+shipped, not because they are dead; and `paths/`, at 415 LOC, is imported by
+126 production files, so "small" says nothing about blast radius.
+
+Entry points:
 
 | File | Role |
 | --- | --- |
@@ -351,6 +389,46 @@ testmon-affected set.
 
 Don't treat CI as the first verification pass — anticipate failures locally.
 
+**`devtools test` forwards arbitrary pytest arguments, and it is FASTER than
+bare pytest.** Nothing said so, so an agent reaches for `pytest` directly and
+silently opts out of the checkout guard, containment, and receipts. Measured on
+the same 1342 tests: 124s through `devtools test` (managed xdist) versus 393s
+bare single-process. Node ids, `-k`, `-x`, `-q` all pass through. There is no
+case where bare `pytest` is the right call in this repo.
+
+**Editing the working tree during a run is now safe.** `devtools verify` runs
+against a frozen reflink snapshot bind-mounted at the checkout's own path, by
+default — not behind a flag. Edit, commit, run `bd`, start another agent; none
+of it reaches the running verify. `--no-isolated` opts out for debugging.
+Concurrent verifies were always safe: they serialize on
+`.cache/native-testmon-lifecycle.lock`.
+
+**A bootstrap costs ~9.5x a warm run (2701s vs 285s, measured over 1233 recorded
+runs), and two very different things cause it.** `devtools why` now names which:
+  - `absent` — the *environment digest* changed, so no graph for it exists.
+    Digest inputs include the installed distribution set, `tests/**/conftest.py`,
+    `devtools/pytest*.py`, the interpreter, and the `HYPOTHESIS_PROFILE` /
+    `POLYLOGUE_CI` environment variables. **Consequence worth planning around:
+    touching conftest or bumping a dependency invalidates every graph.** Batch
+    such changes rather than dribbling them across days.
+  - `incomplete` — a sound graph exists but has not fingerprinted every changed
+    module; the receipt names exactly which files.
+
+**`devtools why`** explains the most recent run — diagnosis, cause, what to do,
+the selection decision, non-green tests, failing steps. Reach for it before
+opening receipt JSON or the testmon SQLite by hand.
+
+**Verify in the context that was failing, and say which context you verified
+in.** A test that fails only inside a full `devtools verify` will pass when run
+standalone; "I ran it and it passed" is then not evidence the fix works. This
+session claimed three supervisor-test fixes on exactly that mistake, and the
+gate failed identically afterwards.
+
+**Record disproved hypotheses on the bead.** When an investigation eliminates a
+cause, write it down (`bd update --append-notes`) so the next session does not
+re-run it. `polylogue-b9yw7` carries three; `polylogue-gibn1`'s notes eliminated
+two candidates and made the third finding cheap.
+
 ### Schema-touching changes
 
 See [Schema regimes](#schema-regimes-durability-keyed). Durable tiers → numbered
@@ -559,6 +637,38 @@ Demo path (private-data-free) for read/search/reader checks:
 validation-lane dispatch, packaging, PR-readiness. Domain semantics live in
 lab/schema/scenario/insight modules; `devtools` commands are thin entrypoints.
 
+**devtools is THE way to run things here, and when it is lacking the answer is
+to improve it — never to go around it.**
+
+That is one rule with two halves, and the second half is what makes the first
+honest. `devtools` is this repository's own code: if a command is slow, noisy,
+missing a flag, or wrong for your case, changing it is ordinary work, usually
+smaller than the workaround, and it fixes the problem for every later session
+instead of just this one. There is therefore never a situation where "devtools
+doesn't do what I need" justifies bypassing it — that sentence is a bug report
+against a file you can edit.
+
+Going around it is not neutral. A bare `pytest` silently opts out of:
+
+- the **checkout guard**, which catches a worktree running another checkout's
+  code (a 2026-07-31 incident corrupted four lanes for a day this way);
+- **containment** — the systemd scope, stall detection and runtime caps that
+  keep a runaway suite from taking the machine with it;
+- the **receipts** that `devtools why`, the merge gate and the lynchpin
+  substrate all read, so the run leaves no trace anyone can act on later.
+
+And it is slower: 124s versus 393s on the same 1342 tests.
+
+This is enforced, not merely written down, because writing it down demonstrably
+failed — bare pytest was reached for dozens of times in one session, each time
+for a real local reason. `.claude/hooks/require-devtools.sh` now denies those
+invocations with the right command in the message.
+`POLYLOGUE_ALLOW_BARE_PYTEST=1` exists for the genuine one-off; needing it twice
+means the harness is missing something, and the fix is to add it there.
+
+If you extend devtools, add the command to the list below in the same change —
+a tool with no line in this file is a tool the next session will not use.
+
 Core loop:
 
 - `devtools status` — repo state, generated-surface drift, next steps.
@@ -568,7 +678,11 @@ Core loop:
   don't trust the tail line.
 - `devtools verify [--quick|--all|--lab]` — see
   [Verification](#verification--testmon-inner-loop-never-blanket-run).
-- `devtools test <sel>` — focused pytest through the managed harness.
+- `devtools test <sel>` — focused pytest through the managed harness. Forwards
+  arbitrary pytest args and is faster than bare pytest; see Verification.
+- `devtools why [--run <id>]` — explain the most recent run: diagnosis, cause,
+  remedy, why it selected what it did, non-green tests, failing steps. Use it
+  before hand-reading receipt JSON.
 - `devtools lab …` — executable schema/provider/pipeline/lane checks.
 - `devtools workspace …` — task history, worktree-gc, evidence.
 
@@ -576,7 +690,10 @@ Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.
 
 Local state: `.cache/` (disposable) and `.local/` (untracked outputs). Keep new
-outputs there, not new top-level roots.
+outputs there, not new top-level roots. Verification receipts under
+`.cache/verify/runs` are pruned automatically to the 100 most recent (anything a
+merge-gate receipt names is retained regardless) — before that policy existed
+they reached 623 directories and 3.0 GB in six days.
 
 ---
 
@@ -618,6 +735,21 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - Committing from a linked worktree: a hook aborts if you `cd`'d into the main
   checkout from inside a worktree (worktree-escape detector, #1211); set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree flows.
+- **Do NOT diagnose a wrong-checkout problem with `python -c "import
+  polylogue"` — that probe lies.** `sys.path` leads with the current directory,
+  so running it from inside a worktree reports that worktree's own source and
+  "confirms" a correct environment while the active one belongs to a different
+  checkout entirely. Verified the hard way 2026-08-17: the probe printed the
+  worktree path, the `.pth` was correct, and the real fault was an inherited
+  `VIRTUAL_ENV` still pointing at the main checkout. **Check `VIRTUAL_ENV` and
+  the `.pth` in the active venv's `site-packages` instead.** Note also that the
+  guard's own remediation text ("remove `.venv` and run `direnv allow`") is
+  wrong for that case: it cannot tell a stale inherited environment from a
+  missing venv, and following it reprovisions a venv that was never broken. To
+  run tooling in a lane, set `VIRTUAL_ENV` and `PATH` to that lane's `.venv`.
+- **Committing from a worktree requires `git -C /absolute/path`.** A bare
+  `git commit` from inside a linked worktree is refused by the wrong-checkout
+  guard even when the cwd is correct.
 - **Worktree running against the wrong checkout's `polylogue` (2026-07-31,
   guarded)**: a linked git worktree without its own `.venv` reuses the main
   checkout's shared venv on PATH. That venv's editable install (a `.pth` in

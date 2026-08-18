@@ -11,6 +11,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
+from polylogue.cli.commands.import_command import _INGEST_SUBMIT_TIMEOUT_S
+
 
 def test_import_command_registered() -> None:
     """import command must be available in the CLI group."""
@@ -97,7 +99,10 @@ def test_import_command_stages_local_path_before_daemon_request(
     body = json.loads(request_data.decode("utf-8"))
     assert body == {"path": str(staged), "source_path": str(source.resolve())}
     assert body["path"] != str(source)
-    assert captured["timeout"] == 5
+    # Bounded and explicit, tied to the policy constant rather than a literal:
+    # the previous hard-coded 5s timed out on an ordinary `import --demo` and
+    # reported the working daemon as unreachable.
+    assert captured["timeout"] == _INGEST_SUBMIT_TIMEOUT_S
 
     # Truthfulness: success output must point at observable state — the
     # staged inbox path AND actionable next-step guidance. The old
@@ -345,7 +350,10 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     assert request.data is not None
     body = json.loads(cast("bytes", request.data).decode("utf-8"))
     assert body == {"path": str(staged), "source_path": str(source_root.resolve())}
-    assert captured["timeout"] == 5
+    # Bounded and explicit, tied to the policy constant rather than a literal:
+    # the previous hard-coded 5s timed out on an ordinary `import --demo` and
+    # reported the working daemon as unreachable.
+    assert captured["timeout"] == _INGEST_SUBMIT_TIMEOUT_S
     assert str(staged) in result.output
     assert "polylogued status" in result.output
     assert "polylogue status --full" in result.output

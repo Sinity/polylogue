@@ -73,13 +73,6 @@ def embeddings_db_path() -> Path:
     return archive_root() / "embeddings.db"
 
 
-def archive_file_set_index_available_for_paths(*, archive_root_path: Path, db_anchor: Path) -> bool:
-    """Return whether routing is active."""
-    del archive_root_path
-    del db_anchor
-    return True
-
-
 def browser_capture_spool_root() -> Path:
     """Browser-capture source artifact spool, scoped under the archive root.
 
@@ -142,6 +135,10 @@ def browser_capture_pairing_state_path() -> Path:
     return archive_root() / "browser-capture-pairing"
 
 
+CLOUD_SANDBOX_ARCHIVE_ROOT = "/tmp/polylogue-archive"
+"""Archive root `.claude/settings.json` sets for cloud sandboxes."""
+
+
 def archive_root() -> Path:
     """Archive root.
 
@@ -167,12 +164,28 @@ def archive_root() -> Path:
     archives from each other and from the real one.
     """
     raw = os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()
-    if raw:
+    if raw and raw != CLOUD_SANDBOX_ARCHIVE_ROOT:
         return Path(raw).expanduser()
 
     from ..config import resolve_archive_root  # lazy: avoid paths<->config import cycle
 
-    return resolve_archive_root()
+    if not raw:
+        return resolve_archive_root()
+
+    # The cloud sentinel specifically. `.claude/settings.json` sets it so a
+    # cloud sandbox has a writable archive, and agent subprocesses inherit it
+    # on the workstation, where it silently retargets every read at an empty
+    # stub instead of the real archive named by polylogue.toml. Same leak class
+    # as POLYLOGUE_PYTEST_BASETEMP_ROOT, and the same treatment: honour it only
+    # where nothing else is configured. Resolving with the variable scrubbed
+    # tells us which world we are in -- a config layer naming a root means the
+    # sentinel leaked, while falling through to the XDG default means this
+    # really is a sandbox with no config.
+    scrubbed = {key: value for key, value in os.environ.items() if key != "POLYLOGUE_ARCHIVE_ROOT"}
+    configured = resolve_archive_root(environment=scrubbed)
+    if configured != data_home():
+        return configured
+    return Path(raw).expanduser()
 
 
 def render_root() -> Path:

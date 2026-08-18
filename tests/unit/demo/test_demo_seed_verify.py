@@ -640,15 +640,22 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     ``demo_only: true`` instead of ``false``.
     """
 
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        initialize_active_archive_root,
+        initialize_archive_database,
+    )
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True)
 
-    # Populate only the durable tiers with real content; deliberately never
-    # create index.db, mirroring a root whose rebuildable tier was reset or
-    # never rebuilt.
+    # Populate only the durable tiers with real content; deliberately leave no
+    # index.db, mirroring a root whose rebuildable tier was reset or never
+    # rebuilt. Bootstrap the whole root first and then drop the rebuildable
+    # tier: a source.db created on its own has no provenance marker, so durable
+    # admission rejects the root before the missing-index case is reached.
+    initialize_active_archive_root(archive_root)
+    (archive_root / "index.db").unlink(missing_ok=True)
     initialize_archive_database(archive_root / "source.db", ArchiveTier.SOURCE)
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(

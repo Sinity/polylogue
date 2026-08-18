@@ -1765,6 +1765,28 @@ def _reviewed_difference_rationale(review: CanaryDifferenceReview) -> str:
     return f"{review.reference}: {review.rationale}"
 
 
+def _session_id_from_identity(identity: dict[str, object]) -> str | None:
+    """Resolve a row identity to a session_id, composing it when necessary.
+
+    ``sessions.session_id`` is a generated column (``origin || ':' || native_id``),
+    so a row identity taken from the table's natural key carries ``origin`` and
+    ``native_id`` and no ``session_id`` at all. Requiring the generated spelling
+    literally made every ``sessions`` difference unclassifiable against a
+    reprocess-scoped delta -- including the v44 title_ref/title_confidence case
+    that scope exists for, whose canary identity is exactly
+    ``{"native_id": ..., "origin": "codex-session"}``. Compose it from the same
+    definition the schema uses rather than teaching callers a second spelling.
+    """
+    session_id = identity.get("session_id")
+    if isinstance(session_id, str):
+        return session_id
+    origin = identity.get("origin")
+    native_id = identity.get("native_id")
+    if isinstance(origin, str) and isinstance(native_id, str):
+        return f"{origin}:{native_id}"
+    return None
+
+
 def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
     """Resolve approval-capable authorities from packaged product declarations.
 
@@ -1833,7 +1855,7 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
             scope = declaration.reprocess_scope
             if scope is not None:
                 identity = dict(review.identity)
-                session_id = identity.get("session_id")
+                session_id = _session_id_from_identity(identity)
                 if not isinstance(session_id, str):
                     unrelated_reviews.append(f"delta {authority_id} requires a session_id row identity")
                 elif scope.origin is not None and not session_id.startswith(f"{scope.origin}:"):

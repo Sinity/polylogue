@@ -14,7 +14,9 @@ from devtools import pre_push_gate
 from devtools.command_catalog import command_name_from_tokens
 
 ROOT = Path(__file__).resolve().parents[3]
-HOOK_PATHS = (ROOT / ".githooks" / "pre-push", ROOT / ".beads-hooks" / "pre-push")
+# `.beads-hooks` is the only hook set: it is committed, so the former
+# `.githooks` fallback could never be selected and has been removed.
+HOOK_PATHS = (ROOT / ".beads-hooks" / "pre-push",)
 ZERO_SHA = "0" * 40
 
 

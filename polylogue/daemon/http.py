@@ -1866,9 +1866,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 handler()
             return
 
-        if workspace_routes.dispatch_get(self, path, params) or (
-            path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params)
-        ):
+        if path[:2] == ["api", "user"] and user_state_http.dispatch_get(self, path[2:], params):
             return
 
         for route in _parameterized_get_routes():

@@ -52,6 +52,9 @@ def _seed_phantom_session(
     assert BRAIN_METADATA_FRAGMENT_FLAG in session.ingest_flags
     assert session.messages and len(session.messages) == 1
 
+    # Raw ids are content-derived: raw admission (polylogue-1fijp) is the sole
+    # creator of raw_sessions rows and assigns the id from the payload, so the
+    # requested value is a hint and the returned one is authoritative.
     raw_id = f"raw-{work_dir}-{artifact_name}"
     returned_raw_id, session_id = archive.write_raw_and_parsed(
         session,
@@ -60,8 +63,7 @@ def _seed_phantom_session(
         acquired_at_ms=acquired_at_ms,
         raw_id=raw_id,
     )
-    assert returned_raw_id == raw_id
-    return session_id, raw_id
+    return session_id, returned_raw_id
 
 
 def _real_session(archive: ArchiveStore, tmp_path: Path, *, acquired_at_ms: int) -> tuple[str, str]:

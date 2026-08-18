@@ -41,6 +41,10 @@ from devtools.verify_runs import (
 )
 from devtools.verify_runs import pytest_basetemp_claim_path as _basetemp_claim_path
 
+# Aliased on import: pluggy treats every module-level ``pytest_``-prefixed name
+# in a conftest as a hook implementation and refuses the plugin outright.
+from devtools.verify_runs import pytest_run_id_belongs_to_verify_run as _run_id_belongs_to_verify_run
+
 # Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
 # before test execution can import product modules: a shared/editable venv's
 # `.pth` entry can point at a different checkout than the one this pytest
@@ -147,7 +151,7 @@ def pytest_configure(config: pytest.Config) -> None:
         managed_basetemp = os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP")
         supervised_managed = (
             run_id is not None
-            and os.environ.get("POLYLOGUE_VERIFY_RUN_ID") == run_id
+            and _run_id_belongs_to_verify_run(run_id, os.environ.get("POLYLOGUE_VERIFY_RUN_ID"))
             and managed_basetemp == configured_basetemp
         )
         if supervised_managed and not hasattr(config, "workerinput"):
@@ -211,8 +215,15 @@ def pytest_configure(config: pytest.Config) -> None:
             raise pytest.UsageError(f"pytest: {exc}") from exc
         config.option.basetemp = str(basetemp)
         os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
-        if not hasattr(config, "workerinput"):
-            identity = (run_id, str(basetemp))
+        identity = (run_id, str(basetemp))
+        if hasattr(config, "workerinput"):
+            # An xdist worker does not own the tree, so it must not claim it —
+            # but it does carry the ambient identity, and a nested pytest run
+            # inside the worker unwinds through this stack. Without a base
+            # entry the pop restores "no invocation" and clears the worker's
+            # own POLYLOGUE_PYTEST_RUN_ID for every later test in the process.
+            _push_pytest_scope(config, identity)
+        else:
             _push_pytest_scope(config, identity, basetemp=basetemp)
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
 

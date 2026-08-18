@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from polylogue.archive.semantic.facts import message_model_name, message_tokens
 from polylogue.archive.viewport.viewports import TokenUsage
 from polylogue.core.json import json_document
 from polylogue.core.sources import source_name_to_origin
@@ -735,20 +734,21 @@ def estimate_message_cost(
     stored in typed archive cost rows and are not read from hydrated sessions.
     """
 
+    # Per-message model/token identity for a hydrated ``Session`` lives on the
+    # ``Message`` row's own columns (#1256). The provider-meta helper pair that
+    # used to lead these expressions always returned ``None`` for hydrated
+    # messages, so it contributed nothing but the appearance of a second source.
     model_name = (
-        message_model_name(message)
-        or str(getattr(message, "model_name", "") or "").strip()
+        str(getattr(message, "model_name", "") or "").strip()
         or (fallback_model.strip() if fallback_model else None)
         or None
     )
-    usage = _token_usage_payload(message_tokens(message))
-    if usage.billable_tokens <= 0:
-        usage = CostUsagePayload(
-            input_tokens=_coerce_int(getattr(message, "input_tokens", 0)),
-            output_tokens=_coerce_int(getattr(message, "output_tokens", 0)),
-            cache_read_tokens=_coerce_int(getattr(message, "cache_read_tokens", 0)),
-            cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
-        )
+    usage = CostUsagePayload(
+        input_tokens=_coerce_int(getattr(message, "input_tokens", 0)),
+        output_tokens=_coerce_int(getattr(message, "output_tokens", 0)),
+        cache_read_tokens=_coerce_int(getattr(message, "cache_read_tokens", 0)),
+        cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
+    )
     return _estimate_from_usage(
         origin=origin,
         session_id=session_id,
@@ -780,13 +780,11 @@ def _session_level_estimate(session: Session) -> CostEstimatePayload | None:
         return None
 
     origin = session.origin.value
-    # message_model_name()/message_tokens() are deliberate stubs for hydrated
-    # messages (#1256) -- per-message model/token identity for a hydrated
-    # ``Session`` lives on the ``Message`` row's own columns, not that
-    # provider-meta helper pair. estimate_message_cost() already carries the
-    # exact same-column fallback (and the harmonized-message path, for
-    # sources that populate it), so per-message harvesting here reuses it
-    # rather than duplicating that fallback logic.
+    # Per-message model/token identity for a hydrated ``Session`` lives on the
+    # ``Message`` row's own columns (#1256). estimate_message_cost() reads them
+    # directly (and carries the harmonized-message path, for sources that
+    # populate it), so per-message harvesting here reuses it rather than
+    # duplicating that logic.
     model_counts: Counter[str] = Counter()
     usage = CostUsagePayload()
     for message in session.messages:

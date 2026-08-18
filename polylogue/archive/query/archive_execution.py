@@ -173,7 +173,9 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "until_ms": _datetime_to_ms(plan.until),
         "since_session_id": plan.since_session_id,
         "boolean_predicate": plan.boolean_predicate,
-        "root": resolve_default_root_filter(plan.root, boolean_predicate=plan.boolean_predicate),
+        "root": resolve_default_root_filter(
+            plan.root, boolean_predicate=plan.boolean_predicate, parent_id=plan.parent_id
+        ),
     }
 
 

@@ -38,22 +38,6 @@ def uses_actions(plan: SessionQueryPlan) -> bool:
     )
 
 
-async def actions_ready(
-    plan: SessionQueryPlan,
-    repository: SessionQueryRuntimeStore,
-) -> bool:
-    del plan, repository
-    return True
-
-
-async def action_search_ready(
-    plan: SessionQueryPlan,
-    repository: SessionQueryRuntimeStore,
-) -> bool:
-    del plan, repository
-    return True
-
-
 async def can_use_action_stats_with(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
@@ -242,8 +226,6 @@ async def fetch_candidates(
 
 
 __all__ = [
-    "action_search_ready",
-    "actions_ready",
     "can_use_action_stats_with",
     "candidate_batch_limit",
     "candidate_record_query",

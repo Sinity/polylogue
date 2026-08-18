@@ -6,8 +6,8 @@ interpolated into ``WEB_SHELL_HTML`` at module import time. It owns:
 
 - the inspector "Similar" tab rendering,
 - the ``/api/sessions/{id}/similar`` fetch call,
-- the four explicit visual states the endpoint contract defines
-  (``ready`` / ``disabled`` / ``unavailable`` / ``not_embedded``).
+- the five explicit visual states the endpoint contract defines
+  (``ready`` / ``disabled`` / ``unavailable`` / ``not_embedded`` / ``inconsistent``).
 
 The reader never calls the embedding provider directly — it consumes
 the daemon-side similarity surface. When that surface reports the
@@ -115,6 +115,17 @@ function renderSimilarNotEmbeddedState() {
     + '</div>';
 }
 
+function renderSimilarInconsistentState(data) {
+  var dropped = data && data.unresolved_message_hits ? Number(data.unresolved_message_hits) : 0;
+  return '<div class="inspector-section"><h4>Similarity index inconsistent</h4>'
+    + '<div style="font-size:var(--small);color:var(--text-muted);line-height:1.5">'
+    +   'The vector store returned ' + esc(String(dropped)) + ' neighbour(s) whose messages are not in this index, '
+    +   'so no ranking could be computed. This usually means the embeddings were built against an older index '
+    +   'generation. Re-embedding this session resolves it.'
+    + '</div>'
+    + '</div>';
+}
+
 function renderInspectorSimilar(el, c) {
   state.similarPanels = state.similarPanels || {};
   var data = state.similarPanels[c.id];
@@ -135,6 +146,8 @@ function renderInspectorSimilar(el, c) {
     html = renderSimilarUnavailableState(data);
   } else if (status === 'not_embedded') {
     html = renderSimilarNotEmbeddedState();
+  } else if (status === 'inconsistent') {
+    html = renderSimilarInconsistentState(data);
   } else if (status === 'ready') {
     html = renderSimilarReadyResults(data);
   } else {

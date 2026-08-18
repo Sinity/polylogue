@@ -185,13 +185,21 @@ def plan_byte_duplicate_supersession(
         for row in candidate_rows:
             raw_id = str(row["raw_id"])
             blob_hash = bytes(row["blob_hash"])
+            # Same origin, but deliberately NOT the same source coordinate.
+            # #3949 narrowed this to require an identical
+            # (origin, source_path, source_index) twin, which made the whole
+            # class unreachable: raw_artifacts carries a UNIQUE index on exactly
+            # that triple for every non-deferred artifact kind, so two raws
+            # sharing one coordinate cannot both exist. The duplicates that do
+            # exist -- and that polylogue-vzn6 measures at ~46% of stored blob
+            # bytes -- are identical bytes acquired at DIFFERENT paths, e.g. the
+            # same export re-downloaded. Origin equality keeps a codex raw from
+            # superseding a chatgpt one; the real safety gate is below, where a
+            # twin only counts if it is already materialized in index.db.
             other_raws_for_hash = [
                 other
                 for other_id, other in hash_to_raws.get(blob_hash, {}).items()
-                if other_id != raw_id
-                and other["origin"] == row["origin"]
-                and other["source_path"] == row["source_path"]
-                and other["source_index"] == row["source_index"]
+                if other_id != raw_id and other["origin"] == row["origin"]
             ]
             indexed_matches = sorted(
                 str(other["raw_id"])
