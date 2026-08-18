@@ -47,6 +47,7 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
+from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
 from devtools.pytest_collection_contract import (
     CLEAR_CONFIGURED_ADDOPTS,
     CLOSED_WORLD_COLLECTION_ARGS,
@@ -89,7 +90,6 @@ from devtools.verify_runs import (
     CURRENT_POSTMORTEM_PATH,
     CURRENT_RESOURCES_PATH,
     CURRENT_STATISTICS_PATH,
-    DEFAULT_PYTEST_BASETEMP_ROOT,
     PYTEST_CANONICAL_REPORT_NAME,
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
@@ -2709,7 +2709,7 @@ def _pytest_profile() -> str:
 
 
 #: The Hypothesis profile `.claude/settings.json` pins for the cloud sandbox lane.
-_CLOUD_HYPOTHESIS_PROFILE = "ci"
+_CLOUD_HYPOTHESIS_PROFILE = CLOUD_SENTINELS["HYPOTHESIS_PROFILE"]
 
 
 def _resolved_hypothesis_profile(env: Mapping[str, str] | None = None) -> str:
@@ -2732,7 +2732,7 @@ def _resolved_hypothesis_profile(env: Mapping[str, str] | None = None) -> str:
     if (
         configured == _CLOUD_HYPOTHESIS_PROFILE
         and not (values.get("POLYLOGUE_CI") or "").strip()
-        and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir()
+        and not running_in_cloud_sandbox()
     ):
         return "default"
     return configured or "default"

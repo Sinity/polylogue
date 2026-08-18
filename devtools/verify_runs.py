@@ -29,6 +29,7 @@ from typing import Any, Final, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
+from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
 VERIFY_CACHE = Path(".cache/verify")
@@ -2072,9 +2073,11 @@ def checkout_hash(root: Path) -> str:
 
 
 DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
-_CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
+_CLOUD_PYTEST_BASETEMP_ROOT = Path(CLOUD_SENTINELS["POLYLOGUE_PYTEST_BASETEMP_ROOT"])
 #: Worker count `.claude/settings.json` pins for the cloud lane.
-_CLOUD_PYTEST_WORKERS = "2"
+# Derived from the single enumeration, but kept as module constants so tests can
+# patch the sentinel VALUE while the predicate stays shared.
+_CLOUD_PYTEST_WORKERS = CLOUD_SENTINELS["POLYLOGUE_PYTEST_WORKERS"]
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
 _PYTEST_BASETEMP_CLAIM_PREFIX = ".polylogue-pytest-claim-"
 
@@ -2167,7 +2170,7 @@ def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
 
     normalized = dict(env)
     configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
-    if configured == str(_CLOUD_PYTEST_BASETEMP_ROOT) and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+    if configured == str(_CLOUD_PYTEST_BASETEMP_ROOT) and not running_in_cloud_sandbox():
         normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
     return normalized
 
@@ -2500,7 +2503,7 @@ def configured_pytest_worker_request(env: Mapping[str, str]) -> int | None:
     Returns None when the environment expresses no usable preference.
     """
     configured = env.get("POLYLOGUE_PYTEST_WORKERS", "").strip()
-    if configured == _CLOUD_PYTEST_WORKERS and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+    if configured == _CLOUD_PYTEST_WORKERS and not running_in_cloud_sandbox():
         configured = ""
     if not configured:
         return None
