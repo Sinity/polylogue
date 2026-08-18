@@ -36,6 +36,12 @@ _CONTROLLER_COLLECTION_PAYLOAD: dict[str, Any] | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
+_COUNTS_SUFFIX = ".counts.json"
+#: Completed/failed tallies flushed every N completions so the supervisor
+#: heartbeat can print live progress and an ETA without replaying event logs.
+_COUNTS_FLUSH_EVERY = 20
+_COMPLETED_COUNT = 0
+_FAILED_COUNT = 0
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
 
 
@@ -385,8 +391,43 @@ def _record_phase_report(report: Any, *, write_event: bool = True) -> None:
     if payload["outcome"] == "failed":
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
     _remember_report(payload)
+    global _COMPLETED_COUNT, _FAILED_COUNT
+    if outcome == "failed":
+        _FAILED_COUNT += 1
+        _flush_counts(force=True)
+    if when == "teardown":
+        _COMPLETED_COUNT += 1
+        _flush_counts()
     if write_event:
         _write_event(payload)
+
+
+def _flush_counts(*, force: bool = False) -> None:
+    """Publish this worker's completed/failed tallies as one tiny atomic file."""
+    if not force and _COMPLETED_COUNT % _COUNTS_FLUSH_EVERY != 0:
+        return
+    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+    if not raw_dir:
+        return
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "controller").replace("/", "-")
+    path = Path(raw_dir) / f"{worker}-{os.getpid()}{_COUNTS_SUFFIX}"
+    payload = json.dumps({"completed": _COMPLETED_COUNT, "failed": _FAILED_COUNT})
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        os.replace(temporary, path)
+
+
+def read_progress_counts(events_dir: Path) -> tuple[int, int]:
+    """Sum every worker's published (completed, failed) tallies."""
+    completed = failed = 0
+    for path in events_dir.glob(f"*{_COUNTS_SUFFIX}"):
+        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            completed += int(data.get("completed", 0))
+            failed += int(data.get("failed", 0))
+    return completed, failed
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -413,6 +454,7 @@ def pytest_runtest_logreport(report: Any) -> None:
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
+    _flush_counts(force=True)
     try:
         # Worker processes have their own in-memory slowest lists. The controller
         # receives the forwarded timings and is the only writer for the shared

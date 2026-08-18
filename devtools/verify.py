@@ -428,6 +428,39 @@ DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 
 
+def _estimate_duration_from_history(
+    *,
+    tier: str,
+    selection: Mapping[str, Any] | None,
+) -> tuple[float, int] | None:
+    """Median duration of recent green runs with the same tier and selection shape.
+
+    An operator watching a run deserves to know whether it is a 30-second warm
+    pass or a 40-minute bootstrap BEFORE it finishes. The history rows carry
+    tier + selection mode/state, which is exactly what predicts duration.
+    """
+    mode = selection.get("selection_mode") if isinstance(selection, Mapping) else None
+    state = selection.get("state_status") if isinstance(selection, Mapping) else None
+    durations: list[float] = []
+    for entry in reversed(_load_history()[-200:]):
+        if entry.get("tier") != tier or entry.get("exit_code") != 0:
+            continue
+        entry_selection = entry.get("testmon_selection")
+        entry_mode = entry_selection.get("selection_mode") if isinstance(entry_selection, dict) else None
+        entry_state = entry_selection.get("state_status") if isinstance(entry_selection, dict) else None
+        if (entry_mode, entry_state) != (mode, state):
+            continue
+        duration = entry.get("duration_s") or entry.get("total_duration_s")
+        if isinstance(duration, int | float) and duration > 0:
+            durations.append(float(duration))
+        if len(durations) >= 10:
+            break
+    if not durations:
+        return None
+    durations.sort()
+    return durations[len(durations) // 2], len(durations)
+
+
 def _load_history() -> list[dict[str, Any]]:
     if not HISTORY_PATH.exists():
         return []
@@ -1639,8 +1672,31 @@ def _run_pytest_with_heartbeat(
                 receipt = read_receipt(launch.receipt_path)
                 controller_pid = receipt.get("controller_pid") if receipt is not None else None
                 controller_text = f", controller={controller_pid}" if isinstance(controller_pid, int) else ""
+                progress_counts_text = ""
+                if events_dir is not None:
+                    from devtools.pytest_progress_plugin import read_progress_counts
+
+                    done_count, failed_count = read_progress_counts(events_dir)
+                    if done_count:
+                        selected_total: int | None = None
+                        if artifacts is not None:
+                            selection_artifact = _read_json_artifact(artifacts.selection_path)
+                            if isinstance(selection_artifact, dict):
+                                raw_selected = selection_artifact.get("selected_count")
+                                if isinstance(raw_selected, int) and raw_selected >= done_count:
+                                    selected_total = raw_selected
+                        rate = done_count / max(sample_now - t0, 1e-6)
+                        eta_text = (
+                            f", eta~{(selected_total - done_count) / rate:.0f}s"
+                            if selected_total is not None and rate > 0
+                            else ""
+                        )
+                        total_text = f"/{selected_total}" if selected_total is not None else ""
+                        fail_text = f", failed={failed_count}" if failed_count else ""
+                        progress_counts_text = f", tests={done_count}{total_text}{fail_text}{eta_text}"
                 sys.stderr.write(
-                    f"    still running: supervisor={process.pid}{controller_text}, elapsed={sample_now - t0:.0f}s, "
+                    f"    still running: supervisor={process.pid}{controller_text}, elapsed={sample_now - t0:.0f}s"
+                    f"{progress_counts_text}, "
                     f"idle={sample_now - last_output:.0f}s{progress_idle_text}{state_text}{cpu_text}{rss_text}{node_text}\n"
                 )
                 sys.stderr.flush()
@@ -3141,6 +3197,13 @@ def _main(argv: list[str] | None = None) -> int:
 
     if not use_json:
         sys.stderr.write("verify: running local verification baseline\n")
+        estimate = _estimate_duration_from_history(
+            tier=tier,
+            selection=_ACTIVE_VERIFY_RUN.run.testmon_selection if preparation is not None else None,
+        )
+        if estimate is not None:
+            median_s, comparable = estimate
+            sys.stderr.write(f"verify: expecting ~{median_s:.0f}s based on {comparable} comparable green run(s)\n")
     if pytest_enabled:
         _warn_low_memory()
 

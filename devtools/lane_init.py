@@ -197,6 +197,38 @@ def _guard_check(worktree: Path) -> str | None:
     return None
 
 
+def _seed_testmon_graph(root: Path, worktree: Path) -> str:
+    """Copy the main checkout's testmon graph into a fresh lane.
+
+    A lane without a graph pays a complete-corpus bootstrap (~9.5x a warm
+    run) on its first verify. The verify preflight can copy the graph
+    lazily, but only when the main checkout's copy is valid AT THAT MOMENT;
+    seeding at provision time makes the lane warm from the start and
+    independent of later main-checkout state. Failure is a note, not an
+    error -- the lazy preflight copy remains as fallback.
+    """
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+
+    source = root / TESTMON_DATA_RELPATH
+    if not source.is_file():
+        return "no main-checkout graph to seed (first lane verify will bootstrap or copy later)"
+    destination = worktree / TESTMON_DATA_RELPATH
+    import sqlite3
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("-wal", "-shm", "-journal"):
+            Path(f"{destination}{suffix}").unlink(missing_ok=True)
+        with (
+            sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30) as source_conn,
+            sqlite3.connect(destination, timeout=30) as destination_conn,
+        ):
+            source_conn.backup(destination_conn)
+    except (OSError, sqlite3.Error) as exc:
+        return f"graph seed failed ({exc}); first lane verify will copy or bootstrap"
+    return "seeded from main checkout (lane verifies start warm)"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = repo_root()
@@ -238,6 +270,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("lane-init: verify-worktree failed", file=sys.stderr)
         return 1
 
+    graph_note = _seed_testmon_graph(root, worktree)
     base_sha = _run(["git", "-C", str(worktree), "rev-parse", "--short=9", "HEAD"]).stdout.strip()
     workers = recommended_workers(args.expected_lanes)
     record = lane_record(
@@ -248,6 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         venv=not args.no_venv,
         workers=workers,
     )
+    record["testmon_graph"] = graph_note
     ledger_path = append_ledger(coordinator_root(root), record)
 
     if args.as_json:
@@ -258,6 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"  venv: {'provisioned (guard-verified)' if not args.no_venv else 'SKIPPED -- lane cannot run devtools/pytest'}"
         )
+        print(f"  testmon graph: {graph_note}")
         if beads:
             print(f"  beads: {', '.join(beads)}")
         print(f"  ledger: {ledger_path}")
