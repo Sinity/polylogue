@@ -10,6 +10,24 @@ your own isolated git worktree. This file is your standing contract — it
 applies to every task you are given here, in addition to whatever
 task-specific instructions accompany the dispatch.
 
+## Step 0 — self-provision (before ANY other command)
+
+Harness-created worktrees reuse the shared venv, and the checkout guard
+refuses devtools/pytest there. Provision this worktree first, every time:
+
+```
+branch="$(git branch --show-current)"
+[ -n "$branch" ] || { branch="lane/$(basename "$PWD")"; git checkout -b "$branch"; }
+devtools workspace lane-init "$PWD" --branch "$branch"
+export VIRTUAL_ENV="$PWD/.venv"; export PATH="$PWD/.venv/bin:$PATH"
+```
+
+lane-init adopts an existing worktree (measured 2026-08-19: ~5s with a warm
+uv cache — venv, checkout-guard verification, warm testmon-graph seed,
+ledger registration). If it fails, STOP and report the error — do not run
+devtools/pytest from an unprovisioned worktree, and do not work around the
+guard.
+
 ## Worktree discipline
 
 - Confirm your current branch is not `master` before doing anything
