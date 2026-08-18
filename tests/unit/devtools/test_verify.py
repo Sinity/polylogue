@@ -4593,3 +4593,30 @@ def test_verify_notifies_on_failure() -> None:
 
     assert rc == 1
     notify.assert_called_once()
+
+
+def test_sigterm_is_finalized_rather_than_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killing a run must still leave a record of what it cost.
+
+    History is written only when a run FINISHES, and verify installed no SIGTERM
+    handler -- it only sends the signal to its children. So `pkill`, a scope
+    teardown, or an operator giving up on a long bootstrap all ended the process
+    with no entry at all. The omission is biased: what gets killed is precisely
+    the expensive run, so the durable record lost its most costly entries.
+    """
+    import signal as signal_module
+
+    from devtools.verify import _terminate_as_interrupt
+
+    before = signal_module.getsignal(signal_module.SIGTERM)
+    raised = False
+    with _terminate_as_interrupt():
+        installed = signal_module.getsignal(signal_module.SIGTERM)
+        assert installed is not before, "SIGTERM must be handled inside the run"
+        try:
+            os.kill(os.getpid(), signal_module.SIGTERM)
+        except KeyboardInterrupt:
+            raised = True
+
+    assert raised, "SIGTERM must surface as the interrupt the finalizer already handles"
+    assert signal_module.getsignal(signal_module.SIGTERM) is before, "the prior handler must be restored"

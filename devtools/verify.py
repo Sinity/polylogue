@@ -34,6 +34,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -3548,6 +3549,44 @@ def _reexec_isolated(raw_argv: list[str]) -> int:
 
 
 @finalize_checkout_mutation_monitors
+@contextlib.contextmanager
+def _terminate_as_interrupt() -> Iterator[None]:
+    """Make SIGTERM finalize the run instead of vanishing with it.
+
+    A run is only written to the durable history once it FINISHES, and verify
+    installs no SIGTERM handler -- it only sends the signal to its own children.
+    So `pkill`, a scope teardown, or an operator who gives up waiting all end the
+    process with no record at all.
+
+    That omission is biased, not random: what gets killed is precisely the long
+    bootstrap nobody wanted to sit through, so the history systematically loses
+    its most expensive entries. Measured 2026-08-18: a lane that spent 48 minutes
+    on one terminated bootstrap contributed 0.04h to `devtools why --history`.
+
+    Raising KeyboardInterrupt reuses the finalization path that already records
+    duration, diagnosis and mutation state, rather than adding a second one.
+    SIGKILL remains unrecordable by construction.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _raise(signum: int, frame: object) -> None:
+        del signum, frame
+        raise KeyboardInterrupt
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _raise)
+    except (OSError, ValueError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            signal.signal(signal.SIGTERM, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     _ACTIVE_VERIFY_RUN = None
@@ -3557,7 +3596,7 @@ def main(argv: list[str] | None = None) -> int:
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
     lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
     try:
-        with lock:
+        with _terminate_as_interrupt(), lock:
             try:
                 return _main(argv)
             except KeyboardInterrupt as exc:
