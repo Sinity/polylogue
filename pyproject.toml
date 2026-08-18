@@ -188,6 +188,7 @@ markers = [
     "live: marks operator-run live archive validation lanes",
     "xdist_group(group_name): distribute parametrized tests within a file across workers (#1026)",
     "load_sensitive: wall-clock-bound tests (timing budgets, loopback sockets) routed into the isolated single-process lane of `devtools verify --all` so xdist worker contention cannot flake them (#1775)",
+    "storage_scale: tests whose single tmp_path tree exceeds the supervised tmpfs budget (incident-scale fixtures); their tmp_path is redirected to NVMe scratch so every other test keeps the fast tmpfs lane",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:dateparser",  # dateparser strptime deprecation (external)

@@ -31,6 +31,12 @@ from pathlib import Path
 
 import pytest
 
+# One proof run materializes 804 full-snapshot acquisitions with a ~90 MB
+# terminal snapshot -- >2 GiB live in a single tmp_path (measured 2315 MiB,
+# 2026-08-18), which no per-test reclaim helps. storage_scale moves this
+# module's trees to NVMe scratch so every other test keeps the tmpfs lane.
+pytestmark = pytest.mark.storage_scale
+
 from polylogue.config import Config
 from polylogue.product import raw_authority
 from polylogue.scenarios import (

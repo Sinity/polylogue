@@ -831,6 +831,14 @@ def _atomic_copy_sqlite_database(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        # Remove the DESTINATION's sidecars before the replace: a stale -wal
+        # from a previous database under the same name is read as this new
+        # database's write-ahead log, and quick_check then fails with page
+        # corruption ("Rowid out of order" -- observed 2026-08-18 in a lane
+        # worktree whose fresh copy sat beside a -wal from an earlier run).
+        for suffix in TESTMON_SIDECAR_SUFFIXES:
+            with contextlib.suppress(FileNotFoundError):
+                Path(f"{destination}{suffix}").unlink()
         os.replace(temporary, destination)
         _fsync_directory(destination.parent)
         _ensure_deadline(deadline_monotonic)
