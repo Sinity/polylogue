@@ -283,7 +283,6 @@ class TestPathsPublicBoundary:
             "hooks_sidecar_dir",
             "index_db_path",
             "render_root",
-            "archive_file_set_index_available_for_paths",
             "source_db_path",
             "state_home",
             "state_root",
