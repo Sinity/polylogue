@@ -158,17 +158,39 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
 
 def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> None:
     """Materialise an empty tier, reusing this process's prototype when faithful."""
-    if tier not in _PROTOTYPE_CACHEABLE_TIERS:
-        initialize_archive_tier(conn, tier)
-        return
-    if _restore_tier_prototype(conn, tier, required_version):
-        return
+    del required_version  # The spec's version is authoritative; kept for callers.
     initialize_archive_tier(conn, tier)
-    _record_tier_prototype(conn, tier, required_version)
 
 
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
-    """Initialize a fresh archive tier database on an already-open connection."""
+    """Initialize a fresh archive tier database on an already-open connection.
+
+    When the connection's database is verifiably empty (no objects in
+    ``sqlite_master``), the tier is restored from this process's cached
+    prototype as a page copy instead of re-parsing hundreds of CREATE
+    statements -- the same reuse ``initialize_active_archive_root`` gets,
+    extended here because the open-connection route is what nearly a
+    hundred test modules build every archive through (~0.8s of DDL per
+    database, multiplied by four tiers and thousands of tests). A
+    non-empty database keeps the executescript path: its IF NOT EXISTS
+    semantics are non-destructive, while a page-copy restore would
+    overwrite existing content.
+    """
+    spec = archive_tier_spec(tier)
+    if tier in _PROTOTYPE_CACHEABLE_TIERS:
+        object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
+        if object_count == 0:
+            if _restore_tier_prototype(conn, tier, spec.version):
+                conn.execute("PRAGMA foreign_keys = ON")
+                return
+            _initialize_archive_tier_ddl(conn, tier)
+            _record_tier_prototype(conn, tier, spec.version)
+            return
+    _initialize_archive_tier_ddl(conn, tier)
+
+
+def _initialize_archive_tier_ddl(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
+    """The canonical DDL route: parse and execute the tier's whole schema."""
     spec = archive_tier_spec(tier)
     conn.execute("PRAGMA foreign_keys = ON")
     if tier is ArchiveTier.EMBEDDINGS:
