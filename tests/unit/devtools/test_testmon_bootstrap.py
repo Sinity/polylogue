@@ -81,18 +81,21 @@ def test_pure_enum_contracts_are_non_traceable_runtime_inputs(tmp_path: Path) ->
     assert impact.runtime_data_paths == ("devtools/verification_contracts.py",)
 
 
-def test_executable_paths_require_current_runtime_modules_and_deleted_modules(tmp_path: Path) -> None:
+def test_executable_paths_require_current_runtime_modules_not_deleted_ones(tmp_path: Path) -> None:
     module = tmp_path / "polylogue" / "runtime.py"
     module.parent.mkdir()
     module.write_text("VALUE = factory()\n", encoding="utf-8")
     malformed = module.with_name("malformed.py")
     malformed.write_text("def broken(:\n", encoding="utf-8")
 
+    # A deleted module is excluded: no rebuild can ever record an edge for a
+    # file that does not exist, so requiring one made ``incomplete``
+    # permanent. pytest-testmon detects the deletion itself through the
+    # dependents' stale recorded fingerprints.
     assert executable_python_paths(
         tmp_path,
         ("polylogue/runtime.py", "polylogue/malformed.py", "polylogue/deleted.py"),
     ) == (
-        "polylogue/deleted.py",
         "polylogue/malformed.py",
         "polylogue/runtime.py",
     )

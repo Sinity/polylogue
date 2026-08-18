@@ -503,9 +503,14 @@ def _safe_relative_path(raw: str) -> str | None:
 def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str, ...]:
     """Return changed Python paths whose runtime behavior needs graph edges.
 
-    A deleted module cannot be parsed, but it still invalidates any graph edge
-    that pointed at it. Keep that path in the required set so inspection fails
-    closed and the verifier rebuilds the complete native corpus.
+    Deleted modules are excluded: an edge for a nonexistent file is
+    unrecordable, so requiring one makes ``incomplete`` permanent -- no
+    rebuild, however complete, can ever clear it (observed 2026-08-18: a
+    branch that renamed a test module could not produce a valid graph even
+    after a full 20,506-test bootstrap). Selection soundness does not need
+    the requirement -- pytest-testmon itself detects a deleted dependency
+    when a recorded fingerprint no longer matches, and selects the
+    dependent tests.
     """
     root = repo_root.resolve()
     executable: list[str] = []
@@ -514,7 +519,9 @@ def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str,
         if relative is None or not relative.endswith(".py"):
             continue
         source = root / relative
-        if source.exists() and source.is_file() and classify_source_ast(source) == "declaration-only":
+        if not source.exists() or not source.is_file():
+            continue
+        if classify_source_ast(source) == "declaration-only":
             continue
         executable.append(relative)
     return tuple(executable)

@@ -3287,7 +3287,34 @@ def _main(argv: list[str] | None = None) -> int:
             preparation,
             required_executable_paths=required_executable_paths,
         )
-        if not native_state.valid:
+        if native_state.status == "incomplete":
+            # Post-run, "incomplete" is exposure, not failure. Any collected
+            # test without recorded dependencies is selected by the run itself
+            # (that is testmon's unknown-test rule), so after a completed run
+            # every collected test either executed now or carries recorded
+            # edges. A changed file still edge-less at this point provably has
+            # no dependent test in the corpus -- a module nothing imports, or
+            # a path that no longer exists. Exiting 5 here made such a branch
+            # permanently ungateable: even the complete corpus cannot edge a
+            # file no test imports. The pre-run inspect still uses
+            # "incomplete" to shape selection.
+            step_results.append(
+                {
+                    "name": "pytest native graph exposure",
+                    "duration_s": 0.0,
+                    "exit": 0,
+                    "diagnosis": "native_testmon_uncovered_changed_paths",
+                    "reason": native_state.reason,
+                    "missing_executable_paths": list(native_state.missing_executable_paths),
+                }
+            )
+            if native_state.missing_executable_paths:
+                sys.stderr.write(
+                    "verify: no test in the corpus imports these changed modules (recorded exposure): "
+                    + ", ".join(native_state.missing_executable_paths)
+                    + "\n"
+                )
+        elif not native_state.valid:
             graph_step = {
                 "name": "pytest native graph validation",
                 "duration_s": 0.0,
@@ -3299,12 +3326,6 @@ def _main(argv: list[str] | None = None) -> int:
             step_results.append(graph_step)
             if exit_code == 0:
                 exit_code = 5
-            if native_state.missing_executable_paths:
-                sys.stderr.write(
-                    "verify: changed executable modules have no runtime dependency edge: "
-                    + ", ".join(native_state.missing_executable_paths)
-                    + "\n"
-                )
     _close_active_native_testmon_state()
 
     total_duration = round(time.monotonic() - started_at, 2)
