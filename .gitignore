@@ -35,6 +35,10 @@ venv/
 
 # Legacy cache/output directories that may still appear at the repo root
 .pytest_cache/
+# pytest cacheprovider fallback scratch (created at repo root mid-run when the
+# configured cache dir is unwritable); transient, but the checkout-mutation
+# monitor sees it appear and would invalidate the observing run.
+pytest-cache-files-*
 .hypothesis/
 .mypy_cache/
 .dmypy.json
