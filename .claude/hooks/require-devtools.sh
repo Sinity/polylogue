@@ -71,7 +71,15 @@ if re.search(r"(^|[;&|(]|\s)devtools(\s|$)", text):
     print("allow")
     raise SystemExit(0)
 
-if re.search(r"(^|[;&|(]|\s)(-m\s+pytest(\s|$)|(\S*/)?pytest(\s|$))", text):
+# pytest must sit at a COMMAND POSITION -- start of a line, or after a
+# separator -- optionally behind env assignments or an interpreter. Matching it
+# after any whitespace flagged ordinary prose such as "directory pytest created"
+# inside a commit message, which is the third false positive this guard produced
+# by treating text as if it were a command.
+command_position = r"(?:^|[\n;&|(]|&&|\|\|)\s*(?:\w+=\S+\s+)*"
+if re.search(command_position + r"(?:\S*/)?pytest(?:\s|$)", text) or re.search(
+    command_position + r"\S*python\S*\s+(?:-\S+\s+)*-m\s+pytest(?:\s|$)", text
+):
     print("deny")
 else:
     print("allow")
