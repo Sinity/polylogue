@@ -550,8 +550,33 @@ def _run_post_merge_terminal_verify(
     *,
     ledger_snapshot: tuple[dict[str, Any], float, int] | None = None,
 ) -> int:
-    """Run terminal verification in a detached worktree at the fetched target."""
+    """Run terminal verification at the fetched target, in place when possible.
+
+    The detached-worktree route has no virtualenv and a direnv-blocked
+    ``.envrc``, so on a workstation the child either dies before running
+    anything or the checkout guard (correctly) refuses the main venv's code
+    against the temp tree -- observed 2026-08-18: the terminal verify failed
+    in 2.6s without executing a single test. When the invoking checkout is
+    ALREADY at the fetched target with a clean tree -- the ordinary state at
+    the end of a merge train, right after pulling merged master -- running in
+    place is attestation-equivalent and actually works. The worktree route
+    remains for a checkout that has moved on or is dirty.
+    """
     repo_root = Path.cwd()
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30, cwd=repo_root
+    ).stdout.strip()
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=30, cwd=repo_root
+    ).stdout.strip()
+    if head == target_sha and not dirty:
+        return cmd_record_full_verify(
+            command,
+            target_sha=target_sha,
+            cwd=repo_root,
+            execution_root=repo_root,
+            ledger_snapshot=ledger_snapshot,
+        )
     with tempfile.TemporaryDirectory(prefix="polylogue-merge-terminal-") as raw_worktree:
         worktree = Path(raw_worktree)
         add = subprocess.run(

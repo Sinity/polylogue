@@ -790,6 +790,10 @@ def test_post_merge_terminal_verify_uses_target_checkout_devshell(
 
     def run(cmd: list[str], **kwargs: Any) -> MagicMock:
         commands.append(cmd)
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="elsewhere\n", stderr="")
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["git", "worktree", "add"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if cmd[:2] == ["direnv", "exec"]:
@@ -1352,12 +1356,45 @@ def test_external_merge_completion_write_failure_keeps_recovery_latch(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
+def test_terminal_verify_runs_in_place_when_head_matches_clean_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """At the fetched target with a clean tree, no bare worktree is materialized.
+
+    The detached-worktree route has no venv and a direnv-blocked .envrc, so on
+    a workstation it failed in seconds without running a test (2026-08-18)."""
+    monkeypatch.chdir(tmp_path)
+    seen: dict[str, Any] = {}
+
+    def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="merged-master\n", stderr="")
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        raise AssertionError(cmd)
+
+    def record(command: str, **kwargs: Any) -> int:
+        seen["cwd"] = kwargs["cwd"]
+        seen["execution_root"] = kwargs["execution_root"]
+        return 0
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(merge_boundary, "cmd_record_full_verify", record)
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 0
+    assert seen["cwd"] == tmp_path
+    assert seen["execution_root"] == tmp_path
+
+
 def test_detached_worktree_add_failure_attempts_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     commands: list[list[str]] = []
 
     def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
         commands.append(cmd)
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="elsewhere\n", stderr="")
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["git", "worktree", "add"]:
             return MagicMock(returncode=1, stdout="", stderr="add failed")
         if cmd[:3] == ["git", "worktree", "remove"]:
@@ -1373,6 +1410,10 @@ def test_detached_worktree_cleanup_failure_is_explicit(monkeypatch: pytest.Monke
     monkeypatch.chdir(tmp_path)
 
     def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="elsewhere\n", stderr="")
+        if cmd[:3] == ["git", "status", "--porcelain"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["git", "worktree", "add"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["git", "worktree", "remove"]:
