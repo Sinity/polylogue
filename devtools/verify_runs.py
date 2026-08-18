@@ -1649,6 +1649,23 @@ class VerifyRun:
         }
         self.write()
 
+    @property
+    def selection_may_run_broadly(self) -> bool:
+        """Whether an affected-mode lane can still execute a near-complete corpus.
+
+        pytest-testmon always selects tests it has never recorded, so an
+        ``affected`` lane over an ``incomplete`` graph (an interrupted
+        bootstrap fingerprinted only part of the corpus) runs every
+        still-unknown test. Its basetemp demand is then full-suite-shaped,
+        and placing it on the bounded tmpfs kills the run at the 2 GiB cap
+        mid-flight (observed 2026-08-18: 2108 MiB allocated > 2048 MiB,
+        SIGTERM at 117s). Only a ``valid`` graph makes a narrow selection.
+        """
+        selection = self._payload.get("testmon_selection")
+        if not isinstance(selection, dict):
+            return False
+        return selection.get("state_status") != "valid"
+
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         index = len(self._payload["steps"]) + 1
         step_id = f"{index:02d}-{_slug(label)}"

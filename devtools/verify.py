@@ -1889,7 +1889,11 @@ def _run_step(
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
-                full_suite=_pytest_uses_full_suite_basetemp(label),
+                # An affected lane over a non-valid graph still runs every
+                # never-recorded test, so its basetemp demand is
+                # full-suite-shaped -- see selection_may_run_broadly.
+                full_suite=_pytest_uses_full_suite_basetemp(label)
+                or (managed_native_lane and run is not None and run.selection_may_run_broadly),
             )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
