@@ -6,6 +6,8 @@ Tracking: polylogue-vzn6 (this design). Cross-refs: polylogue-nh44 / #3146
 evidence epic), polylogue-869u (census memo by blob_hash).
 Evidence: measured read-only against the live archive
 (`/home/sinity/.local/share/polylogue` → `/realm/db/polylogue`), 2026-07-19.
+The archive has since moved again, to `/realm/state/polylogue`; the paths in
+this document are the ones the measurement actually used.
 
 ## The problem
 

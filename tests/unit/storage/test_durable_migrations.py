@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCH
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
+from tests.infra.durable_schema_reset import reset_source_fixture_to_version
 
 
 def _verified_backup_manifest(
@@ -71,6 +72,18 @@ def _tamper_receipt(manifest: Path) -> None:
     receipt = manifest.with_name("verification-receipt.json")
     payload = json.loads(receipt.read_text(encoding="utf-8"))
     payload["verdict"] = "failure"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _tamper_receipt_attestation(manifest: Path) -> None:
+    """Alter a receipt field the MAC covers while leaving the verdict valid.
+
+    _tamper_receipt flips the verdict, which the status check rejects before
+    the MAC is ever verified, so the MAC path needs its own case.
+    """
+    receipt = manifest.with_name("verification-receipt.json")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["verified_at"] = "1999-01-01T00:00:00Z"
     receipt.write_text(json.dumps(payload), encoding="utf-8")
 
 
@@ -121,6 +134,10 @@ def _create_user_v3(path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> None:
+    reset_source_fixture_to_version(conn, version)
 
 
 def _create_user_v5(path: Path) -> None:
@@ -524,6 +541,7 @@ ON raw_artifacts(origin, source_path, source_index);
     conn = sqlite3.connect(path)
     try:
         conn.executescript(v29_ddl)
+        _reset_source_fixture_to_version(conn, 29)
         conn.execute("PRAGMA user_version = 29")
         conn.executemany(
             """
@@ -566,7 +584,7 @@ ON raw_artifacts(origin, source_path, source_index);
     return ordinary_blob, failure_a_blob, failure_b_blob
 
 
-def test_source_tier_v29_applies_only_migration_030_and_preserves_failure_coordinates(
+def test_source_tier_v29_migration_030_splits_raw_artifact_indexes(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
@@ -576,11 +594,15 @@ def test_source_tier_v29_applies_only_migration_030_and_preserves_failure_coordi
     manifest = _verified_backup_manifest(tmp_path / "backup-source-v29")
 
     with sqlite3.connect(db_path) as conn:
+        # "Only migration 030" was true while 30 was the head version. The
+        # runner enforces canonical-DDL parity against the CURRENT head, so a
+        # pinned target cannot pass; assert that 030 ran and that the index
+        # split it performs is intact, which is what this test is really for.
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 29
-        assert result.to_version == 30
-        assert result.applied_versions == (30,)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 30
+        assert 30 in result.applied_versions
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
 
         index_names = {str(row[1]) for row in conn.execute("PRAGMA index_list('raw_artifacts')")}
         assert {"idx_raw_artifacts_source_identity", "idx_raw_artifacts_failure_identity"} <= index_names
@@ -731,17 +753,7 @@ def test_source_publication_backfill_requires_verified_backup(
     with sqlite3.connect(db_path) as conn:
         conn.execute("DROP TABLE raw_authority_parser_census")
         conn.execute("DROP TABLE raw_authority_blockers")
-        conn.execute("DROP TABLE raw_authority_census_post_plans")
-        conn.execute("DROP TABLE raw_authority_census_plans")
-        conn.execute("DROP TABLE raw_authority_plans")
-        conn.execute("DROP TABLE raw_authority_censuses")
-        conn.execute("DROP TABLE excised_content")
-        conn.execute("DROP TABLE sinex_publication_segments")
-        conn.execute("DROP TABLE sinex_publication_receipts")
-        conn.execute("DROP TABLE sinex_publication_payloads")
-        conn.execute("DROP TABLE sinex_publication_obligations")
-        conn.execute("DROP TABLE verified_blob_receipts")
-        conn.execute("ALTER TABLE raw_sessions DROP COLUMN revision_authority_evidence")
+        _reset_source_fixture_to_version(conn, 9)
         conn.execute("PRAGMA user_version = 9")
         conn.commit()
 
@@ -899,31 +911,13 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     blob_hash, blob_size = BlobStore(workspace_env["archive_root"] / "blob").write_from_bytes(b"before-beads")
     with sqlite3.connect(db_path) as conn:
         conn.executescript(old_ddl)
-        for table_name in (
-            "raw_capture_observations",
-            "verified_blob_receipts",
-            "raw_live_source_reconciliation_receipts",
-            "raw_membership_writeback_receipts",
-            "raw_append_chain_backfill_receipts",
-            "raw_authority_parser_census",
-            "raw_authority_plans",
-            "raw_authority_censuses",
-            "raw_authority_census_plans",
-            "raw_authority_census_post_plans",
-            "raw_authority_blockers",
-            "sinex_publication_obligations",
-            "sinex_publication_payloads",
-            "sinex_publication_receipts",
-            "sinex_publication_segments",
-            "excised_content",
-            "raw_byte_duplicate_supersession_receipts",
-            "raw_authority_verdicts",
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        # Derived, not hand-listed: every table a source migration ABOVE this
+        # fixture's version creates must be absent, or that migration's own
+        # CREATE TABLE fails with "table ... already exists". The previous
+        # literal tuple silently went stale each time a migration added a table
+        # (031's raw_authority_artifact_census_receipts was the one that broke
+        # this module).
+        _reset_source_fixture_to_version(conn, 7)
         conn.execute("PRAGMA user_version = 7")
         conn.execute(
             """
@@ -1029,7 +1023,13 @@ def _source_v20_ddl_with_stale_origin_check() -> str:
     )
     assert capture_mode_declaration in stale
     stale = stale.replace(capture_mode_declaration, "")
-    raw_sessions_close = "        CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))\n) STRICT;\n"
+    # Anchor on the END of the raw_sessions CREATE TABLE rather than on one of
+    # its CHECK lines: the previous literal pinned whichever constraint
+    # happened to be last, so an unrelated column addition silently broke this
+    # fixture instead of the behaviour it tests.
+    raw_sessions_match = re.search(r"CREATE TABLE IF NOT EXISTS raw_sessions \(.*?\n\) STRICT;\n", stale, re.S)
+    assert raw_sessions_match is not None
+    raw_sessions_close = raw_sessions_match.group(0)[-len("\n) STRICT;\n") :]
     assert raw_sessions_close in stale
     stale = stale.replace(
         raw_sessions_close,
@@ -1053,11 +1053,10 @@ def _create_source_v20_with_stale_origin_check(path: Path, *, archive_root: Path
     try:
         conn.executescript(_source_v20_ddl_with_stale_origin_check())
         _restore_source_pre_v30_raw_artifact_indexes(conn)
-        # v29 is not present in a v20 archive.  The broad origin-check rewrite
-        # above intentionally affects every current table, so remove this
-        # later table explicitly instead of handing migration 029 a malformed
-        # pre-existing copy that CREATE IF NOT EXISTS would preserve.
-        conn.execute("DROP TABLE raw_failure_disposition_receipts")
+        # Nothing a migration above v20 creates may already exist here: the
+        # broad origin-check rewrite above copies every CURRENT table, so those
+        # later objects would otherwise be handed to their own migration.
+        _reset_source_fixture_to_version(conn, 20)
         conn.execute("PRAGMA user_version = 20")
         conn.execute(
             """
@@ -1335,13 +1334,9 @@ def test_source_tier_v24_repairs_raw_hook_event_origin_check(
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SOURCE_DDL)
         _restore_source_pre_v30_raw_artifact_indexes(conn)
-        for table_name in (
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        # Same derivation as the v7 fixture: anything a migration above v24
+        # creates must not already exist here.
+        _reset_source_fixture_to_version(conn, 24)
         conn.executescript(
             """
             ALTER TABLE raw_hook_events RENAME TO raw_hook_events_v24;
@@ -1715,20 +1710,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             PRAGMA user_version = 13;
             """
         )
-        for table_name in (
-            "raw_capture_observations",
-            "verified_blob_receipts",
-            "raw_live_source_reconciliation_receipts",
-            "raw_membership_writeback_receipts",
-            "raw_append_chain_backfill_receipts",
-            "raw_byte_duplicate_supersession_receipts",
-            "raw_authority_verdicts",
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        _reset_source_fixture_to_version(conn, 14)
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" not in indexes_before
@@ -1828,20 +1810,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             PRAGMA user_version = 14;
             """
         )
-        for table_name in (
-            "raw_capture_observations",
-            "verified_blob_receipts",
-            "raw_live_source_reconciliation_receipts",
-            "raw_membership_writeback_receipts",
-            "raw_append_chain_backfill_receipts",
-            "raw_byte_duplicate_supersession_receipts",
-            "raw_authority_verdicts",
-            "raw_quarantine_group_dedup_receipts",
-            "raw_unknown_export_reclassification_receipts",
-            "raw_non_session_duplicate_exclusion_receipts",
-            "raw_failure_disposition_receipts",
-        ):
-            conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        _reset_source_fixture_to_version(conn, 14)
         conn.commit()
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" not in indexes_before
@@ -2163,7 +2132,8 @@ def test_failed_backup_verification_cannot_authorize_user_migration(
     ("label", "mutate", "match"),
     [
         ("manifest", _tamper_manifest, "does not match manifest"),
-        ("receipt", _tamper_receipt, "attestation MAC is invalid"),
+        ("receipt", _tamper_receipt, "receipt is not a successful verification"),
+        ("receipt-attestation", _tamper_receipt_attestation, "attestation MAC is invalid"),
         ("backup-tier", _tamper_backup_tier, "tier artifact .* mismatch"),
     ],
 )

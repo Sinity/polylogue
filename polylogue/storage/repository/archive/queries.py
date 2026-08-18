@@ -185,6 +185,9 @@ class RepositoryArchiveQueryMixin:
     async def count_by_query(self, query: SessionRecordQuery) -> int:
         return await self.queries.count_sessions(query)
 
+    async def count_actions(self, *, origin: str | None = None) -> int:
+        return await self.queries.count_actions(origin=origin)
+
     async def get_session_stats(self, session_id: str) -> dict[str, int]:
         return await self.queries.get_session_stats(session_id)
 

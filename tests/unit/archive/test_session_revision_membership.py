@@ -506,7 +506,7 @@ def test_refuses_to_equate_colliding_attachment_identities_with_different_bytes(
 # ---------------------------------------------------------------------------
 
 
-def _generation_lifecycle_revision(raw_id: str, elapsed_duration_ms: int) -> MembershipRevision:
+def _generation_lifecycle_revision(raw_id: str, elapsed_duration_ms: int, *, anchor: str = "0") -> MembershipRevision:
     """A ChatGPT-shaped session with one `generation_lifecycle` event."""
     session = ParsedSession(
         source_name=Provider.CHATGPT,
@@ -516,7 +516,7 @@ def _generation_lifecycle_revision(raw_id: str, elapsed_duration_ms: int) -> Mem
             ParsedSessionEvent(
                 event_type="generation_lifecycle",
                 timestamp=str(elapsed_duration_ms / 1000),
-                source_message_provider_id="0",
+                source_message_provider_id=anchor,
                 payload={
                     "state": "completed",
                     "evidence_source": "provider_native",
@@ -1220,3 +1220,96 @@ def test_observation_order_preserves_newer_mutable_idless_revision_without_provi
     assert result.accepted_raw_ids == ("raw-a-new",)
     assert result.equivalent_raw_ids == ("raw-z-old",)
     assert result.ambiguous_raw_ids == ()
+
+
+def test_accepts_generation_lifecycle_anchor_move_as_equivalent() -> None:
+    """Same event, re-anchored to a different message id by a later export.
+
+    ChatGPT anchors a `generation_lifecycle` event to a different
+    `source_message_provider_id` between export vintages of one unchanged
+    conversation. Event identity is keyed on (event_type, anchoring message),
+    so the moved event lands as two disjoint identities, each side holds
+    something the other lacks, and an unchanged conversation compares as a
+    fork. Measured on the live archive as 10 of 136 real ambiguous ChatGPT
+    cohorts still reaching a conflict verdict after polylogue-oycw's fix
+    (polylogue-uqwd) -- one traced example had all 46 messages identical
+    across three revisions, with the conflict coming entirely from this axis.
+    """
+    first_export = _generation_lifecycle_revision("raw-first", 13000, anchor="986a3a7e")
+    second_export = _generation_lifecycle_revision("raw-second", 13000, anchor="1175c3a7")
+
+    # The anchor really does move identity: this is not a no-op fixture.
+    assert first_export.projection.event_contents != second_export.projection.event_contents
+    assert _relation(first_export.projection, second_export.projection) == "equal"
+
+    result = classify_membership_revisions([first_export, second_export])
+
+    assert result.accepted_raw_ids == ("raw-first",)
+    assert result.equivalent_raw_ids == ("raw-second",)
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_anchor_tolerance_does_not_launder_a_genuinely_added_event() -> None:
+    """One side gaining a second event is richness, not an anchor move.
+
+    Pairing is one-to-one and consumes both sides, so a surplus event still
+    reads as containment rather than being silently absorbed.
+    """
+    single = _generation_lifecycle_revision("raw-single", 13000, anchor="986a3a7e")
+    two_events = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="generation_lifecycle",
+                timestamp="13.0",
+                source_message_provider_id=anchor,
+                payload={
+                    "state": "completed",
+                    "evidence_source": "provider_native",
+                    "fidelity": "exact",
+                    "duration_semantics": "provider_reported_elapsed",
+                    "elapsed_duration_ms": 13000,
+                },
+            )
+            for anchor in ("1175c3a7", "44448888")
+        ],
+    )
+    richer = MembershipRevision("raw-richer", session_revision_projection(two_events))
+
+    assert _relation(single.projection, richer.projection) == "b_contains_a"
+
+
+def test_anchor_tolerance_is_scoped_to_the_provider_remeasured_shape() -> None:
+    """An event without the provider-remeasured marker keeps strict anchoring.
+
+    Browser capture emits the same event_type from its own DOM observation,
+    where the anchoring message is a real first-party fact rather than
+    something the provider recomputes per export, so a moved anchor there is
+    genuine divergence and must still conflict.
+    """
+
+    def _dom_observed(raw_id: str, anchor: str) -> MembershipRevision:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="session",
+            messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="generation_lifecycle",
+                    timestamp="13.0",
+                    source_message_provider_id=anchor,
+                    payload={
+                        "state": "completed",
+                        "evidence_source": "browser_capture",
+                        "fidelity": "exact",
+                        "duration_semantics": "dom_observed_wall",
+                        "elapsed_duration_ms": 13000,
+                    },
+                )
+            ],
+        )
+        return MembershipRevision(raw_id, session_revision_projection(session))
+
+    assert _relation(_dom_observed("a", "986a3a7e").projection, _dom_observed("b", "1175c3a7").projection) == "conflict"

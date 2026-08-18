@@ -36,7 +36,10 @@ from polylogue.annotations.write import (
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import require_json_document
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
@@ -469,6 +472,10 @@ async def _resolved(_ref: str) -> bool:
 
 
 def test_accept_then_durable_batch_import_requires_label_judgment_for_active_query(tmp_path: Path) -> None:
+    # The durable batch import opens the audit tier, so the whole archive has to
+    # exist -- and bootstrap has to run BEFORE any durable tier file, or the
+    # root is classified as established-with-unknown-provenance.
+    initialize_active_archive_root(tmp_path)
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
     conn = sqlite3.connect(user_db)

@@ -1687,9 +1687,27 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", _offline_canary_rebuild)
 
+    # The subject is that an invalid candidate is REJECTED before session-insight
+    # materialization -- unexpected_insight_repair above is what actually pins
+    # that. Which guard rejects it first is incidental, and this alternation has
+    # always accepted several.
+    #
+    # "raw frontier integrity" stopped being reachable here in 4d35f59c4: it
+    # required byte-proven authority of every `full` raw, but a first-ever
+    # observation is admitted FULL/ASSERTED by design with no predecessor for a
+    # byte proof to be about, so every source seen exactly once counted as a
+    # broken head. With that false positive gone the candidate is now caught by
+    # the next real guard, current-parser logical-key drift on a frozen raw --
+    # which is the grouped-JSONL pathology's own multi-session shape being
+    # detected, and just as valid a rejection.
     with pytest.raises(
         RuntimeError,
-        match="session-lineage-acyclic|no longer parses to one session|raw frontier integrity",
+        match=(
+            "session-lineage-acyclic"
+            "|no longer parses to one session"
+            "|raw frontier integrity"
+            "|re-derived different current-parser logical keys"
+        ),
     ):
         run_reindex_canary(
             zoo.archive_root,

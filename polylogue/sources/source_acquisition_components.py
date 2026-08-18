@@ -490,7 +490,14 @@ def iter_zip_entry_raw_data(
             stream_name=context.entry.filename,
             provider_hint=entry_provider_hint,
         ):
-            detected_provider = detected.provider
+            # Never downgrade the ZIP-level hint to UNKNOWN. A GDPR export ships
+            # non-conversation siblings (message_feedback.json, user.json, ...)
+            # that legitimately detect as UNKNOWN on their own contents, but the
+            # archive they arrived in is unambiguous. Overwriting the sniffed hint
+            # with a per-payload UNKNOWN is what stamped those members
+            # `unknown-export` (polylogue-hs3y).
+            if detected.provider is not Provider.UNKNOWN:
+                detected_provider = detected.provider
             if detected.provider in GROUP_PROVIDERS:
                 break
             classify_start = time.perf_counter()

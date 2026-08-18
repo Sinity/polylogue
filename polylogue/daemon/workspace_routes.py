@@ -95,10 +95,6 @@ async def build_compare_payload(
     return cast("dict[str, object]", envelope)
 
 
-def dispatch_get(handler: object, path: list[str], params: dict[str, list[str]]) -> bool:
-    return False
-
-
 def handle_stack(handler: object, params: dict[str, list[str]]) -> None:
     ids = parse_id_list(params)
     focus = handler._get_param(params, "focus")  # type: ignore[attr-defined]
@@ -131,6 +127,5 @@ __all__ = [
     "WORKSPACE_SHELL_MODES",
     "build_compare_payload",
     "build_stack_payload",
-    "dispatch_get",
     "parse_id_list",
 ]

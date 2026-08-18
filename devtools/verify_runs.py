@@ -25,10 +25,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ParamSpec, TextIO, TypeVar
+from typing import Any, Final, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
+from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
 VERIFY_CACHE = Path(".cache/verify")
@@ -37,7 +38,17 @@ _XDG_STATE_HOME = os.environ.get("XDG_STATE_HOME", "").strip()
 DEVTOOLS_STATE_DIR = (
     (Path(_XDG_STATE_HOME) if _XDG_STATE_HOME else Path.home() / ".local" / "state") / "polylogue" / "devtools"
 )
-VERIFY_HISTORY_PATH = DEVTOOLS_STATE_DIR / "verify-history.jsonl"
+VERIFY_HISTORY_ENV = "POLYLOGUE_VERIFY_HISTORY_PATH"
+# The run history is the only verification artifact that outlives a checkout,
+# so where it lives is a deployment question, not a repo one. The XDG default
+# keeps a fresh clone and a cloud sandbox working with no configuration; an
+# operator whose machine has a canonical data lake points this at it instead.
+_VERIFY_HISTORY_OVERRIDE = os.environ.get(VERIFY_HISTORY_ENV, "").strip()
+VERIFY_HISTORY_PATH = (
+    Path(_VERIFY_HISTORY_OVERRIDE).expanduser()
+    if _VERIFY_HISTORY_OVERRIDE
+    else DEVTOOLS_STATE_DIR / "verify-history.jsonl"
+)
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 VERIFICATION_INVOCATION_ID_ENV = "POLYLOGUE_VERIFICATION_INVOCATION_ID"
 VERIFICATION_RECEIPT_PATH_ENV = "POLYLOGUE_VERIFICATION_RECEIPT_PATH"
@@ -185,13 +196,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
     no_pytest = not pytest_steps
     corpus_digest: str | None = None
     exit_code = entry.get("exit_code")
-    raw_budget = entry.get("invocation_budget_s")
-    invocation_budget = float(raw_budget) if isinstance(raw_budget, int | float) else None
     raw_wall = entry.get("total_duration_s", entry.get("duration_s", 0.0))
     wall_s = float(raw_wall) if isinstance(raw_wall, int | float) else 0.0
-    deadline_met = entry.get("diagnosis") != "verify_invocation_deadline_exceeded"
-    if invocation_budget is not None:
-        deadline_met = deadline_met and wall_s <= invocation_budget
     return {
         "schema_version": 1,
         "environment": {
@@ -229,7 +235,6 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         },
         "cleanup": {"complete": True if no_pytest else cleanup_complete},
         "containment": {"complete": True if no_pytest else containment_complete},
-        "deadline": {"budget_s": invocation_budget, "met": deadline_met},
         "wall_s": wall_s,
     }
 
@@ -260,6 +265,14 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     durable index used to find and compare them.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        # Deployments point this at a data lake via a symlink, and the target's
+        # directory is swept on a different schedule than the link's. Creating
+        # only the link's own parent leaves ``os.open`` following a dangling
+        # link, which fails the whole verification run over a bookkeeping file.
+        link_target = Path(os.readlink(path))
+        resolved_target = link_target if link_target.is_absolute() else path.parent / link_target
+        resolved_target.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(normalize_verify_history_entry(entry), ensure_ascii=False) + "\n").encode()
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
     try:
@@ -308,8 +321,20 @@ def _read_only_git_env() -> dict[str, str]:
     return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 
 
+#: Paths excluded from receipt evidence. A write here cannot change a test
+#: outcome, so it must not invalidate a run. ``.beads`` is the tracker JSONL,
+#: which nothing at runtime reads; watching it made the repository's own
+#: "export after every write" bead discipline destroy the testmon graph whenever
+#: tracker work overlapped a verify. Kept in one place so the mutation watcher
+#: and the endpoint fingerprint cannot drift apart.
+RECEIPT_EXCLUDED_PATHSPECS: Final[tuple[str, ...]] = (":(exclude).beads",)
+
+
 def worktree_fingerprint(root: Path | None = None) -> str:
-    """Fingerprint tracked changes plus exact non-ignored untracked content."""
+    """Fingerprint tracked changes plus exact non-ignored untracked content.
+
+    Excludes :data:`RECEIPT_EXCLUDED_PATHSPECS`; see that constant for why.
+    """
     checkout_root = (root or Path.cwd()).resolve()
     digest = hashlib.sha256()
     try:
@@ -333,8 +358,8 @@ def worktree_fingerprint(root: Path | None = None) -> str:
             # both status and diff, so Git cannot authorize exact evidence.
             return "unavailable"
     for command in (
-        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        ["git", "diff", "--binary", "HEAD", "--"],
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", *RECEIPT_EXCLUDED_PATHSPECS],
+        ["git", "diff", "--binary", "HEAD", "--", ".", *RECEIPT_EXCLUDED_PATHSPECS],
     ):
         try:
             result = subprocess.run(
@@ -403,8 +428,22 @@ class CheckoutMutationMonitor:
     invalidate themselves.
     """
 
+    #: Directories whose writes cannot invalidate a receipt. Everything here is
+    #: either verifier-owned scratch or non-executable data: no test outcome
+    #: depends on their contents, so a write during the interval is not evidence
+    #: that the tested tree differed from the attested one.
+    #:
+    #: ``.beads`` is tracked, unlike the rest, and is included deliberately. It
+    #: holds the issue-tracker JSONL, which nothing at runtime reads. Leaving it
+    #: watched made the repository's own documented workflow self-defeating: the
+    #: bead discipline is "export after every write", the pre-commit hook exports
+    #: too, so any tracker activity during a verify tripped
+    #: ``checkout_changed_during_verification`` and deleted the entire
+    #: pytest-testmon graph -- costing a full-corpus rebuild for a file that
+    #: cannot change a single test result.
     _IGNORED_TOP_LEVEL = frozenset(
         {
+            ".beads",
             ".cache",
             ".git",
             ".hypothesis",
@@ -573,9 +612,27 @@ class CheckoutMutationMonitor:
                 retained_children.append(child)
             child_directories[:] = retained_children
             directories.append(current_path)
+        # `.git/index` is deliberately NOT watched as checkout authority.
+        #
+        # It was watched as a PROXY for content change: staging is a moment when
+        # tracked content or tracked-path membership may move. Snapshot isolation
+        # replaced the need for that proxy -- a verify now runs against a frozen
+        # reflink copy bind-mounted at the checkout path, so the tested content
+        # cannot change mid-run at all. What remains live inside that namespace
+        # is `.git`, needed to resolve refs, which means an index write is the
+        # one mutation that can still reach a run it provably cannot affect.
+        #
+        # Observed 2026-08-18: a 30-minute merge-gate verify was discarded with
+        # checkout_mutation_path=".git/index" while its initial and final
+        # worktree fingerprints were byte-identical -- its own evidence said
+        # nothing under test had changed. An ordinary `git add`, in a repository
+        # whose workflow is continuous commits, cannot be allowed to cost half an
+        # hour of verification.
+        #
+        # The real signals remain: the working-tree watcher observes content
+        # writes directly, and the worktree fingerprint is compared at start and
+        # finish, covering both tracked content and tracked-path membership.
         self._git_index_path = self._resolve_git_index_path()
-        if self._git_index_path is not None:
-            self._git_authority_paths[self._git_index_path] = ".git/index"
         self._git_authority_paths.update(self._resolve_git_head_paths())
         for authority_path in self._git_authority_paths:
             # The protected startup topology recheck discovers this set again.
@@ -1248,7 +1305,6 @@ def aggregate_native_testmon_run(
     environment_reason: str | None = None,
     selection_mode: str,
     invocation_duration_s: float,
-    budget_s: float,
 ) -> dict[str, Any]:
     """Build one compact, durable aggregate for the two semantic pytest lanes."""
     lanes: list[dict[str, Any]] = []
@@ -1415,10 +1471,6 @@ def aggregate_native_testmon_run(
         },
         "cleanup": {"complete": cleanup_complete},
         "containment": {"complete": containment_complete},
-        "deadline": {
-            "budget_s": budget_s,
-            "met": invocation_duration_s <= budget_s,
-        },
     }
 
 
@@ -1555,6 +1607,71 @@ class VerifyRun:
             self._payload["worktree_fingerprint"] = worktree_fingerprint
         self.write()
 
+    def record_selection(
+        self,
+        *,
+        selection_mode: str,
+        state_status: str,
+        state_reason: str,
+        missing_executable_paths: Sequence[str] = (),
+        runtime_data_paths: Sequence[str] = (),
+        copied_from: str | None = None,
+    ) -> None:
+        """Record WHY this run selected the tests it did.
+
+        A bootstrap costs roughly 9.5x a warm run, so the reason one happened is
+        the single most useful fact a receipt can carry -- and until now it
+        carried none of it. `diagnosis: native_testmon_graph_invalid` named the
+        outcome without the cause, so telling apart the two very different
+        bootstrap triggers meant opening the testmon SQLite by hand:
+
+        * ``absent``     -- the environment digest itself changed, so no graph
+          for it exists. Caused by a dependency bump, a conftest or harness
+          edit, an interpreter change, or one of the two environment variables
+          in the digest (HYPOTHESIS_PROFILE, POLYLOGUE_CI). Nothing is
+          reusable; the cost is unavoidable for that digest.
+        * ``incomplete`` -- a sound graph for this digest exists but has not
+          fingerprinted every changed module yet. ``missing_executable_paths``
+          names exactly which, and those are the only files for which affected
+          selection would be unsafe.
+
+        Only the second is addressable by smarter selection. Recording both
+        makes that split measurable across runs instead of assumed.
+        """
+        self._payload["testmon_selection"] = {
+            "selection_mode": selection_mode,
+            "state_status": state_status,
+            "state_reason": state_reason,
+            "missing_executable_paths": list(missing_executable_paths),
+            "missing_executable_path_count": len(tuple(missing_executable_paths)),
+            "runtime_data_paths": list(runtime_data_paths),
+            "copied_from": copied_from,
+        }
+        self.write()
+
+    @property
+    def testmon_selection(self) -> dict[str, Any] | None:
+        """The recorded selection block, for surfaces (history rows) that outlive receipts."""
+        selection = self._payload.get("testmon_selection")
+        return dict(selection) if isinstance(selection, dict) else None
+
+    @property
+    def selection_may_run_broadly(self) -> bool:
+        """Whether an affected-mode lane can still execute a near-complete corpus.
+
+        pytest-testmon always selects tests it has never recorded, so an
+        ``affected`` lane over an ``incomplete`` graph (an interrupted
+        bootstrap fingerprinted only part of the corpus) runs every
+        still-unknown test. Its basetemp demand is then full-suite-shaped,
+        and placing it on the bounded tmpfs kills the run at the 2 GiB cap
+        mid-flight (observed 2026-08-18: 2108 MiB allocated > 2048 MiB,
+        SIGTERM at 117s). Only a ``valid`` graph makes a narrow selection.
+        """
+        selection = self._payload.get("testmon_selection")
+        if not isinstance(selection, dict):
+            return False
+        return selection.get("state_status") != "valid"
+
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         index = len(self._payload["steps"]) + 1
         step_id = f"{index:02d}-{_slug(label)}"
@@ -1656,7 +1773,6 @@ class VerifyRun:
         checkout_mutation_path: str | None = None,
         checkout_diagnosis: str | None = None,
         pytest_aggregate: Mapping[str, Any] | None = None,
-        invocation_budget_s: float | None = None,
     ) -> dict[str, Any]:
         self._payload["finished_at"] = utc_now()
         self._payload["duration_s"] = round(duration_s, 2)
@@ -1671,8 +1787,6 @@ class VerifyRun:
             self._payload["checkout_mutation_path"] = checkout_mutation_path
         if checkout_diagnosis is not None:
             self._payload["checkout_diagnosis"] = checkout_diagnosis
-        if invocation_budget_s is not None:
-            self._payload["invocation_budget_s"] = invocation_budget_s
         if pytest_aggregate is not None:
             self._payload["pytest_aggregate"] = dict(pytest_aggregate)
         if verification_scope is not None:
@@ -1683,6 +1797,35 @@ class VerifyRun:
         return dict(self._payload)
 
 
+def pytest_step_run_id(run_id: str, step_id: str) -> str:
+    """Return the pytest-invocation identity for one step of a verify run.
+
+    A verify run drives more than one pytest invocation — the parallel lane
+    and then the ``load_sensitive`` serial lane — and the basetemp directory
+    is named from this identity. Sharing it across both lanes made them share
+    one basetemp: the serial lane's ``TempPathFactory.getbasetemp`` then tried
+    to ``rm_rf`` the parallel lane's 20k-test tree and ``mkdir`` it again, and
+    any single undeletable leaf turned every test in that lane into a setup
+    ``FileExistsError`` (59 of them on run 20260817T054610Z). The verify run
+    keeps its own identity in ``POLYLOGUE_VERIFY_RUN_ID``; this one names the
+    invocation, so each lane owns a private tree.
+    """
+    step_index = step_id.split("-", 1)[0]
+    return f"{run_id}-s{step_index}" if step_index.isdigit() else f"{run_id}-{step_id}"
+
+
+def pytest_run_id_belongs_to_verify_run(pytest_run_id: str | None, verify_run_id: str | None) -> bool:
+    """Report whether a pytest identity was issued by this verify run.
+
+    Pytest identities are lane-scoped (:func:`pytest_step_run_id`), so they are
+    no longer equal to the verify run id they descend from. Callers recognising
+    "our own supervisor set this basetemp" must test descent, not equality.
+    """
+    if not pytest_run_id or not verify_run_id:
+        return False
+    return pytest_run_id == verify_run_id or pytest_run_id.startswith(f"{verify_run_id}-")
+
+
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
     # The merge-gate invocation receipt belongs to the top-level devtools
@@ -1691,7 +1834,7 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
     updated.pop(VERIFICATION_INVOCATION_ID_ENV, None)
     updated.pop(VERIFICATION_RECEIPT_PATH_ENV, None)
     updated["POLYLOGUE_VERIFY_RUN_ID"] = run.run_id
-    updated["POLYLOGUE_PYTEST_RUN_ID"] = run.run_id
+    updated["POLYLOGUE_PYTEST_RUN_ID"] = pytest_step_run_id(run.run_id, artifacts.step_id)
     updated["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(artifacts.events_dir)
     updated["POLYLOGUE_PYTEST_EVENTS_PATH"] = str(artifacts.events_merged_path)
     updated["POLYLOGUE_PYTEST_SELECTION_PATH"] = str(artifacts.selection_path)
@@ -1953,7 +2096,11 @@ def checkout_hash(root: Path) -> str:
 
 
 DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
-_CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
+_CLOUD_PYTEST_BASETEMP_ROOT = Path(CLOUD_SENTINELS["POLYLOGUE_PYTEST_BASETEMP_ROOT"])
+#: Worker count `.claude/settings.json` pins for the cloud lane.
+# Derived from the single enumeration, but kept as module constants so tests can
+# patch the sentinel VALUE while the predicate stays shared.
+_CLOUD_PYTEST_WORKERS = CLOUD_SENTINELS["POLYLOGUE_PYTEST_WORKERS"]
 PYTEST_TMPFS_ROOT = Path("/dev/shm")
 _PYTEST_BASETEMP_CLAIM_PREFIX = ".polylogue-pytest-claim-"
 
@@ -2046,7 +2193,7 @@ def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
 
     normalized = dict(env)
     configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
-    if configured == str(_CLOUD_PYTEST_BASETEMP_ROOT) and DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+    if configured == str(_CLOUD_PYTEST_BASETEMP_ROOT) and not running_in_cloud_sandbox():
         normalized.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
     return normalized
 
@@ -2349,14 +2496,44 @@ def apply_managed_pytest_runtime_policy(
 
 
 def adaptive_pytest_worker_count(env: Mapping[str, str]) -> int:
-    """Return an explicit worker override or the current adaptive count."""
-    configured = env.get("POLYLOGUE_PYTEST_WORKERS", "").strip()
-    if configured:
-        try:
-            return max(0, int(configured))
-        except ValueError as exc:
-            raise PytestResourceError(f"invalid POLYLOGUE_PYTEST_WORKERS={configured!r}") from exc
+    """Return an explicit worker override or the current adaptive count.
+
+    ``.claude/settings.json`` pins two workers so a cloud sandbox does not
+    oversubscribe its small runner, and agent subprocesses inherit that on the
+    workstation, where it caps every run at two workers on a 24-thread machine
+    and turns a bounded suite into an hours-long one. Same leak class as
+    POLYLOGUE_ARCHIVE_ROOT and POLYLOGUE_PYTEST_BASETEMP_ROOT, and the same
+    treatment: drop that exact cloud value where the workstation scratch mount
+    proves this is not a sandbox, and let the adaptive policy size the run.
+    Any other value is a deliberate operator override and still wins.
+    """
+    configured = configured_pytest_worker_request(env)
+    if configured is not None:
+        return configured
     return adaptive_pytest_runtime_policy().workers
+
+
+def configured_pytest_worker_request(env: Mapping[str, str]) -> int | None:
+    """The worker count the environment asked for, scrubbed and validated.
+
+    One resolver for one fact. Callers differ in what they do when the
+    environment asks for nothing -- `devtools verify` sizes the run adaptively,
+    a focused `devtools test` stays single-process on purpose -- but they must
+    agree on what "asked for" MEANS, including that the cloud pin is not an
+    answer on this workstation. Reading the variable directly, as run_tests once
+    did, silently reinstates that pin for focused runs.
+
+    Returns None when the environment expresses no usable preference.
+    """
+    configured = env.get("POLYLOGUE_PYTEST_WORKERS", "").strip()
+    if configured == _CLOUD_PYTEST_WORKERS and not running_in_cloud_sandbox():
+        configured = ""
+    if not configured:
+        return None
+    try:
+        return max(0, int(configured))
+    except ValueError as exc:
+        raise PytestResourceError(f"invalid POLYLOGUE_PYTEST_WORKERS={configured!r}") from exc
 
 
 def _is_tmpfs_dir(path: Path) -> bool:

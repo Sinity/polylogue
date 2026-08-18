@@ -9,10 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-from polylogue.mcp.archive_support import archive_index_active_paths
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -165,15 +162,3 @@ async def select_context_image_sessions(
             )
 
     return ContextImageSelection(sessions=[], match_strategy="strict", query_total=0)
-
-
-def archive_context_image_active(
-    *,
-    archive_root: Path,
-    db_anchor_path: Path,
-) -> bool:
-    """Return whether context-image selection should read archive index data."""
-    return archive_index_active_paths(
-        archive_root=archive_root,
-        db_anchor_path=db_anchor_path,
-    )

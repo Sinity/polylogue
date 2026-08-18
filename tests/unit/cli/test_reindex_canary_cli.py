@@ -1588,7 +1588,11 @@ def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
     )
 
     assert result.exit_code == 1
-    assert "classification is incomplete" in result.output
+    # Name the offending column rather than a refusal sentence: the wording is
+    # the CLI's to change, but a rejection that does not tell the operator
+    # which declaration failed to cover the diff is not a usable rejection.
+    assert "different_column" in result.output
+    assert "sessions" in result.output
     assert not report_path.exists()
 
 
@@ -1909,7 +1913,8 @@ def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_fro
     )
 
     assert rejected.exit_code == 1
-    assert "classification is incomplete" in rejected.output
+    assert "forged_column" in rejected.output
+    assert "sessions" in rejected.output
     assert not rejected_report_path.exists()
 
 

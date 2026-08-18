@@ -114,12 +114,45 @@ def _readiness_index_reason(config: Config | None, selection: SessionQuerySpec) 
     )
 
 
+def _selection_is_action_scoped(selection: SessionQuerySpec) -> bool:
+    return bool(
+        selection.action_terms
+        or selection.excluded_action_terms
+        or selection.action_sequence
+        or selection.action_text_terms
+        or selection.tool_terms
+        or selection.excluded_tool_terms
+        or selection.retrieval_lane in {"actions", "hybrid"}
+    )
+
+
 async def _action_read_model_reason(
     repository: object,
     selection: SessionQuerySpec,
 ) -> QueryMissReason | None:
-    del repository, selection
-    return None
+    """Attribute an action-scoped miss to an archive with no indexed actions.
+
+    ``actions`` is a view over tool_use/tool_result blocks, so an archive that
+    has sessions but no tool blocks makes every action-scoped query miss for a
+    reason the predicate breakdown cannot express: the filter is not too narrow,
+    the relation is empty. This returned ``None`` unconditionally, so that miss
+    was silently unattributable among the six reason producers.
+    """
+    if not _selection_is_action_scoped(selection):
+        return None
+    action_count = _int_value(await _call_optional(repository, "count_actions", origin=_selected_origin(selection)))
+    if action_count is None or action_count > 0:
+        return None
+    return QueryMissReason(
+        code="action_read_model_empty",
+        severity="info",
+        summary="This archive scope has no indexed actions.",
+        detail=(
+            "The action relation is derived from tool_use/tool_result blocks; none are present, "
+            "so any action or tool filter matches nothing regardless of its terms."
+        ),
+        count=0,
+    )
 
 
 def _archive_empty_reason(archive_count: int | None) -> QueryMissReason | None:

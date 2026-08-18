@@ -129,14 +129,8 @@ async def test_search_action_results_fallback_batches_scores_and_keeps_best(monk
 
 @pytest.mark.asyncio
 async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.core.errors import DatabaseError
-
     repository = SimpleNamespace(search_actions=AsyncMock())
     direct = [_session("conv-direct")]
-
-    monkeypatch.setattr(
-        "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=True)
-    )
 
     repository.search_actions.return_value = direct
     ready_results = await search_action_results(
@@ -151,12 +145,6 @@ async def test_search_action_results_uses_ready_path_and_raises_on_error(monkeyp
     repository.search_actions.reset_mock(side_effect=True, return_value=True)
     repository.search_actions.side_effect = RuntimeError("boom")
     with pytest.raises(RuntimeError, match="boom"):
-        await search_action_results(SessionQueryPlan(query_terms=("needle",)), repository, limit=2)
-
-    monkeypatch.setattr(
-        "polylogue.archive.query.retrieval_candidates.action_search_ready", AsyncMock(return_value=False)
-    )
-    with pytest.raises(DatabaseError, match="Action search index is not fresh"):
         await search_action_results(SessionQueryPlan(query_terms=("needle",)), repository, limit=2)
 
 

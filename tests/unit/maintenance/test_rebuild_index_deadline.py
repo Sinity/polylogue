@@ -51,6 +51,8 @@ from polylogue.sources.revision_backfill import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -76,6 +78,7 @@ def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
     """Write ``count`` raws that each parse to their own logical cohort."""
     initialize_active_archive_root(root)
     raw_ids: list[str] = []
+    seeded: dict[str, bytes] = {}
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(count):
             payload = _codex_session(f"sess-{index}", (("user", f"hello {index}"), ("assistant", f"hi {index}")))
@@ -87,7 +90,15 @@ def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
                     acquired_at_ms=index + 1,
                 )
             )
+            seeded[raw_ids[-1]] = payload
+    record_codex_parser_census(root, seeded)
+    decide_raw_revision_authority(root)
     return raw_ids
+
+
+def _receipt(root: Path) -> Path:
+    """A fresh schema-inference receipt: the rebuild preflight refuses without one."""
+    return write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
 
 
 def test_deadline_check_invoked_between_replay_cohorts_not_only_after_return(tmp_path: Path) -> None:
@@ -164,7 +175,12 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("polylogue.maintenance.rebuild_index.time.time", fake_time)
         first_pass = rebuild_index_from_source_sync(
-            RebuildIndexRequest(archive_root=root, raw_batch_size=10, pass_deadline_seconds=30.0)
+            RebuildIndexRequest(
+                archive_root=root,
+                schema_inference_receipt_path=_receipt(root),
+                raw_batch_size=10,
+                pass_deadline_seconds=30.0,
+            )
         )
 
     assert first_pass.status == "deferred"
@@ -186,7 +202,9 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
 
     # Real clock restored (the monkeypatch context exited above); the
     # transaction's durable 30s budget is ample for this tiny fixture.
-    final_pass = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, operation_id=operation_id))
+    final_pass = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=_receipt(root), operation_id=operation_id)
+    )
     assert final_pass.status == "replayed"
     assert final_pass.materialized is True
 

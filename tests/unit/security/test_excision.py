@@ -328,12 +328,15 @@ class TestApplySessionExcision:
         from polylogue.pipeline.services.archive_ingest import parse_sources_archive
         from polylogue.scenarios import build_default_corpus_specs
         from polylogue.schemas.synthetic import SyntheticCorpus
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier as _Tier
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
         archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        initialize_archive_database(archive_root / "source.db", _Tier.SOURCE)
-        initialize_archive_database(archive_root / "index.db", _Tier.INDEX)
+        # Bootstrap the archive rather than hand-creating two tiers: a
+        # per-tier initialize leaves no fresh-bootstrap marker, so startup
+        # reconciliation treats this as an established archive being carried
+        # forward and demands released train evidence for every durable version
+        # above the adoption floor.
+        initialize_active_archive_root(archive_root)
 
         specs = build_default_corpus_specs(providers=["codex"], count=1, messages_min=2, messages_max=3, seed=11)
         corpus_dir = tmp_path / "corpus"

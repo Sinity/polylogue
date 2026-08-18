@@ -1470,6 +1470,15 @@ def embed_archive_session_sync(
             model=str(text_provider.model),
             dimensions=int(text_provider.dimension),
         )
+        # Snapshot the *configured* recipe as it stands before any provider call.
+        # The post-materialization guard below asks "did the recipe change while
+        # we worked", and it can only answer that by comparing configuration to
+        # configuration. Comparing it to ``recipe`` -- which is derived from the
+        # provider actually in use -- reports a mismatch that was already true
+        # before the work began, so any caller whose provider differs from the
+        # configured one (a catch-up run pinned to an existing generation's
+        # model, for instance) supersedes every attempt and re-queues forever.
+        configured_recipe_before = _configured_embedding_recipe()
         # Derived directly from row["text"] -- the exact same string handed to
         # the embedder below -- so hash validity equals vector validity by
         # construction (polylogue-q88p). Computed once here in Python, not
@@ -1532,8 +1541,8 @@ def embed_archive_session_sync(
         if (
             current_source_hash != attempt.source_hash
             or current_message_count != len(embeddable)
-            or current_recipe.recipe_hash != attempt.recipe_hash
-            or current_recipe.output_contract_hash != attempt.output_contract_hash
+            or current_recipe.recipe_hash != configured_recipe_before.recipe_hash
+            or current_recipe.output_contract_hash != configured_recipe_before.output_contract_hash
         ):
             supersede_embedding_attempt(
                 embeddings_conn,

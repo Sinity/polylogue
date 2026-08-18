@@ -117,10 +117,16 @@ class RepositoryVectorMixin:
             return {
                 "source_embedded_messages": source_embedded_messages,
                 "results": [],
+                "unresolved_message_hits": 0,
             }
 
         message_ids = [message_id for message_id, _ in results]
         message_to_session = await self._get_message_session_mapping(message_ids)
+        # A hit whose message id resolves to no row is not "no match" -- it means the
+        # embeddings tier references messages the index does not have, so the ranking
+        # is being computed over a broken join. Count it and report it, rather than
+        # letting it disappear into an ordinary empty result set.
+        unresolved_hits = sum(1 for message_id, _ in results if message_id not in message_to_session)
         aggregates: dict[str, tuple[float, set[str]]] = {}
         for message_id, distance in results:
             candidate_id = message_to_session.get(message_id)
@@ -153,6 +159,7 @@ class RepositoryVectorMixin:
         return {
             "source_embedded_messages": source_embedded_messages,
             "results": hits,
+            "unresolved_message_hits": unresolved_hits,
         }
 
     async def _get_message_session_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:

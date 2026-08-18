@@ -65,7 +65,20 @@ def _validator_for_payload(
             envelope.payload,
             source_path=source_path,
         )
-    except (FileNotFoundError, ImportError):
+    except FileNotFoundError:
+        # This provider ships no schema: an expected state, counted by the caller
+        # as `skipped_no_schema`.
+        return None
+    except ImportError:
+        # A validator module that exists but will not import is a defect, not an
+        # absent schema. Reporting it as `skipped_no_schema` made a broken
+        # validator indistinguishable from a provider that never had one, so a
+        # whole provider could silently stop being validated.
+        logger.exception(
+            "validator import failed for provider %s; validation skipped for %s",
+            envelope.provider,
+            source_path,
+        )
         return None
 
 

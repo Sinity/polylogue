@@ -858,12 +858,12 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
         conn.close()
 
     assert [(row["message_id"], row["native_id"], row["position"]) for row in message_rows] == [
-        (f"{session_id}:0.0", None, 0),
-        (f"{session_id}:1.0", None, 1),
+        (f"{session_id}:p:0.0", None, 0),
+        (f"{session_id}:p:1.0", None, 1),
     ]
     assert [(row["message_id"], row["text"]) for row in block_rows] == [
-        (f"{session_id}:0.0", "older text"),
-        (f"{session_id}:1.0", "newer text"),
+        (f"{session_id}:p:0.0", "older text"),
+        (f"{session_id}:p:1.0", "newer text"),
     ]
     assert session_message_count == 2
 

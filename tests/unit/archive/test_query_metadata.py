@@ -154,7 +154,10 @@ def test_query_unit_descriptors_own_terminal_aliases() -> None:
     assert "boundary" in terminal_query_fields("context-snapshots")
     assert {"tool", "handler", "status"}.issubset(terminal_query_fields("observed-events"))
     assert {"tool", "handler", "status"}.issubset(observed_descriptor.aggregate_group_fields)
-    assert "polylogue --format json runs where ..." in terminal_query_cli_surfaces()
+    # The surface example carries the `find "…"` form the strict command floor
+    # (#1842) requires: a bare unquoted expression is a UsageError, so the
+    # pre-floor spelling would advertise an invocation that cannot run.
+    assert 'polylogue --format json find "runs where ..."' in terminal_query_cli_surfaces()
     assert "runs where session.repo:polylogue AND role:main" in terminal_query_examples()
 
 

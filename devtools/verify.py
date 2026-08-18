@@ -34,6 +34,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -45,6 +46,17 @@ from typing import Any
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
+)
+from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
+from devtools.pytest_collection_contract import (
+    CLEAR_CONFIGURED_ADDOPTS,
+    CLOSED_WORLD_COLLECTION_ARGS,
+    IGNORED_COLLECTION_ARGS,
+    MANAGED_PLUGIN_ARGS,
+    MANAGED_PLUGIN_NAMES,
+    PARALLEL_MARKER_EXPRESSION,
+    PROGRESS_PLUGIN_NAME,
+    SERIAL_MARKER_EXPRESSION,
 )
 from devtools.pytest_progress_plugin import merge_worker_collection_payloads
 from devtools.pytest_supervisor import (
@@ -102,6 +114,7 @@ from devtools.verify_runs import (
     normalize_pytest_basetemp_env,
     pytest_basetemp_path,
     pytest_command_worker_request,
+    pytest_step_run_id,
     pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     start_checkout_mutation_monitor,
@@ -122,29 +135,14 @@ from polylogue.scenarios.workload import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-_PYTEST_CLEAR_CONFIGURED_ADDOPTS = "--override-ini=addopts="
-_PYTEST_MANAGED_PLUGIN_NAMES = (
-    "anyio",
-    "asyncio",
-    "hypothesispytest",
-    "benchmark",
-    "pytest_cov",
-    "pytest_jsonreport",
-    "randomly",
-    "syrupy",
-    "timeout",
-    "xdist",
-    "pytest-testmon",
-)
-_PYTEST_MANAGED_PLUGIN_ARGS = tuple(argument for name in _PYTEST_MANAGED_PLUGIN_NAMES for argument in ("-p", name))
-_PYTEST_CLOSED_WORLD_COLLECTION_ARGS = (
-    _PYTEST_CLEAR_CONFIGURED_ADDOPTS,
-    "--override-ini=python_files=test_*.py *_test.py fuzz_*.py",
-    "--override-ini=python_classes=Test",
-    "--override-ini=python_functions=test",
-    "--override-ini=norecursedirs=",
-    "tests",
-)
+_PYTEST_CLEAR_CONFIGURED_ADDOPTS = CLEAR_CONFIGURED_ADDOPTS
+# Collection-affecting values live in devtools/pytest_collection_contract.py and
+# are re-exported here under their historical names. That module -- not this
+# one -- is the testmon environment-digest input, so editing this orchestrator
+# no longer discards every recorded dependency graph.
+_PYTEST_MANAGED_PLUGIN_NAMES = MANAGED_PLUGIN_NAMES
+_PYTEST_MANAGED_PLUGIN_ARGS = MANAGED_PLUGIN_ARGS
+_PYTEST_CLOSED_WORLD_COLLECTION_ARGS = CLOSED_WORLD_COLLECTION_ARGS
 NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
 
 
@@ -425,7 +423,6 @@ PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
-VERIFY_INVOCATION_BUDGET_S = 3600.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
@@ -1213,7 +1210,10 @@ def _run_pytest_with_heartbeat(
         if artifacts is not None
         else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
-    pytest_run_id = run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(os.getpid()))
+    # Prefer the value pytest itself will read: the basetemp directory is named
+    # from it, and it is lane-scoped so the parallel and serial lanes of one
+    # verify run do not share a tree.
+    pytest_run_id = env.get("POLYLOGUE_PYTEST_RUN_ID") or (run.run_id if run is not None else str(os.getpid()))
     tmpfs_cleanup_path = _supervised_tmpfs_cleanup_path(
         root=Path(cwd) if cwd is not None else Path.cwd(),
         run_id=pytest_run_id,
@@ -1405,7 +1405,7 @@ def _run_pytest_with_heartbeat(
     sampler = (
         ResourceSampler(
             root_pid=process.pid,
-            run_id=run.run_id if run is not None else env.get("POLYLOGUE_PYTEST_RUN_ID", str(process.pid)),
+            run_id=env.get("POLYLOGUE_PYTEST_RUN_ID") or (run.run_id if run is not None else str(process.pid)),
             root=Path(cwd) if cwd is not None else Path.cwd(),
             env=env,
             output_path=artifacts.resources_path if artifacts is not None else Path.cwd() / CURRENT_RESOURCES_PATH,
@@ -1851,6 +1851,16 @@ def _run_step(
         _clear_pytest_report(cmd)
     artifacts = run.start_step(label=label, cmd=cmd) if run is not None else None
     env = _subprocess_env(native_testmon_data=native_testmon_data)
+    if is_pytest and run is not None and artifacts is not None:
+        # Stamp this step's pytest identity before basetemp admission, not just
+        # before launch. The identity names the basetemp directory, so a
+        # preflight run against an inherited one admits (or refuses) a tree this
+        # step will never use. It refuses whenever the ambient environment
+        # belongs to another managed run — a nested `verify.main()` inside a
+        # test inherits the enclosing run's id, resolves to a basetemp that run
+        # already claimed, and exits 125 on a claim it should never have
+        # contended for.
+        env["POLYLOGUE_PYTEST_RUN_ID"] = pytest_step_run_id(run.run_id, artifacts.step_id)
     external_addopts_neutralized = False
     external_plugins_neutralized = False
     if owns_pytest_environment:
@@ -1879,7 +1889,11 @@ def _run_step(
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
-                full_suite=_pytest_uses_full_suite_basetemp(label),
+                # An affected lane over a non-valid graph still runs every
+                # never-recorded test, so its basetemp demand is
+                # full-suite-shaped -- see selection_may_run_broadly.
+                full_suite=_pytest_uses_full_suite_basetemp(label)
+                or (managed_native_lane and run is not None and run.selection_may_run_broadly),
             )
         except PytestResourceError as exc:
             elapsed = time.monotonic() - t0
@@ -2301,6 +2315,10 @@ def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str
     # lets sitecustomize alter pytest controls before the managed command runs.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONOPTIMIZE", None)
+    # Bytecode writing must stay enabled: PYTHONPYCACHEPREFIX below sends it to
+    # .cache/pycache, and without it pytest re-runs assertion rewriting over
+    # every test module in every worker on every run.
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONUSERBASE", None)
     env["PYTHONNOUSERSITE"] = "1"
@@ -2337,14 +2355,14 @@ def _native_pytest_steps(
         "pytest",
         "-q",
         "--tb=short",
-        "--ignore=tests/benchmarks",
+        *IGNORED_COLLECTION_ARGS,
         "--durations=10",
         f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
         "--json-report",
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={PYTEST_REPORT_PATH}",
         "-p",
-        "devtools.pytest_progress_plugin",
+        PROGRESS_PLUGIN_NAME,
     ]
     pytest_cmd.extend(_PYTEST_MANAGED_PLUGIN_ARGS)
     pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
@@ -2357,7 +2375,7 @@ def _native_pytest_steps(
     parallel_cmd = [
         *pytest_cmd,
         "-m",
-        "not load_sensitive",
+        PARALLEL_MARKER_EXPRESSION,
         *native_args,
         *parallel_worker_args,
     ]
@@ -2373,7 +2391,7 @@ def _native_pytest_steps(
     serial_cmd.extend(
         [
             "-m",
-            "load_sensitive",
+            SERIAL_MARKER_EXPRESSION,
             *native_args,
             "-p",
             "no:randomly",
@@ -2694,21 +2712,47 @@ def _pytest_profile() -> str:
     return "correctness=complete"
 
 
+#: The Hypothesis profile `.claude/settings.json` pins for the cloud sandbox lane.
+_CLOUD_HYPOTHESIS_PROFILE = CLOUD_SENTINELS["HYPOTHESIS_PROFILE"]
+
+
+def _resolved_hypothesis_profile(env: Mapping[str, str] | None = None) -> str:
+    """Return the Hypothesis profile, ignoring the cloud pin on a workstation.
+
+    `.claude/settings.json` sets HYPOTHESIS_PROFILE=ci so a cloud sandbox runs a
+    cheap profile, and agent subprocesses inherit it on the workstation. The
+    profiles are not equivalent: `ci` caps at 30 examples (5 under POLYLOGUE_CI)
+    where `default` runs 100, so the leak silently removed 70% of every property
+    test's search in the ordinary dev loop -- weaker coverage with nothing on
+    screen to say so.
+
+    Same treatment as the POLYLOGUE_PYTEST_WORKERS and POLYLOGUE_ARCHIVE_ROOT
+    sentinels: drop that exact value only where this is provably not CI and not a
+    sandbox -- POLYLOGUE_CI unset and the workstation scratch mount present. Any
+    other profile, and `ci` in real CI, is a deliberate choice and still wins.
+    """
+    values = os.environ if env is None else env
+    configured = (values.get("HYPOTHESIS_PROFILE") or "").strip()
+    if (
+        configured == _CLOUD_HYPOTHESIS_PROFILE
+        and not (values.get("POLYLOGUE_CI") or "").strip()
+        and not running_in_cloud_sandbox()
+    ):
+        return "default"
+    return configured or "default"
+
+
 def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str | None]:
     environment = {
         # Hypothesis uses its default profile when the variable is absent.
         # Record that effective value in the testmon environment identity so a
         # bootstrap graph is reusable by the following affected invocation.
-        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE") or "default",
+        "HYPOTHESIS_PROFILE": _resolved_hypothesis_profile(),
         "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
     }
     if force_release_profile:
         environment["HYPOTHESIS_PROFILE"] = "default"
     return environment
-
-
-def _remaining_invocation_budget(started_at: float) -> float:
-    return max(0.0, VERIFY_INVOCATION_BUDGET_S - (time.monotonic() - started_at))
 
 
 def _native_environment_after_run(
@@ -2745,7 +2789,6 @@ def _release_baseline_allowed(
         return False
     cleanup = aggregate.get("cleanup")
     containment = aggregate.get("containment")
-    deadline = aggregate.get("deadline")
     return bool(
         aggregate.get("complete_corpus_covered") is True
         and aggregate.get("terminal_green") is True
@@ -2756,8 +2799,6 @@ def _release_baseline_allowed(
         and cleanup.get("complete") is True
         and isinstance(containment, Mapping)
         and containment.get("complete") is True
-        and isinstance(deadline, Mapping)
-        and deadline.get("met") is True
     )
 
 
@@ -2823,7 +2864,6 @@ def _finalize_preflight_failure(
         final_worktree_fingerprint=final_worktree_fingerprint,
         checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
         checkout_diagnosis=checkout_diagnosis,
-        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     history_entry = {
         **payload,
@@ -2836,7 +2876,6 @@ def _finalize_preflight_failure(
         "final_worktree_fingerprint": final_worktree_fingerprint,
         "steps": [step] if step is not None else [],
         "total_duration_s": duration_s,
-        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": False,
@@ -2874,6 +2913,13 @@ def _main(argv: list[str] | None = None) -> int:
         help="Run the native pytest-testmon lifecycle plus verification-lab checks.",
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
+    parser.add_argument(
+        "--no-isolated",
+        dest="isolated",
+        action="store_false",
+        default=True,
+        help="Run directly against the working tree instead of a frozen snapshot (debugging escape hatch).",
+    )
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -3008,7 +3054,6 @@ def _main(argv: list[str] | None = None) -> int:
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
-                deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
             )
             if (
                 preparation.selection_mode == "bootstrap"
@@ -3020,7 +3065,6 @@ def _main(argv: list[str] | None = None) -> int:
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
-                    deadline_monotonic=started_at + VERIFY_INVOCATION_BUDGET_S,
                 )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
@@ -3052,7 +3096,27 @@ def _main(argv: list[str] | None = None) -> int:
                 mutation_monitor=mutation_monitor,
                 initial_worktree_fingerprint=checkout_fingerprint,
             )
-        testmon_mode = "full" if full_requested or runtime_data_paths else preparation.selection_mode
+        # OPERATOR DECISION 2026-08-18: untraceable changes are RECORDED, not
+        # paid for. Python tracing cannot observe non-Python runtime data, so a
+        # changed JSON fixture or packaging file can yield a green zero-selection
+        # run -- a real hazard, and the reason this used to force the complete
+        # corpus. The operator weighed that against the measured cost and chose
+        # the hazard: forcing a full corpus on every such change stopped work
+        # entirely. runtime_data_paths still lands in the receipt and in
+        # `devtools why`, so the exposure is visible per run and a deliberate
+        # `--all` remains available before anything that needs the guarantee.
+        testmon_mode = "full" if full_requested else preparation.selection_mode
+        # Record the cause, not just the outcome. A bootstrap is ~9.5x a warm
+        # run; which of the two triggers fired decides whether better selection
+        # could have avoided it, and the receipt previously said neither.
+        _ACTIVE_VERIFY_RUN.run.record_selection(
+            selection_mode=testmon_mode,
+            state_status=preparation.local_state.status,
+            state_reason=preparation.local_state.reason,
+            missing_executable_paths=preparation.local_state.missing_executable_paths,
+            runtime_data_paths=runtime_data_paths,
+            copied_from=str(preparation.copied_from) if preparation.copied_from is not None else None,
+        )
         if preparation.removed_paths:
             sys.stderr.write(
                 "verify: repaired invalid native pytest-testmon state by removing only "
@@ -3065,7 +3129,8 @@ def _main(argv: list[str] | None = None) -> int:
             sys.stderr.write("verify: native pytest-testmon environment is empty; plain verify will build it\n")
         if runtime_data_paths and not full_requested:
             sys.stderr.write(
-                "verify: changed package runtime data is outside Python tracing; running the complete corpus: "
+                "verify: changed package runtime data is outside Python tracing; recorded as exposure "
+                "(run `devtools verify --all` before anything that needs the guarantee): "
                 + ", ".join(runtime_data_paths)
                 + "\n"
             )
@@ -3113,21 +3178,9 @@ def _main(argv: list[str] | None = None) -> int:
     exit_code = 0
     native_graph_touched = False
     for label, cmd in steps:
-        remaining = _remaining_invocation_budget(started_at)
-        if remaining <= 0:
-            deadline_step = {
-                "name": label,
-                "duration_s": 0.0,
-                "exit": 124,
-                "diagnosis": "verify_invocation_deadline_exceeded",
-                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
-            }
-            step_results.append(deadline_step)
-            exit_code = 124
-            break
         if label.startswith("pytest"):
             _warn_low_memory()
-        rc, elapsed, metadata = _run(label, cmd, run=verify_run, timeout_s=remaining)
+        rc, elapsed, metadata = _run(label, cmd, run=verify_run)
         step_result: dict[str, Any] = {"name": label, "duration_s": round(elapsed, 2), "exit": rc}
         step_result.update(metadata)
         if label.startswith("pytest native parallel"):
@@ -3171,12 +3224,21 @@ def _main(argv: list[str] | None = None) -> int:
             if checkout_fingerprint_unavailable
             else "checkout_mutation_monitor_unavailable"
         )
-    elif (
-        final_head != head
-        or preparation_mutation_observation.changed
-        or mutation_observation.changed
-        or final_checkout_fingerprint != checkout_fingerprint
+    elif final_head != head or final_checkout_fingerprint != checkout_fingerprint:
+        checkout_stable = False
+        diagnosis = "checkout_changed_during_verification"
+    elif (preparation_mutation_observation.changed or mutation_observation.changed) and not os.environ.get(
+        _ISOLATION_SENTINEL
     ):
+        # A transient observation (a path appeared and was gone again by the
+        # end, leaving head and fingerprint identical) can only poison an
+        # UNisolated run. Under snapshot isolation the pytest lanes see a
+        # frozen tree: the only mutations the monitor can observe at ROOT are
+        # the run's own exhaust, which the identical final fingerprint proves
+        # did not persist. Observed 2026-08-18: a fully green gate was
+        # invalidated -- and its freshly built testmon graph deleted -- over a
+        # transient pytest-cache-files-* scratch directory with identical
+        # before/after fingerprints.
         checkout_stable = False
         diagnosis = "checkout_changed_during_verification"
     else:
@@ -3200,12 +3262,24 @@ def _main(argv: list[str] | None = None) -> int:
         exit_code = 125
         sys.stderr.write("verify: checkout contents were not stable for exact-head evidence.\n")
         if native_graph_touched:
-            try:
-                removed = remove_invalid_native_testmon_state(ROOT)
-            except NativeTestmonRepairError as exc:
-                stability_step["testmon_cleanup_error"] = str(exc)
+            if os.environ.get(_ISOLATION_SENTINEL):
+                # The receipt is stale (attestation binds to the exact head),
+                # but the graph is not: snapshot-isolated lanes fingerprinted
+                # frozen content, so a checkout mutation cannot have poisoned
+                # any recorded edge. The pre-snapshot design deleted the graph
+                # here, which turned every invalidated receipt into a ~9.5x
+                # complete-corpus bootstrap on the next run (PR #3975 left
+                # this reaction behind when snapshots landed).
+                stability_step["testmon_graph_retained"] = (
+                    "snapshot-isolated lanes fingerprint frozen content; receipt staleness does not poison the graph"
+                )
             else:
-                stability_step["testmon_cleanup_paths"] = [str(path) for path in removed]
+                try:
+                    removed = remove_invalid_native_testmon_state(ROOT)
+                except NativeTestmonRepairError as exc:
+                    stability_step["testmon_cleanup_error"] = str(exc)
+                else:
+                    stability_step["testmon_cleanup_paths"] = [str(path) for path in removed]
 
     native_state = None
     if preparation is not None:
@@ -3213,7 +3287,34 @@ def _main(argv: list[str] | None = None) -> int:
             preparation,
             required_executable_paths=required_executable_paths,
         )
-        if not native_state.valid:
+        if native_state.status == "incomplete":
+            # Post-run, "incomplete" is exposure, not failure. Any collected
+            # test without recorded dependencies is selected by the run itself
+            # (that is testmon's unknown-test rule), so after a completed run
+            # every collected test either executed now or carries recorded
+            # edges. A changed file still edge-less at this point provably has
+            # no dependent test in the corpus -- a module nothing imports, or
+            # a path that no longer exists. Exiting 5 here made such a branch
+            # permanently ungateable: even the complete corpus cannot edge a
+            # file no test imports. The pre-run inspect still uses
+            # "incomplete" to shape selection.
+            step_results.append(
+                {
+                    "name": "pytest native graph exposure",
+                    "duration_s": 0.0,
+                    "exit": 0,
+                    "diagnosis": "native_testmon_uncovered_changed_paths",
+                    "reason": native_state.reason,
+                    "missing_executable_paths": list(native_state.missing_executable_paths),
+                }
+            )
+            if native_state.missing_executable_paths:
+                sys.stderr.write(
+                    "verify: no test in the corpus imports these changed modules (recorded exposure): "
+                    + ", ".join(native_state.missing_executable_paths)
+                    + "\n"
+                )
+        elif not native_state.valid:
             graph_step = {
                 "name": "pytest native graph validation",
                 "duration_s": 0.0,
@@ -3225,28 +3326,9 @@ def _main(argv: list[str] | None = None) -> int:
             step_results.append(graph_step)
             if exit_code == 0:
                 exit_code = 5
-            if native_state.missing_executable_paths:
-                sys.stderr.write(
-                    "verify: changed executable modules have no runtime dependency edge: "
-                    + ", ".join(native_state.missing_executable_paths)
-                    + "\n"
-                )
     _close_active_native_testmon_state()
 
     total_duration = round(time.monotonic() - started_at, 2)
-    deadline_recorded = any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in step_results)
-    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
-        step_results.append(
-            {
-                "name": "verify invocation deadline",
-                "duration_s": 0.0,
-                "exit": 124,
-                "diagnosis": "verify_invocation_deadline_exceeded",
-                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
-            }
-        )
-        exit_code = 124
-        deadline_recorded = True
     pytest_aggregate: dict[str, Any] | None = None
     native_environment = native_state.environment if native_state is not None else None
     if preparation is not None:
@@ -3259,34 +3341,15 @@ def _main(argv: list[str] | None = None) -> int:
             environment_reason=native_state.reason if native_state is not None else "post-run inspection unavailable",
             selection_mode=testmon_mode or "affected",
             invocation_duration_s=total_duration,
-            budget_s=VERIFY_INVOCATION_BUDGET_S,
         )
 
-    # Aggregation and final graph inspection are part of the same invocation
-    # deadline as collection and execution. Recompute once after aggregation
-    # so a run cannot gain release authority by crossing the budget during
-    # finalization rather than during a pytest lane.
+    # Finalization can outlast the last pytest lane, so wall_s is taken here
+    # rather than from the lanes alone.
     finalized_duration = round(time.monotonic() - started_at, 2)
     if finalized_duration > total_duration:
         total_duration = finalized_duration
-    if total_duration > VERIFY_INVOCATION_BUDGET_S and not deadline_recorded:
-        step_results.append(
-            {
-                "name": "verify invocation deadline",
-                "duration_s": 0.0,
-                "exit": 124,
-                "diagnosis": "verify_invocation_deadline_exceeded",
-                "timeout_s": VERIFY_INVOCATION_BUDGET_S,
-            }
-        )
-        exit_code = 124
-        deadline_recorded = True
     if pytest_aggregate is not None:
         pytest_aggregate["wall_s"] = total_duration
-        pytest_aggregate["deadline"] = {
-            "budget_s": VERIFY_INVOCATION_BUDGET_S,
-            "met": total_duration <= VERIFY_INVOCATION_BUDGET_S,
-        }
 
     release_baseline_allowed = _release_baseline_allowed(
         selection_mode=testmon_mode,
@@ -3329,11 +3392,22 @@ def _main(argv: list[str] | None = None) -> int:
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
-        "invocation_budget_s": VERIFY_INVOCATION_BUDGET_S,
+        # Focused-test rows (run_tests.py) already carry status/duration_s;
+        # carrying the same names here gives the history ONE queryable shape
+        # instead of a per-tier field hunt (lynchpin's readers fall back
+        # across spellings today; new analysis should not have to).
+        "duration_s": total_duration,
+        "status": "success" if exit_code == 0 else "failed",
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": release_baseline_allowed,
     }
+    if (recorded_selection := verify_run.testmon_selection) is not None:
+        # The bootstrap-cause split (absent vs incomplete vs valid) is the
+        # single most analysis-relevant fact a run row can carry -- the
+        # 2026-08-17 suite-cost analysis (polylogue-7kc67) had to open
+        # receipt JSON per run because history rows lacked it.
+        history_entry["testmon_selection"] = recorded_selection
     if preparation is not None:
         history_entry["testmon_environment"] = {
             "name": preparation.environment_name,
@@ -3359,7 +3433,6 @@ def _main(argv: list[str] | None = None) -> int:
         checkout_mutation_path=(preparation_mutation_observation.observed_path or mutation_observation.observed_path),
         checkout_diagnosis=checkout_diagnosis,
         pytest_aggregate=pytest_aggregate,
-        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     history_entry["pytest_aggregate"] = finalized_payload["pytest_aggregate"]
     if use_json:
@@ -3449,7 +3522,6 @@ def _finalize_verify_runner_exception(
         final_worktree_fingerprint=final_worktree_fingerprint,
         checkout_mutation_path=(mutation_observation.observed_path if mutation_observation is not None else None),
         checkout_diagnosis=checkout_diagnosis,
-        invocation_budget_s=VERIFY_INVOCATION_BUDGET_S,
     )
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)
@@ -3460,15 +3532,146 @@ def _finalize_verify_runner_exception(
     return exit_code
 
 
+#: Set inside a snapshot so the re-executed run does not snapshot itself.
+_ISOLATION_SENTINEL = "POLYLOGUE_VERIFY_ISOLATED"
+
+
+def _should_isolate(raw_argv: Sequence[str]) -> bool:
+    """Whether this invocation should re-execute against a frozen snapshot.
+
+    Default on. Declines only when the caller opted out, when this process IS the
+    isolated re-execution, or when the host cannot provide a namespace -- in
+    which case the run proceeds against the live tree and says so, rather than
+    failing a machine that simply lacks bwrap.
+    """
+    from devtools.snapshot_run import bubblewrap_available
+
+    if "--no-isolated" in raw_argv or os.environ.get(_ISOLATION_SENTINEL):
+        return False
+    if "--history" in raw_argv:
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # A verify invoked from inside a test is exercising this orchestration,
+        # not verifying the checkout: re-executing would spawn a real subprocess
+        # against a snapshot and the caller would observe none of the steps it
+        # asserts on. The isolation path has its own coverage in
+        # tests/unit/devtools/test_snapshot_run.py.
+        return False
+    if not bubblewrap_available():
+        sys.stderr.write(
+            "verify: bwrap unavailable, running against the live working tree; "
+            "edits during this run can still disturb it\n"
+        )
+        return False
+    return True
+
+
+def _reexec_isolated(raw_argv: list[str]) -> int:
+    """Re-run this verify against a frozen snapshot of the checkout.
+
+    Isolation is applied by re-execution rather than by wrapping the pytest step
+    alone, because every step reads the checkout: the static gates, the
+    generated-surface drift check and the lab policies would otherwise observe a
+    tree the pytest step did not. One boundary, one view.
+
+    Isolation is the default rather than a flag. A protection an operator has to
+    remember to ask for is one that is absent exactly when it is needed, and this
+    repository already records that failure mode: "a tool without a line in this
+    file is a tool the next session won't use." `--no-isolated` remains as a
+    debugging escape hatch.
+    """
+    from devtools.snapshot_run import (
+        SnapshotUnavailableError,
+        default_extra_binds,
+        materialize_snapshot,
+        snapshot_command,
+    )
+
+    inner = list(raw_argv)
+    snapshot = materialize_snapshot(ROOT)
+    try:
+        argv = snapshot_command(
+            [sys.executable, "-m", "devtools", "verify", *inner],
+            root=ROOT,
+            snapshot=snapshot,
+            extra_binds=default_extra_binds(),
+        )
+        environment = {**os.environ, _ISOLATION_SENTINEL: "1"}
+        sys.stderr.write(f"verify: running against a frozen snapshot of {ROOT}\n")
+        completed = subprocess.run(argv, check=False, env=environment)
+        return completed.returncode
+    except SnapshotUnavailableError as exc:
+        sys.stderr.write(f"verify: refusing to run unisolated after --isolated was requested: {exc}\n")
+        return 125
+    finally:
+        shutil.rmtree(snapshot, ignore_errors=True)
+
+
 @finalize_checkout_mutation_monitors
+@contextlib.contextmanager
+def _terminate_as_interrupt() -> Iterator[None]:
+    """Make SIGTERM finalize the run instead of vanishing with it.
+
+    A run is only written to the durable history once it FINISHES, and verify
+    installs no SIGTERM handler -- it only sends the signal to its own children.
+    So `pkill`, a scope teardown, or an operator who gives up waiting all end the
+    process with no record at all.
+
+    That omission is biased, not random: what gets killed is precisely the long
+    bootstrap nobody wanted to sit through, so the history systematically loses
+    its most expensive entries. Measured 2026-08-18: a lane that spent 48 minutes
+    on one terminated bootstrap contributed 0.04h to `devtools why --history`.
+
+    Raising KeyboardInterrupt reuses the finalization path that already records
+    duration, diagnosis and mutation state, rather than adding a second one.
+    SIGKILL remains unrecordable by construction.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _raise(signum: int, frame: object) -> None:
+        del signum, frame
+        raise KeyboardInterrupt
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _raise)
+    except (OSError, ValueError):
+        yield
+        return
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError, ValueError):
+            signal.signal(signal.SIGTERM, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     _ACTIVE_VERIFY_RUN = None
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if _should_isolate(raw_argv):
+        return _reexec_isolated(raw_argv)
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # A verify invoked from inside a test must not contend for THIS
+        # checkout's lifecycle lock.
+        #
+        # ROOT is module-level, so a nested main() locks the real checkout's
+        # .cache no matter which temporary repository the test points it at. When
+        # the outer run is a full-corpus verify holding that lock for half an
+        # hour, every such test blocks for the 60s timeout and then fails --
+        # which is why this family failed only inside `devtools verify` and
+        # passed standalone, and why it blocked the merge gate.
+        #
+        # A nested run owns no part of the outer graph: it drives its own
+        # temporary state and asserts on it. Serializing the two protects
+        # nothing, and the lock's real contract -- one lifecycle per checkout at
+        # a time -- is still enforced for every non-test invocation.
+        native_pytest_enabled = False
     lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
     try:
-        with lock:
+        with _terminate_as_interrupt(), lock:
             try:
                 return _main(argv)
             except KeyboardInterrupt as exc:

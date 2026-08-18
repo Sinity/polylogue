@@ -88,7 +88,15 @@ def _append_jsonl(path: Path, records: list[dict[str, object]]) -> int:
 
 
 def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes) -> str:
-    """Seed an archived raw row for the exact prefix stored before a restart."""
+    """Seed an archived, materialized raw row for the prefix stored before a restart.
+
+    Both tiers are required, because cursor reconciliation deliberately refuses to
+    trust a raw that cannot be shown to have become a session: it selects candidate
+    raws from ``source.db`` and then requires a matching ``sessions.raw_id`` row in
+    the active index. Seeding only the raw describes an archive where the prefix was
+    acquired but never materialized -- for which declining to reconcile is the
+    correct answer -- rather than the restart-with-a-lost-cursor case this pins.
+    """
     source_db = archive_root / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     raw_id = sha256(raw_bytes).hexdigest()
@@ -97,9 +105,9 @@ def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes)
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, native_id, source_path, source_index,
-                blob_hash, blob_size, acquired_at_ms
+                blob_hash, blob_size, acquired_at_ms, parsed_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
@@ -110,8 +118,25 @@ def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes)
                 bytes.fromhex(raw_id),
                 len(raw_bytes),
                 1_770_000_000_000,
+                # Candidate selection requires a parsed, error-free raw: an
+                # unparsed row is not evidence the prefix was ever ingested.
+                1_770_000_000_000,
             ),
         )
+
+    index_db = archive_root / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (native_id, origin, raw_id, content_hash) VALUES (?, ?, ?, ?)",
+            (path.stem, "claude-code-session", raw_id, bytes.fromhex(raw_id)[:32]),
+        )
+
+    # Reconciliation also requires the referenced blob to be present on disk, so a
+    # row pointing at content the archive can no longer produce is never trusted.
+    blob_path = archive_root / "blob" / raw_id[:2] / raw_id[2:]
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(raw_bytes)
     return raw_id
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -94,3 +95,26 @@ def test_convergence_warning_line_reports_unclassified_join_gaps(monkeypatch: py
         "3 raw/index join gap(s) found; "
         "results may be partial until daemon convergence classifies them."
     )
+
+
+def test_convergence_warning_line_reports_undetermined_when_probe_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unanswerable readiness check must not render as a healthy archive.
+
+    This warning is what tells the operator that query results may be partial
+    while a rebuild is in flight or raw materialization is behind. Swallowing the
+    failure and returning ``None`` made every such error indistinguishable from
+    "checked, and results are complete", so partial results were presented as
+    complete with nothing to indicate the check never ran.
+    """
+
+    def _raise(_ops_db: Path) -> list[dict[str, object]]:
+        raise sqlite3.OperationalError("no such table: index_rebuild_attempts")
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
+    monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", _raise)
+
+    warning = convergence_warning_line()
+
+    assert warning == "Archive convergence state could not be determined; results may be partial."

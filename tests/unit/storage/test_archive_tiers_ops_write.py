@@ -754,21 +754,39 @@ def test_record_route_observation_prunes_by_retention_window(tmp_path: Path) -> 
 
 
 def test_record_route_observation_caps_row_count(tmp_path: Path) -> None:
+    """The cap holds once the table is over it.
+
+    Seeded in bulk rather than through 20,005 individual calls. Each call commits
+    its own transaction, measured at 12.9 ms of fsync apiece -- 258s to fill the
+    table, which is why this test used to exceed its 120s timeout. That cost is a
+    property of the write path, not of the cap logic under test here, and driving
+    it 20,000 times measured the filesystem instead of the behaviour.
+    """
     conn = _connect(tmp_path / "ops.db")
     base_ms = 1_700_000_000_000
-    for i in range(ROUTE_OBSERVATION_ROW_CAP + 5):
-        record_route_observation(
-            conn,
-            observation_id=f"obs-{i}",
-            trace_id=f"t-{i}",
-            surface="cli",
-            route="cli.status",
-            started_at_ms=base_ms + i,
-            duration_ms=10,
-            status="ok",
+    seeded = ROUTE_OBSERVATION_ROW_CAP + 4
+    with conn:
+        conn.executemany(
+            "INSERT INTO route_observations (observation_id, trace_id, surface, route,"
+            " started_at_ms, duration_ms, status, sampled) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            [(f"obs-{i}", f"t-{i}", "cli", "cli.status", base_ms + i, 10, "ok") for i in range(seeded)],
         )
+
+    # One real observation through the production path trips the cap.
+    record_route_observation(
+        conn,
+        observation_id=f"obs-{seeded}",
+        trace_id=f"t-{seeded}",
+        surface="cli",
+        route="cli.status",
+        started_at_ms=base_ms + seeded,
+        duration_ms=10,
+        status="ok",
+    )
+
     row_count = int(conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0])
     assert row_count <= ROUTE_OBSERVATION_ROW_CAP
     # The oldest rows are the ones dropped -- the newest observation always survives.
     newest = list_route_observations(conn, limit=1)
-    assert newest[0].observation_id == f"obs-{ROUTE_OBSERVATION_ROW_CAP + 4}"
+    assert newest[0].observation_id == f"obs-{seeded}"
+    assert conn.execute("SELECT 1 FROM route_observations WHERE observation_id = 'obs-0'").fetchone() is None

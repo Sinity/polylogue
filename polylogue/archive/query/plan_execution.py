@@ -107,7 +107,7 @@ async def count_for_plan(
     plan: SessionQueryPlan,
     repository: SessionQueryRuntimeStore,
 ) -> int:
-    if plan.can_count_in_sql() and await plan._actions_ready(repository):
+    if plan.can_count_in_sql():
         return int(await repository.count_by_query(plan.record_query.for_count()))
 
     unbounded = plan.with_limit(None)

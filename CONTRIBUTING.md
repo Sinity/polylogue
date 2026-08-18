@@ -249,10 +249,8 @@ The repository should stay aligned with the workflow above:
 ## Git Hooks
 
 The devshell installs git hooks automatically. It anchors `core.hooksPath` at
-the absolute checkout selected through Git's shared common directory, so
-linked worktrees cannot retain a branch-point relative hook path. In a
-Beads-enabled checkout it selects `.beads-hooks`; otherwise it falls back to
-`.githooks`.
+`.beads-hooks` in the absolute checkout selected through Git's shared common
+directory, so linked worktrees cannot retain a branch-point relative hook path.
 The Beads composite hooks chain the ordinary Polylogue gates below and then run
 the matching `bd hooks run ...` integration.
 

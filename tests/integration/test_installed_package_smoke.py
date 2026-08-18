@@ -180,32 +180,38 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
 
     # polylogue --version: must succeed and embed the build commit / dirty marker
     # so the version contract is exercised end-to-end.
-    res = _run((str(bin_dir / "polylogue"), "--version"), env=env, timeout=30)
+    res = _run((str(bin_dir / "polylogue"), "--version"), env=env, cwd=home, timeout=30)
     assert "polylogue" in res.stdout.lower()
 
     # polylogue --help and ``polylogued``/``polylogue-mcp`` --help: cheap surface
     # checks that the click groups load with all extras resolvable.
-    _run((str(bin_dir / "polylogue"), "--help"), env=env, timeout=30)
-    _run((str(bin_dir / "polylogued"), "--help"), env=env, timeout=30)
-    _run((str(bin_dir / "polylogue-mcp"), "--help"), env=env, timeout=30)
+    _run((str(bin_dir / "polylogue"), "--help"), env=env, cwd=home, timeout=30)
+    _run((str(bin_dir / "polylogued"), "--help"), env=env, cwd=home, timeout=30)
+    _run((str(bin_dir / "polylogue-mcp"), "--help"), env=env, cwd=home, timeout=30)
 
     # polylogue --plain analyze --count: forces an archive open (or first-run bootstrap)
     # under fresh XDG paths; must not traceback.
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60)
 
     # polylogue --plain status: the actionable first-run surface (#1263) — must
     # exit cleanly and emit human text against a fresh archive.
     status = _run(
         (str(bin_dir / "polylogue"), "--plain", "status"),
         env=env,
+        cwd=home,
         timeout=60,
     )
     assert status.stdout.strip(), "polylogue ops status produced no output"
     assert "Traceback" not in status.stdout + status.stderr
 
     # polylogued status: daemon-side status against fresh XDG paths (#1265 AC).
-    daemon_status = _run((str(bin_dir / "polylogued"), "status"), env=env, timeout=60)
+    # `polylogued status` exits non-zero when no daemon is running ("absent
+    # heartbeat"), which is the correct report here rather than a smoke
+    # failure. What this probe is for is that the entry point loads and does
+    # not traceback.
+    daemon_status = _run((str(bin_dir / "polylogued"), "status"), env=env, cwd=home, timeout=60, check=False)
     assert "Traceback" not in daemon_status.stdout + daemon_status.stderr
+    assert "heartbeat" in (daemon_status.stdout + daemon_status.stderr).lower()
 
     # Runtime dependency-closure probe (#2307): the query-first `find` path pulls
     # in the Lark grammar, FTS/search providers, and archive storage — a strictly
@@ -218,6 +224,7 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
     diagnose = _run(
         (str(bin_dir / "polylogue"), "--diagnose", "find", "polylogue"),
         env=env,
+        cwd=home,
         timeout=60,
         check=False,
     )
@@ -263,8 +270,8 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
     )
 
     before = _snapshot(home)
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, timeout=60)
-    _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, cwd=home, timeout=60)
     after = _snapshot(home)
 
     new_under_home = sorted(p for p in (after - before) if home in p.parents)

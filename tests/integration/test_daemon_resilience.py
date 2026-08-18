@@ -836,25 +836,36 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
         # Verify daemon is still alive.
         assert proc.poll() is None, f"Daemon exited prematurely with code {proc.returncode}"
 
-        # Check VmPeak from /proc — the high-water mark of virtual memory
-        # usage.  VmRSS sampled after ingestion has finished reports the
-        # post-cleanup state, not the peak.
+        # Peak RESIDENT memory (VmHWM), not peak virtual address space (VmPeak).
+        # VmRSS sampled after ingestion reports the post-cleanup state rather than
+        # the high-water mark, so a peak field is required -- but VmPeak measures
+        # reservation, not use. A free-threaded interpreter with SQLite mmap and
+        # per-thread arenas reserves multiple GiB of address space while staying
+        # well under a GiB resident (measured here: VmPeak 3591 MiB against VmHWM
+        # 590 MiB), so bounding VmPeak fails for reasons unrelated to memory
+        # pressure and says nothing about whether the daemon actually ballooned.
         pid = proc.pid
-        peak_bytes = 0
+        peak_rss_bytes = 0
+        peak_vsize_bytes = 0
         try:
             status_path = Path(f"/proc/{pid}/status")
             for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                if line.startswith("VmPeak:"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        peak_bytes = int(parts[1]) * 1024  # kB → bytes
-                    break
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                if line.startswith("VmHWM:"):
+                    peak_rss_bytes = int(parts[1]) * 1024  # kB → bytes
+                elif line.startswith("VmPeak:"):
+                    peak_vsize_bytes = int(parts[1]) * 1024
         except OSError:
             pass
 
-        peak_mb = peak_bytes / (1024 * 1024) if peak_bytes > 0 else 0
-        if peak_mb > 0:
-            assert peak_bytes <= 2 * 1024 * 1024 * 1024, f"Daemon VmPeak exceeds 2 GB: {peak_mb:.0f} MiB"
+        peak_rss_mb = peak_rss_bytes / (1024 * 1024) if peak_rss_bytes > 0 else 0
+        if peak_rss_mb > 0:
+            assert peak_rss_bytes <= 2 * 1024 * 1024 * 1024, (
+                f"Daemon peak RSS exceeds 2 GB: {peak_rss_mb:.0f} MiB "
+                f"(VmPeak/address space {peak_vsize_bytes / (1024 * 1024):.0f} MiB, informational)"
+            )
 
         # All messages ingested.
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:

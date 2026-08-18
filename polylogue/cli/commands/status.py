@@ -107,11 +107,17 @@ def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _fast_fts_doc_count(conn: Any) -> int:
-    # Exact FTS coverage is no longer a direct-status fallback concern.
-    # Counting the FTS shadow table can fault gigabytes of pages during
-    # catch-up; daemon status carries the maintained freshness state.
-    return 0
+def _fast_fts_doc_count(conn: Any) -> int | None:
+    """Return ``None``: direct status deliberately does not measure FTS coverage.
+
+    Counting the FTS shadow table can fault gigabytes of pages during catch-up,
+    so the maintained freshness state on daemon status is the supported source.
+    This returned ``0`` before, which is indistinguishable from a genuinely empty
+    index and made the caller's coverage branch dead rather than skipped -- the
+    line silently disappeared instead of saying it was not measured.
+    """
+    del conn
+    return None
 
 
 def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
@@ -2078,12 +2084,12 @@ def _show_direct_status(
                 f"  Unidentified artifacts: [yellow]{unidentified:,}[/yellow] "
                 "(never became a session; see `polylogue ops doctor --artifact-coverage --cohorts`)"
             )
-        if fts:
+        if fts is not None:
             fts_pct = 100 * fts / msgs if msgs else 100
             fts_color = "green" if fts_pct > 99 else "yellow"
             env.ui.console.print(f"  FTS indexed: [{fts_color}]{fts_pct:.1f}%[/{fts_color}]")
         else:
-            env.ui.console.print("  FTS indexed: [dim]daemon status unavailable[/dim]")
+            env.ui.console.print("  FTS indexed: [dim]not measured without the daemon[/dim]")
 
         try:
             from polylogue.storage.embeddings.status_payload import embedding_status_payload

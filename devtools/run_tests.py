@@ -52,6 +52,7 @@ from devtools.verify_runs import (
     CheckoutMutationObservation,
     VerifyRun,
     append_verify_history,
+    configured_pytest_worker_request,
     finalize_checkout_mutation_monitors,
     finish_checkout_mutation_monitor,
     git_head,
@@ -94,6 +95,27 @@ _NON_PATH_VALUE_OPTIONS = frozenset(
         "-o",
     }
 )
+
+
+def _verbose_output() -> bool:
+    """Whether the caller asked for the full preamble and artifact footer."""
+    return "--verbose" in sys.argv[1:] or bool(os.environ.get("POLYLOGUE_DEVTOOLS_VERBOSE"))
+
+
+def _import_path_is_unsurprising(polylogue_import_path: Path | str) -> bool:
+    """Whether the resolved package is the one this checkout owns.
+
+    Fails toward announcing. An empty or unresolvable path is NOT evidence that
+    the environment is fine -- and it would otherwise read as unsurprising,
+    because ``Path("").resolve()`` is the current directory, which normally sits
+    inside the checkout.
+    """
+    if not str(polylogue_import_path).strip():
+        return False
+    try:
+        return Path(polylogue_import_path).resolve().is_relative_to(ROOT.resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def _absolute_option_path(
@@ -199,11 +221,17 @@ def _has_worker_flag(selection: list[str]) -> bool:
 
 
 def _worker_args(selection: list[str]) -> list[str]:
-    """Default focused runs to a single process; honor an explicit override."""
+    """Default focused runs to a single process; honor an explicit override.
+
+    The override is read through the shared resolver rather than straight from
+    the environment, so the cloud worker pin is scrubbed here exactly as it is
+    for `devtools verify`. Reading it raw gave focused runs two processes where
+    the policy intends one.
+    """
     if _has_worker_flag(selection):
         return []
-    workers = os.environ.get("POLYLOGUE_PYTEST_WORKERS", "0").strip() or "0"
-    return ["-n", workers]
+    requested = configured_pytest_worker_request(os.environ)
+    return ["-n", str(requested if requested is not None else 0)]
 
 
 def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> list[str]:
@@ -277,7 +305,14 @@ def main(argv: list[str] | None = None) -> int:
         return 125
     polylogue_import_path = fingerprint.polylogue_import_path
     environment_fingerprint = fingerprint.as_dict()
-    sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
+    # Announce the resolved package ONLY when it is surprising. This line exists
+    # for the 2026-07-31 wrong-checkout incident, where a worktree silently ran
+    # the main checkout's code; it earns its place when it contradicts the
+    # checkout, and is pure noise on the overwhelming majority of runs where it
+    # does not. The fact itself is never lost -- it is recorded as
+    # polylogue_import_path in the run receipt either way.
+    if _verbose_output() or not _import_path_is_unsurprising(polylogue_import_path):
+        sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
@@ -385,9 +420,14 @@ def main(argv: list[str] | None = None) -> int:
         append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    sys.stderr.write(
-        f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-        f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
-        f"output={PYTEST_OUTPUT_PATH}\n"
-    )
+    # The artifact-path footer is reference material, not a result. Printing six
+    # paths after every green run trains the reader to skip the tail of the
+    # output, which is exactly where a failure summary appears. `devtools why`
+    # reaches the same artifacts on demand.
+    if _verbose_output() or rc != 0:
+        sys.stderr.write(
+            f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
+            f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
+            f"output={PYTEST_OUTPUT_PATH}\n"
+        )
     return rc

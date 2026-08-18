@@ -405,7 +405,10 @@
 
         shellHook = ''
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
-          export PYTHONDONTWRITEBYTECODE=1
+          # No PYTHONDONTWRITEBYTECODE here: the cache prefix below already
+          # keeps bytecode out of the source tree, and forbidding writes also
+          # disables pytest's assertion-rewrite cache, which costs a full
+          # re-rewrite of every test module on every run in every xdist worker.
           export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
           export POLYLOGUE_REPO_ROOT="$PWD"
           mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
@@ -442,10 +445,7 @@
             else
               # Transitional fallback for a common checkout that predates
               # the helper. Keep the same worktree-config invariant.
-              desired_hooks_path="$git_common_root/.githooks"
-              if [ -d "$git_common_root/.beads-hooks" ]; then
-                desired_hooks_path="$git_common_root/.beads-hooks"
-              fi
+              desired_hooks_path="$git_common_root/.beads-hooks"
               git -C "$git_common_root" config --local extensions.worktreeConfig true
               git -C "$git_common_root" config --local core.hooksPath "$desired_hooks_path"
               while IFS= read -r worktree_path; do

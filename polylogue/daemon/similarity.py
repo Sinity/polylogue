@@ -21,6 +21,11 @@ Contract:
   case while a backlog is catching up), the endpoint returns
   ``status="not_embedded"`` with an empty result list. The caller
   should render the "this session is not yet embedded" state.
+- When the vector store returns neighbors whose message ids exist in no
+  indexed row, the ranking join is broken rather than empty; the endpoint
+  returns ``status="inconsistent"`` with
+  ``reason="embedded_messages_missing_from_index"`` instead of an
+  indistinguishable empty ``ready``.
 - Otherwise the endpoint returns ``status="ready"`` with a ranked list
   of session hits. Each hit carries a numeric ``score`` (cosine
   similarity in ``[0, 1]``, higher is more similar) and a coarse
@@ -184,6 +189,24 @@ def _build_archive_similar_payload(
                 }
             )
 
+        # Vector hits that resolve to no indexed message mean the embeddings tier
+        # references messages this index does not carry -- a stale embedding
+        # generation, or a reindex that changed message-identity derivation. Ranking
+        # over a broken join and answering "ready" with the survivors is indis-
+        # tinguishable from "nothing is similar", so the caller cannot tell a healthy
+        # empty answer from a broken one. Report the discrepancy instead.
+        unresolved = int(cast(int, query_result.get("unresolved_message_hits", 0)))
+        if unresolved and not hits:
+            return {
+                "status": "inconsistent",
+                "reason": "embedded_messages_missing_from_index",
+                "session_id": session_id,
+                "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
+                "limit": bounded_limit,
+                "results": [],
+                "unresolved_message_hits": unresolved,
+            }
+
         return {
             "status": "ready",
             "reason": None,
@@ -191,6 +214,7 @@ def _build_archive_similar_payload(
             "source_embedded_messages": int(cast(int, query_result["source_embedded_messages"])),
             "limit": bounded_limit,
             "results": hits,
+            "unresolved_message_hits": unresolved,
         }
     finally:
         index_conn.close()
@@ -217,6 +241,15 @@ def build_similar_payload(
     - ``"ready"`` — ranked similar sessions are attached under
       ``results``. ``results`` may still be empty if no other
       session shares an embedded neighbor.
+    - ``"inconsistent"`` — the vector store returned neighbors but none of
+      their message ids exist in this index, so the ranking join is broken
+      (a stale embedding generation, or a reindex that changed message
+      identity). Distinguished from ``"ready"`` with an empty list, which
+      means the archive genuinely holds nothing similar.
+
+    ``unresolved_message_hits`` accompanies ``ready`` and ``inconsistent`` and
+    counts neighbors dropped for having no indexed message. Non-zero alongside
+    ``ready`` means the ranking is partial.
     """
 
     bounded_limit = _clamp_limit(limit)

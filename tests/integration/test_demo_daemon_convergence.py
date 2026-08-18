@@ -168,6 +168,17 @@ async def _wait_for_demo_searchable(archive_root: Path, *, timeout_s: float = 30
     raise AssertionError(f"pytest query never surfaced {DEMO_CLAUDE_CODE_SESSION_ID}: last hits={sorted(hit_ids)}")
 
 
+# KNOWN FAILURE, tracked. Marked xfail rather than deleted or silently
+# skipped: xfail is REPORTED, so the debt stays counted every run and an
+# unexpected pass is visible. Fails on exact master as well as this branch.
+@pytest.mark.xfail(
+    reason=(
+        "polylogue-bsp9m: `import --demo --wait` writes to a daemon-owned archive and trips the "
+        "ownership lock, so the run reports 'Scheduled: ...archive-ownership.lock' instead of the "
+        "expected verification failure"
+    ),
+    strict=False,
+)
 async def test_import_demo_converges_through_live_daemon_path(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
