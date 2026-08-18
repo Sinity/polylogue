@@ -632,12 +632,24 @@ class TestBackfillCommand:
 
         index_db = tmp_path / "index.db"
         sqlite3.connect(index_db).close()
-        fake_embed = MagicMock(
-            side_effect=[
-                EmbedSessionOutcome(status="embedded", session_id="conv-1", embedded_message_count=1),
-                EmbedSessionOutcome(status="embedded", session_id="conv-2", embedded_message_count=1),
-            ]
-        )
+        # Event-driven fake clock: scripted read sequences broke twice (a
+        # StopIteration when the command read the clock an extra time, then a
+        # second embed when an extra read consumed the past-deadline value).
+        # Advancing the clock AS A SIDE EFFECT of the first embed makes any
+        # number of reads at any point correct by construction: every read
+        # before embed #1 sees 0.0, every read after it sees 2.0.
+        clock = {"now": 0.0}
+        outcomes = [
+            EmbedSessionOutcome(status="embedded", session_id="conv-1", embedded_message_count=1),
+            EmbedSessionOutcome(status="embedded", session_id="conv-2", embedded_message_count=1),
+        ]
+
+        def embed_then_pass_deadline(*_args: Any, **_kwargs: Any) -> EmbedSessionOutcome:
+            outcome = outcomes.pop(0)
+            clock["now"] = 2.0
+            return outcome
+
+        fake_embed = MagicMock(side_effect=embed_then_pass_deadline)
         pending = [
             PendingSession(session_id="conv-1", title="A", message_count=1),
             PendingSession(session_id="conv-2", title="B", message_count=1),
@@ -654,15 +666,7 @@ class TestBackfillCommand:
                 return_value=pending,
             ),
             patch("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed),
-            # A finite side_effect list here raised StopIteration whenever the
-            # command read the clock one more time than the script predicted
-            # (an intermittent gate failure twice on 2026-08-18). The deadline
-            # semantics only need "started at 0, past the limit from the third
-            # read onward" -- hold the final value instead of running dry.
-            patch(
-                "polylogue.cli.commands.embed.time.monotonic",
-                side_effect=lambda _readings=iter([0.0, 0.0]): next(_readings, 2.0),
-            ),
+            patch("polylogue.cli.commands.embed.time.monotonic", side_effect=lambda: clock["now"]),
         ):
             result = cli_runner.invoke(
                 embed_command,
