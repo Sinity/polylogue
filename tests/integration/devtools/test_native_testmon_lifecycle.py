@@ -487,8 +487,8 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
     assert [step["name"] for step in lanes] == ["pytest native parallel (full)", "pytest native serial (full)"]
     for step in lanes:
-        assert "--testmon-noselect" in step["statistics"]["command"]
-        assert "--testmon-forceselect" not in step["statistics"]["command"]
+        assert "--testmon-forceselect" in step["statistics"]["command"]
+        assert "--testmon-noselect" not in step["statistics"]["command"]
         assert "--override-ini=addopts=" in step["statistics"]["command"]
         assert step["external_addopts_neutralized"] is True
         assert step["external_plugins_neutralized"] is True

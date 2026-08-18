@@ -2118,6 +2118,13 @@ def _run_step(
             # with the native environment corpus before granting release
             # authority. Keep the complete node set in these bounded artifacts.
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
+            if label.endswith("(full)"):
+                # Full-mode lanes claim complete-corpus coverage, so testmon's
+                # file-level collection skip must be disabled: it hides tests
+                # the graph has never recorded when they share a file with
+                # stable recorded ones (the marker-split lanes make that
+                # systematic). Per-test deselection still narrows execution.
+                env["POLYLOGUE_TESTMON_COMPLETE_COLLECTION"] = "1"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         if owns_pytest_environment:
@@ -3475,7 +3482,17 @@ def _main(argv: list[str] | None = None) -> int:
             if checkout_fingerprint_unavailable
             else "checkout_mutation_monitor_unavailable"
         )
-    elif final_head != head or final_checkout_fingerprint != checkout_fingerprint:
+    elif (final_head != head or final_checkout_fingerprint != checkout_fingerprint) and not os.environ.get(
+        _ISOLATION_SENTINEL
+    ):
+        # Under snapshot isolation the pytest lanes verified the frozen
+        # launch content; only .git is live-bound, so a commit or merge
+        # landing mid-run moves final_head without touching what ran. The
+        # receipt keeps its launch-head binding (consumers compare that
+        # against their current head and correctly treat it as stale for
+        # newer commits). Observed 2026-08-18: an 82-minute green-baseline
+        # terminal run was discarded because an unrelated PR merged while
+        # it ran.
         checkout_stable = False
         diagnosis = "checkout_changed_during_verification"
     elif (preparation_mutation_observation.changed or mutation_observation.changed) and not os.environ.get(

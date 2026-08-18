@@ -94,10 +94,12 @@ def escape_fts5_query(query: str) -> str:
         # appears in a non-prefix position (e.g. *word, w*rd).
         if "*" in query:
             # A ``*`` is only a valid FTS5 prefix when it suffixes a word token
-            # (``word*``). Bare asterisks (``*``, ``* *``) are not valid prefix
-            # syntax and must be quoted, so only strip word-suffixed ``*`` here.
-            without_prefix = re.sub(r"(\w)\*(\s|$)", r"\1\2", query).rstrip("*")
-            if _FTS5_SPECIAL.search(without_prefix):
+            # (``word*``) exactly once. Bare (``*``, ``* *``) and doubled
+            # (``word**``) asterisks are syntax errors and must be quoted, so
+            # strip exactly one word-suffixed ``*`` per token and quote if any
+            # asterisk survives.
+            without_prefix = re.sub(r"(\w)\*(?=\s|$)", r"\1", query)
+            if "*" in without_prefix or _FTS5_SPECIAL.search(without_prefix):
                 return _quoted(query)
             # Only special char was * in prefix position — don't quote
             # for that, but still check operator edge cases below.

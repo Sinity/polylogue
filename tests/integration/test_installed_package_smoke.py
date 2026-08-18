@@ -44,6 +44,21 @@ requires_uv = pytest.mark.skipif(
 )
 
 
+def _uv_env() -> dict[str, str]:
+    """Ambient env minus host-interpreter coupling.
+
+    The dev interpreter is a Nix free-threaded CPython whose
+    ``_PYTHON_SYSCONFIGDATA_NAME`` names a ``_sysconfigdata_t_*`` module that
+    uv's managed (non-free-threaded) interpreters do not ship; inheriting it
+    makes every sysconfig lookup inside the fresh venv fail. The other vars
+    couple subprocesses to the dev venv the same way.
+    """
+    env = dict(os.environ)
+    for key in ("_PYTHON_SYSCONFIGDATA_NAME", "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(key, None)
+    return env
+
+
 def _build_wheel(work_dir: Path) -> Path:
     """Build a wheel from the repo checkout into ``work_dir/dist``."""
     dist_dir = work_dir / "dist"
@@ -51,6 +66,7 @@ def _build_wheel(work_dir: Path) -> Path:
     _run(
         ("uv", "build", "--out-dir", str(dist_dir), "--wheel", str(REPO_ROOT)),
         cwd=REPO_ROOT,
+        env=_uv_env(),
     )
     wheels = sorted(dist_dir.glob("*.whl"))
     assert len(wheels) == 1, f"expected exactly one wheel in {dist_dir}, got {wheels!r}"
@@ -64,11 +80,12 @@ def _install_wheel(wheel: Path, install_dir: Path) -> Path:
     """
     install_dir.mkdir(parents=True, exist_ok=True)
     venv_dir = install_dir / "venv"
-    _run(("uv", "venv", str(venv_dir)), cwd=install_dir)
+    _run(("uv", "venv", str(venv_dir)), cwd=install_dir, env=_uv_env())
     python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     _run(
         ("uv", "pip", "install", "--python", str(python), str(wheel)),
         cwd=install_dir,
+        env=_uv_env(),
     )
     return venv_dir / ("Scripts" if os.name == "nt" else "bin")
 

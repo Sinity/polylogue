@@ -3942,8 +3942,23 @@ def test_transient_mutation_invalidates_only_unisolated_runs(
         assert stability[0]["transient_checkout_mutation"] is True
 
 
-def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
+@pytest.mark.parametrize(
+    ("isolated", "expected_rc"),
+    [
+        # Isolated runs verified the frozen launch snapshot; only .git is
+        # live-bound, so a commit or merge landing mid-run moves the final
+        # head without touching what actually ran. The receipt keeps its
+        # launch-head binding. Unisolated, a moved head means the lanes may
+        # have seen mixed content, so the strict rejection holds.
+        (True, 0),
+        (False, 125),
+    ],
+)
+def test_git_head_change_invalidates_only_unisolated_runs(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    isolated: bool,
+    expected_rc: int,
 ) -> None:
     class _StableMonitor:
         def __init__(self, _root: Path) -> None:
@@ -3955,6 +3970,10 @@ def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
         def finish(self) -> CheckoutMutationObservation:
             return CheckoutMutationObservation(changed=False, unavailable=False)
 
+    if isolated:
+        monkeypatch.setenv("POLYLOGUE_VERIFY_ISOLATED", "1")
+    else:
+        monkeypatch.delenv("POLYLOGUE_VERIFY_ISOLATED", raising=False)
     with (
         patch("devtools.verify._run", return_value=(0, 0.01, {})),
         patch("devtools.verify._git_head", side_effect=("start-head", "different-head")),
@@ -3964,13 +3983,17 @@ def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
         patch("devtools.verify._notify"),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
     ):
-        assert main(["--quick", "--json"]) == 125
+        assert main(["--quick", "--json"]) == expected_rc
 
     payload = json.loads(capsys.readouterr().out)
-    checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
-    assert checkout_step["diagnosis"] == "checkout_changed_during_verification"
-    assert checkout_step["initial_git_head"] == "start-head"
-    assert checkout_step["final_git_head"] == "different-head"
+    stability = [step for step in payload["steps"] if step["name"] == "checkout stability"]
+    if expected_rc == 0:
+        assert stability == []
+        assert payload["final_git_head"] == "different-head"
+    else:
+        assert stability[0]["diagnosis"] == "checkout_changed_during_verification"
+        assert stability[0]["initial_git_head"] == "start-head"
+        assert stability[0]["final_git_head"] == "different-head"
 
 
 def test_verify_keeps_checkout_monitor_active_through_final_authority_samples(

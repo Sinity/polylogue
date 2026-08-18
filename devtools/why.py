@@ -57,8 +57,8 @@ _EXPLANATIONS: dict[str, Explanation] = {
     ),
     "checkout_changed_during_verification": Explanation(
         "The working tree changed while the run was in flight, so the receipt could not attest to fixed content.",
-        "Should no longer occur: devtools verify now runs against a frozen snapshot by default. If you see this "
-        "on a current build, the run was started with --no-isolated or on a host without bwrap.",
+        "Occurs only on unisolated runs (--no-isolated, or a host without bwrap): isolated runs verify the "
+        "frozen launch snapshot, so live-tree movement mid-run leaves the launch-head receipt binding intact.",
     ),
     "checkout_changed_during_focused_test": Explanation(
         "The working tree changed during a focused test run.",
