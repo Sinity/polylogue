@@ -575,6 +575,45 @@ def _run_post_merge_terminal_verify(
         return result if _remove_detached_worktree(repo_root, worktree) else 1
 
 
+def _head_missing_master_tip(head_sha: str) -> str | None:
+    """Return a refusal reason when ``head_sha`` does not contain origin/master.
+
+    Fetches first so the ancestry answer reflects the remote's current tip,
+    not a stale local ref. Unavailable git evidence refuses (fail closed):
+    merging with unknown ancestry is exactly the stale-base hazard.
+    """
+    repo_root = merge_gate._repository_root()
+    try:
+        subprocess.run(
+            ["git", "fetch", "--quiet", "origin", "master", head_sha],
+            capture_output=True,
+            timeout=120,
+            cwd=repo_root,
+            check=True,
+        )
+        master_tip = subprocess.run(
+            ["git", "rev-parse", "origin/master"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=repo_root,
+            check=True,
+        ).stdout.strip()
+        contains = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", master_tip, head_sha],
+            capture_output=True,
+            timeout=30,
+            cwd=repo_root,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"could not establish base ancestry against origin/master: {exc}"
+    if contains.returncode == 0:
+        return None
+    if contains.returncode == 1:
+        return f"head {head_sha[:8]} does not contain origin/master tip {master_tip[:8]} (stale base)"
+    return f"git merge-base --is-ancestor failed (exit {contains.returncode})"
+
+
 def cmd_merge(
     pr: int,
     *,
@@ -605,6 +644,22 @@ def cmd_merge(
         return 1
 
     head_sha = info["headRefOid"]
+    # A receipt recorded on a stale-based head verifies the OLD tree: its
+    # environment digest predates the current graph, so the "receipt" is a
+    # complete-corpus bootstrap of code master no longer contains (observed
+    # 2026-08-18: a dependabot branch cut three days earlier cost a 40-minute
+    # full rebuild to attest one workflow-file change). Require the head to
+    # contain master's tip so the receipt run reuses the warm graph and
+    # attests the tree that will actually land.
+    stale_base_error = _head_missing_master_tip(head_sha)
+    if stale_base_error is not None:
+        print(f"REFUSING to merge PR #{pr}: {stale_base_error}", file=sys.stderr)
+        print(
+            f"  update the branch first: gh api -X PUT repos/{{owner}}/{{repo}}/pulls/{pr}/update-branch"
+            " (then re-run this merge at the new head)",
+            file=sys.stderr,
+        )
+        return 1
     checkout_root = merge_gate._repository_root()
     scope = merge_gate._scope_verdict(
         pr,

@@ -40,6 +40,40 @@ def _scope_bead_record(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(pr_scope, "_bead_records_at", canonical_records)
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
+    # Placeholder PR SHAs cannot answer real ancestry; the stale-base guard
+    # has its own dedicated tests below.
+    monkeypatch.setattr(merge_boundary, "_head_missing_master_tip", lambda _head: None)
+
+
+def test_stale_base_head_refuses_before_recording(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A head that does not contain origin/master refuses with the update remedy.
+
+    A receipt recorded on a stale-based head attests the OLD tree -- its
+    environment digest predates the current graph, so 'recording' becomes a
+    complete-corpus bootstrap of code master no longer contains (a dependabot
+    branch cut three days earlier cost a 40-minute rebuild to attest one
+    workflow-file change, 2026-08-18).
+    """
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+    monkeypatch.setattr(
+        merge_boundary,
+        "_head_missing_master_tip",
+        lambda head: f"head {head[:8]} does not contain origin/master tip aaaaaaaa (stale base)",
+    )
+
+    exit_code = merge_boundary.cmd_merge(
+        42,
+        command="devtools test x",
+        max_age_s=3600,
+        poll_rounds=1,
+        poll_interval_s=0,
+        dry_run=True,
+        with_verify=False,
+        verify_command="devtools verify --all",
+    )
+    assert exit_code == 1
 
 
 def _scope_body(head_sha: str) -> str:

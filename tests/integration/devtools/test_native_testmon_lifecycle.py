@@ -1062,7 +1062,11 @@ def test_production_verify_deleted_module_rebuilds_and_fails_dependents(tmp_path
     # under test -- that the dependent is selected and fails -- is asserted
     # directly above and below and is unaffected.
     assert mutated["testmon_environment"]["required_executable_paths"] == []
-    assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == ["polylogue/app.py"]
+    # A deleted path is excluded from the required/trigger sets entirely
+    # (polylogue-#3988): no rebuild can ever fingerprint a nonexistent file,
+    # so requiring one made incomplete permanent. The dependent is still
+    # selected through its own stale recorded fingerprint, asserted below.
+    assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == []
     assert mutated["pytest_aggregate"]["selected_union_count"] == 1
     assert mutated["pytest_aggregate"]["terminal_union_count"] == 1
     assert "ModuleNotFoundError" in completed.stderr
@@ -1101,10 +1105,11 @@ def test_production_verify_moved_module_rebuilds_and_fails_dependents(tmp_path: 
     # under test -- that the dependent is selected and fails -- is asserted
     # directly above and below and is unaffected.
     assert mutated["testmon_environment"]["required_executable_paths"] == ["polylogue/renamed.py"]
-    assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == [
-        "polylogue/app.py",
-        "polylogue/renamed.py",
-    ]
+    # A deleted path is excluded from the required/trigger sets entirely
+    # (polylogue-#3988): no rebuild can ever fingerprint a nonexistent file,
+    # so requiring one made incomplete permanent. The dependent is still
+    # selected through its own stale recorded fingerprint, asserted below.
+    assert mutated["testmon_environment"]["bootstrap_trigger_paths"] == ["polylogue/renamed.py"]
     assert mutated["pytest_aggregate"]["selected_union_count"] == 1
     assert mutated["pytest_aggregate"]["terminal_union_count"] == 1
     assert "ModuleNotFoundError" in completed.stderr
@@ -1141,13 +1146,18 @@ def test_production_verify_deleted_module_with_updated_imports_rebuilds_successf
 
     assert completed.returncode == 0, completed.stderr
     environment = rebuilt["testmon_environment"]
-    # A DELETED path stays a bootstrap trigger: there is no graph edge to reuse
-    # for a module that no longer exists, so this case is untouched by the
-    # incomplete-graph decision.
-    assert environment["selection_mode"] == "bootstrap"
+    # The deleted module is no longer a bootstrap trigger (an edge for a
+    # nonexistent file is unrecordable, so requiring one made incomplete
+    # permanent). The surviving changed module has recorded edges, so the run
+    # stays a warm affected selection and still covers the dependent.
+    assert environment["selection_mode"] == "affected"
     assert environment["required_executable_paths"] == ["polylogue/app.py"]
-    assert environment["bootstrap_trigger_paths"] == ["polylogue/app.py", "polylogue/old.py"]
-    assert rebuilt["pytest_aggregate"]["terminal_green"] is True
+    assert environment["bootstrap_trigger_paths"] == ["polylogue/app.py"]
+    # terminal_green demands complete-corpus coverage, which a warm affected
+    # selection definitionally lacks; "rebuilds successfully" means the
+    # dependent was selected and nothing failed.
+    assert rebuilt["pytest_aggregate"]["selected_union_count"] == 1
+    assert rebuilt["pytest_aggregate"]["non_green_count"] == 0
 
 
 def test_production_verify_moved_module_with_updated_imports_rebuilds_successfully(tmp_path: Path) -> None:
@@ -1192,7 +1202,6 @@ def test_production_verify_moved_module_with_updated_imports_rebuilds_successful
     assert environment["selection_mode"] == "affected"
     assert environment["required_executable_paths"] == ["polylogue/renamed.py", "tests/test_app.py"]
     assert environment["bootstrap_trigger_paths"] == [
-        "polylogue/old.py",
         "polylogue/renamed.py",
         "tests/test_app.py",
     ]
