@@ -345,6 +345,20 @@ def test_source_v29_sidecar_proves_failure_lifecycle_consumers_against_fresh_sch
     assert results[1].detail == "validated one raw failure disposition without mutation"
 
 
+def test_source_v30_sidecar_proves_raw_artifact_upsert_against_fresh_schema(tmp_path: Path) -> None:
+    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 30)
+    assert sidecar is not None
+
+    results = _runtime_consumer_results(sidecar.train, tmp_path)
+
+    assert [(result.consumer_id, result.passed) for result in results] == [
+        ("raw-artifact-upsert", True),
+        ("raw-failure-lifecycle", True),
+        ("raw-materialization-replay", True),
+    ]
+    assert results[0].detail == "wrote and read back one raw artifact in the projected source tier"
+
+
 def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3341,6 +3355,23 @@ def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
 
     assert spaced == same_literal_compact_layout
     assert spaced != changed_literal
+
+
+def test_historical_source_inventory_removes_only_future_schema_objects() -> None:
+    """Historical parity keeps replaced v28 objects and removes v29+ additions."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
+        migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, 28)
+        inventory = migration_runner.capture_durable_schema_inventory(connection)
+    finally:
+        connection.close()
+
+    refs = {item.object_ref for item in inventory.objects}
+    assert "index:idx_raw_artifacts_source_identity" in refs
+    assert "index:idx_raw_artifacts_failure_identity" not in refs
+    assert "table:raw_container_coordinates" not in refs
+    assert "column:raw_sessions.detected_provider" not in refs
 
 
 def test_admission_rejects_stale_current_and_target_versions() -> None:
