@@ -465,6 +465,97 @@ def _estimate_duration_from_history(
     return durations[len(durations) // 2], len(durations)
 
 
+def _print_verify_plan() -> int:
+    """Answer "what would run and why" from the graph, without running anything.
+
+    The operator asked this question three times on 2026-08-18 before it was
+    answerable in one command: selection is computed by pytest-testmon during
+    the run, but the graph it selects FROM is a queryable SQLite file sitting
+    in .cache -- changed files, their dependent tests, and the attested
+    remainder are a 200ms query, not a 40-minute discovery.
+    """
+    import sqlite3
+
+    from devtools.testmon_bootstrap import (
+        TESTMON_DATA_RELPATH,
+        classify_native_testmon_changes,
+        testmon_environment_digest,
+    )
+
+    data = ROOT / TESTMON_DATA_RELPATH
+    if not data.is_file():
+        print("plan: no graph recorded -- the next run bootstraps the complete corpus")
+        return 0
+    head = _git_head()
+    base = subprocess.run(
+        ["git", "merge-base", "HEAD", "origin/master"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=ROOT,
+    ).stdout.strip()
+    changed = _changed_paths(base or head or "HEAD", head or "HEAD")
+    impact = classify_native_testmon_changes(ROOT, changed)
+    try:
+        # Match the production preparation call exactly: profile + managed
+        # pytest environment feed the digest, and the function returns the
+        # full prefixed environment name.
+        env_name = testmon_environment_digest(
+            ROOT,
+            pytest_profile=_pytest_profile(),
+            pytest_environment=_native_pytest_environment(force_release_profile=False),
+        )
+    except Exception as exc:  # pragma: no cover - defensive: report, don't crash a read-only plan
+        env_name = f"<unavailable: {exc}>"
+    conn = sqlite3.connect(f"file:{data}?mode=ro", uri=True)
+    try:
+        environments = [str(row[0]) for row in conn.execute("SELECT environment_name FROM environment")]
+        recorded = int(conn.execute("SELECT COUNT(DISTINCT test_name) FROM test_execution").fetchone()[0])
+        executable = list(impact.executable_paths)
+        dependents = 0
+        if executable:
+            placeholders = ",".join("?" for _ in executable)
+            dependents = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT execution.test_name)
+                    FROM test_execution AS execution
+                    JOIN test_execution_file_fp AS edge ON edge.test_execution_id = execution.id
+                    JOIN file_fp AS fingerprint ON fingerprint.id = edge.fingerprint_id
+                    WHERE fingerprint.filename IN ({placeholders})
+                    """,
+                    executable,
+                ).fetchone()[0]
+            )
+    finally:
+        conn.close()
+    env_recorded = env_name in environments
+    print(f"plan: graph holds {recorded} recorded test(s); environment {'matches' if env_recorded else 'DIFFERS'}")
+    if not env_recorded:
+        print(f"plan: current digest {env_name[:40]} not among recorded {[e[:40] for e in environments]}")
+        print(
+            "plan: a digest change (deps/conftest/harness/profile) voids recordings -- the complete corpus"
+            " executes. (A verify running RIGHT NOW records under WAL; its rows may not be visible here yet.)"
+        )
+        return 0
+    print(f"plan: {len(executable)} changed executable file(s) since merge-base")
+    for path in executable[:15]:
+        print(f"  - {path}")
+    if len(executable) > 15:
+        print(f"  ... and {len(executable) - 15} more")
+    if impact.runtime_data_paths:
+        print(f"plan: {len(impact.runtime_data_paths)} non-Python runtime file(s) outside tracing (recorded exposure)")
+    print(
+        f"plan: ~{dependents} dependent test(s) execute + any never-recorded tests; ~{recorded - dependents} attested unchanged-green"
+    )
+    estimate = _estimate_duration_from_history(
+        tier="testmon", selection={"selection_mode": "affected", "state_status": "valid"}
+    )
+    if estimate is not None:
+        print(f"plan: comparable warm runs took ~{estimate[0]:.0f}s (n={estimate[1]})")
+    return 0
+
+
 def _load_history() -> list[dict[str, Any]]:
     if not HISTORY_PATH.exists():
         return []
@@ -3030,6 +3121,11 @@ def _main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
     parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Predict what would execute and why (changed files, dependent tests, attested count, ETA) and exit.",
+    )
+    parser.add_argument(
         "--no-isolated",
         dest="isolated",
         action="store_false",
@@ -3048,6 +3144,13 @@ def _main(argv: list[str] | None = None) -> int:
             return 125
         _print_history()
         return 0
+    if args.plan:
+        try:
+            assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+        except CheckoutImportMismatchError as exc:
+            sys.stderr.write(f"verify: {exc}\n")
+            return 125
+        return _print_verify_plan()
 
     full_requested = bool(args.all or args.full)
     use_json = args.json if args.json is not None else not sys.stdout.isatty()
@@ -3696,7 +3799,7 @@ def _should_isolate(raw_argv: Sequence[str]) -> bool:
 
     if "--no-isolated" in raw_argv or os.environ.get(_ISOLATION_SENTINEL):
         return False
-    if "--history" in raw_argv:
+    if "--history" in raw_argv or "--plan" in raw_argv:
         return False
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # A verify invoked from inside a test is exercising this orchestration,
@@ -3800,7 +3903,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if _should_isolate(raw_argv):
         return _reexec_isolated(raw_argv)
-    native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
+    native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history", "--plan"))
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # A verify invoked from inside a test must not contend for THIS
         # checkout's lifecycle lock.
