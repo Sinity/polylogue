@@ -2118,6 +2118,13 @@ def _run_step(
             # with the native environment corpus before granting release
             # authority. Keep the complete node set in these bounded artifacts.
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
+            if label.endswith("(full)"):
+                # Full-mode lanes claim complete-corpus coverage, so testmon's
+                # file-level collection skip must be disabled: it hides tests
+                # the graph has never recorded when they share a file with
+                # stable recorded ones (the marker-split lanes make that
+                # systematic). Per-test deselection still narrows execution.
+                env["POLYLOGUE_TESTMON_COMPLETE_COLLECTION"] = "1"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         if owns_pytest_environment:

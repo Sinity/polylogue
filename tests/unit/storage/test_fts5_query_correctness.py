@@ -409,6 +409,12 @@ def test_fts5_boolean_query() -> None:
         "?",
         "!",
         "...",
+        # Doubled/misplaced prefix asterisks are syntax errors unless quoted
+        "0**",
+        "word**",
+        "foo* bar**",
+        "*word",
+        "w*rd",
         # FTS5 column filter syntax (should be escaped)
         "title:something",
         "role:user",
