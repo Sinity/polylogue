@@ -172,6 +172,11 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             print(
                 f"  - {step.get('step_id')} exit={step.get('exit')} {step.get('diagnosis') or ''}".rstrip(), file=stream
             )
+            output_path = step.get("output_path")
+            if isinstance(output_path, str) and Path(output_path).is_file():
+                tail = Path(output_path).read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
+                for line in tail:
+                    print(f"      {line}", file=stream)
 
     # Graph fate matters more than any single step: a deleted graph means the
     # NEXT run pays a ~9.5x complete-corpus bootstrap, and until this line

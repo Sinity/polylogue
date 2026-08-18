@@ -522,10 +522,34 @@ def _print_verify_plan() -> int:
     try:
         environments = [str(row[0]) for row in conn.execute("SELECT environment_name FROM environment")]
         recorded = int(conn.execute("SELECT COUNT(DISTINCT test_name) FROM test_execution").fetchone()[0])
-        executable = list(impact.executable_paths)
+        # Diff the graph's recorded file fshas against working-tree content
+        # with testmon's own hash: selection is fingerprint-driven, so a
+        # git-diff against merge-base under-predicts right after a merge
+        # (observed: "0 changed / ~0 dependents" while the run selected 1725).
+        from testmon.process_code import get_source_sha
+
+        recorded_fshas: dict[str, set[str]] = {}
+        for filename, fsha in conn.execute("SELECT DISTINCT filename, fsha FROM file_fp"):
+            if isinstance(filename, str) and isinstance(fsha, str):
+                recorded_fshas.setdefault(filename, set()).add(fsha)
+        fingerprint_changed: list[str] = []
+        for filename, fshas in recorded_fshas.items():
+            file_path = ROOT / filename
+            if not file_path.is_file():
+                continue
+            try:
+                # testmon's own resolver: git blob sha for clean tracked
+                # files, content hash otherwise -- matching what the graph
+                # recorded.
+                current = get_source_sha(str(ROOT), filename)[1]
+            except OSError:
+                continue
+            if current is not None and current not in fshas:
+                fingerprint_changed.append(filename)
+        executable = sorted(set(impact.executable_paths) | set(fingerprint_changed))
         dependents = 0
-        if executable:
-            placeholders = ",".join("?" for _ in executable)
+        if fingerprint_changed:
+            placeholders = ",".join("?" for _ in fingerprint_changed)
             dependents = int(
                 conn.execute(
                     f"""
@@ -535,7 +559,7 @@ def _print_verify_plan() -> int:
                     JOIN file_fp AS fingerprint ON fingerprint.id = edge.fingerprint_id
                     WHERE fingerprint.filename IN ({placeholders})
                     """,
-                    executable,
+                    fingerprint_changed,
                 ).fetchone()[0]
             )
     finally:
@@ -549,7 +573,7 @@ def _print_verify_plan() -> int:
             " executes. (A verify running RIGHT NOW records under WAL; its rows may not be visible here yet.)"
         )
         return 0
-    print(f"plan: {len(executable)} changed executable file(s) since merge-base")
+    print(f"plan: {len(executable)} changed executable file(s) vs the recorded graph")
     for path in executable[:15]:
         print(f"  - {path}")
     if len(executable) > 15:
@@ -2468,6 +2492,21 @@ def _run_step(
             sys.stderr.write(result.stdout + "\n")
         if result.stderr.strip():
             sys.stderr.write(result.stderr + "\n")
+    if not is_pytest and artifacts is not None and (result.stdout.strip() or result.stderr.strip()):
+        # Static steps (mypy, ruff, render) previously left NO durable output:
+        # a failing mypy step showed exit=1 in the receipt and nothing else,
+        # and `devtools why` could not name the errors (2026-08-18: two
+        # terminal gates were red on the mypy step and diagnosing required a
+        # manual bare rerun).
+        try:
+            artifacts.step_dir.mkdir(parents=True, exist_ok=True)
+            (artifacts.step_dir / "output.log").write_text(
+                result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr,
+                encoding="utf-8",
+            )
+            metadata["output_path"] = str(artifacts.step_dir / "output.log")
+        except OSError:
+            pass
     if run is not None and artifacts is not None:
         finalized_step = run.finish_step(
             step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": result.returncode, **metadata}
