@@ -5806,6 +5806,31 @@ def _empty_session_candidate_ids(conn: sqlite3.Connection) -> list[tuple[str, st
     ]
 
 
+def _blob_store_for_connection(conn: sqlite3.Connection) -> BlobStore | None:
+    """The blob store belonging to the archive this connection is repairing.
+
+    Inspection otherwise resolves blobs through the AMBIENT configured archive,
+    so repairing any other archive reads every blob from the wrong place. That
+    is not a hypothetical: it silently turns "these bytes are unreadable" into
+    the classifier's only observation, and the caller-supplied-archive contract
+    that maintenance is built on is exactly the case it breaks.
+
+    Derived from the attached `source` database's own path, so it follows the
+    connection rather than process configuration. Returns None when that cannot
+    be determined, leaving the previous default in place.
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        name = row[1] if not isinstance(row, sqlite3.Row) else row["name"]
+        path = row[2] if not isinstance(row, sqlite3.Row) else row["file"]
+        if name == "source" and path:
+            return BlobStore(Path(path).parent / "blob")
+    return None
+
+
 def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_id: str | None) -> bool:
     """Return ``True`` only when *raw_id* resolves to source bytes that the
     CURRENT ``classify_artifact``/``inspect_raw_artifact`` pipeline positively
@@ -5834,7 +5859,7 @@ def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_
 
     try:
         record = _row_to_raw_session(row)
-        observation = inspect_raw_artifact(record)
+        observation = inspect_raw_artifact(record, blob_store=_blob_store_for_connection(conn))
     except Exception:
         # Cannot classify -> no positive evidence -> retain.
         return False
