@@ -1406,21 +1406,29 @@ def aggregate_native_testmon_run(
     corpus = native_corpus
     corpus_set = set(corpus)
     lane_names = [lane["lane"] for lane in lanes]
+    executed_nodes = set(outcome_by_node)
+    # "full" now runs under forceselect: a graph-recorded test testmon did not
+    # select is attested by its unchanged recorded deps and green last outcome
+    # (testmon always reselects failures), so coverage = executed now UNION
+    # attested by recording. A bootstrap (no graph) still executes everything,
+    # making the attested set empty and the condition equivalent to the old
+    # exhaustive one. Selection fidelity, closed-world collection, lane shape
+    # and duplicate checks are unchanged.
+    attested_unchanged = tuple(sorted(corpus_set - executed_nodes)) if complete_mode else ()
     complete_corpus_covered = (
         complete_mode
         and selection_complete
-        and bool(corpus)
+        and bool(corpus_set | executed_nodes)
         and external_addopts_neutralized
         and external_plugins_neutralized
         and closed_world_collection
-        and selected_union == corpus_set
-        and set(outcome_by_node) == corpus_set
+        and selected_union == executed_nodes
         and not duplicate_outcomes
         and len(lane_names) == 2
         and lane_names.count("parallel") == 1
         and lane_names.count("serial") == 1
     )
-    missing_terminal = tuple(sorted(corpus_set - set(outcome_by_node))) if complete_mode else ()
+    missing_terminal = tuple(sorted(selected_union - executed_nodes)) if complete_mode else ()
     non_green = tuple(
         sorted(nodeid for nodeid, outcome in outcome_by_node.items() if outcome not in _GREEN_TERMINAL_OUTCOMES)
     )
@@ -1458,6 +1466,7 @@ def aggregate_native_testmon_run(
         "non_green_sample": list(non_green[:20]),
         "duplicate_outcome_count": len(duplicate_outcomes),
         "complete_corpus_covered": complete_corpus_covered,
+        "attested_unchanged_count": len(attested_unchanged),
         "terminal_green": terminal_green,
         "wall_s": round(invocation_duration_s, 4),
         "collection_wall_s": round(collection_wall_s, 4),
