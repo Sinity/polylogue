@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Protocol, TypeAlias
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.viewport.viewports import ReasoningTrace, TokenUsage, ToolCall
+from polylogue.archive.viewport.viewports import ReasoningTrace, ToolCall
 from polylogue.core.enums import Origin
 
 ContentBlockSequence: TypeAlias = Sequence[Mapping[str, object]]
@@ -58,29 +58,6 @@ def message_reasoning_traces(message: SemanticMessageLike) -> tuple[ReasoningTra
     return _message_content_block_reasoning_traces(message)
 
 
-def message_tokens(message: SemanticMessageLike) -> TokenUsage | None:
-    """Hydrated messages have no provider-meta token usage (#1256).
-
-    Token usage for hydrated reads is sourced through the typed cost
-    projection in ``polylogue.archive.semantic.pricing`` and the
-    per-message ``input_tokens``/``output_tokens`` columns on the
-    ``messages`` row, not through this helper.
-    """
-
-    return None
-
-
-def message_model_name(message: SemanticMessageLike) -> str | None:
-    """Hydrated messages have no provider-meta model name (#1256).
-
-    Per-message model identity is sourced through the typed cost
-    projection in ``polylogue.archive.semantic.pricing`` and the
-    persisted ``model_name`` column, not through this helper.
-    """
-
-    return None
-
-
 def _message_content_block_tool_calls(message: SemanticMessageLike) -> tuple[ToolCall, ...]:
     from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 
@@ -123,9 +100,7 @@ def _message_content_block_reasoning_traces(message: SemanticMessageLike) -> tup
 __all__ = [
     "ContentBlockSequence",
     "message_has_text",
-    "message_model_name",
     "message_reasoning_traces",
-    "message_tokens",
     "message_tool_calls",
     "normalized_role_label",
     "SemanticMessageLike",

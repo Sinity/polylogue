@@ -224,13 +224,17 @@ or worker processes.
 
 The detailed artifacts above are checkout-local and disposable. Each `devtools
 verify` or `devtools test` invocation automatically appends its compact run
-summary to `$XDG_STATE_HOME/polylogue/devtools/verify-history.jsonl` (or the
-corresponding `~/.local/state` path), shared across linked worktrees without a
-separate recording command. `devtools verify --history` prints the recent
+summary to `$POLYLOGUE_VERIFY_HISTORY_PATH` when that is set, otherwise to
+`$XDG_STATE_HOME/polylogue/devtools/verify-history.jsonl` (or the corresponding
+`~/.local/state` path), shared across linked worktrees without a separate
+recording command. The override exists so an operator can keep this history in
+a canonical data location -- it is the only verification artifact that outlives
+a checkout, and cross-worktree comparison depends on every lane appending to
+one file. `devtools verify --history` prints the recent
 cross-worktree runs. A native verify record also carries one run-level pytest
 aggregate: environment and corpus digest/count, selection mode, outcomes
 across both lanes, wall and collection time, peak RSS/PSS/swap/storage,
-read/write totals, cleanup and containment, and the 3600-second budget result.
+read/write totals, and cleanup and containment.
 Setup, call, and teardown timings come only from pytest reports in the event
 stream.
 

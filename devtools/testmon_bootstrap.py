@@ -40,7 +40,7 @@ from typing import Literal
 TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
 TESTMON_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
-NativeStateStatus = Literal["absent", "valid", "invalid"]
+NativeStateStatus = Literal["absent", "valid", "invalid", "incomplete"]
 NativeSelectionMode = Literal["bootstrap", "affected"]
 ASTClassification = Literal["declaration-only", "executable", "source-unreadable"]
 
@@ -54,10 +54,18 @@ _ENVIRONMENT_INPUTS = (
     # creating it changes collection even though it was not present when the
     # previous environment was named.
     "conftest.py",
-    "devtools/checkout_guard.py",
-    "devtools/testmon_bootstrap.py",
-    "devtools/verify.py",
-    "devtools/verify_runs.py",
+    # NOT devtools/verify.py. That orchestrator is ~3,500 lines of flag parsing,
+    # output formatting, receipt bookkeeping and retention, none of which
+    # changes what pytest collects -- yet hashing it meant a COMMENT there
+    # discarded every graph and forced a full-corpus bootstrap (~9.5x a warm
+    # run). On the branch that introduced this split, 16 of 132 commits touched
+    # a digest input, most of them fixes to the verification harness itself.
+    # The collection-affecting values it used to carry now live in
+    # pytest_collection_contract, which IS hashed, so a genuine change to
+    # markers, plugins, ini overrides or collection roots still invalidates.
+    # verify.py's behaviour remains covered the ordinary way: the tests that
+    # import it carry real testmon edges to it.
+    "devtools/pytest_collection_contract.py",
 )
 _PYTEST_ENVIRONMENT_KEYS = (
     "HYPOTHESIS_PROFILE",
@@ -88,6 +96,20 @@ class NativeTestmonState:
     @property
     def valid(self) -> bool:
         return self.status == "valid" and self.environment is not None
+
+    @property
+    def resumable(self) -> bool:
+        """A graph that holds real recorded work but does not yet cover every changed module.
+
+        Distinct from ``invalid``: the database is structurally sound and its
+        environment row is unambiguous, it simply has not fingerprinted every
+        executable path yet -- which is the normal state of a bootstrap that
+        was interrupted. Such a graph must not drive affected selection (that
+        would silently skip tests), but discarding it throws away every test
+        the interrupted run already recorded and guarantees the next
+        invocation starts from zero again.
+        """
+        return self.status == "incomplete" and self.environment is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,10 +312,18 @@ def _environment_input_paths(
 ) -> tuple[str, ...]:
     """Discover collection and managed-pytest harness inputs."""
     paths = set(_ENVIRONMENT_INPUTS)
-    patterns = (
-        "devtools/pytest*.py",
-        "tests/**/conftest.py",
-    )
+    # NOT tests/**/conftest.py. Every collected test executes conftest, so
+    # testmon holds an edge to it from every test and selects precisely when it
+    # changes -- hashing it here is the same double-counting that made editing
+    # the orchestrator discard the graph. Keeping it also made the transparent
+    # worktree graph copy unreachable: that copy requires the main checkout's
+    # graph to be valid under the LANE's digest, and a lane exists precisely
+    # because it is on a different branch, so any harness file differing between
+    # the two branches permanently defeated it. Measured on this repository: 5 of
+    # 22 digest inputs differed between the main checkout and both live lanes,
+    # and every one of the five was harness implementation rather than
+    # collection semantics.
+    patterns = ("devtools/pytest*.py",)
     for pattern in patterns:
         for path in root.glob(pattern):
             _ensure_deadline(deadline_monotonic)
@@ -473,9 +503,14 @@ def _safe_relative_path(raw: str) -> str | None:
 def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str, ...]:
     """Return changed Python paths whose runtime behavior needs graph edges.
 
-    A deleted module cannot be parsed, but it still invalidates any graph edge
-    that pointed at it. Keep that path in the required set so inspection fails
-    closed and the verifier rebuilds the complete native corpus.
+    Deleted modules are excluded: an edge for a nonexistent file is
+    unrecordable, so requiring one makes ``incomplete`` permanent -- no
+    rebuild, however complete, can ever clear it (observed 2026-08-18: a
+    branch that renamed a test module could not produce a valid graph even
+    after a full 20,506-test bootstrap). Selection soundness does not need
+    the requirement -- pytest-testmon itself detects a deleted dependency
+    when a recorded fingerprint no longer matches, and selects the
+    dependent tests.
     """
     root = repo_root.resolve()
     executable: list[str] = []
@@ -484,7 +519,9 @@ def executable_python_paths(repo_root: Path, paths: Iterable[str]) -> tuple[str,
         if relative is None or not relative.endswith(".py"):
             continue
         source = root / relative
-        if source.exists() and source.is_file() and classify_source_ast(source) == "declaration-only":
+        if not source.exists() or not source.is_file():
+            continue
+        if classify_source_ast(source) == "declaration-only":
             continue
         executable.append(relative)
     return tuple(executable)
@@ -593,8 +630,15 @@ def inspect_native_testmon_environment(
             ).fetchall()
             _ensure_deadline(deadline_monotonic)
             if len(environment_rows) != 1:
-                reason = "native environment is absent" if not environment_rows else "native environment is ambiguous"
-                return NativeTestmonState("invalid", reason)
+                if not environment_rows:
+                    # A sound database that simply does not carry this
+                    # environment is not damaged state. The file is shared by
+                    # every environment name (the hypothesis-profile fallback
+                    # probes two in a single invocation), so reporting "invalid"
+                    # here invites the caller to delete another environment's
+                    # graph on a routine miss.
+                    return NativeTestmonState("absent", f"native environment {environment_name!r} is absent")
+                return NativeTestmonState("invalid", "native environment is ambiguous")
             environment_id = int(environment_rows[0][0])
             nodeids = tuple(
                 row[0]
@@ -605,7 +649,21 @@ def inspect_native_testmon_environment(
                 if isinstance(row[0], str) and row[0]
             )
             _ensure_deadline(deadline_monotonic)
-            if not nodeids or len(nodeids) != len(set(nodeids)):
+            if not nodeids:
+                # An environment row with no recorded executions is EMPTY, not
+                # damaged. pytest creates the row at startup, so this is exactly
+                # what a bootstrap interrupted before its first test completes
+                # leaves behind -- and calling it "invalid" makes the caller
+                # delete the whole shared SQLite file, taking every OTHER
+                # environment's graph with it. That is the loop no number of
+                # retries escapes: kill a bootstrap once, and the next run starts
+                # from zero, and so does the one after.
+                #
+                # Reported as absent instead: there is nothing here to reuse, so
+                # this environment bootstraps, while graphs belonging to other
+                # environment names survive untouched.
+                return NativeTestmonState("absent", f"native environment {environment_name!r} has no recorded tests")
+            if len(nodeids) != len(set(nodeids)):
                 return NativeTestmonState("invalid", "native environment has no unique collected corpus")
             uncovered = connection.execute(
                 """
@@ -652,7 +710,7 @@ def inspect_native_testmon_environment(
     )
     if missing:
         return NativeTestmonState(
-            "invalid",
+            "incomplete",
             "changed executable modules are absent from the native dependency graph",
             environment,
             missing,
@@ -860,7 +918,20 @@ def prepare_native_testmon_environment(
     if local.valid:
         return NativeTestmonPreparation(environment_name, "affected", local, None, (), linked, main_checkout)
 
-    removed = remove_invalid_native_testmon_state(root)
+    # Retain a merely incomplete graph. An interrupted bootstrap leaves a
+    # sound database that simply has not fingerprinted every changed module
+    # yet; removing it discards every test the interrupted run recorded, so
+    # the next invocation bootstraps from zero and is interrupted at the same
+    # point -- a loop no number of retries escapes. Only genuinely unusable
+    # state (corrupt, schema-incompatible, ambiguous environment, or replaced
+    # on disk) is removed.
+    # Only genuinely damaged state is removed. A database that is merely
+    # missing this environment, or holds an interrupted bootstrap's partial
+    # graph, is left alone: deleting it discards work that belongs to another
+    # environment or to the run that was interrupted.
+    removed: tuple[Path, ...] = ()
+    if local.status == "invalid":
+        removed = remove_invalid_native_testmon_state(root)
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
@@ -899,6 +970,20 @@ def prepare_native_testmon_environment(
                 main_checkout,
             )
 
+    if local.resumable:
+        # OPERATOR DECISION 2026-08-18: prefer the hazard to the standstill.
+        # A resumable graph is structurally sound and merely lacks edges for some
+        # changed modules. The previous rule discarded it and ran the complete
+        # corpus, which is ~9.5x a warm run; measured against the recorded run
+        # history, 5.1 of 5.65 hours of testmon-tier time went to runs that
+        # selected nothing and ran everything. The residual risk is precise and
+        # bounded: tests whose only dependency is an un-fingerprinted module may
+        # not be selected on THIS run. They are selected on the next one, because
+        # the run still records edges for everything it executes. The uncovered
+        # paths are named in the receipt rather than paid for every time.
+        return NativeTestmonPreparation(
+            environment_name, "affected", local, copied_from, removed, linked, main_checkout
+        )
     return NativeTestmonPreparation(environment_name, "bootstrap", local, copied_from, removed, linked, main_checkout)
 
 

@@ -41,7 +41,16 @@ from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
+from polylogue.core.enums import (
+    AssertionKind,
+    AssertionStatus,
+    BlockType,
+    BranchType,
+    MaterialOrigin,
+    Origin,
+    Provider,
+    TitleSource,
+)
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.refs import (
@@ -54,7 +63,11 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.block_anchor import format_block_anchor
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
@@ -405,6 +418,7 @@ _HASH = b"x" * 32
 def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = None) -> tuple[str, str]:
     source_path = source_path or str(Path.home() / ".codex" / "sessions" / "session.jsonl")
     raw_id = "raw-import-1"
+    initialize_active_archive_root(tmp_path)
     source_conn = sqlite3.connect(tmp_path / "source.db")
     index_conn = sqlite3.connect(tmp_path / "index.db")
     try:
@@ -540,6 +554,7 @@ async def _seed_two_sessions(db_path: Path) -> None:
                 source_name=Provider.CLAUDE_AI,
                 provider_session_id="conv-alpha",
                 title="Alpha",
+                title_source=TitleSource.ORIGIN,
                 messages=[
                     ParsedMessage(
                         provider_message_id="alpha-m1",
@@ -807,6 +822,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         native_id="conv-alpha",
         origin="claude-ai-export",
         title="Alpha",
+        title_source=TitleSource.ORIGIN,
         created_at=None,
         updated_at=None,
         message_count=2,
@@ -2006,7 +2022,9 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
             )
 
         initialize_archive_database(archive.config.archive_root / "user.db", ArchiveTier.USER)
-        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        # blocks.block_id derives from messages.message_id, which is generated
+        # with an "n:" discriminator for a native-id message.
+        instruction_block_id = f"{parent_session_id}:n:dispatch:0"
         with sqlite3.connect(archive.config.archive_root / "user.db") as conn:
             upsert_assertion(
                 conn,
@@ -2996,7 +3014,8 @@ async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(
         created_at_ms=123,
     )
     try:
-        with ArchiveStore.open_existing(tmp_path) as store:
+        # open_existing defaults to read-only; saving a batch is a user.db write.
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
             store.save_annotation_batch(batch)
 
         payload = await archive.resolve_ref(batch.batch_ref)
@@ -3142,7 +3161,8 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
     )
     archive = _archive(tmp_path)
     try:
-        with ArchiveStore.open_existing(tmp_path) as store:
+        # open_existing defaults to read-only; saving a batch is a user.db write.
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
             store.save_annotation_batch(batch)
             persisted = store.get_annotation_batch(batch.batch_id)
             assert persisted is not None
@@ -3218,7 +3238,8 @@ async def test_resolve_ref_byte_bounds_opaque_annotation_refs_and_scalars(tmp_pa
     )
     archive = _archive(tmp_path)
     try:
-        with ArchiveStore.open_existing(tmp_path) as store:
+        # open_existing defaults to read-only; saving a batch is a user.db write.
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
             store.save_annotation_batch(batch)
             persisted = store.get_annotation_batch(batch.batch_id)
             assert persisted is not None
@@ -3536,7 +3557,9 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
                 )
             )
 
-        instruction_block_id = f"{parent_session_id}:dispatch:0"
+        # blocks.block_id derives from messages.message_id, which is generated
+        # with an "n:" discriminator for a native-id message.
+        instruction_block_id = f"{parent_session_id}:n:dispatch:0"
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -3673,7 +3696,7 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
                 )
             )
 
-        instruction_block_id = f"{parent_session_id}:dispatch-a:0"
+        instruction_block_id = f"{parent_session_id}:n:dispatch-a:0"
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -6007,7 +6030,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
                     branch_type=BranchType.SUBAGENT,
                 )
             )
-        delegation_ref = f"delegation:{parent_session_id}:dispatch:0"
+        delegation_ref = f"delegation:{parent_session_id}:n:dispatch:0"
         request = AnnotationBatchImportRequest(
             jsonl=json.dumps(
                 {

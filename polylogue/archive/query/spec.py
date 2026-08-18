@@ -225,6 +225,7 @@ def resolve_default_root_filter(
     root: bool | None,
     *,
     boolean_predicate: QueryPredicate | None = None,
+    parent_id: str | None = None,
 ) -> bool | None:
     """Resolve the SQL-level ``root`` filter a session query should apply.
 
@@ -254,6 +255,12 @@ def resolve_default_root_filter(
     if root is not None:
         return root
     if lineage_seed_from_predicate(boolean_predicate) is not None:
+        return None
+    if parent_id:
+        # Same reasoning as the lineage exemption above: naming a parent is an
+        # explicit request for that session's children, so applying the
+        # top-level-only default would drop every row the filter asked for and
+        # make `parent` return empty for all input.
         return None
     return True
 

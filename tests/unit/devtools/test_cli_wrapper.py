@@ -157,3 +157,38 @@ def test_repo_wrapper_script_has_no_hardcoded_paths() -> None:
     # The wrapper may mention POLYLOGUE_REPO_ROOT (as a documented
     # overridable fallback), but it must not require it.
     assert "POLYLOGUE_REPO_ROOT is not set" not in body
+
+
+def test_wrapper_uses_the_resolved_checkouts_own_interpreter(tmp_path: Path) -> None:
+    """A worktree's `devtools` must not run on another checkout's interpreter.
+
+    The wrapper resolved which checkout's CODE to run but exec'd a bare `python`,
+    so inside a linked worktree it used the main checkout's venv -- whose editable
+    install points at the main checkout. checkout_guard then refuses with exit
+    125: code from one checkout, environment from another.
+
+    The practical cost was that plain `devtools test` did not work in a worktree
+    at all, and every call needed an `env VIRTUAL_ENV=... PATH=...` prefix -- the
+    friction that pushes a caller to bare `pytest` and out of the guard,
+    containment and receipts this wrapper exists to provide.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / "devtools").mkdir(parents=True)
+    (checkout / "devtools" / "__main__.py").write_text("", encoding="utf-8")
+    venv_python = checkout / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text('#!/bin/sh\necho "INTERPRETER=$0"\n', encoding="utf-8")
+    venv_python.chmod(0o755)
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+
+    result = subprocess.run(
+        ["bash", str(WRAPPER), "status"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert str(venv_python) in result.stdout, (
+        f"wrapper did not use the checkout's own interpreter: {result.stdout}{result.stderr}"
+    )

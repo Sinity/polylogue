@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from polylogue.archive.query.spec import parse_query_date, resolve_default_root_filter
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
-from polylogue.paths import archive_file_set_index_available_for_paths
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
 from polylogue.surfaces.payloads import (
@@ -113,17 +112,6 @@ def mcp_archive_root(config: Config) -> Path:
     if active_root is not None and config.db_path.exists():
         return active_root
     return config.archive_root
-
-
-def archive_index_active_paths(
-    *,
-    archive_root: Path,
-    db_anchor_path: Path,
-) -> bool:
-    """Path-oriented variant for call sites that do not carry Config."""
-    if not isinstance(archive_root, Path):
-        return False
-    return archive_file_set_index_available_for_paths(archive_root_path=archive_root, db_anchor=db_anchor_path)
 
 
 def archive_query_filters(spec: SessionQuerySpec) -> ArchiveQueryFilters:
@@ -858,7 +846,6 @@ def _sort_value(sort: object) -> str | None:
 __all__ = [
     "ArchiveQueryFilters",
     "active_archive_root",
-    "archive_index_active_paths",
     "archive_session_list_payload",
     "archive_message_payload",
     "archive_message_page_payload",

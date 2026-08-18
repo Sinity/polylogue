@@ -16,7 +16,6 @@ from polylogue.archive.query.fields import (
 from polylogue.archive.query.plan_description import describe_plan, effective_fetch_limit, plan_has_filters
 from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.query.retrieval import (
-    actions_ready,
     can_use_action_stats_with,
     candidate_record_query,
     fetch_record_query_for,
@@ -211,9 +210,6 @@ class SessionQueryPlan:
 
     def _uses_action_read_model(self) -> bool:
         return uses_actions(self)
-
-    async def _actions_ready(self, repository: SessionQueryRuntimeStore) -> bool:
-        return await actions_ready(self, repository)
 
     async def can_use_action_stats_with(self, repository: SessionQueryRuntimeStore) -> bool:
         return await can_use_action_stats_with(self, repository)

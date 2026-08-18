@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.conftest import _MANAGED_VERIFY_ENV
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -1733,7 +1734,10 @@ class TestNoArchiveStatus:
                     _show_direct_status(env)
 
         combined = _combined_calls(env)
-        assert "daemon status unavailable" in combined
+        # Direct status deliberately does not measure FTS coverage (the query
+        # assertions above are this test's subject); it must say so rather than
+        # render a 0% that reads as a genuinely empty index.
+        assert "not measured without the daemon" in combined
         assert any("SUM(message_count)" in query for query in queries)
         assert not any("messages_fts_docsize" in query for query in queries)
 
@@ -2685,6 +2689,14 @@ class TestEnvIsolation:
                 "POLYLOGUE_SITE_CONFIG",
                 "POLYLOGUE_DAEMON_URL",
             }
+            # The managed verification supervisor's own run-identity plumbing is
+            # not host configuration, and conftest deliberately exempts it from
+            # the scrub: clearing it mid-run detaches this process from the
+            # basetemp it owns and from the event ledger. What this case is
+            # about is operator configuration leaking in, so it defers to the
+            # same canonical set rather than keeping a second list that silently
+            # disagrees whenever the supervisor gains a variable.
+            and k not in _MANAGED_VERIFY_ENV
         ]
         assert leaked == [], f"host POLYLOGUE_* vars leaked into test env: {leaked}"
         # And the daemon URL must be routed to an unreachable address.

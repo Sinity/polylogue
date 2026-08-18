@@ -39,8 +39,10 @@ import pytest
 import polylogue.maintenance.rebuild_index as rebuild_index
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.sources.parsers import codex as codex_parser
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
@@ -82,10 +84,10 @@ def _seed_distinct_codex_sessions(root: Path, count: int, *, monkeypatch: pytest
             """
             UPDATE raw_sessions
             SET logical_source_key = CASE
-                    WHEN source_path LIKE '%/0.jsonl' THEN 'codex:sess-0'
-                    WHEN source_path LIKE '%/1.jsonl' THEN 'codex:sess-1'
-                    WHEN source_path LIKE '%/2.jsonl' THEN 'codex:sess-2'
-                    ELSE 'codex:sess-3'
+                    WHEN source_path LIKE '%/0.jsonl' THEN 'codex-session:sess-0'
+                    WHEN source_path LIKE '%/1.jsonl' THEN 'codex-session:sess-1'
+                    WHEN source_path LIKE '%/2.jsonl' THEN 'codex-session:sess-2'
+                    ELSE 'codex-session:sess-3'
                 END,
                 revision_kind = 'full',
                 source_revision = raw_id,
@@ -94,6 +96,28 @@ def _seed_distinct_codex_sessions(root: Path, count: int, *, monkeypatch: pytest
                 revision_authority = 'byte_proven'
             """
         )
+        source.commit()
+    # write_raw_payload records raw bytes only, so no current-parser census
+    # receipt exists and the inactive-candidate gate refuses the corpus with
+    # "requires a complete current-parser source census". Record one per raw
+    # from the same payload the fixture wrote.
+    with sqlite3.connect(root / "source.db") as source:
+        for raw_id, index in zip(raw_ids, range(count), strict=True):
+            records = json.loads(
+                "["
+                + ",".join(
+                    line
+                    for line in _codex_session(
+                        f"sess-{index}", (("user", f"hello {index}"), ("assistant", f"hi {index}"))
+                    )
+                    .decode("utf-8")
+                    .splitlines()
+                    if line.strip()
+                )
+                + "]"
+            )
+            parsed = codex_parser.parse(records, f"sess-{index}")
+            record_current_parser_source_census(source, raw_id, parser_sessions=[parsed])
         source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))

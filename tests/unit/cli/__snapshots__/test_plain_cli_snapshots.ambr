@@ -571,6 +571,8 @@
           "unchecked": 0,
           "affected_unchecked": 0,
           "lost_source_evidence_count": 0,
+          "parser_census_incomplete_count": 0,
+          "parser_census_incomplete_blob_bytes": 0,
           "raw_artifact_count": 0,
           "materialized_raw_artifact_count": 0,
           "archive_session_count": 0,
@@ -588,7 +590,16 @@
             "parsed_without_index_session": 0
           },
           "source_family_counts": {},
-          "lost_source_evidence_samples": []
+          "lost_source_evidence_samples": [],
+          "raw_authority_parser_census": {
+            "available": true,
+            "complete_count": 2,
+            "incomplete_count": 0,
+            "incomplete_blob_bytes": 0,
+            "missing_receipt_count": 0,
+            "non_complete_receipt_count": 0,
+            "incomplete_origin_summary": []
+          }
         }
       },
       "raw_frontier_integrity": {
@@ -1017,8 +1028,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 24,
-        "user_version": 24,
+        "expected_user_version": 33,
+        "user_version": 33,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,
@@ -1041,8 +1052,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 57,
-        "user_version": 57,
+        "expected_user_version": 67,
+        "user_version": 67,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -1148,14 +1159,14 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 12,
+          "sqlite_stat1_rows": 15,
           "planner_stats_present": true
         },
         "index": {
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 38,
+          "sqlite_stat1_rows": 36,
           "planner_stats_present": true
         },
         "embeddings": {
@@ -1206,6 +1217,47 @@
         "by_status": {}
       },
       "lifetime_attempts": {}
+    },
+    "assertion_candidate_queue": {
+      "mode": "assertion-candidate-queue-health",
+      "state": "empty-unverified",
+      "observed_at_ms": <HASH>,
+      "pending_count": 0,
+      "status_counts": {},
+      "kind_counts": {},
+      "source_counts": {},
+      "oldest_pending_at_ms": null,
+      "newest_pending_at_ms": null,
+      "oldest_pending_age_ms": null,
+      "stale_pending_count": 0,
+      "retention_outcome": "none",
+      "producer_stage": "standing-queries",
+      "producer_status": null,
+      "producer_observed_at_ms": null,
+      "producer_age_ms": null,
+      "scheduler_state": "unknown",
+      "scheduler_heartbeat_at_ms": null,
+      "scheduler_heartbeat_age_ms": null,
+      "judgment_scheduler_receipt_status": "unknown",
+      "judgment_scheduler_receipt_at_ms": null,
+      "judgment_scheduler_receipt_age_ms": null,
+      "judgment_scheduler_receipt_reason": null,
+      "judgment_scheduler_receipt_retryable": null,
+      "judgment_scheduler_receipt_retry_route": null,
+      "judgment_scheduler_receipt_batch_limit": null,
+      "judgment_scheduler_receipt_considered": null,
+      "judgment_scheduler_receipt_accepted": null,
+      "judgment_scheduler_receipt_rejected": null,
+      "judgment_scheduler_receipt_escalated": null,
+      "judgment_scheduler_receipt_idempotent": null,
+      "judgment_scheduler_receipt_failed": null,
+      "judgment_scheduler_receipt_persistence_degraded": null,
+      "judgment_scheduler_receipt_persistence_recovered": null,
+      "producer_debt_count": 0,
+      "caveats": [
+        "no successful standing-queries producer event is observable",
+        "a fresh scheduler heartbeat is not observable"
+      ]
     },
     "raw_materialization_readiness": {
       "available": true,
@@ -1277,9 +1329,21 @@
       "raw_authority_frontier_remediation_refs": [],
       "raw_authority_blocker_count": 0,
       "raw_authority_pending_census_count": 0,
+      "raw_authority_parser_census": {
+        "available": true,
+        "complete_count": 2,
+        "incomplete_count": 0,
+        "incomplete_blob_bytes": 0,
+        "missing_receipt_count": 0,
+        "non_complete_receipt_count": 0,
+        "incomplete_origin_summary": []
+      },
+      "raw_authority_parser_census_incomplete_count": 0,
+      "raw_authority_parser_census_incomplete_blob_bytes": 0,
       "raw_authority_ledger_counts": {
         "unresolved_blockers": 0,
-        "pending_censuses": 0
+        "pending_censuses": 0,
+        "parser_census_incomplete": 0
       }
     },
     "raw_frontier_integrity": {
@@ -1329,6 +1393,19 @@
       "oversized_stream_safe_count": 0,
       "top_raw_rows": [],
       "origin_summary": []
+    },
+    "raw_failures": {
+      "parse": 0,
+      "validation": 0,
+      "quarantined": 0,
+      "maintenance": 0,
+      "deferred_retryable": 0,
+      "terminal_rejections": 0,
+      "unexplained": 0,
+      "lifecycle_available": true,
+      "lifecycle_state": "healthy",
+      "lifecycle_reason": null,
+      "sample_count": 0
     },
     "diagnostic": {
       "kind": "no_sources",

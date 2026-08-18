@@ -17,6 +17,7 @@ import pytest
 import tests.conftest as conftest
 from devtools import verify_runs
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.nested_pytest import nested_pytest_env
 
 
 @contextmanager
@@ -366,10 +367,6 @@ def test_nested_explicit_basetemp_restores_active_outer_managed_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    ambient_identity = (
-        os.environ.get("POLYLOGUE_PYTEST_RUN_ID"),
-        os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"),
-    )
     _shm, _scratch = _make_real_candidates(monkeypatch, tmp_path)
     for name in (
         "POLYLOGUE_VERIFY_RUN_ID",
@@ -403,8 +400,25 @@ def test_nested_explicit_basetemp_restores_active_outer_managed_identity(
         assert os.environ["POLYLOGUE_PYTEST_RUN_ID"] == outer_identity[0]
         assert os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] == outer_identity[1]
 
-    assert os.environ.get("POLYLOGUE_PYTEST_RUN_ID") == ambient_identity[0]
-    assert os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP") == ambient_identity[1]
+    # Once the synthetic outer scope exits, the identity reverts to whatever
+    # scope is genuinely active -- which is the point: nesting restores, it does
+    # not clear. Standalone that is nothing; inside `devtools verify` it is the
+    # managed run actually executing this test.
+    #
+    # Asserting the RELATIONSHIP rather than a literal is what makes this
+    # environment-independent. It previously compared against an "ambient"
+    # identity captured before the monkeypatch.delenv calls above: standalone the
+    # ambient was (None, None) and the comparison passed trivially, while inside
+    # a managed run it was a real id and the comparison failed -- asking conftest
+    # to restore a value the test had just deleted and never shown it.
+    remaining = conftest._ACTIVE_PYTEST_SCOPES[-1] if conftest._ACTIVE_PYTEST_SCOPES else None
+    if remaining is None:
+        assert "POLYLOGUE_PYTEST_RUN_ID" not in os.environ
+        assert "POLYLOGUE_PYTEST_MANAGED_BASETEMP" not in os.environ
+    else:
+        run_id, basetemp = remaining
+        assert os.environ["POLYLOGUE_PYTEST_RUN_ID"] == run_id
+        assert os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] == basetemp
 
 
 @pytest.mark.parametrize("alias", [False, True])
@@ -546,8 +560,9 @@ def test_explicit_basetemp_claim_survives_real_pytest_basetemp_replacement(tmp_p
     cleared_by_pytest = explicit / "cleared-by-temp-path-factory"
     cleared_by_pytest.write_text("old", encoding="utf-8")
     repo_root = Path(__file__).resolve().parents[2]
-    env = {key: value for key, value in os.environ.items() if not key.startswith("POLYLOGUE_PYTEST_")}
-    env.pop("POLYLOGUE_VERIFY_RUN_ID", None)
+    # A nested pytest must not inherit the managed run's own variables; see
+    # tests/infra/nested_pytest.py for what breaks when it does.
+    env = nested_pytest_env()
 
     result = subprocess.run(
         [

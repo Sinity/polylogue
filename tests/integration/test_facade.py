@@ -148,9 +148,12 @@ class TestPolylogueParsing:
         first_count = result1.counts["sessions"]
         assert first_count > 0
 
-        # Second ingest parses the same source again, but storage remains idempotent.
+        # Second ingest is skipped at the acquire stage (the raw_id already
+        # exists), so the parse stage never runs and reports nothing -- exactly
+        # what this case's docstring describes. Idempotency is the archive
+        # state below, not the per-run counter.
         result2 = await archive.parse_file(sample_chatgpt_file)
-        assert result2.counts["sessions"] == first_count
+        assert result2.counts["sessions"] == 0
 
         # Verify DB still has same number of sessions (idempotent)
         sessions = await archive.list_sessions()

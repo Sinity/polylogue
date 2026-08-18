@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import itertools
 import json
 import os
 import platform
@@ -20,7 +21,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.checkout_guard import CheckoutImportMismatchError
-from devtools.testmon_bootstrap import NativeTestmonDeadlineError, NativeTestmonRepairError, executable_python_paths
+from devtools.testmon_bootstrap import NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
@@ -199,6 +200,34 @@ def test_lab_verify_delegates_to_lab_smoke() -> None:
         "lab smoke",
         [sys.executable, "-m", "devtools", "lab", "smoke", "run", "archive-smoke", "--tier", "0"],
     )
+
+
+def test_receipt_records_why_a_bootstrap_happened_not_just_that_it_did(tmp_path: Path) -> None:
+    """A bootstrap costs ~9.5x a warm run, so the receipt must name its cause.
+
+    `diagnosis: native_testmon_graph_invalid` records the outcome alone, which
+    cannot distinguish a digest change (nothing was reusable) from an
+    incomplete graph (better selection could have avoided most of the work).
+    Telling them apart previously meant reading the testmon SQLite by hand.
+    """
+    run = VerifyRun(tier="testmon", argv=[], git_head="head", root=tmp_path)
+
+    run.record_selection(
+        selection_mode="bootstrap",
+        state_status="incomplete",
+        state_reason="changed executable modules are absent from the native dependency graph",
+        missing_executable_paths=("polylogue/daemon/http.py", "tests/unit/daemon/test_http.py"),
+        runtime_data_paths=(),
+        copied_from=None,
+    )
+
+    recorded = json.loads((run.run_dir / "run.json").read_text(encoding="utf-8"))["testmon_selection"]
+    assert recorded["state_status"] == "incomplete", "the addressable case must be distinguishable from 'absent'"
+    assert recorded["missing_executable_path_count"] == 2
+    assert "polylogue/daemon/http.py" in recorded["missing_executable_paths"], (
+        "the specific uncovered files are what a smarter selection would need"
+    )
+    assert recorded["selection_mode"] == "bootstrap"
 
 
 def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
@@ -514,7 +543,6 @@ def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp
         corpus_nodeids=("a", "b"),
         selection_mode="bootstrap",
         invocation_duration_s=0.1,
-        budget_s=10.0,
     )
 
     assert result["external_addopts_neutralized"] is False
@@ -1432,79 +1460,6 @@ def test_checkout_mutation_monitor_remembers_deleted_ignored_root(tmp_path: Path
     assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
 
 
-@pytest.mark.uses_real_clock("waits for the real filesystem watcher to witness an index replacement")
-def test_checkout_mutation_monitor_observes_transient_index_authority_change(tmp_path: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".gitignore").write_text("ignored/\n", encoding="utf-8")
-    baseline = tmp_path / "baseline.py"
-    baseline.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", ".gitignore", "baseline.py"], cwd=tmp_path, check=True)
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    hidden = tmp_path / "ignored" / "hidden.py"
-    hidden.parent.mkdir()
-    hidden.write_text("secret authority\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-f", "ignored/hidden.py"], cwd=tmp_path, check=True)
-    deadline = time.monotonic() + 1
-    while not monitor._changed and time.monotonic() < deadline:
-        time.sleep(0.001)
-    assert monitor._changed, "monitor did not witness the changed index authority before it was restored"
-    subprocess.run(["git", "reset", "-q", "--", "ignored/hidden.py"], cwd=tmp_path, check=True)
-    observation = monitor.finish()
-
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
-
-
-@pytest.mark.uses_real_clock("coordinates a deliberately coalesced Git index watcher event")
-def test_checkout_mutation_monitor_keeps_coalesced_index_authority_event(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restoring signature comparison would miss the delayed authority event."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    tracked = tmp_path / "tracked.py"
-    tracked.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    index = tmp_path / ".git" / "index"
-    baseline = index.read_bytes()
-    release_event = threading.Event()
-
-    def delayed_watch(*_paths: Path, **kwargs: object) -> object:
-        yield set()
-        assert release_event.wait(timeout=1)
-        yield {(watchfiles.Change.modified, str(index))}
-        stop_event = kwargs["stop_event"]
-        assert isinstance(stop_event, threading.Event)
-        stop_event.wait(timeout=1)
-
-    monkeypatch.setattr(watchfiles, "watch", delayed_watch)
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    tracked.write_text("value = 2\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    index.write_bytes(baseline)
-    release_event.set()
-    observation = monitor.finish()
-
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
-
-
-def test_checkout_mutation_monitor_keeps_initial_authority_signature_across_topology_recheck(tmp_path: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    tracked = tmp_path / "tracked.py"
-    tracked.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor._watched_directories()
-    tracked.write_text("value = 2\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    monitor._watched_directories()
-    monitor._record_change(tmp_path / ".git")
-
-    assert monitor.finish() == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
-
-
 @pytest.mark.uses_real_clock("waits for the filesystem watcher to witness a branch-ref replacement")
 def test_checkout_mutation_monitor_observes_transient_head_ref_change(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -1558,6 +1513,35 @@ def test_checkout_mutation_monitor_ignores_shared_packed_refs_when_current_ref_i
     monitor = CheckoutMutationMonitor(tmp_path)
     monitor._watched_directories()
     monitor._record_change(tmp_path / ".git" / "packed-refs")
+
+    assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
+
+
+def test_staging_a_file_does_not_invalidate_a_run(tmp_path: Path) -> None:
+    """`git add` is bookkeeping, not a change to what is under test.
+
+    The index used to be watched as a PROXY for content change. Snapshot
+    isolation removed the need for it: a verify runs against a frozen reflink
+    copy bind-mounted at the checkout path, so tested content cannot change
+    mid-run. `.git` stays live inside that namespace because refs must resolve,
+    which left an index write as the one mutation able to invalidate a run it
+    provably could not affect.
+
+    Observed 2026-08-18: a 30-minute merge-gate verify was discarded with
+    checkout_mutation_path=".git/index" while its own initial and final worktree
+    fingerprints were byte-identical.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
+    monitor = CheckoutMutationMonitor(tmp_path)
+    monitor.start()
+
+    # An index write with no accompanying change to the tested tree. Under
+    # snapshot isolation this is the shape that reaches a run through the
+    # deliberately live-bound `.git`, and it must not invalidate anything.
+    monitor._record_change(tmp_path / ".git" / "index")
 
     assert monitor.finish() == CheckoutMutationObservation(changed=False, unavailable=False)
 
@@ -1682,33 +1666,6 @@ def test_checkout_mutation_monitor_ignores_uncommitted_git_index_lock(tmp_path: 
     observation = monitor.finish()
 
     assert observation == CheckoutMutationObservation(changed=False, unavailable=False)
-
-
-def test_checkout_mutation_monitor_records_semantically_unchanged_index_replacement(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "tracked.py").write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True)
-    index = tmp_path / ".git" / "index"
-
-    def portable_watch(*_paths: Path, **_kwargs: object) -> object:
-        yield set()
-        replacement = index.with_suffix(".replacement")
-        replacement.write_bytes(index.read_bytes())
-        replacement.replace(index)
-        yield {(watchfiles.Change.modified, str(index))}
-        stop_event = _kwargs["stop_event"]
-        assert isinstance(stop_event, threading.Event)
-        stop_event.wait(timeout=1)
-
-    monkeypatch.setattr(watchfiles, "watch", portable_watch)
-    monitor = CheckoutMutationMonitor(tmp_path)
-    monitor.start()
-    observation = monitor.finish()
-
-    assert observation == CheckoutMutationObservation(changed=True, unavailable=False, observed_path=".git/index")
 
 
 def test_checkout_mutation_monitor_rejects_partial_git_enumeration(
@@ -3374,7 +3331,11 @@ def test_bench_slo_forces_nested_pytest_to_managed_scratch(
     assert "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in policy_input
     env = subprocess_run.call_args.kwargs["env"]
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
-    assert env["POLYLOGUE_PYTEST_RUN_ID"] == run.run_id
+    # The pytest identity names one invocation, not the whole run: it derives
+    # from the run id but carries a per-step suffix, so the parallel and serial
+    # lanes of one run cannot land on the same basetemp directory.
+    assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(f"{run.run_id}-")
+    assert env["POLYLOGUE_PYTEST_RUN_ID"] != run.run_id
     assert env["POLYLOGUE_PYTEST_TMPFS"] == "0"
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(scratch)
     assert "PYTEST_ADDOPTS" not in env
@@ -3491,6 +3452,10 @@ def test_pytest_run_heartbeat_reports_latest_test_node(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    # _pytest_env resolves the events path from ROOT, not the cwd, so chdir
+    # alone leaves this test writing into the real .cache/verify/ events file
+    # and racing whatever a previous run left there.
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
     nodeid = "tests/unit/example.py::test_slow_node"
     script = (
         "import json, os, pathlib, time; "
@@ -3865,7 +3830,6 @@ def test_verify_continues_after_failed_cheap_step(
     assert payload["verification_scope"] == "non-test"
     assert payload["release_baseline_allowed"] is False
     assert payload["pytest_aggregate"]["selection_mode"] == "none"
-    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": True}
     assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
 
 
@@ -3921,6 +3885,59 @@ def test_verify_classifies_unavailable_mutation_monitor_separately(
     payload = json.loads(capsys.readouterr().out)
     checkout_step = next(step for step in payload["steps"] if step["name"] == "checkout stability")
     assert checkout_step["diagnosis"] == "checkout_mutation_monitor_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("isolated", "expected_rc"),
+    [
+        # Under snapshot isolation a transient observation (head and
+        # fingerprint identical at the end) can only be the run's own exhaust:
+        # the lanes saw a frozen tree, so nothing the monitor observed can
+        # have reached them. The receipt stays valid. Unisolated, the old
+        # strictness holds -- a transient really can have poisoned the run.
+        (True, 0),
+        (False, 125),
+    ],
+)
+def test_transient_mutation_invalidates_only_unisolated_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    isolated: bool,
+    expected_rc: int,
+) -> None:
+    class _TransientMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=True, unavailable=False, observed_path="pytest-cache-files-x")
+
+    if isolated:
+        monkeypatch.setenv("POLYLOGUE_VERIFY_ISOLATED", "1")
+    else:
+        monkeypatch.delenv("POLYLOGUE_VERIFY_ISOLATED", raising=False)
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="stable-head"),
+        patch("devtools.verify.CheckoutMutationMonitor", _TransientMonitor),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == expected_rc
+    payload = json.loads(capsys.readouterr().out)
+    stability = [step for step in payload["steps"] if step["name"] == "checkout stability"]
+    if expected_rc == 0:
+        assert stability == []
+    else:
+        assert stability[0]["diagnosis"] == "checkout_changed_during_verification"
+        assert stability[0]["transient_checkout_mutation"] is True
 
 
 def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
@@ -4192,7 +4209,6 @@ def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
     receipt_payload = json.loads(receipt.read_text())
     assert receipt_payload["diagnosis"] == "checkout_import_mismatch"
     assert receipt_payload["pytest_aggregate"] == history["pytest_aggregate"]
-    assert receipt_payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": True}
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_import_mismatch"
 
 
@@ -4244,51 +4260,6 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "native_git_authority_unavailable"
 
 
-def test_native_preparation_uses_invocation_deadline_and_records_expiry(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class _StableMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
-        def finish(self) -> CheckoutMutationObservation:
-            return CheckoutMutationObservation(changed=False, unavailable=False)
-
-    history: dict[str, Any] = {}
-    receipt = tmp_path / "invocation-receipt.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "preparation-deadline")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
-    monkeypatch.setattr(verify, "VERIFY_INVOCATION_BUDGET_S", 42.0)
-
-    def expire_preparation(*_args: object, **kwargs: object) -> object:
-        assert kwargs["deadline_monotonic"] == 142.0
-        raise NativeTestmonDeadlineError("verify invocation deadline expired during native testmon preparation")
-
-    with (
-        patch("devtools.verify.time.monotonic", return_value=100.0),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._git_commit", return_value="base"),
-        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
-        patch("devtools.verify.prepare_native_testmon_environment", side_effect=expire_preparation),
-        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
-        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
-        patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
-        patch("devtools.verify._notify"),
-    ):
-        assert main(["--json"]) == 124
-
-    normalized = verify_runs.normalize_verify_history_entry(history)
-    assert normalized["diagnosis"] == "verify_invocation_deadline_exceeded"
-    assert normalized["pytest_aggregate"]["deadline"] == {"budget_s": 42.0, "met": False}
-    assert json.loads(receipt.read_text())["exit_code"] == 124
-    assert json.loads(capsys.readouterr().out)["exit_code"] == 124
-
-
 def test_verify_anchors_relative_state_to_checkout_when_invoked_from_subdirectory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4313,7 +4284,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[str] = []
-    lane_timeouts: list[float] = []
 
     class _StableMonitor:
         def __init__(self, _root: Path) -> None:
@@ -4330,6 +4300,9 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         selection_mode="affected",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4341,7 +4314,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
 
     def fake_run(label: str, _command: list[str], **_kwargs: object) -> tuple[int, float, dict[str, object]]:
         calls.append(label)
-        lane_timeouts.append(cast(float, _kwargs["timeout_s"]))
         if "parallel" in label:
             return 1, 0.01, {"diagnosis": "pytest_failed"}
         return 0, 0.01, {"diagnosis": "pytest_passed"}
@@ -4360,7 +4332,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
             ],
         ),
         patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify._remaining_invocation_budget", side_effect=(3500.0, 3200.0)),
         patch("devtools.verify.aggregate_native_testmon_run", return_value={"terminal_green": False}),
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
@@ -4370,7 +4341,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         assert main(["--json"]) == 1
 
     assert calls == ["pytest native parallel (affected)", "pytest native serial (affected)"]
-    assert lane_timeouts == [3500.0, 3200.0]
     assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is False
 
 
@@ -4383,7 +4353,6 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         "closed_world_collection": True,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
-        "deadline": {"met": True},
     }
 
     assert _release_baseline_allowed(
@@ -4408,7 +4377,6 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
         {**aggregate, "closed_world_collection": False},
         {**aggregate, "cleanup": {"complete": False}},
         {**aggregate, "containment": {"complete": False}},
-        {**aggregate, "deadline": {"met": False}},
     ):
         assert not _release_baseline_allowed(
             selection_mode="full",
@@ -4447,6 +4415,9 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         selection_mode="affected",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4463,7 +4434,6 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         "closed_world_collection": True,
         "cleanup": {"complete": True},
         "containment": {"complete": True},
-        "deadline": {"met": True},
     }
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.setattr(
@@ -4513,6 +4483,13 @@ def test_collection_failure_still_persists_native_run_aggregate(
         selection_mode="bootstrap",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(
+            status="invalid",
+            reason="native environment has no unique collected corpus",
+            missing_executable_paths=(),
+        ),
     )
     invalid_state = SimpleNamespace(
         valid=False,
@@ -4551,7 +4528,7 @@ def test_collection_failure_still_persists_native_run_aggregate(
     assert aggregate["containment"]["complete"] is False
 
 
-def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
+def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class _StableMonitor:
@@ -4569,6 +4546,9 @@ def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
         selection_mode="bootstrap",
         removed_paths=(),
         copied_from=None,
+        # A real NativeTestmonPreparation always carries local_state; the
+        # receipt records its status so a bootstrap's CAUSE is legible.
+        local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4577,7 +4557,9 @@ def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
         environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
         missing_executable_paths=(),
     )
-    clock = iter((100.0, 3701.0, 3701.0, 3701.0))
+    # Repeat the final reading so the test does not depend on the exact number
+    # of monotonic() reads the implementation happens to make.
+    clock = itertools.chain(iter((100.0, 3701.0, 3701.0, 3701.0)), itertools.repeat(3701.0))
 
     def prepare(*_args: object, **_kwargs: object) -> object:
         assert time.monotonic() == 3701.0
@@ -4596,12 +4578,13 @@ def test_deadline_starts_before_native_preparation_and_fails_closed_after_steps(
         patch("devtools.verify._save_history"),
         patch("devtools.verify._notify"),
     ):
-        assert main(["--json"]) == 124
+        assert main(["--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["total_duration_s"] == 3601.0
-    assert payload["pytest_aggregate"]["deadline"] == {"budget_s": 3600.0, "met": False}
-    assert any(step["diagnosis"] == "verify_invocation_deadline_exceeded" for step in payload["steps"])
+    # An hour of wall clock no longer terminates the invocation or discards the
+    # work it produced; the pytest runtime and stall timeouts remain the guard
+    # against a genuine hang.
+    assert not any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in payload["steps"])
 
 
 def test_completion_notification_uses_pytest_count() -> None:
@@ -4663,3 +4646,30 @@ def test_verify_notifies_on_failure() -> None:
 
     assert rc == 1
     notify.assert_called_once()
+
+
+def test_sigterm_is_finalized_rather_than_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Killing a run must still leave a record of what it cost.
+
+    History is written only when a run FINISHES, and verify installed no SIGTERM
+    handler -- it only sends the signal to its children. So `pkill`, a scope
+    teardown, or an operator giving up on a long bootstrap all ended the process
+    with no entry at all. The omission is biased: what gets killed is precisely
+    the expensive run, so the durable record lost its most costly entries.
+    """
+    import signal as signal_module
+
+    from devtools.verify import _terminate_as_interrupt
+
+    before = signal_module.getsignal(signal_module.SIGTERM)
+    raised = False
+    with _terminate_as_interrupt():
+        installed = signal_module.getsignal(signal_module.SIGTERM)
+        assert installed is not before, "SIGTERM must be handled inside the run"
+        try:
+            os.kill(os.getpid(), signal_module.SIGTERM)
+        except KeyboardInterrupt:
+            raised = True
+
+    assert raised, "SIGTERM must surface as the interrupt the finalizer already handles"
+    assert signal_module.getsignal(signal_module.SIGTERM) is before, "the prior handler must be restored"

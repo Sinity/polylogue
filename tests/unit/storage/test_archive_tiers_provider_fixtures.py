@@ -65,7 +65,9 @@ def test_archive_tiers_writer_materializes_drive_payload(tmp_path: Path) -> None
     assert envelope.title == "Capital trivia"
     message_ids = [message.message_id for message in envelope.messages]
     assert envelope.active_leaf_message_id == message_ids[-1]
-    assert message_ids == [f"aistudio-drive:gem-text-only:{position}.0" for position in range(4)]
+    # An id-less message takes the generated "p:<position>.<variant>" form;
+    # the bare "<position>.<variant>" spelling predates that discriminator.
+    assert message_ids == [f"aistudio-drive:gem-text-only:p:{position}.0" for position in range(4)]
     assert [message.role for message in envelope.messages] == ["user", "assistant", "user", "assistant"]
     assert [message.is_active_leaf for message in envelope.messages] == [False, False, False, True]
     assert search_archive_blocks(conn, "Paris") == [f"{message_ids[1]}:0"]
@@ -82,7 +84,8 @@ def test_archive_tiers_writer_materializes_antigravity_payload(tmp_path: Path) -
     assert envelope.native_id == "anti-fixture-001"
     message_ids = [message.message_id for message in envelope.messages]
     assert len(message_ids) == len(set(message_ids)) == 2
-    assert all(message_id.startswith("antigravity-session:anti-fixture-001:synthetic-") for message_id in message_ids)
+    # Native-id messages carry the generated "n:" discriminator.
+    assert all(message_id.startswith("antigravity-session:anti-fixture-001:n:synthetic-") for message_id in message_ids)
     assert [message.role for message in envelope.messages] == ["user", "assistant"]
     assert envelope.messages[1].is_active_leaf is True
     assert search_archive_blocks(conn, "complete") == [f"{message_ids[1]}:0"]

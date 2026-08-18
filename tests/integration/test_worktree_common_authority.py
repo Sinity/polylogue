@@ -73,13 +73,17 @@ def test_common_authority_keeps_stale_linked_worktree_clean(tmp_path: Path) -> N
     (scripts / "bd").chmod(0o755)
     shutil.copy2(ROOT / "scripts" / "configure-git-hooks", scripts / "configure-git-hooks")
     (scripts / "configure-git-hooks").chmod(0o755)
-    hooks = common / ".githooks"
+    # `.beads-hooks` is the only hook set the installer selects; the `.githooks`
+    # fallback was unreachable (it is chosen only when `.beads-hooks` is absent,
+    # and that directory is committed) and has been removed. This test is about
+    # common-checkout hook authority, not the directory's name.
+    hooks = common / ".beads-hooks"
     hooks.mkdir()
     (hooks / "post-checkout").write_text(
         "#!/bin/sh\nprintf '%s\\n' stale-hook > \"$WORKTREE_HOOK_PROBE\"\n", encoding="utf-8"
     )
     (hooks / "post-checkout").chmod(0o755)
-    _run(["git", "add", ".envrc", "scripts", ".githooks"], common, env)
+    _run(["git", "add", ".envrc", "scripts", ".beads-hooks"], common, env)
     _run(["git", "commit", "-m", "historical lane"], common, env)
     _run(["git", "worktree", "add", "-b", "stale-lane", str(lane)], common, env)
 
@@ -88,7 +92,7 @@ def test_common_authority_keeps_stale_linked_worktree_clean(tmp_path: Path) -> N
     (hooks / "post-checkout").write_text(
         "#!/bin/sh\nprintf '%s\\n' common-hook > \"$WORKTREE_HOOK_PROBE\"\n", encoding="utf-8"
     )
-    _run(["git", "add", "scripts/bd", ".githooks/post-checkout"], common, env)
+    _run(["git", "add", "scripts/bd", ".beads-hooks/post-checkout"], common, env)
     _run(["git", "commit", "-m", "deploy common authority"], common, env)
 
     _run([str(scripts / "configure-git-hooks")], common, env)

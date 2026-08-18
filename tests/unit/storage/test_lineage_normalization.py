@@ -1016,6 +1016,9 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
     ).fetchall()
     assert [row[0] for row in stored_positions] == [2, 3]
     assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
+    # The prefix-anchored attachment lost its only ref; the row must be swept,
+    # not left acquired-but-unreachable (attachment-acquisition-debt).
+    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
     event_ref = conn.execute(
         """
         SELECT source_message_id, source_message_provider_id
@@ -1111,6 +1114,8 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
+    # Same sweep requirement as the partial-tail path: no ref-less rows survive.
+    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
     assert (
         conn.execute("SELECT COUNT(*) FROM web_content_constructs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     )

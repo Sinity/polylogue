@@ -1574,6 +1574,10 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
         actionable=1,
         affected_total=4,
         affected_actionable=4,
+        # Readiness now short-circuits to UNKNOWN "source parser census
+        # unavailable" whenever the census key is present but unavailable
+        # (#3903), which would shadow the specific condition under test.
+        raw_authority_parser_census={"available": True},
     )
 
     with (
@@ -1633,6 +1637,10 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
         actionable=1,
         affected_total=4,
         affected_actionable=4,
+        # Readiness now short-circuits to UNKNOWN "source parser census
+        # unavailable" whenever the census key is present but unavailable
+        # (#3903), which would shadow the specific condition under test.
+        raw_authority_parser_census={"available": True},
     )
 
     with (
@@ -1903,6 +1911,10 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
             return_value=status_module.RawMaterializationReadiness(
                 available=True,
                 raw_authority_frontier={"lifecycle_status": "completed"},
+                # Without an available census, readiness short-circuits to
+                # "source parser census unavailable" (#3903) and shadows the
+                # broken-chain signal this test exists to assert.
+                raw_authority_parser_census={"available": True},
             ),
         ),
     ):

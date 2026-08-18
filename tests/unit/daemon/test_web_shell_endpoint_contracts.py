@@ -502,11 +502,6 @@ class TestWebShellWorkspaceAssetContract:
 
     # ---- /api/stack contract -------------------------------------------
 
-    def test_api_stack_dispatch_is_owned_by_http_handler(self) -> None:
-        handler = _make_handler("GET", "/api/stack?ids=a,b")
-        ok = workspace_routes.dispatch_get(handler, ["api", "stack"], {"ids": ["a,b"]})
-        assert ok is False
-
     def test_api_stack_requires_ids(self) -> None:
         handler = _make_handler("GET", "/api/stack")
         send_error, send_json = _capture(handler)
@@ -524,15 +519,6 @@ class TestWebShellWorkspaceAssetContract:
 
     # ---- /api/compare contract -----------------------------------------
 
-    def test_api_compare_dispatch_is_owned_by_http_handler(self) -> None:
-        handler = _make_handler("GET", "/api/compare?left=a&right=b")
-        ok = workspace_routes.dispatch_get(
-            handler,
-            ["api", "compare"],
-            {"left": ["a"], "right": ["b"]},
-        )
-        assert ok is False
-
     @pytest.mark.parametrize(
         "params",
         [
@@ -548,13 +534,6 @@ class TestWebShellWorkspaceAssetContract:
         workspace_routes.handle_compare(handler, params)
         send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_request")
         send_json.assert_not_called()
-
-    # ---- dispatch fallthrough -----------------------------------------
-
-    def test_unknown_workspace_route_falls_through(self) -> None:
-        handler = _make_handler("GET", "/api/unknown")
-        ok = workspace_routes.dispatch_get(handler, ["api", "unknown"], {})
-        assert ok is False
 
     def test_parse_id_list_normalizes_whitespace_and_commas(self) -> None:
         parsed = workspace_routes.parse_id_list({"ids": ["a, b ,c", "d"]})

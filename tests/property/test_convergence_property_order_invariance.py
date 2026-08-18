@@ -93,6 +93,20 @@ TestConvergencePropertyInterruptionMachine = ConvergencePropertyInterruptionMach
 TestConvergencePropertyInterruptionMachine.settings = settings(max_examples=2, stateful_step_count=3, deadline=None)
 
 
+def test_reingest_child_then_parent_keeps_attachment_closure_green(tmp_path: Path) -> None:
+    """Deterministic pin of a machine-found failure: fork child (3) ingested
+    before its lineage parent (2) prunes the child's replayed prefix, and the
+    child's prefix-anchored attachment row must be swept with its refs — not
+    left acquired-but-unreachable for attachment-acquisition-debt to report."""
+    pathology = rich_convergence_pathology()
+    initialize_active_archive(tmp_path)
+    archive = ingest_convergence_pathology(tmp_path, pathology, session_indexes=(0,), converge_after_each=False)
+    for index in (3, 2):
+        archive = ingest_convergence_pathology(tmp_path, pathology, session_indexes=(index,), converge_after_each=False)
+    converge_convergence_archive(archive)
+    assert_archive_verification_green(tmp_path)
+
+
 def test_convergence_property_order_mutation_red_twin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Removing the real late-parent resolver recreates the historical order bug."""
     from polylogue.storage.sqlite.archive_tiers import write as write_module

@@ -34,6 +34,8 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
+from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -61,13 +63,21 @@ def _codex_session(native_id: str) -> bytes:
 
 def _seed_one_codex_session(root: Path) -> None:
     initialize_active_archive_root(root)
+    payload = _codex_session("sess-lease-lifecycle")
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        archive.write_raw_payload(
+        raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=_codex_session("sess-lease-lifecycle"),
+            payload=payload,
             source_path="lease-lifecycle-test/0.jsonl",
             acquired_at_ms=1,
         )
+    record_codex_parser_census(root, {raw_id: payload})
+    decide_raw_revision_authority(root)
+
+
+def _receipt(root: Path) -> Path:
+    """A fresh schema-inference receipt: the rebuild preflight refuses without one."""
+    return write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
 
 
 def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
@@ -92,6 +102,7 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
         session_ids: tuple[str, ...] | None = None,
         archive_root_override: Path | None = None,
         owned_inactive_generation: tuple[str, str] | None = None,
+        resolve_convergence_debt: bool = True,
     ) -> RepairResult:
         # This terminal stage runs strictly AFTER replay has already
         # committed rows into the owned inactive generation, and strictly
@@ -117,7 +128,9 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
 
     monkeypatch.setattr(repair_module, "repair_session_insights", probing_repair_session_insights)
 
-    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(archive_root=root, schema_inference_receipt_path=_receipt(root))
+    )
 
     assert receipt.status == "replayed"
     assert probe_result["attempted"] is True, "the probe never ran; the test setup itself is broken"

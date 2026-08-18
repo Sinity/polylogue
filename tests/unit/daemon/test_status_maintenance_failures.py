@@ -30,6 +30,7 @@ from polylogue.daemon.status import (
 )
 from polylogue.maintenance.failure_routing import route_failure_sample
 from polylogue.maintenance.planner import FailureSample
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _seed_raw_table(db: Path, parse_error: str | None = None, validation_status: str | None = None) -> Path:
@@ -84,6 +85,10 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
     """Maintenance failures appear even when the archive DB doesn't exist yet."""
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
+    # The raw-failure lifecycle reads source.db; without a real archive it
+    # reports "source.db evidence is unavailable" and every severity
+    # assertion below degrades to ERROR regardless of the backlog seeded.
+    initialize_active_archive_root(archive_root)
     _route(archive_root, op_id="op-1")
 
     db = tmp_path / "missing.db"
@@ -126,11 +131,17 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
 
 
 def test_raw_failure_info_merges_ingest_and_maintenance(tmp_path: Path) -> None:
-    db = tmp_path / "index.db"
-    index_db = _seed_raw_table(db, parse_error="JSONDecodeError at /tmp/foo")
-
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
+    # Bootstrap before seeding: a durable tier that already exists when the
+    # archive is initialised is classified as established-with-unknown
+    # provenance, and durable admission then demands released train evidence a
+    # scratch archive can never have.
+    initialize_active_archive_root(archive_root)
+    # _seed_raw_table writes source.db beside the path it is given, and the
+    # lifecycle reads source.db under the patched archive_root -- seeding into
+    # tmp_path put the evidence in a sibling directory nothing reads.
+    index_db = _seed_raw_table(archive_root / "index.db", parse_error="JSONDecodeError at /tmp/foo")
     _route(archive_root, op_id="op-mix-1")
     _route(archive_root, op_id="op-mix-2", kind="ValueError", message="x")
 
@@ -156,6 +167,10 @@ def test_raw_failure_info_merges_ingest_and_maintenance(tmp_path: Path) -> None:
 def test_check_raw_failures_medium_escalates_on_maintenance(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
+    # The raw-failure lifecycle reads source.db; without a real archive it
+    # reports "source.db evidence is unavailable" and every severity
+    # assertion below degrades to ERROR regardless of the backlog seeded.
+    initialize_active_archive_root(archive_root)
     for i in range(5):
         _route(archive_root, op_id=f"op-batch-{i}")
 
@@ -177,6 +192,10 @@ def test_check_raw_failures_medium_escalates_on_maintenance(tmp_path: Path) -> N
 def test_check_raw_failures_medium_critical_on_large_maintenance_backlog(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
+    # The raw-failure lifecycle reads source.db; without a real archive it
+    # reports "source.db evidence is unavailable" and every severity
+    # assertion below degrades to ERROR regardless of the backlog seeded.
+    initialize_active_archive_root(archive_root)
     for _ in range(60):
         _route(archive_root, op_id="op-backlog")
 
@@ -195,6 +214,10 @@ def test_check_raw_failures_medium_critical_on_large_maintenance_backlog(tmp_pat
 
 def test_format_daemon_status_lines_renders_maintenance_bucket() -> None:
     payload = {
+        # The renderer reports "unavailable" and suppresses the counts unless
+        # the lifecycle evidence says the source tier was actually read.
+        "raw_failure_lifecycle_available": True,
+        "raw_failure_lifecycle_state": "degraded",
         "raw_parse_failures": 0,
         "raw_validation_failures": 0,
         "raw_quarantined": 0,

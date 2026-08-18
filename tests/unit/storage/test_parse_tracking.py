@@ -417,6 +417,14 @@ class TestResetParseStatus:
                     acquired_at="2026-01-01T00:00:00Z",
                 )
             )
+        # Origin-scoped selection projects detected_provider (raw_state.py's
+        # raw_provider_origin_sql), not payload_provider, so a row without a
+        # detected provider reads as 'unknown-export' and matches no origin
+        # scope. Record the parser classification the scope filters on.
+        with sqlite3.connect(backend.db_path.with_name("source.db")) as conn:
+            for raw_id, provider in (("raw-0", "chatgpt"), ("raw-1", "chatgpt"), ("raw-2", "claude-ai")):
+                conn.execute("UPDATE raw_sessions SET detected_provider = ? WHERE raw_id = ?", (provider, raw_id))
+            conn.commit()
         await backend.mark_raw_parsed("raw-0")
         await backend.mark_raw_parsed("raw-2")
 

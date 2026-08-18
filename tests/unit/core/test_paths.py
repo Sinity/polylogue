@@ -283,8 +283,56 @@ class TestPathsPublicBoundary:
             "hooks_sidecar_dir",
             "index_db_path",
             "render_root",
-            "archive_file_set_index_available_for_paths",
             "source_db_path",
             "state_home",
             "state_root",
         }
+
+
+class TestCloudArchiveRootLeak:
+    """`.claude/settings.json`'s cloud archive root must not retarget the workstation.
+
+    That file sets POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-archive so a cloud
+    sandbox has a writable archive. Agent subprocesses inherit it on the
+    workstation, where it silently pointed every read at an empty stub instead
+    of the archive polylogue.toml names -- the same leak class already fixed
+    for POLYLOGUE_PYTEST_BASETEMP_ROOT.
+    """
+
+    def test_sentinel_yields_to_a_configured_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from polylogue.paths._roots import CLOUD_SANDBOX_ARCHIVE_ROOT, archive_root
+
+        configured = tmp_path / "real-archive"
+        config_dir = tmp_path / "config" / "polylogue"
+        config_dir.mkdir(parents=True)
+        (config_dir / "polylogue.toml").write_text(f'[archive]\nroot = "{configured}"\n', encoding="utf-8")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", CLOUD_SANDBOX_ARCHIVE_ROOT)
+
+        assert archive_root() == configured
+
+    def test_sentinel_stands_when_nothing_else_is_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuine cloud sandbox has no config layer, so the sentinel is correct."""
+        from polylogue.paths._roots import CLOUD_SANDBOX_ARCHIVE_ROOT, archive_root
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", CLOUD_SANDBOX_ARCHIVE_ROOT)
+
+        assert archive_root() == Path(CLOUD_SANDBOX_ARCHIVE_ROOT)
+
+    def test_a_genuine_override_still_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Per-test scratch roots must keep isolating; only the sentinel is special."""
+        from polylogue.paths._roots import archive_root
+
+        scratch = tmp_path / "scratch-archive"
+        config_dir = tmp_path / "config" / "polylogue"
+        config_dir.mkdir(parents=True)
+        (config_dir / "polylogue.toml").write_text(f'[archive]\nroot = "{tmp_path / "configured"}"\n', encoding="utf-8")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(scratch))
+
+        assert archive_root() == scratch
