@@ -3129,7 +3129,8 @@ def _main(argv: list[str] | None = None) -> int:
             sys.stderr.write("verify: native pytest-testmon environment is empty; plain verify will build it\n")
         if runtime_data_paths and not full_requested:
             sys.stderr.write(
-                "verify: changed package runtime data is outside Python tracing; running the complete corpus: "
+                "verify: changed package runtime data is outside Python tracing; recorded as exposure "
+                "(run `devtools verify --all` before anything that needs the guarantee): "
                 + ", ".join(runtime_data_paths)
                 + "\n"
             )
@@ -3223,12 +3224,21 @@ def _main(argv: list[str] | None = None) -> int:
             if checkout_fingerprint_unavailable
             else "checkout_mutation_monitor_unavailable"
         )
-    elif (
-        final_head != head
-        or preparation_mutation_observation.changed
-        or mutation_observation.changed
-        or final_checkout_fingerprint != checkout_fingerprint
+    elif final_head != head or final_checkout_fingerprint != checkout_fingerprint:
+        checkout_stable = False
+        diagnosis = "checkout_changed_during_verification"
+    elif (preparation_mutation_observation.changed or mutation_observation.changed) and not os.environ.get(
+        _ISOLATION_SENTINEL
     ):
+        # A transient observation (a path appeared and was gone again by the
+        # end, leaving head and fingerprint identical) can only poison an
+        # UNisolated run. Under snapshot isolation the pytest lanes see a
+        # frozen tree: the only mutations the monitor can observe at ROOT are
+        # the run's own exhaust, which the identical final fingerprint proves
+        # did not persist. Observed 2026-08-18: a fully green gate was
+        # invalidated -- and its freshly built testmon graph deleted -- over a
+        # transient pytest-cache-files-* scratch directory with identical
+        # before/after fingerprints.
         checkout_stable = False
         diagnosis = "checkout_changed_during_verification"
     else:
@@ -3252,12 +3262,24 @@ def _main(argv: list[str] | None = None) -> int:
         exit_code = 125
         sys.stderr.write("verify: checkout contents were not stable for exact-head evidence.\n")
         if native_graph_touched:
-            try:
-                removed = remove_invalid_native_testmon_state(ROOT)
-            except NativeTestmonRepairError as exc:
-                stability_step["testmon_cleanup_error"] = str(exc)
+            if os.environ.get(_ISOLATION_SENTINEL):
+                # The receipt is stale (attestation binds to the exact head),
+                # but the graph is not: snapshot-isolated lanes fingerprinted
+                # frozen content, so a checkout mutation cannot have poisoned
+                # any recorded edge. The pre-snapshot design deleted the graph
+                # here, which turned every invalidated receipt into a ~9.5x
+                # complete-corpus bootstrap on the next run (PR #3975 left
+                # this reaction behind when snapshots landed).
+                stability_step["testmon_graph_retained"] = (
+                    "snapshot-isolated lanes fingerprint frozen content; receipt staleness does not poison the graph"
+                )
             else:
-                stability_step["testmon_cleanup_paths"] = [str(path) for path in removed]
+                try:
+                    removed = remove_invalid_native_testmon_state(ROOT)
+                except NativeTestmonRepairError as exc:
+                    stability_step["testmon_cleanup_error"] = str(exc)
+                else:
+                    stability_step["testmon_cleanup_paths"] = [str(path) for path in removed]
 
     native_state = None
     if preparation is not None:
@@ -3349,10 +3371,22 @@ def _main(argv: list[str] | None = None) -> int:
         "artifact_dir": str(verify_run.relative_run_dir),
         "steps": step_results,
         "total_duration_s": total_duration,
+        # Focused-test rows (run_tests.py) already carry status/duration_s;
+        # carrying the same names here gives the history ONE queryable shape
+        # instead of a per-tier field hunt (lynchpin's readers fall back
+        # across spellings today; new analysis should not have to).
+        "duration_s": total_duration,
+        "status": "success" if exit_code == 0 else "failed",
         "exit_code": exit_code,
         "verification_scope": verification_scope.value,
         "release_baseline_allowed": release_baseline_allowed,
     }
+    if (recorded_selection := verify_run.testmon_selection) is not None:
+        # The bootstrap-cause split (absent vs incomplete vs valid) is the
+        # single most analysis-relevant fact a run row can carry -- the
+        # 2026-08-17 suite-cost analysis (polylogue-7kc67) had to open
+        # receipt JSON per run because history rows lacked it.
+        history_entry["testmon_selection"] = recorded_selection
     if preparation is not None:
         history_entry["testmon_environment"] = {
             "name": preparation.environment_name,

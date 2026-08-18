@@ -3887,6 +3887,59 @@ def test_verify_classifies_unavailable_mutation_monitor_separately(
     assert checkout_step["diagnosis"] == "checkout_mutation_monitor_unavailable"
 
 
+@pytest.mark.parametrize(
+    ("isolated", "expected_rc"),
+    [
+        # Under snapshot isolation a transient observation (head and
+        # fingerprint identical at the end) can only be the run's own exhaust:
+        # the lanes saw a frozen tree, so nothing the monitor observed can
+        # have reached them. The receipt stays valid. Unisolated, the old
+        # strictness holds -- a transient really can have poisoned the run.
+        (True, 0),
+        (False, 125),
+    ],
+)
+def test_transient_mutation_invalidates_only_unisolated_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    isolated: bool,
+    expected_rc: int,
+) -> None:
+    class _TransientMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=True, unavailable=False, observed_path="pytest-cache-files-x")
+
+    if isolated:
+        monkeypatch.setenv("POLYLOGUE_VERIFY_ISOLATED", "1")
+    else:
+        monkeypatch.delenv("POLYLOGUE_VERIFY_ISOLATED", raising=False)
+    with (
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="stable-head"),
+        patch("devtools.verify.CheckoutMutationMonitor", _TransientMonitor),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+        patch("devtools.verify._notify"),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+    ):
+        rc = main(["--quick", "--json"])
+
+    assert rc == expected_rc
+    payload = json.loads(capsys.readouterr().out)
+    stability = [step for step in payload["steps"] if step["name"] == "checkout stability"]
+    if expected_rc == 0:
+        assert stability == []
+    else:
+        assert stability[0]["diagnosis"] == "checkout_changed_during_verification"
+        assert stability[0]["transient_checkout_mutation"] is True
+
+
 def test_verify_rejects_git_head_change_with_matching_worktree_fingerprints(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

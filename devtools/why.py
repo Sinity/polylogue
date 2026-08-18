@@ -133,7 +133,13 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
                 print(f"    ... and {len(missing) - 10} more", file=stream)
         runtime_data = selection.get("runtime_data_paths") or []
         if runtime_data:
-            print(f"  {len(runtime_data)} changed non-Python runtime file(s) forced the complete corpus", file=stream)
+            # Recorded exposure, not an escalation: untraceable changes no
+            # longer force the complete corpus (operator decision 2026-08-18).
+            print(
+                f"  {len(runtime_data)} changed non-Python runtime file(s) are outside Python tracing"
+                " (recorded exposure; `--all` covers them)",
+                file=stream,
+            )
 
     aggregate = payload.get("pytest_aggregate")
     if isinstance(aggregate, dict):
@@ -160,6 +166,23 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
         for step in failing_steps:
             print(
                 f"  - {step.get('step_id')} exit={step.get('exit')} {step.get('diagnosis') or ''}".rstrip(), file=stream
+            )
+
+    # Graph fate matters more than any single step: a deleted graph means the
+    # NEXT run pays a ~9.5x complete-corpus bootstrap, and until this line
+    # existed the only evidence was a buried receipt field.
+    for step in payload.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        cleanup_paths = step.get("testmon_cleanup_paths")
+        if cleanup_paths:
+            print("\nthis run DELETED the testmon graph (next run will bootstrap the complete corpus):", file=stream)
+            for path in cleanup_paths:
+                print(f"  - {path}", file=stream)
+        if step.get("testmon_graph_retained"):
+            print(
+                f"\ntestmon graph retained despite receipt invalidation: {step['testmon_graph_retained']}",
+                file=stream,
             )
 
     artifact_dir = payload.get("artifact_dir")

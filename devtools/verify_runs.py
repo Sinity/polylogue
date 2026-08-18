@@ -1650,6 +1650,12 @@ class VerifyRun:
         self.write()
 
     @property
+    def testmon_selection(self) -> dict[str, Any] | None:
+        """The recorded selection block, for surfaces (history rows) that outlive receipts."""
+        selection = self._payload.get("testmon_selection")
+        return dict(selection) if isinstance(selection, dict) else None
+
+    @property
     def selection_may_run_broadly(self) -> bool:
         """Whether an affected-mode lane can still execute a near-complete corpus.
 
