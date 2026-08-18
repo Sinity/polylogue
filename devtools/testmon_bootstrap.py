@@ -733,6 +733,22 @@ def inspect_native_testmon_environment(
     return NativeTestmonState("valid", "native environment is current", environment)
 
 
+def canonical_test_nodeid(nodeid: str) -> str:
+    """One id per test across lane shapes.
+
+    xdist loadgroup runs record ``path::test[param]@group`` while single-process
+    lanes record ``path::test[param]``; graph rows, certificates, and coverage
+    math must compare on ONE form or every cross-shape comparison invents
+    phantom missing/attested tests (509 of them, observed 2026-08-18). Only a
+    trailing ``@group`` outside any param bracket is stripped, so params that
+    themselves contain ``@`` survive.
+    """
+    base, sep, suffix = nodeid.rpartition("@")
+    if sep and suffix and "]" not in suffix and ":" not in suffix and "/" not in suffix:
+        return base
+    return nodeid
+
+
 _CERTIFIED_CORPUS_TABLE = "polylogue_certified_corpus"
 
 
@@ -770,7 +786,7 @@ def write_certified_corpus(repo_root: Path, environment_name: str, nodeids: Iter
     data_path = repo_root.resolve() / TESTMON_DATA_RELPATH
     if not data_path.exists():
         return False
-    payload = json.dumps(sorted(set(nodeids)))
+    payload = json.dumps(sorted({canonical_test_nodeid(nodeid) for nodeid in nodeids}))
     try:
         with contextlib.closing(sqlite3.connect(data_path)) as connection:
             connection.execute(
@@ -810,7 +826,12 @@ def certified_attestation_violation(
     certified = read_certified_corpus(root / TESTMON_DATA_RELPATH, environment_name)
     if certified is None:
         return "no completed covered run has certified this environment's corpus"
-    lost = {nodeid for nodeid in certified.difference(current_nodeids) if (root / nodeid.split("::", 1)[0]).is_file()}
+    current = {canonical_test_nodeid(nodeid) for nodeid in current_nodeids}
+    lost = {
+        nodeid
+        for nodeid in {canonical_test_nodeid(entry) for entry in certified} - current
+        if (root / nodeid.split("::", 1)[0]).is_file()
+    }
     if lost:
         sample = ", ".join(sorted(lost)[:5])
         return f"{len(lost)} certified test(s) are missing from the graph (e.g. {sample})"
