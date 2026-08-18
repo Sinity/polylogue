@@ -637,6 +637,38 @@ Demo path (private-data-free) for read/search/reader checks:
 validation-lane dispatch, packaging, PR-readiness. Domain semantics live in
 lab/schema/scenario/insight modules; `devtools` commands are thin entrypoints.
 
+**devtools is THE way to run things here, and when it is lacking the answer is
+to improve it — never to go around it.**
+
+That is one rule with two halves, and the second half is what makes the first
+honest. `devtools` is this repository's own code: if a command is slow, noisy,
+missing a flag, or wrong for your case, changing it is ordinary work, usually
+smaller than the workaround, and it fixes the problem for every later session
+instead of just this one. There is therefore never a situation where "devtools
+doesn't do what I need" justifies bypassing it — that sentence is a bug report
+against a file you can edit.
+
+Going around it is not neutral. A bare `pytest` silently opts out of:
+
+- the **checkout guard**, which catches a worktree running another checkout's
+  code (a 2026-07-31 incident corrupted four lanes for a day this way);
+- **containment** — the systemd scope, stall detection and runtime caps that
+  keep a runaway suite from taking the machine with it;
+- the **receipts** that `devtools why`, the merge gate and the lynchpin
+  substrate all read, so the run leaves no trace anyone can act on later.
+
+And it is slower: 124s versus 393s on the same 1342 tests.
+
+This is enforced, not merely written down, because writing it down demonstrably
+failed — bare pytest was reached for dozens of times in one session, each time
+for a real local reason. `.claude/hooks/require-devtools.sh` now denies those
+invocations with the right command in the message.
+`POLYLOGUE_ALLOW_BARE_PYTEST=1` exists for the genuine one-off; needing it twice
+means the harness is missing something, and the fix is to add it there.
+
+If you extend devtools, add the command to the list below in the same change —
+a tool with no line in this file is a tool the next session will not use.
+
 Core loop:
 
 - `devtools status` — repo state, generated-surface drift, next steps.

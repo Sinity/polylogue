@@ -27,6 +27,10 @@ venv/
 !.claude/setup.sh
 !.claude/agents/
 !.claude/agents/*.md
+# Project-local enforcement hooks are shared repo policy, not per-developer
+# state: the whole point is that every session gets them.
+!.claude/hooks/
+!.claude/hooks/*.sh
 .vscode/
 
 # Legacy cache/output directories that may still appear at the repo root
