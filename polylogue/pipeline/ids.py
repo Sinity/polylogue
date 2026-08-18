@@ -107,6 +107,18 @@ class SessionRevisionProjection:
     # when their mutable content changes. Native-id axes retain strict content
     # conflict semantics in ``session_revision_membership``.
     mutable_message_identities: frozenset[bytes] = frozenset()
+    #: ``(event_identity, anchor_free_identity)`` for events whose anchoring
+    #: message is provider-remeasured rather than content. ChatGPT re-anchors
+    #: a ``generation_lifecycle`` event to a different
+    #: ``source_message_provider_id`` between export vintages of the SAME
+    #: conversation, so its identity -- keyed on (event_type, anchoring
+    #: message) -- reads as two disjoint events instead of one, and the
+    #: revision axis calls an unchanged conversation a fork (polylogue-uqwd).
+    #: The anchor-free identity lets ``session_revision_membership`` recognise
+    #: the moved event as the same slot. Comparison-layer only: this value is
+    #: never persisted and never enters ``session_hash``, so nothing here
+    #: changes stored identity or requires a reparse.
+    anchor_free_event_identities: frozenset[tuple[bytes, bytes]] = frozenset()
 
 
 def _normalize_nested_for_hash(value: object) -> object:
@@ -554,6 +566,22 @@ _EVENT_CONTENT_PAYLOAD_ALLOWLIST: dict[str, frozenset[str]] = {
 }
 
 
+def _anchor_is_remeasured(event: ParsedSessionEvent) -> bool:
+    """Whether this event's anchoring message is provider measurement, not content.
+
+    True only for an event type carrying a payload allowlist AND declaring
+    ``duration_semantics == "provider_reported_elapsed"`` -- the ChatGPT
+    generation_lifecycle shape. Same two-part test
+    :func:`_event_content_payload` uses to strip remeasured payload fields, so
+    the anchor tolerance can never be broader than the payload tolerance.
+    """
+    allowlist = _EVENT_CONTENT_PAYLOAD_ALLOWLIST.get(event.event_type)
+    return (
+        allowlist is not None
+        and event.payload.get(_PROVIDER_REPORTED_ELAPSED_MARKER_KEY) == _PROVIDER_REPORTED_ELAPSED_MARKER_VALUE
+    )
+
+
 def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
     """Build the position- and measurement-independent CONTENT payload for one event.
 
@@ -624,6 +652,28 @@ def event_base_identity_hash(*, event_type: JSONValue, source_message_provider_i
     """
     return bytes.fromhex(
         hash_payload({"event_type": event_type, "source_message_provider_id": source_message_provider_id})
+    )
+
+
+def event_anchor_free_identity_hash(content_payload: Mapping[str, JSONValue]) -> bytes:
+    """Identity for an event whose anchoring message is itself remeasured.
+
+    Same content payload as the ordinary identity, minus
+    ``source_message_provider_id``. ChatGPT anchors a ``generation_lifecycle``
+    event to a different message id in different exports of one unchanged
+    conversation (polylogue-uqwd), so the anchor is provider measurement on
+    that shape, not content -- exactly the distinction
+    ``_event_content_payload``'s allowlist already draws for the event's own
+    duration and timestamp.
+
+    Deliberately NOT the event's stored identity: dropping the anchor there
+    would merge genuinely distinct events that differ only by which message
+    they hang off, and would be a stored-identity change requiring a reparse.
+    This value exists purely so the revision-membership comparison can pair a
+    moved event with itself.
+    """
+    return bytes.fromhex(
+        hash_payload({key: value for key, value in content_payload.items() if key != "source_message_provider_id"})
     )
 
 
@@ -801,6 +851,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     event_hashes: list[bytes] = []
     event_base_identities: list[bytes] = []
     event_content_hashes: list[bytes] = []
+    event_anchor_free_identities: list[bytes | None] = []
     for payload, event in zip(session_events_payload, convo.session_events, strict=True):
         event_hashes.append(bytes.fromhex(hash_payload(payload)))
         content_payload = _event_content_payload(event)
@@ -811,8 +862,21 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
             )
         )
         event_content_hashes.append(bytes.fromhex(hash_payload(content_payload)))
+        # Narrowed to the same shape the payload allowlist targets: an event
+        # type with a registered allowlist that declares itself
+        # provider-remeasured. That is the ChatGPT generation_lifecycle shape
+        # whose anchor was observed to move between export vintages
+        # (polylogue-uqwd). Browser-capture emits the same event_type without
+        # the marker, and its anchor is a real first-party observation, so it
+        # is deliberately excluded and keeps strict anchor semantics.
+        event_anchor_free_identities.append(
+            event_anchor_free_identity_hash(content_payload) if _anchor_is_remeasured(event) else None
+        )
     event_contents: set[tuple[bytes, bytes]] = set()
-    for base_identity, content_hash in zip(event_base_identities, event_content_hashes, strict=True):
+    anchor_free_pairs: set[tuple[bytes, bytes]] = set()
+    for base_identity, content_hash, anchor_free in zip(
+        event_base_identities, event_content_hashes, event_anchor_free_identities, strict=True
+    ):
         # A base identity (event type + anchoring message) is ambiguous
         # whenever it is EVER possible for more than one event to share it
         # (e.g. one chatgpt_block_metadata event per block on a message), so
@@ -832,6 +896,8 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         # correctly collapse to one set entry either way.
         canonical_identity = event_canonical_identity_hash(base_identity=base_identity, content_hash=content_hash)
         event_contents.add((canonical_identity, content_hash))
+        if anchor_free is not None:
+            anchor_free_pairs.add((canonical_identity, anchor_free))
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),
         message_hashes=tuple(message_hashes),
@@ -842,5 +908,6 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachment_contents=frozenset(attachment_contents),
         event_hashes=tuple(event_hashes),
         event_contents=frozenset(event_contents),
+        anchor_free_event_identities=frozenset(anchor_free_pairs),
         mutable_message_identities=frozenset(mutable_message_identities),
     )

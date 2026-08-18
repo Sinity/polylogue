@@ -205,6 +205,63 @@ def _axis_relation(
     return "equal"
 
 
+def _event_axis_relation(
+    a: SessionRevisionProjection,
+    b: SessionRevisionProjection,
+) -> _Relation:
+    """Compare the event axis, pairing an event whose anchor moved with itself.
+
+    ChatGPT re-anchors a ``generation_lifecycle`` event to a different
+    ``source_message_provider_id`` between export vintages of one unchanged
+    conversation. Event identity is keyed on (event_type, anchoring message),
+    so the same logical event lands as two disjoint identities: each side then
+    holds something the other lacks and an unchanged conversation compares as
+    a fork (polylogue-uqwd -- measured as 10 of 136 real ambiguous ChatGPT
+    cohorts still reaching a conflict verdict after polylogue-oycw's fix).
+
+    Only events the projection marked anchor-free are eligible, which is the
+    provider-remeasured shape alone; every other event keeps strict anchor
+    semantics. Pairing is one-to-one and consumes both sides, so two unmatched
+    events on one side against one on the other still leaves a genuine
+    surplus, and a real added event is still richness rather than a silent
+    merge.
+    """
+    identities_a = _identities(a.event_contents)
+    identities_b = _identities(b.event_contents)
+    anchor_free_a = dict(a.anchor_free_event_identities)
+    anchor_free_b = dict(b.anchor_free_event_identities)
+
+    unmatched_a = identities_a - identities_b
+    unmatched_b = identities_b - identities_a
+    paired_a: set[bytes] = set()
+    paired_b: set[bytes] = set()
+    available: dict[bytes, list[bytes]] = {}
+    for identity in sorted(unmatched_b):
+        key = anchor_free_b.get(identity)
+        if key is not None:
+            available.setdefault(key, []).append(identity)
+    for identity in sorted(unmatched_a):
+        key = anchor_free_a.get(identity)
+        if key is None:
+            continue
+        candidates = available.get(key)
+        if not candidates:
+            continue
+        paired_a.add(identity)
+        paired_b.add(candidates.pop(0))
+
+    if not paired_a and not paired_b:
+        return _axis_relation(identities_a, a.event_contents, identities_b, b.event_contents)
+
+    # Re-run the ordinary comparison with the moved events removed from both
+    # sides. They are the same slot carrying the same content modulo the
+    # anchor -- equal anchor-free identity already means equal type, timestamp
+    # and payload -- so dropping the pair changes neither side's evidence.
+    kept_a = frozenset((identity, content) for identity, content in a.event_contents if identity not in paired_a)
+    kept_b = frozenset((identity, content) for identity, content in b.event_contents if identity not in paired_b)
+    return _axis_relation(_identities(kept_a), kept_a, _identities(kept_b), kept_b)
+
+
 def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Relation:
     """Combine the message/attachment/event axes into one overall relation.
 
@@ -222,9 +279,7 @@ def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Re
             mutable_identities=a.mutable_message_identities | b.mutable_message_identities,
         ),
         _axis_relation(a.attachment_identities, a.attachment_contents, b.attachment_identities, b.attachment_contents),
-        _axis_relation(
-            _identities(a.event_contents), a.event_contents, _identities(b.event_contents), b.event_contents
-        ),
+        _event_axis_relation(a, b),
     )
     if "conflict" in axes:
         return "conflict"

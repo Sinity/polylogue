@@ -1666,10 +1666,17 @@ def test_chatgpt_mapping_order_does_not_create_revision_conflict() -> None:
     ]
     assert historical_left.session_events[0].source_message_provider_id == "node_a"
     assert historical_right.session_events[0].source_message_provider_id == "node_b"
-    assert _relation(historical_revisions[0].projection, historical_revisions[1].projection) == "conflict"
+    # The historical parser anchored the same provider-remeasured
+    # generation_lifecycle event to whichever timed message the mapping order
+    # surfaced first, so these two parses genuinely disagree on the anchor.
+    # Since polylogue-uqwd the comparison layer pairs an anchor-moved
+    # remeasured event with itself, so an unchanged conversation no longer
+    # classifies as a conflict on this axis alone.
+    assert _relation(historical_revisions[0].projection, historical_revisions[1].projection) == "equal"
     historical_result = classify_membership_revisions(historical_revisions, existing_accepted_raw_id="raw-left")
-    assert historical_result.accepted_raw_ids == ()
-    assert historical_result.ambiguous_raw_ids == ("raw-left", "raw-right")
+    assert historical_result.accepted_raw_ids == ("raw-left",)
+    assert historical_result.equivalent_raw_ids == ("raw-right",)
+    assert historical_result.ambiguous_raw_ids == ()
 
 
 # ---------------------------------------------------------------------------
