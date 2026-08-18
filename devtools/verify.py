@@ -3594,6 +3594,22 @@ def main(argv: list[str] | None = None) -> int:
     if _should_isolate(raw_argv):
         return _reexec_isolated(raw_argv)
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history"))
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # A verify invoked from inside a test must not contend for THIS
+        # checkout's lifecycle lock.
+        #
+        # ROOT is module-level, so a nested main() locks the real checkout's
+        # .cache no matter which temporary repository the test points it at. When
+        # the outer run is a full-corpus verify holding that lock for half an
+        # hour, every such test blocks for the 60s timeout and then fails --
+        # which is why this family failed only inside `devtools verify` and
+        # passed standalone, and why it blocked the merge gate.
+        #
+        # A nested run owns no part of the outer graph: it drives its own
+        # temporary state and asserts on it. Serializing the two protects
+        # nothing, and the lock's real contract -- one lifecycle per checkout at
+        # a time -- is still enforced for every non-test invocation.
+        native_pytest_enabled = False
     lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
     try:
         with _terminate_as_interrupt(), lock:
