@@ -16,11 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from devtools.verify_runs import VERIFY_RUNS_DIR
+from devtools.verify_runs import VERIFY_HISTORY_PATH, VERIFY_RUNS_DIR
 
 __all__ = ["main"]
 
@@ -165,11 +167,114 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
         print(f"\nartifacts: {artifact_dir}", file=stream)
 
 
+def _aggregate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The per-run pytest aggregate, which is where selection counts live."""
+    aggregate = entry.get("pytest_aggregate")
+    return aggregate if isinstance(aggregate, dict) else {}
+
+
+def _render_history(hours: float, stream: Any) -> int:
+    """Answer "where did the time go" from the durable cross-checkout history.
+
+    This exists because the question kept being asked and kept requiring an ad
+    hoc DuckDB query against the lynchpin substrate, which materialises on its
+    own cadence and was 17 hours stale when it mattered. The history file is the
+    same data at its source, includes every checkout and linked worktree, and is
+    current by construction.
+    """
+    if not VERIFY_HISTORY_PATH.exists():
+        print(f"why: no run history at {VERIFY_HISTORY_PATH}", file=sys.stderr)
+        return 1
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    rows: list[dict[str, Any]] = []
+    with VERIFY_HISTORY_PATH.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            started = str(entry.get("started_at") or "")
+            try:
+                when = datetime.fromisoformat(started)
+            except ValueError:
+                continue
+            if when >= cutoff:
+                rows.append(entry)
+
+    if not rows:
+        print(f"no verification runs in the last {hours:g}h", file=stream)
+        return 0
+
+    total = sum(float(entry.get("duration_s") or 0.0) for entry in rows)
+    print(f"{len(rows)} run(s) in the last {hours:g}h, {total / 3600:.2f}h of wall time", file=stream)
+    # Say this out loud, because the omission is biased rather than random. A
+    # run only reaches the history append after it finishes, so anything killed
+    # -- which in practice means the long bootstraps someone gave up waiting on
+    # -- is absent. Measured 2026-08-18: a lane that burned 48 minutes on a
+    # single terminated bootstrap contributed 0.04h to this view.
+    print("(killed runs never reach this record, so long bootstraps are under-counted)\n", file=stream)
+
+    def _summarise(key: str, label: str) -> None:
+        buckets: dict[str, tuple[int, float]] = {}
+        for entry in rows:
+            name = str(entry.get(key) or "-")
+            runs, seconds = buckets.get(name, (0, 0.0))
+            buckets[name] = (runs + 1, seconds + float(entry.get("duration_s") or 0.0))
+        print(f"by {label}:", file=stream)
+        for name, (runs, seconds) in sorted(buckets.items(), key=lambda item: -item[1][1]):
+            print(f"  {name:38} {runs:5} run(s)  {seconds / 3600:7.2f}h", file=stream)
+        print(file=stream)
+
+    _summarise("tier", "tier")
+    _summarise("diagnosis", "diagnosis")
+    checkouts: dict[str, tuple[int, float]] = {}
+    for entry in rows:
+        name = Path(str(entry.get("checkout_root") or "-")).name or "-"
+        runs, seconds = checkouts.get(name, (0, 0.0))
+        checkouts[name] = (runs + 1, seconds + float(entry.get("duration_s") or 0.0))
+    print("by checkout:", file=stream)
+    for name, (runs, seconds) in sorted(checkouts.items(), key=lambda item: -item[1][1]):
+        print(f"  {name:38} {runs:5} run(s)  {seconds / 3600:7.2f}h", file=stream)
+    print(file=stream)
+
+    # The expensive shape, called out by name: runs that selected nothing and
+    # therefore executed everything.
+    full = [
+        entry
+        for entry in rows
+        if not _aggregate(entry).get("selected_union_count")
+        and (_aggregate(entry).get("terminal_union_count") or 0) > 1000
+    ]
+    if full:
+        wasted = sum(float(entry.get("duration_s") or 0.0) for entry in full)
+        share = wasted / total * 100 if total else 0.0
+        print(
+            f"{len(full)} run(s) selected nothing and ran the full corpus: "
+            f"{wasted / 3600:.2f}h ({share:.0f}% of the window)",
+            file=stream,
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Explain the most recent verification run.")
     parser.add_argument("--run", help="Explain a specific run id instead of the most recent.")
+    parser.add_argument(
+        "--history",
+        nargs="?",
+        type=float,
+        const=24.0,
+        metavar="HOURS",
+        help="Summarise where verification time went over the last HOURS (default 24).",
+    )
     parser.add_argument("--json", action="store_true", help="Emit the receipt as JSON.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.history is not None:
+        return _render_history(args.history, sys.stdout)
 
     if args.run:
         path = VERIFY_RUNS_DIR / args.run / "run.json"

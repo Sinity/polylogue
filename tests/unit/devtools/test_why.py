@@ -12,6 +12,8 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 from devtools.why import _EXPLANATIONS, _latest_run, _render
 
 
@@ -102,3 +104,53 @@ def test_import_mismatch_remedy_warns_that_the_obvious_probe_lies() -> None:
 
     assert "cwd" in remedy
     assert "VIRTUAL_ENV" in remedy
+
+
+def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The question "where did the last N hours go" kept requiring an ad hoc
+    DuckDB query against a substrate that materialises on its own cadence and
+    was 17 hours stale when it mattered. The history file is that data at its
+    source, current by construction, and covers every checkout and worktree."""
+    from datetime import UTC, datetime, timedelta
+
+    from devtools import why
+
+    recent = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    stale = (datetime.now(UTC) - timedelta(hours=100)).isoformat()
+    history = tmp_path / "verify-history.jsonl"
+    history.write_text(
+        "\n".join(
+            json.dumps(entry)
+            for entry in (
+                {
+                    "started_at": recent,
+                    "tier": "testmon",
+                    "duration_s": 2700.0,
+                    "diagnosis": "native_testmon_graph_invalid",
+                    "checkout_root": "/realm/project/polylogue",
+                    "pytest_aggregate": {"selected_union_count": 0, "terminal_union_count": 20000},
+                },
+                {
+                    "started_at": recent,
+                    "tier": "focused-test",
+                    "duration_s": 10.0,
+                    "diagnosis": "pytest_passed",
+                    "checkout_root": "/realm/worktrees/lane-a",
+                },
+                {"started_at": stale, "tier": "quick", "duration_s": 9999.0, "diagnosis": "pytest_passed"},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", history)
+    stream = io.StringIO()
+
+    assert why._render_history(24.0, stream) == 0
+
+    output = stream.getvalue()
+    assert "2 run(s)" in output, "the 100-hour-old run is outside the window"
+    assert "9999" not in output
+    assert "lane-a" in output, "lanes must be visible; their receipts die with the worktree"
+    assert "selected nothing and ran the full corpus" in output
+    assert "under-counted" in output, "the record omits killed runs and must say so"
