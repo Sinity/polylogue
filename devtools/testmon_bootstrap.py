@@ -604,6 +604,20 @@ def inspect_native_testmon_environment(
             return NativeTestmonState("invalid", f"cannot inspect native testmon sidecar {sidecar}: {exc}")
         if not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
             return NativeTestmonState("invalid", f"native testmon sidecar is not a single-link regular file: {sidecar}")
+    # A killed writer (supervisor SIGTERM, operator interrupt) leaves a WAL
+    # that only a read-WRITE connection can replay -- the read-only URI below
+    # fails with SQLITE_READONLY_RECOVERY, the state is judged invalid, and
+    # removal then destroys EVERY environment's accumulated graph in the
+    # shared file (observed 2026-08-18: one killed bootstrap cost the warm
+    # master graph and a 20,500-test rebuild). Checkpoint first so ordinary
+    # crash recovery happens instead.
+    if any(path.exists() for path in sidecars):
+        with contextlib.suppress(sqlite3.Error, OSError):
+            recovery = sqlite3.connect(data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
+            try:
+                recovery.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            finally:
+                recovery.close()
     try:
         with (
             contextlib.closing(
@@ -831,6 +845,14 @@ def _atomic_copy_sqlite_database(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        # Remove the DESTINATION's sidecars before the replace: a stale -wal
+        # from a previous database under the same name is read as this new
+        # database's write-ahead log, and quick_check then fails with page
+        # corruption ("Rowid out of order" -- observed 2026-08-18 in a lane
+        # worktree whose fresh copy sat beside a -wal from an earlier run).
+        for suffix in TESTMON_SIDECAR_SUFFIXES:
+            with contextlib.suppress(FileNotFoundError):
+                Path(f"{destination}{suffix}").unlink()
         os.replace(temporary, destination)
         _fsync_directory(destination.parent)
         _ensure_deadline(deadline_monotonic)
