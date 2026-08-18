@@ -30,6 +30,7 @@ from typing import Any, Final, ParamSpec, TextIO, TypeVar
 import watchfiles
 
 from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
+from devtools.testmon_bootstrap import canonical_test_nodeid
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
 VERIFY_CACHE = Path(".cache/verify")
@@ -1402,12 +1403,13 @@ def aggregate_native_testmon_run(
 
     for outcome in outcome_by_node.values():
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
-    native_corpus = tuple(sorted(set(corpus_nodeids)))
+    native_corpus = tuple(sorted({canonical_test_nodeid(nodeid) for nodeid in corpus_nodeids}))
     complete_mode = selection_mode in {"bootstrap", "full"}
     corpus = native_corpus
     corpus_set = set(corpus)
     lane_names = [lane["lane"] for lane in lanes]
-    executed_nodes = set(outcome_by_node)
+    executed_nodes = {canonical_test_nodeid(nodeid) for nodeid in outcome_by_node}
+    selected_union = {canonical_test_nodeid(nodeid) for nodeid in selected_union}
     # "full" now runs under forceselect: a graph-recorded test testmon did not
     # select is attested by its unchanged recorded deps and green last outcome
     # (testmon always reselects failures), so coverage = executed now UNION

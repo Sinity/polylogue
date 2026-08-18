@@ -10,6 +10,7 @@ from devtools.testmon_bootstrap import (
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
     _testmon_schema_version,
+    canonical_test_nodeid,
     classify_native_testmon_changes,
     classify_source_ast,
     executable_python_paths,
@@ -658,3 +659,20 @@ def test_an_interrupted_bootstrap_does_not_delete_every_environments_graph(tmp_p
     with sqlite3.connect(data) as connection:
         rows = connection.execute("SELECT COUNT(*) FROM environment").fetchone()
     assert rows[0] == 1, "other environments' rows must be untouched"
+
+
+@pytest.mark.parametrize(
+    ("nodeid", "canonical"),
+    [
+        ("tests/test_a.py::test_plain", "tests/test_a.py::test_plain"),
+        ("tests/test_a.py::test_p[chatgpt]@chatgpt", "tests/test_a.py::test_p[chatgpt]"),
+        ("tests/test_a.py::test_p[user@example.com]", "tests/test_a.py::test_p[user@example.com]"),
+        ("tests/test_a.py::test_p[a@b]@group", "tests/test_a.py::test_p[a@b]"),
+        ("tests/test_a.py::test_p[x]", "tests/test_a.py::test_p[x]"),
+    ],
+)
+def test_canonical_test_nodeid_strips_only_loadgroup_suffix(nodeid: str, canonical: str) -> None:
+    # xdist loadgroup lanes record `id@group`, single-process lanes record `id`;
+    # comparing across shapes without one canonical form invented 509 phantom
+    # missing/attested tests and a permanent re-execution treadmill.
+    assert canonical_test_nodeid(nodeid) == canonical
