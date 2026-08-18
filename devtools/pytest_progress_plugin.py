@@ -295,17 +295,6 @@ def pytest_sessionstart(session: Any) -> None:
 @pytest.hookimpl
 def pytest_collection(session: Any) -> None:
     """Record collection start so selected-test runs expose import/collection cost."""
-    if os.environ.get("POLYLOGUE_TESTMON_COMPLETE_COLLECTION") == "1":
-        # testmon skips collecting whole files when every RECORDED test in them
-        # is stable -- which silently hides tests the graph has never seen (a
-        # marker-split lane records only its own lane, so the other lane's
-        # tests in the same file are invisible to a later forceselect run).
-        # Full-mode lanes claim complete-corpus coverage, so they must collect
-        # every file and let per-test deselection (which keeps unknown tests)
-        # do the narrowing.
-        select_plugin = session.config.pluginmanager.get_plugin("TestmonSelect")
-        if select_plugin is not None and getattr(select_plugin, "deselected_files", None):
-            select_plugin.deselected_files = []
     del session
     global _COLLECTION_STARTED_AT
     _COLLECTION_STARTED_AT = time.monotonic()

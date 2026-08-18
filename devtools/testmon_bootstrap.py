@@ -34,6 +34,7 @@ import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -732,6 +733,90 @@ def inspect_native_testmon_environment(
     return NativeTestmonState("valid", "native environment is current", environment)
 
 
+_CERTIFIED_CORPUS_TABLE = "polylogue_certified_corpus"
+
+
+def read_certified_corpus(data_path: Path, environment_name: str) -> frozenset[str] | None:
+    """The corpus a completed covered run certified for this environment.
+
+    ``None`` means no completed run has certified the environment yet -- an
+    interrupted bootstrap leaves a graph whose recorded rows LOOK like a
+    complete corpus (the corpus is derived from the graph, so it is blind to
+    its own losses). Attestation is sound only against a certificate.
+    """
+    if not data_path.exists():
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(_readonly_uri(data_path), uri=True)) as connection:
+            row = connection.execute(
+                f"SELECT nodeids_json FROM {_CERTIFIED_CORPUS_TABLE} WHERE environment_name = ?",
+                (environment_name,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or not isinstance(row[0], str):
+        return None
+    try:
+        nodeids = json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(nodeids, list):
+        return None
+    return frozenset(str(nodeid) for nodeid in nodeids)
+
+
+def write_certified_corpus(repo_root: Path, environment_name: str, nodeids: Iterable[str]) -> bool:
+    """Record the corpus of a completed covered run alongside the graph."""
+    data_path = repo_root.resolve() / TESTMON_DATA_RELPATH
+    if not data_path.exists():
+        return False
+    payload = json.dumps(sorted(set(nodeids)))
+    try:
+        with contextlib.closing(sqlite3.connect(data_path)) as connection:
+            connection.execute(
+                f"CREATE TABLE IF NOT EXISTS {_CERTIFIED_CORPUS_TABLE} ("
+                "environment_name TEXT PRIMARY KEY,"
+                "nodeids_json TEXT NOT NULL,"
+                "certified_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                f"INSERT INTO {_CERTIFIED_CORPUS_TABLE} (environment_name, nodeids_json, certified_at)"
+                " VALUES (?, ?, ?)"
+                " ON CONFLICT(environment_name) DO UPDATE SET"
+                " nodeids_json = excluded.nodeids_json, certified_at = excluded.certified_at",
+                (environment_name, payload, datetime.now(UTC).isoformat()),
+            )
+            connection.commit()
+    except sqlite3.Error:
+        return False
+    return True
+
+
+def certified_attestation_violation(
+    repo_root: Path,
+    *,
+    environment_name: str,
+    current_nodeids: Sequence[str],
+) -> str | None:
+    """Why this graph may NOT attest unexecuted tests, or None when it may.
+
+    A graph row set is blind to its own losses (an interrupted serial lane or
+    damaged rows shrink the corpus AND the coverage claim together), so
+    attestation is checked against the certificate the last completed covered
+    run wrote. Tests whose test file no longer exists are legitimately gone
+    and do not violate the certificate.
+    """
+    root = repo_root.resolve()
+    certified = read_certified_corpus(root / TESTMON_DATA_RELPATH, environment_name)
+    if certified is None:
+        return "no completed covered run has certified this environment's corpus"
+    lost = {nodeid for nodeid in certified.difference(current_nodeids) if (root / nodeid.split("::", 1)[0]).is_file()}
+    if lost:
+        sample = ", ".join(sorted(lost)[:5])
+        return f"{len(lost)} certified test(s) are missing from the graph (e.g. {sample})"
+    return None
+
+
 def _owned_paths(repo_root: Path) -> tuple[Path, ...]:
     root = repo_root.resolve()
     _validate_owned_state_parents(root)
@@ -938,6 +1023,21 @@ def prepare_native_testmon_environment(
     linked = bool(info and info[0])
     main_checkout = info[1] if linked and info is not None else None
     if local.valid:
+        violation = certified_attestation_violation(
+            root,
+            environment_name=environment_name,
+            current_nodeids=local.environment.nodeids if local.environment is not None else (),
+        )
+        if violation is not None:
+            # The graph can still SELECT soundly, but it may not ATTEST the
+            # tests it would deselect -- re-execute the corpus and re-certify.
+            local = NativeTestmonState(
+                local.status,
+                f"attestation refused, re-executing corpus: {violation}",
+                local.environment,
+                local.missing_executable_paths,
+            )
+            return NativeTestmonPreparation(environment_name, "bootstrap", local, None, (), linked, main_checkout)
         return NativeTestmonPreparation(environment_name, "affected", local, None, (), linked, main_checkout)
 
     # Retain a merely incomplete graph. An interrupted bootstrap leaves a
@@ -982,6 +1082,27 @@ def prepare_native_testmon_environment(
             )
             if not local.valid:
                 raise NativeTestmonRepairError(f"published native testmon copy is invalid: {local.reason}")
+            violation = certified_attestation_violation(
+                root,
+                environment_name=environment_name,
+                current_nodeids=local.environment.nodeids if local.environment is not None else (),
+            )
+            if violation is not None:
+                local = NativeTestmonState(
+                    local.status,
+                    f"attestation refused, re-executing corpus: {violation}",
+                    local.environment,
+                    local.missing_executable_paths,
+                )
+                return NativeTestmonPreparation(
+                    environment_name,
+                    "bootstrap",
+                    local,
+                    copied_from,
+                    removed,
+                    linked,
+                    main_checkout,
+                )
             return NativeTestmonPreparation(
                 environment_name,
                 "affected",

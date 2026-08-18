@@ -20,6 +20,7 @@ from devtools.testmon_bootstrap import (
     NativeTestmonRepairError,
     inspect_native_testmon_environment,
     prepare_native_testmon_environment,
+    write_certified_corpus,
 )
 from devtools.testmon_bootstrap import (
     testmon_environment_digest as _testmon_environment_digest,
@@ -163,6 +164,19 @@ def _run_lane(
     return LaneResult(completed, artifact_dir, selection_payload)
 
 
+def _certify_recorded_corpus(repo: Path, environment_name: str) -> None:
+    """Mirror a completed covered production run: certify the graph's rows."""
+    data = repo / TESTMON_DATA_RELPATH
+    with sqlite3.connect(data) as connection:
+        rows = connection.execute(
+            "SELECT te.test_name FROM test_execution te"
+            " JOIN environment e ON te.environment_id = e.id"
+            " WHERE e.environment_name = ?",
+            (environment_name,),
+        ).fetchall()
+    write_certified_corpus(repo, environment_name, [row[0] for row in rows])
+
+
 def _run_plain_verify_corpus(
     repo: Path,
     *,
@@ -185,6 +199,7 @@ def _run_plain_verify_corpus(
         lane="serial",
         base_marker=base_marker,
     )
+    _certify_recorded_corpus(repo, environment_name)
     return parallel, serial
 
 
@@ -435,15 +450,19 @@ def test_serial_owner():
     second, warm = _run_production_verify(repo)
 
     assert second.returncode == 0, second.stderr
-    assert warm["testmon_environment"]["selection_mode"] == "affected"
-    assert warm["release_baseline_allowed"] is False
+    assert warm["testmon_environment"]["selection_mode"] == "full"
     assert warm["pytest_aggregate"]["selected_union_count"] == 0
+    # Zero execution, complete attested coverage: every corpus test's recorded
+    # deps are unchanged and green, so the warm run still earns release
+    # authority -- the fold's central claim.
+    assert warm["verification_scope"] == "release-baseline"
+    assert warm["release_baseline_allowed"] is True
 
     (package / "app.py").write_text("def answer() -> int:\n    return 0\n", encoding="utf-8")
     third, mutated = _run_production_verify(repo)
 
     assert third.returncode == 1
-    assert mutated["testmon_environment"]["selection_mode"] == "affected"
+    assert mutated["testmon_environment"]["selection_mode"] == "full"
     assert mutated["pytest_aggregate"]["terminal_union_count"] == 2
     assert mutated["release_baseline_allowed"] is False
     assert "assert 0 == 42" in third.stderr
@@ -475,20 +494,23 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    completed, payload = _run_production_verify(repo, "--all")
+    completed, payload = _run_production_verify(repo)
 
     assert completed.returncode == 0, completed.stderr
     assert payload["tier"] == "full"
-    assert payload["testmon_environment"]["selection_mode"] == "full"
+    assert payload["testmon_environment"]["selection_mode"] == "bootstrap"
     assert payload["verification_scope"] == "release-baseline"
     assert payload["release_baseline_allowed"] is True
     assert payload["worktree_fingerprint"] == payload["final_worktree_fingerprint"]
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
     assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
-    assert [step["name"] for step in lanes] == ["pytest native parallel (full)", "pytest native serial (full)"]
+    assert [step["name"] for step in lanes] == [
+        "pytest native parallel (bootstrap)",
+        "pytest native serial (bootstrap)",
+    ]
     for step in lanes:
-        assert "--testmon-forceselect" in step["statistics"]["command"]
-        assert "--testmon-noselect" not in step["statistics"]["command"]
+        assert "--testmon-noselect" in step["statistics"]["command"]
+        assert "--testmon-forceselect" not in step["statistics"]["command"]
         assert "--override-ini=addopts=" in step["statistics"]["command"]
         assert step["external_addopts_neutralized"] is True
         assert step["external_plugins_neutralized"] is True
@@ -497,7 +519,7 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["external_addopts_neutralized"] is True
     assert aggregate["external_plugins_neutralized"] is True
     assert aggregate["closed_world_collection"] is True
-    assert aggregate["selection_mode"] == "full"
+    assert aggregate["selection_mode"] == "bootstrap"
     assert aggregate["environment"]["native_corpus_count"] == 2
     assert aggregate["corpus"]["count"] == 2
     assert aggregate["selected_union_count"] == 2
@@ -508,13 +530,27 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
 
+    # A graph that loses recorded rows (an interrupted lane, damaged rows)
+    # shrinks its corpus AND its coverage claim together -- the row set is
+    # blind to its own losses, and testmon's file-level collection skip
+    # would hide the lost test from every later warm run. The certificate
+    # the completed run wrote catches the loss: attestation is refused and
+    # the corpus re-executes and re-certifies.
+    graph = repo / ".cache" / "testmon" / "testmondata"
+    with sqlite3.connect(graph) as connection:
+        connection.execute("DELETE FROM test_execution WHERE test_name LIKE '%serial%'")
+    warm_completed, warm = _run_production_verify(repo)
 
-@pytest.mark.parametrize(("verify_args", "selection_mode"), [((), "bootstrap"), (("--all",), "full")])
-def test_release_native_runs_override_a_reduced_hypothesis_profile(
-    tmp_path: Path,
-    verify_args: tuple[str, ...],
-    selection_mode: str,
-) -> None:
+    assert warm_completed.returncode == 0, warm_completed.stderr
+    assert warm["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert "attestation refused" in warm["testmon_selection"]["state_reason"]
+    warm_aggregate = warm["pytest_aggregate"]
+    assert warm_aggregate["corpus"]["count"] == 2
+    assert warm_aggregate["terminal_union_count"] == 2
+    assert warm["release_baseline_allowed"] is True
+
+
+def test_release_native_runs_override_a_reduced_hypothesis_profile(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(
@@ -549,12 +585,11 @@ def test_release_native_runs_override_a_reduced_hypothesis_profile(
 
     completed, payload = _run_production_verify(
         repo,
-        *verify_args,
         environment_overrides={"HYPOTHESIS_PROFILE": "verify"},
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert payload["testmon_environment"]["selection_mode"] == selection_mode
+    assert payload["testmon_environment"]["selection_mode"] == "bootstrap"
     assert payload["release_baseline_allowed"] is True
 
 
@@ -620,7 +655,7 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     else:
         monkeypatch.setenv("PYTEST_ADDOPTS", environment_addopts)
 
-    completed, payload = _run_production_verify(repo, "--all")
+    completed, payload = _run_production_verify(repo)
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -667,7 +702,7 @@ def test_production_verify_all_drops_pythonpath_startup_injection(tmp_path: Path
         encoding="utf-8",
     )
 
-    completed, payload = _run_production_verify(repo, "--all")
+    completed, payload = _run_production_verify(repo)
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -697,9 +732,9 @@ def test_plain_native_lane_environment_removes_ambient_pytest_variables(
 @pytest.mark.parametrize(
     ("environment_overrides", "interpreter_args", "verify_args"),
     [
-        ({"PYTHONOPTIMIZE": "1"}, (), ("--all",)),
-        ({}, ("-O",), ("--all",)),
-        ({}, ("-OO",), ("--all",)),
+        ({"PYTHONOPTIMIZE": "1"}, (), ()),
+        ({}, ("-O",), ()),
+        ({}, ("-OO",), ()),
         ({"PYTHONOPTIMIZE": "1"}, (), ("--quick", "--lab")),
         ({"PYTHONOPTIMIZE": "1"}, (), ("--commit", "--lab")),
     ],
@@ -801,7 +836,7 @@ def test_production_affected_verify_neutralizes_execution_suppressing_addopts(
     completed, payload = _run_production_verify(repo)
 
     assert completed.returncode == 1
-    assert payload["testmon_environment"]["selection_mode"] == "affected"
+    assert payload["testmon_environment"]["selection_mode"] == "full"
     assert payload["release_baseline_allowed"] is False
     aggregate = payload["pytest_aggregate"]
     assert aggregate["selected_union_count"] == 2
@@ -869,7 +904,7 @@ def test_production_verify_all_owns_complete_test_root_over_configured_testpaths
     monkeypatch.setenv("PYTEST_PLUGINS", "ambient_narrow")
     monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
 
-    completed, payload = _run_production_verify(repo, "--all")
+    completed, payload = _run_production_verify(repo)
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -954,7 +989,7 @@ def test_runtime_json_only_mutation_is_recorded_but_not_caught(tmp_path: Path) -
 
     # What remains enforced is that the exposure is VISIBLE. The changed path is
     # recorded on the receipt and surfaced by `devtools why`, so a reviewer can
-    # see exactly which untraceable file went unverified and run `--all` when the
+    # see exactly which untraceable file went unverified when the
     # guarantee is wanted. Silence here would make the tradeoff undiscoverable,
     # which is the part that would be indefensible.
     assert mutated["testmon_environment"]["runtime_data_paths"] == [
@@ -1016,7 +1051,7 @@ def test_production_verify_test_runtime_data_mutation_is_recorded_but_not_caught
 
     # What stays enforced is that the exposure is VISIBLE: the changed path is on
     # the receipt and surfaced by `devtools why`, so a reviewer can see which
-    # untraceable file went unverified and run `--all` when the guarantee matters.
+    # untraceable file went unverified when the guarantee matters.
     assert mutated["testmon_environment"]["runtime_data_paths"] == ["tests/data/expected.txt"]
     # Nothing is selected, which is the exposure stated plainly: the fixture that
     # changed has no traced edge, so no test is chosen and the failing assertion
@@ -1150,7 +1185,7 @@ def test_production_verify_deleted_module_with_updated_imports_rebuilds_successf
     # nonexistent file is unrecordable, so requiring one made incomplete
     # permanent). The surviving changed module has recorded edges, so the run
     # stays a warm affected selection and still covers the dependent.
-    assert environment["selection_mode"] == "affected"
+    assert environment["selection_mode"] == "full"
     assert environment["required_executable_paths"] == ["polylogue/app.py"]
     assert environment["bootstrap_trigger_paths"] == ["polylogue/app.py"]
     # terminal_green demands complete-corpus coverage, which a warm affected
@@ -1199,7 +1234,7 @@ def test_production_verify_moved_module_with_updated_imports_rebuilds_successful
     # dependency is an un-fingerprinted module may be missed on this run and is
     # selected on the next, because the run still records edges for everything it
     # executes -- and the uncovered paths are named on the receipt either way.
-    assert environment["selection_mode"] == "affected"
+    assert environment["selection_mode"] == "full"
     assert environment["required_executable_paths"] == ["polylogue/renamed.py", "tests/test_app.py"]
     assert environment["bootstrap_trigger_paths"] == [
         "polylogue/renamed.py",
@@ -1209,16 +1244,15 @@ def test_production_verify_moved_module_with_updated_imports_rebuilds_successful
     # executed, and nothing failed.
     assert rebuilt["pytest_aggregate"]["non_green_count"] == 0
     assert rebuilt["pytest_aggregate"]["selected_union_count"] == 1
-    # terminal_green stays False here, and correctly so. It is defined as
-    # `complete_corpus_covered and not missing_terminal and not non_green` -- a
-    # RELEASE-AUTHORITY signal meaning the whole corpus ran green, not "this run
-    # passed". It was True before only because a moved module forced a bootstrap
-    # over the complete corpus; with affected selection driving a
-    # sound-but-incomplete graph (operator decision 2026-08-18) the corpus is
-    # deliberately not fully covered, so claiming release authority here would be
-    # the bug.
-    assert rebuilt["pytest_aggregate"]["terminal_green"] is False
-    assert rebuilt["pytest_aggregate"]["complete_corpus_covered"] is False
+    # The pre-run graph carried named exposure (renamed.py had no recorded
+    # edges), so nothing could be attested -- but this corpus is one test and
+    # that test EXECUTED, so coverage-by-execution is complete and honest.
+    # Exposure that the run pays for by executing the whole corpus does not
+    # withhold authority; exposure that survives as unexecuted attestation
+    # would (see the runtime-data tests).
+    assert rebuilt["pytest_aggregate"]["attested_unchanged_count"] == 0
+    assert rebuilt["pytest_aggregate"]["terminal_green"] is True
+    assert rebuilt["pytest_aggregate"]["complete_corpus_covered"] is True
 
 
 def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -> None:

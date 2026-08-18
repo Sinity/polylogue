@@ -137,7 +137,7 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             # longer force the complete corpus (operator decision 2026-08-18).
             print(
                 f"  {len(runtime_data)} changed non-Python runtime file(s) are outside Python tracing"
-                " (recorded exposure; `--all` covers them)",
+                " (recorded exposure; only re-execution after an environment change covers them)",
                 file=stream,
             )
 

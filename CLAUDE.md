@@ -378,9 +378,11 @@ testmon-affected set.
   invalid local state, optionally copies a matching main-checkout database,
   and automatically runs the complete correctness corpus when no valid native
   environment exists. Never ask an operator or agent to seed or repair it.
-- Reserve `devtools verify --all` (complete unit/property/fuzz/integration
-  correctness corpus; performance benchmarks excluded) for harness/dependency
-  changes or a final pre-PR diagnostic.
+- There is no `--all` flag anymore: every plain `devtools verify` is scoped
+  to the complete correctness corpus (benchmarks excluded), executes only
+  changed-dependency/never-recorded/previously-failing tests, attests the
+  rest from unchanged recorded greens, and earns release-baseline authority
+  when coverage is complete and green.
 - `devtools verify --quick` = format + lint + mypy + `render all --check`
   (no tests); it runs on `git push` via the pre-push hook. It is a fast gate,
   not a substitute for the default baseline before a PR.
@@ -501,12 +503,11 @@ workflow, not optional conveniences — use them at the point named, every time:
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
   `gh pr merge --squash`. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal
-  full-suite verify after merging. `devtools workspace merge train-status`
-  reports (exit 1) any PRs merged since the last recorded full-suite verify —
-  this is the structural stand-in for "a merge-train records the full-suite
-  verify as its terminal ledger step"; `devtools workspace merge
-  record-full-verify --command "devtools verify --all"` records that step
-  directly once per merge-train session boundary. The lower-level
+  verify after merging. `devtools workspace merge train-status`
+  reports (exit 1) any PRs merged since the last recorded terminal verify.
+  The terminal step records itself: any plain `devtools verify` that earns
+  release-baseline authority at origin/master writes the ledger entry — no
+  separate record command exists. The lower-level
   `devtools workspace merge-gate record/check` commands still exist for
   ad hoc receipt inspection, but the merge action itself should go through
   `workspace merge`.

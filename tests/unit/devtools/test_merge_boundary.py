@@ -71,7 +71,7 @@ def test_stale_base_head_refuses_before_recording(monkeypatch: pytest.MonkeyPatc
         poll_interval_s=0,
         dry_run=True,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
     assert exit_code == 1
 
@@ -272,22 +272,10 @@ def test_workspace_merge_preserves_train_status_dispatch(monkeypatch: pytest.Mon
     assert calls == [True]
 
 
-def test_workspace_merge_preserves_record_full_verify_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: list[tuple[str, str]] = []
-
-    def record(command: str, target_sha: str, **_kwargs: object) -> int:
-        captured.append((command, target_sha))
-        return 0
-
-    monkeypatch.setattr(merge_boundary, "_reconciled_terminal_verify_snapshot", lambda: {})
-    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", lambda: "master-sha")
-    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", record)
-
-    assert (
-        click_dispatch._dispatch(["workspace", "merge", "record-full-verify", "--command", "devtools verify --all"])
-        == 0
-    )
-    assert captured == [("devtools verify --all", "master-sha")]
+def test_workspace_merge_rejects_removed_record_full_verify_action() -> None:
+    # The terminal step records itself from an accepted plain verify; the
+    # standalone incantation is gone.
+    assert click_dispatch._dispatch(["workspace", "merge", "record-full-verify", "--command", "devtools verify"]) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +296,7 @@ def test_merge_auto_records_when_no_fresh_receipt_then_merges(monkeypatch: pytes
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 0
@@ -336,7 +324,7 @@ def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
             poll_interval_s=0,
             dry_run=True,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 0
     )
@@ -352,7 +340,7 @@ def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
             poll_interval_s=0,
             dry_run=True,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 0
     )
@@ -381,7 +369,7 @@ def test_merge_strips_doubled_pr_suffix_before_merging(monkeypatch: pytest.Monke
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 0
@@ -418,7 +406,7 @@ def test_merge_refuses_when_the_target_base_changes_after_validation(
             poll_interval_s=0,
             dry_run=False,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 1
     )
@@ -453,7 +441,7 @@ def test_merge_refuses_when_the_scope_body_changes_after_validation(
             poll_interval_s=0,
             dry_run=False,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 1
     )
@@ -474,7 +462,7 @@ def test_merge_refuses_when_pr_not_open(monkeypatch: pytest.MonkeyPatch, tmp_pat
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 1
@@ -496,7 +484,7 @@ def test_merge_refuses_when_pr_scope_carrier_is_missing(
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 2
@@ -526,7 +514,7 @@ def test_merge_refuses_when_unresolved_review_thread_exists(monkeypatch: pytest.
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code != 0
@@ -547,7 +535,7 @@ def test_merge_refuses_when_local_verify_command_fails(monkeypatch: pytest.Monke
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 1
@@ -572,7 +560,7 @@ def test_merge_replaces_a_recent_failed_receipt_instead_of_reusing_it(
             poll_interval_s=0,
             dry_run=True,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 2
     )
@@ -588,7 +576,7 @@ def test_merge_replaces_a_recent_failed_receipt_instead_of_reusing_it(
             poll_interval_s=0,
             dry_run=True,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 0
     )
@@ -657,7 +645,7 @@ def test_merge_dry_run_never_calls_gh_pr_merge(monkeypatch: pytest.MonkeyPatch, 
         poll_interval_s=0,
         dry_run=True,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 0
@@ -679,7 +667,7 @@ def test_merge_propagates_gh_pr_merge_failure(monkeypatch: pytest.MonkeyPatch, t
         poll_interval_s=0,
         dry_run=False,
         with_verify=False,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 3
@@ -693,7 +681,7 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
     base = _fake_run(pr_view)
 
     def run(cmd: list[str], **kwargs: Any) -> MagicMock:
-        if cmd[:3] == ["devtools", "verify", "--all"]:
+        if cmd[:2] == ["devtools", "verify"]:
             _write_terminal_receipt(kwargs)
             return MagicMock(
                 returncode=0,
@@ -724,12 +712,12 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
         poll_interval_s=0,
         dry_run=False,
         with_verify=True,
-        verify_command="devtools verify --all",
+        verify_command="devtools verify",
     )
 
     assert exit_code == 0
     ledger = merge_boundary._read_ledger()
-    assert ledger["last_full_verify"]["command"] == "devtools verify --all"
+    assert ledger["last_full_verify"]["command"] == "devtools verify"
     assert ledger["last_full_verify"]["exit_code"] == 0
     # train-status should now report clean.
     assert merge_boundary.cmd_train_status(as_json=False) == 0
@@ -753,7 +741,7 @@ def test_merge_with_verify_returns_nonzero_when_terminal_authority_is_rejected(
             poll_interval_s=0,
             dry_run=False,
             with_verify=True,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 1
     )
@@ -778,7 +766,7 @@ def test_post_merge_terminal_verify_rejects_stale_feature_head(monkeypatch: pyte
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 1
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master") == 1
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
 
 
@@ -829,7 +817,7 @@ def test_post_merge_terminal_verify_uses_target_checkout_devshell(
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 0
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify", "merged-master") == 0
     assert any(command[:2] == ["direnv", "exec"] for command in commands)
 
 
@@ -940,7 +928,7 @@ def test_merge_write_failure_recovers_valid_pending_ledger(monkeypatch: pytest.M
             poll_interval_s=0,
             dry_run=False,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 1
     )
@@ -972,7 +960,7 @@ def test_train_status_blocks_when_pr_merged_after_last_full_verify(
                 "at": 1000.0,
                 "verification_started_at": 1000.0,
                 "duration_s": 1.0,
-                "command": "devtools verify --all",
+                "command": "devtools verify",
                 "exit_code": 0,
                 "verification_scope": "release-baseline",
                 "release_baseline_allowed": True,
@@ -1000,9 +988,8 @@ def test_train_status_requires_release_baseline_guidance(
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
     output = capsys.readouterr().out
-    assert "devtools verify --all" in output
-    assert "narrower agreed selection" not in output
-    assert "does not grant the release-baseline authority" in output
+    assert "devtools verify" in output
+    assert "records itself" in output
 
 
 def test_train_status_reads_historical_scope_without_granting_release_authority(
@@ -1042,7 +1029,7 @@ def test_train_status_rejects_untyped_accepted_terminal_ledger(monkeypatch: pyte
                 "at": 1000.0,
                 "verification_started_at": 1000.0,
                 "duration_s": 1.0,
-                "command": "devtools verify --all",
+                "command": "devtools verify",
                 "exit_code": 0,
                 "verification_scope": None,
                 "release_baseline_allowed": True,
@@ -1076,7 +1063,7 @@ def test_record_full_verify_clears_pending_prs(monkeypatch: pytest.MonkeyPatch, 
 
     monkeypatch.setattr(subprocess, "run", _run)
 
-    exit_code = merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master")
+    exit_code = merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master")
 
     assert exit_code == 0
     assert merge_boundary.cmd_train_status(as_json=False) == 0
@@ -1101,7 +1088,7 @@ def test_record_full_verify_rejects_plausible_unbound_stdout(monkeypatch: pytest
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 1
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master") == 1
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
 
 
@@ -1114,7 +1101,7 @@ def test_record_full_verify_propagates_failure(monkeypatch: pytest.MonkeyPatch, 
 
     monkeypatch.setattr(subprocess, "run", _run)
 
-    exit_code = merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master")
+    exit_code = merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master")
 
     assert exit_code == 1
     ledger = merge_boundary._read_ledger()
@@ -1135,7 +1122,7 @@ def test_record_full_verify_rejects_success_without_structured_release_permissio
         lambda _cmd, **_kwargs: MagicMock(returncode=0, stdout="all good\n", stderr=""),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 1
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master") == 1
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
@@ -1156,7 +1143,7 @@ def test_record_full_verify_rejects_untyped_scope_even_when_permission_is_true(
         ),
     )
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 1
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master") == 1
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
@@ -1187,7 +1174,7 @@ def test_concurrent_merge_during_terminal_verify_remains_pending(
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 0
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master") == 0
     assert merge_boundary.cmd_train_status(as_json=False) == 1
     ledger = merge_boundary._read_ledger()
     assert ledger["last_full_verify"]["merged_master_sha"] == "merged-master"
@@ -1223,7 +1210,7 @@ def test_concurrent_ledger_writer_cannot_lose_merge_entry(monkeypatch: pytest.Mo
         )
 
     monkeypatch.setattr(subprocess, "run", run)
-    assert merge_boundary.cmd_record_full_verify("devtools verify --all", target_sha="merged-master") == 0
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha="merged-master") == 0
     assert writer is not None
     writer.join(timeout=1)
     assert not writer.is_alive()
@@ -1235,37 +1222,31 @@ def test_concurrent_ledger_writer_cannot_lose_merge_entry(monkeypatch: pytest.Mo
 def test_terminal_snapshot_is_taken_before_default_branch_fetch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A merge landing during the target fetch must stay pending in the ledger.
+
+    cmd_merge --with-verify snapshots the reconciled ledger BEFORE fetching
+    the merged default branch; this pins that ordering at the seams it uses.
+    """
     monkeypatch.chdir(tmp_path)
     events: list[str] = []
-    snapshots: list[tuple[dict[str, Any], float, int]] = []
 
     original_snapshot = merge_boundary._terminal_verify_snapshot
 
     def snapshot() -> tuple[dict[str, Any], float, int]:
         events.append("ledger-snapshot")
-        captured = original_snapshot()
-        snapshots.append(captured)
-        return captured
+        return original_snapshot()
 
     def fetch() -> str:
         events.append("target-fetch")
         merge_boundary._append_merge_entry(88, "after-fetch-sha", "merge after target fetch")
         return "merged-master"
 
-    def post_verify(
-        _command: str, _target: str, *, ledger_snapshot: tuple[dict[str, Any], float, int] | None = None
-    ) -> int:
-        assert ledger_snapshot is not None
-        assert ledger_snapshot[2] == 0
-        return 1
-
     monkeypatch.setattr(merge_boundary, "_terminal_verify_snapshot", snapshot)
-    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", fetch)
-    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", post_verify)
+    ledger_snapshot = merge_boundary._reconciled_terminal_verify_snapshot()
+    fetch()
 
-    assert merge_boundary.main(["record-full-verify", "--command", "devtools verify --all"]) == 1
     assert events == ["ledger-snapshot", "target-fetch"]
-    assert snapshots[0][2] == 0
+    assert ledger_snapshot[2] == 0
     assert merge_boundary.cmd_train_status(as_json=False) == 1
 
 
@@ -1298,7 +1279,7 @@ def test_external_merge_before_completion_is_reconciled_from_durable_intent(
             poll_interval_s=0,
             dry_run=False,
             with_verify=False,
-            verify_command="devtools verify --all",
+            verify_command="devtools verify",
         )
         == 0
     )
@@ -1321,20 +1302,9 @@ def test_record_full_verify_reconciles_durable_intents_before_snapshot(
         "_gh_json",
         lambda _args: {"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}},
     )
-    monkeypatch.setattr(merge_boundary, "_fetched_current_default_branch_sha", lambda: "merged-master")
-    snapshots: list[tuple[dict[str, Any], float, int]] = []
+    snapshot = merge_boundary._reconciled_terminal_verify_snapshot()
 
-    def post_verify(
-        _command: str, _target: str, *, ledger_snapshot: tuple[dict[str, Any], float, int] | None = None
-    ) -> int:
-        assert ledger_snapshot is not None
-        snapshots.append(ledger_snapshot)
-        return 0
-
-    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", post_verify)
-
-    assert merge_boundary.main(["record-full-verify", "--command", "devtools verify --all"]) == 0
-    assert snapshots[0][2] == 1
+    assert snapshot[2] == 1
     assert not merge_boundary._read_ledger()["merge_intents"]
 
 
@@ -1380,7 +1350,7 @@ def test_terminal_verify_runs_in_place_when_head_matches_clean_target(
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(merge_boundary, "cmd_record_full_verify", record)
-    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 0
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify", "merged-master") == 0
     assert seen["cwd"] == tmp_path
     assert seen["execution_root"] == tmp_path
 
@@ -1402,7 +1372,7 @@ def test_detached_worktree_add_failure_attempts_cleanup(monkeypatch: pytest.Monk
         raise AssertionError(cmd)
 
     monkeypatch.setattr(subprocess, "run", run)
-    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 1
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify", "merged-master") == 1
     assert any(command[:3] == ["git", "worktree", "remove"] for command in commands)
 
 
@@ -1422,14 +1392,13 @@ def test_detached_worktree_cleanup_failure_is_explicit(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(merge_boundary, "cmd_record_full_verify", lambda *_args, **_kwargs: 0)
-    assert merge_boundary._run_post_merge_terminal_verify("devtools verify --all", "merged-master") == 1
+    assert merge_boundary._run_post_merge_terminal_verify("devtools verify", "merged-master") == 1
 
 
-def test_manual_record_route_fetches_target_and_rejects_stale_cli_output(
+def test_terminal_record_rejects_stale_cli_output_for_fetched_target(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    post_targets: list[str] = []
 
     def run(cmd: list[str], **_kwargs: Any) -> MagicMock:
         if cmd[:3] == ["gh", "repo", "view"]:
@@ -1450,13 +1419,9 @@ def test_manual_record_route_fetches_target_and_rejects_stale_cli_output(
             stderr="",
         )
 
-    def post_verify(command: str, target_sha: str, **_kwargs: Any) -> int:
-        post_targets.append(target_sha)
-        return merge_boundary.cmd_record_full_verify(command, target_sha=target_sha)
-
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr(merge_boundary, "_run_post_merge_terminal_verify", post_verify)
+    target_sha = merge_boundary._fetched_current_default_branch_sha()
 
-    assert merge_boundary.main(["record-full-verify", "--command", "devtools verify --all"]) == 1
-    assert post_targets == ["current-master"]
+    assert target_sha == "current-master"
+    assert merge_boundary.cmd_record_full_verify("devtools verify", target_sha=target_sha) == 1
     assert merge_boundary._read_ledger()["last_full_verify"]["accepted"] is False

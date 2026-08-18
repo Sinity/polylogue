@@ -82,6 +82,7 @@ from devtools.testmon_bootstrap import (
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
+    write_certified_corpus,
 )
 from devtools.verification_contracts import VerificationScope
 from devtools.verify_runs import (
@@ -439,12 +440,22 @@ def _estimate_duration_from_history(
     pass or a 40-minute bootstrap BEFORE it finishes. The history rows carry
     tier + selection mode/state, which is exactly what predicts duration.
     """
+
+    def _tier_key(value: object) -> object:
+        # Pre-fold history recorded plain runs as tier "testmon" with
+        # selection_mode "affected"; both are the same population as today's
+        # incremental "full" runs, so estimation keeps reading them.
+        return "full" if value in ("testmon", "full") else value
+
+    def _mode_key(value: object) -> object:
+        return "full" if value in ("affected", "full") else value
+
     mode = selection.get("selection_mode") if isinstance(selection, Mapping) else None
     state = selection.get("state_status") if isinstance(selection, Mapping) else None
     exact: list[float] = []
     tier_only: list[float] = []
     for entry in reversed(_load_history()[-200:]):
-        if entry.get("tier") != tier or entry.get("exit_code") != 0:
+        if _tier_key(entry.get("tier")) != _tier_key(tier) or entry.get("exit_code") != 0:
             continue
         duration = entry.get("duration_s") or entry.get("total_duration_s")
         if not isinstance(duration, int | float) or duration <= 0:
@@ -452,7 +463,7 @@ def _estimate_duration_from_history(
         entry_selection = entry.get("testmon_selection")
         entry_mode = entry_selection.get("selection_mode") if isinstance(entry_selection, dict) else None
         entry_state = entry_selection.get("state_status") if isinstance(entry_selection, dict) else None
-        if (entry_mode, entry_state) == (mode, state) and len(exact) < 10:
+        if (_mode_key(entry_mode), entry_state) == (_mode_key(mode), state) and len(exact) < 10:
             exact.append(float(duration))
         elif len(tier_only) < 10:
             tier_only.append(float(duration))
@@ -503,7 +514,7 @@ def _print_verify_plan() -> int:
         env_name = testmon_environment_digest(
             ROOT,
             pytest_profile=_pytest_profile(),
-            pytest_environment=_native_pytest_environment(force_release_profile=False),
+            pytest_environment=_native_pytest_environment(),
         )
     except Exception as exc:  # pragma: no cover - defensive: report, don't crash a read-only plan
         env_name = f"<unavailable: {exc}>"
@@ -549,7 +560,7 @@ def _print_verify_plan() -> int:
         f"plan: ~{dependents} dependent test(s) execute + any never-recorded tests; ~{recorded - dependents} attested unchanged-green"
     )
     estimate = _estimate_duration_from_history(
-        tier="testmon", selection={"selection_mode": "affected", "state_status": "valid"}
+        tier="full", selection={"selection_mode": "full", "state_status": "valid"}
     )
     if estimate is not None:
         print(f"plan: comparable warm runs took ~{estimate[0]:.0f}s (n={estimate[1]})")
@@ -2061,7 +2072,10 @@ def _run_step(
     external_plugins_neutralized = False
     if owns_pytest_environment:
         _normalize_managed_pytest_environment(env, disable_plugin_autoload=managed_native_lane)
-    if managed_native_lane and _pytest_uses_full_suite_basetemp(label):
+    if managed_native_lane:
+        # Every plain-verify lane can grant release authority, so every lane
+        # runs the complete Hypothesis profile -- a reduced ambient profile
+        # must not silently weaken an authority-granting run.
         env["HYPOTHESIS_PROFILE"] = "default"
     explicit_basetemp = _pytest_command_basetemp(cmd, cwd=cwd, env=env)
     if explicit_basetemp is not None:
@@ -2118,13 +2132,6 @@ def _run_step(
             # with the native environment corpus before granting release
             # authority. Keep the complete node set in these bounded artifacts.
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
-            if label.endswith("(full)"):
-                # Full-mode lanes claim complete-corpus coverage, so testmon's
-                # file-level collection skip must be disabled: it hides tests
-                # the graph has never recorded when they share a file with
-                # stable recorded ones (the marker-split lanes make that
-                # systematic). Per-test deselection still narrows execution.
-                env["POLYLOGUE_TESTMON_COMPLETE_COLLECTION"] = "1"
         if run is not None and artifacts is not None:
             env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         if owns_pytest_environment:
@@ -2621,7 +2628,7 @@ def _native_pytest_steps(
 
 def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
     """Accept only a command produced by the managed native-lane builder."""
-    match = re.fullmatch(r"pytest native (parallel|serial) \((affected|bootstrap|full)\)", label)
+    match = re.fullmatch(r"pytest native (parallel|serial) \((bootstrap|full)\)", label)
     if match is None:
         return False
     environment_args = [arg for arg in cmd if arg.startswith("--testmon-env=")]
@@ -2837,8 +2844,13 @@ def _pytest_command_concurrency(cmd: Sequence[str], *, env: Mapping[str, str] | 
 
 
 def _pytest_uses_full_suite_basetemp(label: str) -> bool:
-    """Whether this semantic lane may materialize the complete corpus tree."""
-    return label.startswith("pytest native") and ("(bootstrap)" in label or "(full)" in label)
+    """Whether this semantic lane always materializes the complete corpus tree.
+
+    A "(full)" lane over a valid graph makes a narrow forceselect selection,
+    so it is NOT full-suite-shaped by label alone; selection_may_run_broadly
+    covers the non-valid-graph cases at the placement decision.
+    """
+    return label.startswith("pytest native") and "(bootstrap)" in label
 
 
 def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
@@ -2917,9 +2929,8 @@ def _planned_verification_scope(
 ) -> VerificationScope:
     if args.quick or args.commit:
         return VerificationScope.NON_TEST
-    if testmon_mode in {"bootstrap", "full"}:
-        return VerificationScope.RELEASE_BASELINE
-    return VerificationScope.AFFECTED
+    del testmon_mode
+    return VerificationScope.RELEASE_BASELINE
 
 
 def _pytest_profile() -> str:
@@ -2956,17 +2967,14 @@ def _resolved_hypothesis_profile(env: Mapping[str, str] | None = None) -> str:
     return configured or "default"
 
 
-def _native_pytest_environment(*, force_release_profile: bool) -> dict[str, str | None]:
-    environment = {
+def _native_pytest_environment() -> dict[str, str | None]:
+    return {
         # Hypothesis uses its default profile when the variable is absent.
         # Record that effective value in the testmon environment identity so a
-        # bootstrap graph is reusable by the following affected invocation.
+        # bootstrap graph is reusable by every later incremental invocation.
         "HYPOTHESIS_PROFILE": _resolved_hypothesis_profile(),
         "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
     }
-    if force_release_profile:
-        environment["HYPOTHESIS_PROFILE"] = "default"
-    return environment
 
 
 def _native_environment_after_run(
@@ -3114,12 +3122,6 @@ def _main(argv: list[str] | None = None) -> int:
     started_at = time.monotonic()
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Run the complete pytest correctness corpus (excluding performance benchmarks).",
-    )
-    parser.add_argument("--full", action="store_true", help="Alias for --all.")
     parser.add_argument("--commit", action="store_true", help="Pre-commit tier: format + lint + mypy only.")
     parser.add_argument(
         "--lab",
@@ -3159,26 +3161,12 @@ def _main(argv: list[str] | None = None) -> int:
             return 125
         return _print_verify_plan()
 
-    full_requested = bool(args.all or args.full)
     use_json = args.json if args.json is not None else not sys.stdout.isatty()
-    tier = (
-        "commit"
-        if args.commit
-        else "quick"
-        if args.quick
-        else "full"
-        if full_requested
-        else "lab"
-        if args.lab
-        else "testmon"
-    )
+    tier = "commit" if args.commit else "quick" if args.quick else "lab" if args.lab else "full"
     head = _git_head()
     pytest_enabled = not (args.quick or args.commit)
     managed_pytest_enabled = pytest_enabled or args.lab
-    planned_scope = _planned_verification_scope(
-        args,
-        testmon_mode="full" if full_requested else None,
-    )
+    planned_scope = _planned_verification_scope(args, testmon_mode="full")
     verify_run = VerifyRun(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
@@ -3262,7 +3250,7 @@ def _main(argv: list[str] | None = None) -> int:
     runtime_data_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
     testmon_mode: str | None = None
-    native_pytest_environment = _native_pytest_environment(force_release_profile=full_requested)
+    native_pytest_environment = _native_pytest_environment()
     preparation_mutation_observation: CheckoutMutationObservation | None = None
     if pytest_enabled:
         assert base_commit is not None
@@ -3285,7 +3273,7 @@ def _main(argv: list[str] | None = None) -> int:
                 preparation.selection_mode == "bootstrap"
                 and native_pytest_environment["HYPOTHESIS_PROFILE"] != "default"
             ):
-                native_pytest_environment = _native_pytest_environment(force_release_profile=True)
+                native_pytest_environment = {**native_pytest_environment, "HYPOTHESIS_PROFILE": "default"}
                 preparation = prepare_native_testmon_environment(
                     ROOT,
                     required_executable_paths=preparation_required_executable_paths,
@@ -3329,9 +3317,13 @@ def _main(argv: list[str] | None = None) -> int:
         # corpus. The operator weighed that against the measured cost and chose
         # the hazard: forcing a full corpus on every such change stopped work
         # entirely. runtime_data_paths still lands in the receipt and in
-        # `devtools why`, so the exposure is visible per run and a deliberate
-        # `--all` remains available before anything that needs the guarantee.
-        testmon_mode = "full" if full_requested else preparation.selection_mode
+        # `devtools why`, so the exposure is visible per run.
+        #
+        # Every plain run is complete-corpus scoped: forceselect executes
+        # changed-dep, never-recorded, and previously-failing tests, and
+        # attests the rest from their unchanged recorded greens. "bootstrap"
+        # (no sound graph for this environment digest) executes everything.
+        testmon_mode = "full" if preparation.selection_mode == "affected" else preparation.selection_mode
         # Record the cause, not just the outcome. A bootstrap is ~9.5x a warm
         # run; which of the two triggers fired decides whether better selection
         # could have avoided it, and the receipt previously said neither.
@@ -3353,10 +3345,9 @@ def _main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"verify: copied matching native pytest-testmon DB from {preparation.copied_from}\n")
         elif preparation.selection_mode == "bootstrap":
             sys.stderr.write("verify: native pytest-testmon environment is empty; plain verify will build it\n")
-        if runtime_data_paths and not full_requested:
+        if runtime_data_paths:
             sys.stderr.write(
-                "verify: changed package runtime data is outside Python tracing; recorded as exposure "
-                "(run `devtools verify --all` before anything that needs the guarantee): "
+                "verify: changed package runtime data is outside Python tracing; recorded as exposure: "
                 + ", ".join(runtime_data_paths)
                 + "\n"
             )
@@ -3599,6 +3590,9 @@ def _main(argv: list[str] | None = None) -> int:
     total_duration = round(time.monotonic() - started_at, 2)
     pytest_aggregate: dict[str, Any] | None = None
     native_environment = native_state.environment if native_state is not None else None
+    attestation_sound = testmon_mode == "bootstrap" or (
+        preparation is not None and preparation.local_state.status == "valid" and not runtime_data_paths
+    )
     if preparation is not None:
         pytest_aggregate = aggregate_native_testmon_run(
             ROOT,
@@ -3609,7 +3603,18 @@ def _main(argv: list[str] | None = None) -> int:
             environment_reason=native_state.reason if native_state is not None else "post-run inspection unavailable",
             selection_mode=testmon_mode or "affected",
             invocation_duration_s=total_duration,
+            attestation_sound=attestation_sound,
         )
+        if (
+            testmon_mode in ("full", "bootstrap")
+            and pytest_aggregate.get("complete_corpus_covered") is True
+            and native_environment is not None
+        ):
+            # A completed covered run certifies its corpus next to the graph;
+            # future attestation is checked against this certificate, because
+            # the graph's own row set is blind to its losses (an interrupted
+            # lane shrinks the corpus and the coverage claim together).
+            write_certified_corpus(ROOT, preparation.environment_name, native_environment.nodeids)
 
     # Finalization can outlast the last pytest lane, so wall_s is taken here
     # rather than from the lanes alone.
@@ -3627,8 +3632,17 @@ def _main(argv: list[str] | None = None) -> int:
         aggregate=pytest_aggregate,
     )
     verification_scope = planned_scope
-    if testmon_mode == "affected":
-        release_baseline_allowed = False
+    if (
+        testmon_mode == "full"
+        and not attestation_sound
+        and not (pytest_aggregate is not None and pytest_aggregate.get("complete_corpus_covered") is True)
+    ):
+        # The run carried named exposure (an incomplete graph or untraceable
+        # runtime-data changes) and did NOT pay for it by executing the whole
+        # corpus, so it cannot claim the release baseline. It still authorizes
+        # PR merges. A run that executed everything anyway keeps its planned
+        # scope: full execution covers any exposure.
+        verification_scope = VerificationScope.AFFECTED
 
     checkout_diagnosis = next(
         (
@@ -3721,6 +3735,14 @@ def _main(argv: list[str] | None = None) -> int:
 
     if exit_code == 0:
         _stamp_head()
+        if pytest_enabled and release_baseline_allowed is True and head is not None:
+            # The merge-train ledger's terminal step is "one green
+            # complete-corpus verify on the merged master"; any plain verify
+            # that earns release authority AT origin/master IS that step, so
+            # it records itself instead of requiring a separate incantation.
+            from devtools.merge_boundary import record_accepted_terminal_verify
+
+            record_accepted_terminal_verify(git_head=head, duration_s=total_duration)
     else:
         _notify(
             _format_completion_notification(

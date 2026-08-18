@@ -291,8 +291,7 @@ Before creating a PR, run the local baseline. CI runs the same checks, while
 local pytest selection is accelerated by pytest-testmon.
 
 ```bash
-devtools verify            # static/generated gates + pytest-testmon affected tests
-devtools verify --all      # complete correctness corpus; benchmarks excluded
+devtools verify            # static/generated gates + incremental complete-corpus pytest
 devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
@@ -303,18 +302,20 @@ repairs missing or invalid native testmon state and automatically builds a new
 environment when collection semantics change.
 
 `devtools verify` does not replay a prior verify result. It always runs the
-static gates. With a valid native environment, it invokes pytest-testmon for
-affected-test selection from the current source, dependency, and Python-version
-state. When it bootstraps a missing or invalid native environment, it runs the
+static gates. With a valid native environment, it invokes pytest-testmon to
+execute changed-dependency, never-recorded, and previously-failing tests, and
+attests the remaining corpus from unchanged recorded greens — earning
+release-baseline authority when coverage is complete and green. When it bootstraps a missing or invalid native environment, it runs the
 complete correctness corpus. The pytest step covers unit, property, fuzz, and
 integration tests while excluding the separately operated `tests/benchmarks`
 performance surface. It uses
-`--testmon-forceselect` for affected selection, with one parallel `not
+`--testmon-forceselect` for incremental selection, with one parallel `not
 load_sensitive` lane and one serial `load_sensitive` lane over the same native
 environment. `tui` is a category marker and remains parallel unless a test is
 also explicitly `load_sensitive`. Use
-`devtools verify --all` for the complete correctness corpus; there is no
-manual seed or repair command.
+There is no manual seed or repair command, and no separate full-corpus flag:
+every plain run is scoped to the complete corpus, executing what changed and
+attesting the rest from unchanged recorded greens.
 
 Add `devtools release build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
