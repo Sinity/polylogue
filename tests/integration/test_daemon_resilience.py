@@ -41,6 +41,11 @@ pytestmark = [
     ),
     pytest.mark.slow,
     pytest.mark.integration,
+    # Real daemon subprocesses started under a 15s deadline: xdist worker
+    # contention starves the interpreter startup and flakes the whole gate
+    # (failed twice in-lane on 2026-08-18, green standalone at ~2s both
+    # times). Wall-clock-bound -> the isolated serial lane owns it.
+    pytest.mark.load_sensitive,
 ]
 
 # ---------------------------------------------------------------------------
