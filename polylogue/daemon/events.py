@@ -40,11 +40,22 @@ def _events_db_path() -> Path:
     return archive_root() / "ops.db"
 
 
+#: Ops-tier convergence runs once per (process, path): the multi-statement
+#: tier initialization can wait out SQLite lock timeouts statement by
+#: statement, and running it on EVERY emit put that aggregate wait inside the
+#: write-coordinator's shutdown window -- a SIGTERM'd daemon then exceeded its
+#: 15s exit deadline stuck in tier DDL (polylogue-b9oi8). First emit still
+#: converges the tier, so benign-DDL convergence-on-open is preserved.
+_CONVERGED_EVENT_DBS: set[Path] = set()
+
+
 def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
     """Open and initialize the daemon events database for an emitter."""
     path = _events_db_path() if path is None else path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    initialize_archive_database(path, ArchiveTier.OPS)
+    if path not in _CONVERGED_EVENT_DBS or not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        initialize_archive_database(path, ArchiveTier.OPS)
+        _CONVERGED_EVENT_DBS.add(path)
     conn = open_daemon_connection(path)
     conn.executescript(_DAEMON_EVENTS_DDL)
     return conn
