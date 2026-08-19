@@ -24,6 +24,7 @@ import re
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -902,6 +903,14 @@ def _parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     return parser.parse_args(option_argv), controller_cmd
 
 
+def _restore_owner_write(root: Path) -> None:
+    """Read-only trees (seeded-archive artifacts chmod their directories
+    non-writable) must not survive cleanup: restore owner-write throughout."""
+    for candidate in (root, *root.rglob("*")):
+        with contextlib.suppress(OSError):
+            candidate.chmod(candidate.stat().st_mode | stat.S_IWUSR)
+
+
 def cleanup_managed_tmpfs_path(path: Path | None) -> bool:
     """Remove only a harness-owned direct child of the system tmpfs."""
     if path is None or not path.name.startswith("pytest-polylogue-"):
@@ -912,6 +921,9 @@ def cleanup_managed_tmpfs_path(path: Path | None) -> bool:
     except OSError:
         return False
     shutil.rmtree(path, ignore_errors=True)
+    if path.exists():
+        _restore_owner_write(path)
+        shutil.rmtree(path, ignore_errors=True)
     return not path.exists()
 
 

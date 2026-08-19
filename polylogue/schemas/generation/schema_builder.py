@@ -127,6 +127,7 @@ def generate_schema_from_samples(
     max_stats_samples: int = 500,
     max_genson_samples: int | None = None,
     provider: str | None = None,
+    privacy_config: SchemaPrivacyConfig | None = None,
 ) -> MutableSchemaPayload:
     if not GENSON_AVAILABLE:
         raise ImportError("genson is required for schema generation. Install with: pip install genson")
@@ -155,7 +156,7 @@ def generate_schema_from_samples(
             stats_samples = random.Random(42).sample(list(samples), max_stats_samples)
 
         field_stats = _collect_field_stats(stats_samples)
-        schema = _annotate_schema(schema, field_stats)
+        schema = _annotate_schema(schema, field_stats, privacy_config=privacy_config)
         pins = _load_rejected_pins(provider) if provider else {}
         schema = _annotate_semantic_and_relational(schema, field_stats, pins=pins)
 
