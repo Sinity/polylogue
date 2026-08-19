@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -57,6 +58,29 @@ def test_cleanup_managed_tmpfs_path_removes_only_owned_run(tmp_path: Path) -> No
         assert not run_root.exists()
         assert cleanup_managed_tmpfs_path(tmp_path / "pytest-polylogue-not-tmpfs") is False
     finally:
+        shutil.rmtree(run_root, ignore_errors=True)
+
+
+def test_cleanup_managed_tmpfs_path_removes_read_only_artifact_trees(tmp_path: Path) -> None:
+    """Seeded-archive artifacts chmod their directories read-only; cleanup must
+    still remove them (polylogue-b9yw7: cleanup.complete=false withheld merge
+    authority on otherwise-green receipts)."""
+    run_root = Path("/dev/shm") / f"pytest-polylogue-cleanup-ro-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        artifact = run_root / "seeded-cache" / "artifacts" / "deadbeef" / "wire"
+        artifact.mkdir(parents=True)
+        payload = artifact / "seed-00.jsonl"
+        payload.write_text("{}", encoding="utf-8")
+        for target in (payload, artifact, artifact.parent):
+            target.chmod(target.stat().st_mode & ~0o222)
+
+        assert cleanup_managed_tmpfs_path(run_root) is True
+        assert not run_root.exists()
+    finally:
+        if run_root.exists():
+            for candidate in sorted(run_root.rglob("*"), reverse=True):
+                with contextlib.suppress(OSError):
+                    candidate.chmod(candidate.stat().st_mode | 0o200)
         shutil.rmtree(run_root, ignore_errors=True)
 
 
