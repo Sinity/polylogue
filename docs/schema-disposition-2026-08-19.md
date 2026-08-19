@@ -1,454 +1,450 @@
 # Schema disposition audit — full column inventory (gvzkr)
 
 Date: 2026-08-19. Committed artifact for `polylogue-gvzkr`'s column-level schema-disposition
-acceptance criteria. Extends the 2026-08-04 table-level seed
-(`.agent/scratch/polylogue-gvzkr-schema-disposition-2026-08-04.md`, not committed — a working
-scratch file) to full column granularity across all five SQLite tiers, then normalizes and
-recomputes it against live DDL for this commit.
+acceptance criteria. Normalizes the reconciled column-granularity disposition audit — the
+aggregate index (`.agent/scratch/gvzkr-column-disposition-2026-08-19.md`, not committed — a
+working scratch file) plus five per-tier files — into one committed artifact with a
+mechanically recomputed coverage summary and one row per column across all five SQLite tiers.
 
-**Every number in the summary table below is recomputed directly from the row table further
-down in this file** — never hand-entered — specifically to avoid the header/body disagreement
-that the source working notes had. That disagreement turned out to be pervasive, not isolated
-to one tier: see "Correction versus the working notes" below.
+**The underlying audit went through a real fanout coordination failure before this pass**:
+two of five dispatched tier-audits initially exceeded scope and overwrote sibling tier files;
+after restoration, three of five tier files still had internal header/body arithmetic
+mismatches; and `user.db` carried an unresolved 3-column verdict dispute between two prior
+drafts. The audit owner's reconciliation pass fixed all of this by recomputing every tier's
+column denominator directly against live DDL (`PRAGMA table_info` against each tier's
+canonical `*_DDL` constant) and personally re-verifying the disputed `user.db` columns against
+`polylogue/storage/sqlite/query_objects.py` line-by-line. This file's own build additionally
+re-validated every tier's row count against a fresh, independent DDL parse before writing —
+see "Independent DDL-denominator validation" below.
 
 ## Coverage summary (machine-derivable — recomputed from the row table, not hand-maintained)
 
-| tier | tables | columns | KEEP | PURGE | UNCLEAR |
+| tier | tables | columns classified | KEEP | PURGE | UNCLEAR |
 |---|---:|---:|---:|---:|---:|
-| source.db | 37 | 357 | 273 | 76 | 8 |
-| index.db | 61 | 650 | 639 | 11 | 0 |
+| source.db | 37 | 357 | 178 | 159 | 20 |
+| index.db | 48 | 617 | 606 | 11 | 0 |
 | embeddings.db | 6 | 50 | 48 | 2 | 0 |
 | ops.db | 16 | 158 | 138 | 20 | 0 |
-| user.db | 16 | 121 | 120 | 0 | 1 |
-| **total** | **136** | **1336** | **1218** | **109** | **9** |
+| user.db | 16 | 121 | 118 | 3 | 0 |
+| **total** | **123** | **1303** | **1088** | **195** | **20** |
 
-Column counts are enumerated from live `PRAGMA table_info` output against each tier's canonical
-`*_DDL` constant in `polylogue/storage/sqlite/archive_tiers/{source,index,embeddings,ops,user}.py`
-(embeddings.db's `message_embeddings` vec0 virtual table was enumerated from its `CREATE VIRTUAL
-TABLE ... USING vec0(...)` DDL text directly, since the `vec0` loadable extension is not present
-in this environment to execute it). index.db's 33 FTS5 shadow-table columns (`messages_fts_{config,data,docsize,idx}`, `blocks_command_trigram_{config,data,docsize,idx}`, `session_work_events_fts_{config,content,data,docsize,idx}`) are included as individual rows with an inherited KEEP verdict, per the audit's own rule that they track their parent FTS table's disposition rather than being independently classified.
+Plus **33 index.db FTS5 shadow-table columns** (`messages_fts_{config,data,docsize,idx}`,
+`blocks_command_trigram_{config,data,docsize,idx}`, `session_work_events_fts_{config,content,
+data,docsize,idx}`) — SQLite FTS5 virtual-table implementation storage that inherits its
+parent FTS table's disposition rather than being independently classified (per the audit's own
+rule: the correct removal trigger is dropping the parent FTS object, not a standalone
+column-level verdict on shadow tables). They are listed as individual rows in their own
+clearly-marked section below, not folded into the KEEP/PURGE/UNCLEAR tallies above.
+**Grand total across all five tiers: 1,336 columns** (1,303 classified + 33 inherited).
 
-## Correction versus the working notes
+## Independent DDL-denominator validation
 
-The working scratch files this artifact normalizes had a real, pervasive defect: **every tier's
-own header summary line undercounted its own body table**, not just ops.db's (which is the one
-case the dispatching instruction already knew about). Recomputing from live DDL via
-`PRAGMA table_info` and reconciling against each per-tier working file's row content found:
-
-- **source.db**: working notes claimed 33 tables / 208 columns. Live DDL has **37 tables / 357
-  columns** — the working notes' own body text already named all 37 tables (2 fully detailed
-  column-by-column, 28 more given table-level KEEP/PURGE/UNCLEAR verdicts, 7 delegated as
-  PURGE-pending-execution), it just never summed them. This file expands every table-level
-  verdict to one row per real DDL column so the AC's "every column exactly once" holds; no new
-  columns were audited beyond what the working notes already covered per table.
-- **index.db**: working notes' own body (617 individually classified + 33 inherited FTS-shadow)
-  already summed correctly to 650, matching live DDL exactly. No correction needed here beyond
-  transcription.
-- **embeddings.db**: working notes claimed 49 columns; the body table itself has 50 rows,
-  matching live DDL (the header simply mis-added KEEP 47 + PURGE 2).
-- **ops.db**: working notes claimed 130 columns (aggregate) / 129 (per-tier header), both wrong;
-  the per-tier body has 158 rows, matching live DDL exactly — this is the same defect the
-  dispatching instruction flagged, confirmed and fixed the same way (recompute from the body).
-- **user.db**: working notes claimed 92 columns; the body table has 121 rows, matching live DDL
-  exactly.
-
-Net effect: the true total is **1,336 columns across 136 tables/views**, not the ~1,124 the
-aggregate working file estimated. The disposition *content* (which columns are KEEP/PURGE/
-UNCLEAR and why) is unchanged from the working notes — this was a counting/summation defect in
-the header lines, not a re-audit of any column's evidence.
+Before writing this file, every tier's row count was cross-checked against a column list
+enumerated independently from live DDL — not against the per-tier working files' own header
+lines, which is exactly the check that caught the header/body mismatches described above.
+Method: `SOURCE_DDL`/`INDEX_DDL`/`OPS_DDL`/`USER_DDL` executed against an in-memory SQLite
+connection, columns read back via `PRAGMA table_info`; `EMBEDDINGS_DDL` parsed as text (its
+`vec0` virtual table needs a loadable extension not present in this environment). Result: every
+tier's row count in this file equals its independently-derived DDL column count exactly —
+source.db 357, index.db 617 classified + 33 shadow, embeddings.db 50, ops.db 158, user.db 121.
+No tier's total was taken on trust from a working file's own header.
 
 ## UNCLEAR — adjudicate at PR review, not guessed here
 
-9 individual column rows are UNCLEAR, covering 2 distinct findings (both carried from the
-underlying audit — this pass did not resolve either):
+20 individual column rows are UNCLEAR, covering 2 distinct findings, both carried unresolved
+from the underlying audit:
 
-1. **`source.excised_content`** (8 of 8 columns: `removed_hash`, `hash_kind`, `reason`, `actor`,
-   `prior_revision`, `span_start`, `span_end`, `excised_at_ms`) — the table's own DDL comment
-   (`polylogue/storage/sqlite/archive_tiers/source.py:837-840`) states it is "never queried for
-   its own sake by a reader — it exists purely as a write-time gate plus forensic trail," which
-   argues against PURGE (it is deliberately write-mostly by design, not accidentally dead), but
-   no column-level production SELECT was found either, which argues against a confident KEEP.
-   **What would settle it:** confirm with whoever owns the excision/GC subsystem whether the
-   forensic-trail read path is genuinely unimplemented-but-wanted, or was deliberately never
-   built because the write-time gate is sufficient on its own.
-2. **`user.query_names.supersedes_query_hash`** (1 column) — written on every INSERT/UPSERT
-   (`polylogue/storage/sqlite/query_objects.py:128-136`) but never appears in any production
-   SELECT list; the column name and a DDL comment suggest it was meant to support
-   renamed/superseded-query-name tracking, a real feature shape, not obviously dead weight.
-   **What would settle it:** confirm whether renamed-query tracking (the `polylogue-4p1`
-   query-object cluster) ever shipped a reader for this column, or was left half-built.
+1. **`source.raw_unknown_export_reclassification_receipts`** (all 14 columns: `raw_id`,
+   `previous_origin`, `new_origin`, `previous_capture_mode`, `new_capture_mode`,
+   `embedded_provider`, `source_path`, `blob_hash`, `blob_size`, `reclassified_at_ms`,
+   `tool_version`, `backup_manifest_path`, `index_reparse_required`, `detail`) — the only
+   reference beyond DDL/writer is `polylogue/maintenance/unknown_export_reclassification_apply.py:116`,
+   which checks `sqlite_master` for table *existence* (a schema-currency probe), not a row read.
+   No column is confirmed read anywhere. Flagged UNCLEAR rather than PURGE because this table
+   records a one-time browser-capture reclassification (`polylogue-s8s54`) whose forensic value
+   may still be load-bearing for that specific incident's audit trail — not a grep-decidable
+   call. **What would settle it:** confirm with whoever owns `polylogue-s8s54`'s closure
+   whether that incident's audit trail still needs this table live, or whether it closed clean
+   and the table can be reclassified PURGE.
+2. **`source.excised_content`** (6 of 8 columns: `reason`, `actor`, `prior_revision`,
+   `span_start`, `span_end`, `excised_at_ms` — the other 2, `removed_hash`/`hash_kind`, are
+   KEEP: they are read as a real write-time gate at `source_write.py:79`) — never read back
+   anywhere; the table's own DDL comment (`source.py:838`) states "never queried for its own
+   sake by a reader," i.e. these 6 columns are write-mostly-by-design (a forensic/audit trail
+   of what was intentionally forgotten and why), not accidentally dead. **What would settle
+   it:** confirm with whoever owns the excision/GC subsystem whether a forensic-trail reader
+   was ever intended, or whether the write-time gate is deliberately the whole feature.
 
-Both are graded UNCLEAR rather than PURGE deliberately, per durable/write-mostly-by-design
-conservatism — a wrong PURGE on either would need an explicit-consent-gated destructive
-migration to undo. Do not guess a verdict for either at PR review without the owner input named
-above.
+Both findings are graded UNCLEAR rather than PURGE deliberately, per durable/write-mostly-by-
+design conservatism — a wrong PURGE on either would need an explicit-consent-gated destructive
+migration to undo. Do not guess a verdict for either at PR review without the named owner input.
 
 ## Full column table
 
-One row per column, every column exactly once. `tier.table.column` | verdict | evidence
-citation | unlocks / owning reference.
+One row per column, every classified column exactly once. `tier.table.column` | verdict |
+evidence citation | unlocks / owning reference.
 
 ### source.db
 
 | tier.table.column | verdict | evidence | unlocks / owning reference |
 |---|---|---|---|
-| `source.audit_continuity_control.singleton` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.audit_continuity_control.committed_generation` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.audit_continuity_control.committed_head_sha256` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.audit_continuity_control.pending_mutation_id` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.audit_continuity_control.pending_payload_json` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.audit_continuity_control.pending_payload_sha256` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.audit_continuity_control.prepared_at_ms` | KEEP | polylogue/storage/sqlite/audit_continuity.py (every column selected across lines 282-672), polylogue/operations/durable_change_train.py:1002-1560, polylogue/maintenance/raw_authority_recovery.py (generic-row dump excludes this table by name as "volatile"). singleton/prepared_at_ms confirmed via CHECK constraint + INSERT, not an explicit SELECT. | n/a |
-| `source.blob_publication_reservations.publication_id` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.blob_publication_reservations.blob_hash` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.blob_publication_reservations.size_bytes` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.blob_publication_reservations.publisher_id` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.blob_publication_reservations.reserved_at_ms` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.blob_refs.blob_hash` | KEEP | blob_gc.py:265,316, GC candidate scan | n/a |
-| `source.blob_refs.ref_id` | KEEP | blob_gc.py referent-table resolution (ref_type/ref_id join), excision.py:322-551 | n/a |
-| `source.blob_refs.ref_type` | KEEP | blob_gc.py:171-297, archive_verification.py:1107-1143, blob_ref_liveness.py:217 | n/a |
-| `source.blob_refs.source_path` | KEEP | repair.py:568,857 SELECT blob_hash, source_path, size_bytes FROM blob_refs | n/a |
-| `source.blob_refs.size_bytes` | KEEP | same repair.py:568,857 select | n/a |
-| `source.blob_refs.acquired_at_ms` | KEEP | source_write.py:1374,1382 SELECT acquired_at_ms, rowid FROM blob_refs; durable_change_train.py:2158 copy-forward read | n/a |
-| `source.excised_content.removed_hash` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.hash_kind` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.reason` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.actor` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.prior_revision` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.span_start` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.span_end` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.excised_content.excised_at_ms` | UNCLEAR | DDL comment at source.py:837-840: "never queried for its own sake by a reader - exists purely as a write-time gate plus forensic trail." Deliberately write-mostly by design (write-time re-acquisition gate IS its function), not accidentally write-only - so PURGE would be wrong, but no column-level production SELECT found either (seed-carried UNCLEAR). | operator call - deliberately write-mostly by design, not a confident PURGE |
-| `source.gc_generations.generation_id` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.gc_generations.started_at_ms` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.gc_generations.completed_at_ms` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.gc_generations.reclaimed_count` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.gc_generations.reclaimed_bytes` | KEEP | blob_store.py, blob_gc.py (seed-carried) | n/a |
-| `source.history_sidecars.sidecar_id` | KEEP | source_write.py, schema_inference_gate.py, archive_verification.py, blob_gc.py (seed-carried) | n/a |
-| `source.history_sidecars.origin` | KEEP | source_write.py, schema_inference_gate.py, archive_verification.py, blob_gc.py (seed-carried) | n/a |
-| `source.history_sidecars.source_path` | KEEP | source_write.py, schema_inference_gate.py, archive_verification.py, blob_gc.py (seed-carried) | n/a |
-| `source.history_sidecars.payload_json` | KEEP | source_write.py, schema_inference_gate.py, archive_verification.py, blob_gc.py (seed-carried) | n/a |
-| `source.history_sidecars.observed_at_ms` | KEEP | source_write.py, schema_inference_gate.py, archive_verification.py, blob_gc.py (seed-carried) | n/a |
-| `source.history_sidecars.content_hash` | KEEP | source_write.py, schema_inference_gate.py, archive_verification.py, blob_gc.py (seed-carried) | n/a |
-| `source.otlp_spans.span_id` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.trace_id` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.parent_span_id` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.origin` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.session_native_id` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.name` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.kind` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.attributes_json` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.events_json` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.started_at_ms` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.ended_at_ms` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.otlp_spans.received_at_ms` | PURGE | rg -n 'otlp_spans' polylogue devtools tests finds only DDL/migration/migration-test references, no production SELECT. Durable-tier drop requires polylogue-60i5 admission (seed-carried PURGE candidate, re-confirmed). | requires polylogue-60i5 durable-migration admission before any drop |
-| `source.raw_append_chain_backfill_receipts.raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.logical_source_key` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.source_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.blob_hash` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.blob_size` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.append_start_offset` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.append_end_offset` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.matched_after_codex_header_strip` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.previous_revision_authority` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.compared_at_ms` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.tool_version` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.backup_manifest_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_append_chain_backfill_receipts.detail` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_artifacts.artifact_id` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.raw_id` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.origin` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.source_path` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.source_index` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.artifact_kind` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.support_status` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.classification_reason` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.parse_as_session` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.schema_eligible` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.malformed_jsonl_lines` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.decode_error` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.cohort_id` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.link_group_key` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.sidecar_agent_type` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.first_observed_at_ms` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_artifacts.last_observed_at_ms` | KEEP | schema_inference_gate.py, blob_gc.py:86 explicit table list, maintenance/archive_verification.py (seed-carried) | n/a |
-| `source.raw_authority_artifact_census_checkpoint_members.census_id` | KEEP | raw_authority_artifact_census.py:216,282,290 (SELECT raw_id ... WHERE census_id = ? ORDER BY ordinal) | n/a |
-| `source.raw_authority_artifact_census_checkpoint_members.ordinal` | KEEP | raw_authority_artifact_census.py:216,282,290 (SELECT raw_id ... WHERE census_id = ? ORDER BY ordinal) | n/a |
-| `source.raw_authority_artifact_census_checkpoint_members.raw_id` | KEEP | raw_authority_artifact_census.py:216,282,290 (SELECT raw_id ... WHERE census_id = ? ORDER BY ordinal) | n/a |
-| `source.raw_authority_artifact_census_checkpoints.census_id` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.universe_sha256` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.candidate_count` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.universe_complete` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.snapshot_max_raw_rowid` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.materialized_after_rowid` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.index_generation` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.index_identity_sha256` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.next_after_raw_id` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.last_receipt_id` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.completed_at_ms` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_checkpoints.created_at_ms` | KEEP | raw_authority_artifact_census.py:239 SELECT candidate_count, universe_sha256, universe_complete, snapshot_max_raw_rowid, ... | n/a |
-| `source.raw_authority_artifact_census_receipts.receipt_id` | KEEP | polylogue/maintenance/raw_authority_artifact_census.py (receipt applied-at/tool-version bookkeeping for bounded census pages) | n/a |
-| `source.raw_authority_artifact_census_receipts.receipt_sha256` | KEEP | polylogue/maintenance/raw_authority_artifact_census.py (receipt applied-at/tool-version bookkeeping for bounded census pages) | n/a |
-| `source.raw_authority_artifact_census_receipts.receipt_json` | KEEP | polylogue/maintenance/raw_authority_artifact_census.py (receipt applied-at/tool-version bookkeeping for bounded census pages) | n/a |
-| `source.raw_authority_artifact_census_receipts.backup_manifest_path` | KEEP | polylogue/maintenance/raw_authority_artifact_census.py (receipt applied-at/tool-version bookkeeping for bounded census pages) | n/a |
-| `source.raw_authority_artifact_census_receipts.applied_at_ms` | KEEP | polylogue/maintenance/raw_authority_artifact_census.py (receipt applied-at/tool-version bookkeeping for bounded census pages) | n/a |
-| `source.raw_authority_artifact_census_receipts.tool_version` | KEEP | polylogue/maintenance/raw_authority_artifact_census.py (receipt applied-at/tool-version bookkeeping for bounded census pages) | n/a |
-| `source.raw_authority_blockers.blocker_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.reason` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.expected_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.observed_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.created_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.resolved_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_blockers.resolution` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.ordinal` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.selected` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.outcome_status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.reason` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.next_action` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.application_receipt_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.outcome_recorded` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_plans.recorded_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_post_plans.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_post_plans.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_census_post_plans.ordinal` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.sequence_no` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.scope_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.residual_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.parser_fingerprint` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.mode` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.lifecycle_status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.quiescent` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.inventory_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.residual_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.post_inventory_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.post_residual_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.post_residual_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.post_plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.postflight_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.executable_plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.residual_plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.predecessor_census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.fixed_point` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.created_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_censuses.completed_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_parser_census.raw_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_parser_census.parser_fingerprint` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_parser_census.status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_parser_census.logical_keys_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_parser_census.detail` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_parser_census.censused_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.input_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.input_raw_ids_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.logical_keys_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.authority_witness_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.source_preconditions_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.index_preconditions_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_plans.created_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_authority_verdicts.raw_id` | KEEP | raw_authority_verdict_cache.py, blob_gc.py (seed-carried) | n/a |
-| `source.raw_authority_verdicts.logical_source_key` | KEEP | raw_authority_verdict_cache.py, blob_gc.py (seed-carried) | n/a |
-| `source.raw_authority_verdicts.verdict` | KEEP | raw_authority_verdict_cache.py, blob_gc.py (seed-carried) | n/a |
-| `source.raw_authority_verdicts.cohort_member_count` | KEEP | raw_authority_verdict_cache.py, blob_gc.py (seed-carried) | n/a |
-| `source.raw_authority_verdicts.cohort_fingerprint` | KEEP | raw_authority_verdict_cache.py, blob_gc.py (seed-carried) | n/a |
-| `source.raw_authority_verdicts.computed_at_ms` | KEEP | raw_authority_verdict_cache.py, blob_gc.py (seed-carried) | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.blob_hash` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.blob_size` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.duplicate_of_raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.duplicate_of_session_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.previous_revision_authority` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.promoted_at_ms` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.tool_version` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.backup_manifest_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_byte_duplicate_supersession_receipts.detail` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_capture_observations.raw_id` | KEEP | polylogue/storage/source_write.py (seed-carried, re-confirmed) | n/a |
-| `source.raw_capture_observations.capture_mode` | KEEP | polylogue/storage/source_write.py (seed-carried, re-confirmed) | n/a |
-| `source.raw_capture_observations.first_observed_at_ms` | KEEP | polylogue/storage/source_write.py (seed-carried, re-confirmed) | n/a |
-| `source.raw_container_coordinates.raw_id` | KEEP | polylogue/storage/blob_integrity.py:1058-1064,1709-1712 (zip-container coordinate join and record path) | n/a |
-| `source.raw_container_coordinates.coordinate_format` | KEEP | polylogue/storage/blob_integrity.py:1058-1064,1709-1712 (zip-container coordinate join and record path) | n/a |
-| `source.raw_container_coordinates.entry_ordinal` | KEEP | polylogue/storage/blob_integrity.py:1058-1064,1709-1712 (zip-container coordinate join and record path) | n/a |
-| `source.raw_container_coordinates.split_index` | KEEP | polylogue/storage/blob_integrity.py:1058-1064,1709-1712 (zip-container coordinate join and record path) | n/a |
-| `source.raw_failure_disposition_receipts.raw_id` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.artifact_id` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.origin` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.source_path` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.source_index` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.blob_hash` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.blob_size` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.previous_parse_error` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.previous_validation_status` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.previous_artifact_kind` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.previous_support_status` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.previous_classification_reason` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.disposition_kind` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.manifest_sha256` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.disposed_at_ms` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.tool_version` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.backup_manifest_path` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_failure_disposition_receipts.detail` | KEEP | polylogue/maintenance/raw_failure_disposition_apply.py:116-191 (SELECT r.raw_id, r.origin, r.source_path, ... EXISTS (SELECT 1 FROM raw_failure_disposition_receipts ...)) | n/a |
-| `source.raw_hook_events.hook_event_id` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.origin` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.native_id` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.session_native_id` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.source_path` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.event_type` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.payload_json` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.observed_at_ms` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_hook_events.blob_hash` | KEEP | polylogue/maintenance/hook_payload_ref_reconciliation_receipt.py:195, hook_payload_ref_reconciliation_apply.py:220, polylogue/storage/hook_payload_ref_reconciliation.py:277,287 all SELECT/UPDATE it directly, incl. blob_hash | n/a |
-| `source.raw_live_source_reconciliation_receipts.raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.verdict` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.previous_revision_authority` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.source_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.blob_hash` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.blob_size` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.compared_at_ms` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.tool_version` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.backup_manifest_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_live_source_reconciliation_receipts.detail` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_census.raw_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_membership_census.parser_fingerprint` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_membership_census.status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_membership_census.member_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_membership_census.censused_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_membership_census.detail` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed; not re-derived at column granularity this pass per the team-lead's cite-don't-re-derive instruction for delegated tables. Current writers still feed open P0 reconciliation work. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
-| `source.raw_membership_writeback_receipts.raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.logical_source_key` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.provider_session_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.membership_decision` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.previous_revision_authority` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.promoted_at_ms` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.tool_version` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.backup_manifest_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_membership_writeback_receipts.detail` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.raw_id` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.blob_hash` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.blob_size` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.indexed_twin_raw_id` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.indexed_twin_session_id` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.parser_fingerprint` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.excluded_at_ms` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.tool_version` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_non_session_duplicate_exclusion_receipts.detail` | KEEP | polylogue/maintenance/schema_inference_gate.py:288,327-338 (SELECT blob_hash, blob_size, indexed_twin_raw_id, ... FROM raw_non_session_duplicate_exclusion_receipts) | n/a |
-| `source.raw_quarantine_group_dedup_receipts.raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.source_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.blob_hash` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.blob_size` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.representative_raw_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.representative_session_id` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.promoted_at_ms` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.tool_version` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.backup_manifest_path` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_quarantine_group_dedup_receipts.detail` | KEEP | seed-carried, re-confirmed | n/a |
-| `source.raw_session_memberships.raw_id` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.logical_source_key` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.provider_session_id` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.source_revision` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.normalized_content_hash` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.message_count` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.predecessor_raw_id` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.acquisition_generation` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.revision_authority` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.decision` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_session_memberships.decided_at_ms` | KEEP | active reconciler consumer (seed-carried) | n/a |
-| `source.raw_sessions.raw_id` | KEEP | PK; used everywhere (raw_reads.py, raw_state.py, blob_gc.py) | n/a |
-| `source.raw_sessions.origin` | KEEP | idx_raw_sessions_origin; filtered constantly in queries/raw_reads.py, daemon/status.py | n/a |
-| `source.raw_sessions.capture_mode` | KEEP | raw_capture_observations dedup logic, source_write.py | n/a |
-| `source.raw_sessions.native_id` | KEEP | idx_raw_sessions_origin_native; dedup/dispatch lookups | n/a |
-| `source.raw_sessions.source_path` | KEEP | idx_raw_sessions_source_path; import_explain.py, repair.py | n/a |
-| `source.raw_sessions.source_index` | KEEP | same index; raw_writes.py | n/a |
-| `source.raw_sessions.blob_hash` | KEEP | idx_raw_sessions_blob_hash; blob_gc.py reference surface check | n/a |
-| `source.raw_sessions.blob_size` | KEEP | raw_state.py, mappers_archive.py | n/a |
-| `source.raw_sessions.acquired_at_ms` | KEEP | raw_reads.py, daemon/provenance.py | n/a |
-| `source.raw_sessions.file_mtime_ms` | KEEP | raw_reads.py:192-198, daemon/provenance.py:132, blob_integrity.py:1058-1078, repair.py:503,747,1041 | n/a |
-| `source.raw_sessions.parsed_at_ms` | KEEP | idx_raw_sessions_parse_ready; raw_state.py | n/a |
-| `source.raw_sessions.parse_error` | KEEP | daemon/status.py:982, raw_state.py | n/a |
-| `source.raw_sessions.validated_at_ms` | KEEP | idx_raw_sessions_parse_ready; raw_state.py:224 | n/a |
-| `source.raw_sessions.validation_status` | KEEP | daemon/status.py:982, import_explain.py:281 | n/a |
-| `source.raw_sessions.validation_error` | KEEP | daemon/provenance.py:137-266, daemon/status.py:982, import_explain.py:188-204, operations/archive_debt.py:246, mappers_archive.py:224 | n/a |
-| `source.raw_sessions.validation_drift_count` | KEEP | raw_state.py:171, mappers_archive.py:225 | n/a |
-| `source.raw_sessions.validation_mode` | KEEP | raw_writes.py, source_write.py:1009 | n/a |
-| `source.raw_sessions.detection_warnings_json` | KEEP | import_explain.py:189-281, daemon/status.py:956-957 | n/a |
-| `source.raw_sessions.logical_source_key` | KEEP | idx_raw_sessions_logical_revision; pervasive in raw_reconciler/revision_authority | n/a |
-| `source.raw_sessions.revision_kind` | KEEP | CHECK-gated, raw_state.py, revision_governance.py | n/a |
-| `source.raw_sessions.source_revision` | KEEP | raw_session_memberships joins, repair.py | n/a |
-| `source.raw_sessions.predecessor_source_revision` | KEEP | revision_governance.py append-chain resolution | n/a |
-| `source.raw_sessions.predecessor_raw_id` | KEEP | raw_append_chain_backfill_receipts linkage, revision_governance.py | n/a |
-| `source.raw_sessions.baseline_raw_id` | KEEP | revision_governance.py append-chain baseline resolution | n/a |
-| `source.raw_sessions.append_start_offset` | KEEP | revision_governance.py append-chain validation | n/a |
-| `source.raw_sessions.append_end_offset` | KEEP | revision_governance.py append-chain validation, CHECK(>start) | n/a |
-| `source.raw_sessions.acquisition_generation` | KEEP | idx_raw_sessions_logical_revision; raw_reconciler generation tracking | n/a |
-| `source.raw_sessions.revision_authority` | KEEP | idx_raw_sessions_raw_authority_census_candidates; pervasive gate (61 hits) - CHECK'd, filtered, read by raw_authority_verdict_projection | n/a |
-| `source.raw_sessions.revision_authority_evidence` | KEEP | raw_live_source_reconciliation_receipts/raw_append_chain_backfill_receipts provenance linkage | n/a |
-| `source.raw_sessions.detected_provider` | KEEP | sampling_db.py:316-332, migration 033 rationale (detected-vs-declared provider drift) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.raw_id` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.previous_origin` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.new_origin` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.previous_capture_mode` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.new_capture_mode` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.embedded_provider` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.source_path` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.blob_hash` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.blob_size` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.reclassified_at_ms` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.tool_version` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.backup_manifest_path` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.index_reparse_required` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.raw_unknown_export_reclassification_receipts.detail` | KEEP | polylogue/maintenance/unknown_export_reclassification_apply.py:116-220 (existence + reclassification-required gate) | n/a |
-| `source.sinex_publication_obligations.object_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.protocol_version` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.revision_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.manifest_digest` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.mode` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.status` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.attempt_count` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.last_attempt_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.last_receipt_state` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.last_error` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.created_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.updated_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.retired_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_obligations.next_attempt_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.object_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.protocol_version` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.revision_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.manifest_digest` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.manifest_bytes` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.manifest_sha256` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.manifest_size_bytes` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.segment_count` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.total_size_bytes` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_payloads.staged_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.object_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.protocol_version` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.revision_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.manifest_digest` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.attempt_number` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.request_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.receipt_state` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.receipt_detail` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.error_code` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_receipts.received_at_ms` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.object_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.protocol_version` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.revision_id` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.manifest_digest` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.position` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.segment_name` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.segment_bytes` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.segment_sha256` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.sinex_publication_segments.size_bytes` | KEEP | polylogue/sinex/service.py, polylogue/sinex/obligations.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.blob_hash` | KEEP | blob_verification.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.st_dev` | KEEP | blob_verification.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.st_ino` | KEEP | blob_verification.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.st_size` | KEEP | blob_verification.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.st_mtime_ns` | KEEP | blob_verification.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.st_ctime_ns` | KEEP | blob_verification.py (seed-carried) | n/a |
-| `source.verified_blob_receipts.verified_at_ms` | KEEP | blob_verification.py (seed-carried) | n/a |
+| `source.audit_continuity_control.singleton` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.audit_continuity_control.committed_generation` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.audit_continuity_control.committed_head_sha256` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.audit_continuity_control.pending_mutation_id` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.audit_continuity_control.pending_payload_json` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.audit_continuity_control.pending_payload_sha256` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.audit_continuity_control.prepared_at_ms` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
+| `source.blob_publication_reservations.publication_id` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.blob_hash` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.size_bytes` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.publisher_id` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.reserved_at_ms` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_refs.blob_hash` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
+| `source.blob_refs.ref_id` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
+| `source.blob_refs.ref_type` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
+| `source.blob_refs.source_path` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
+| `source.blob_refs.size_bytes` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
+| `source.blob_refs.acquired_at_ms` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
+| `source.excised_content.removed_hash` | KEEP | `source_write.py:79` write-time gate WHERE clause | n/a |
+| `source.excised_content.hash_kind` | KEEP | `source_write.py:79` same WHERE clause | n/a |
+| `source.excised_content.reason` | UNCLEAR | never read back; forensic-only per table's own doc comment | n/a |
+| `source.excised_content.actor` | UNCLEAR | never read back; forensic-only | n/a |
+| `source.excised_content.prior_revision` | UNCLEAR | never read back; forensic-only | n/a |
+| `source.excised_content.span_start` | UNCLEAR | never read back; forensic-only | n/a |
+| `source.excised_content.span_end` | UNCLEAR | never read back; forensic-only | n/a |
+| `source.excised_content.excised_at_ms` | UNCLEAR | never read back; forensic-only | n/a |
+| `source.gc_generations.generation_id` | KEEP | Reader: storage/blob_gc.py:782 full-row SELECT; surfaced via cli/commands/maintenance/_blob_gc.py. | n/a |
+| `source.gc_generations.started_at_ms` | KEEP | Reader: storage/blob_gc.py:782 full-row SELECT; surfaced via cli/commands/maintenance/_blob_gc.py. | n/a |
+| `source.gc_generations.completed_at_ms` | KEEP | Reader: storage/blob_gc.py:782 full-row SELECT; surfaced via cli/commands/maintenance/_blob_gc.py. | n/a |
+| `source.gc_generations.reclaimed_count` | KEEP | Reader: storage/blob_gc.py:782 full-row SELECT; surfaced via cli/commands/maintenance/_blob_gc.py. | n/a |
+| `source.gc_generations.reclaimed_bytes` | KEEP | Reader: storage/blob_gc.py:782 full-row SELECT; surfaced via cli/commands/maintenance/_blob_gc.py. | n/a |
+| `source.history_sidecars.sidecar_id` | KEEP | Readers: pipeline/services/ingest_batch/_core.py, sources/revision_backfill.py, storage/blob_gc.py, cli/commands/status.py. | n/a |
+| `source.history_sidecars.origin` | KEEP | Readers: pipeline/services/ingest_batch/_core.py, sources/revision_backfill.py, storage/blob_gc.py, cli/commands/status.py. | n/a |
+| `source.history_sidecars.source_path` | KEEP | Readers: pipeline/services/ingest_batch/_core.py, sources/revision_backfill.py, storage/blob_gc.py, cli/commands/status.py. | n/a |
+| `source.history_sidecars.payload_json` | KEEP | Readers: pipeline/services/ingest_batch/_core.py, sources/revision_backfill.py, storage/blob_gc.py, cli/commands/status.py. | n/a |
+| `source.history_sidecars.observed_at_ms` | KEEP | Readers: pipeline/services/ingest_batch/_core.py, sources/revision_backfill.py, storage/blob_gc.py, cli/commands/status.py. | n/a |
+| `source.history_sidecars.content_hash` | KEEP | Readers: pipeline/services/ingest_batch/_core.py, sources/revision_backfill.py, storage/blob_gc.py, cli/commands/status.py. | n/a |
+| `source.otlp_spans.span_id` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.trace_id` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.parent_span_id` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.origin` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.session_native_id` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.name` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.kind` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.attributes_json` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.events_json` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.started_at_ms` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.ended_at_ms` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.otlp_spans.received_at_ms` | PURGE | No production SELECT found (reconfirmed this pass, column-level); requires polylogue-60i5 durable-tier consent gate before any drop. | requires polylogue-60i5 durable-migration admission before any drop |
+| `source.raw_append_chain_backfill_receipts.raw_id` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.logical_source_key` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.source_path` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.blob_hash` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.blob_size` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.append_start_offset` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.append_end_offset` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.matched_after_codex_header_strip` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.previous_revision_authority` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.compared_at_ms` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.tool_version` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.backup_manifest_path` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_append_chain_backfill_receipts.detail` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_append_chain_backfill_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations. | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_artifacts.artifact_id` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.raw_id` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.origin` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.source_path` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.source_index` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.artifact_kind` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.support_status` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.classification_reason` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.parse_as_session` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.schema_eligible` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.malformed_jsonl_lines` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.decode_error` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.cohort_id` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.link_group_key` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.sidecar_agent_type` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.first_observed_at_ms` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_artifacts.last_observed_at_ms` | KEEP | Wide reader set incl. storage/sqlite/queries/artifacts.py, storage/artifacts/queries.py, storage/repair.py, storage/raw_failure_lifecycle.py, insights/claude_workflow_*.py, api/archive.py, mcp/payloads.py. | n/a |
+| `source.raw_authority_artifact_census_checkpoint_members.census_id` | KEEP | All three columns read in maintenance/raw_authority_artifact_census.py:216,282,290 (resumable member paging by ordinal). | n/a |
+| `source.raw_authority_artifact_census_checkpoint_members.ordinal` | KEEP | All three columns read in maintenance/raw_authority_artifact_census.py:216,282,290 (resumable member paging by ordinal). | n/a |
+| `source.raw_authority_artifact_census_checkpoint_members.raw_id` | KEEP | All three columns read in maintenance/raw_authority_artifact_census.py:216,282,290 (resumable member paging by ordinal). | n/a |
+| `source.raw_authority_artifact_census_checkpoints.census_id` | KEEP | `raw_authority_artifact_census.py:242` SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.universe_sha256` | KEEP | same SELECT (row unpacked for resume validation) | n/a |
+| `source.raw_authority_artifact_census_checkpoints.candidate_count` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.universe_complete` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.snapshot_max_raw_rowid` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.materialized_after_rowid` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.index_generation` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.index_identity_sha256` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.next_after_raw_id` | KEEP | same SELECT (resume cursor) | n/a |
+| `source.raw_authority_artifact_census_checkpoints.last_receipt_id` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_checkpoints.completed_at_ms` | KEEP | same SELECT (completion check) | n/a |
+| `source.raw_authority_artifact_census_checkpoints.created_at_ms` | KEEP | same SELECT | n/a |
+| `source.raw_authority_artifact_census_receipts.receipt_id` | PURGE | Zero production SELECT found; only reference beyond DDL is maintenance/raw_authority_artifact_census.py, which is the writer. Added in schema v31 (feature/fix/raw-authority-census), after the 2026-08-04 seed. | too new to have an owning cleanup bead — flag for triage, not 6kur, since it's not legacy debt |
+| `source.raw_authority_artifact_census_receipts.receipt_sha256` | PURGE | Zero production SELECT found; only reference beyond DDL is maintenance/raw_authority_artifact_census.py, which is the writer. Added in schema v31 (feature/fix/raw-authority-census), after the 2026-08-04 seed. | too new to have an owning cleanup bead — flag for triage, not 6kur, since it's not legacy debt |
+| `source.raw_authority_artifact_census_receipts.receipt_json` | PURGE | Zero production SELECT found; only reference beyond DDL is maintenance/raw_authority_artifact_census.py, which is the writer. Added in schema v31 (feature/fix/raw-authority-census), after the 2026-08-04 seed. | too new to have an owning cleanup bead — flag for triage, not 6kur, since it's not legacy debt |
+| `source.raw_authority_artifact_census_receipts.backup_manifest_path` | PURGE | Zero production SELECT found; only reference beyond DDL is maintenance/raw_authority_artifact_census.py, which is the writer. Added in schema v31 (feature/fix/raw-authority-census), after the 2026-08-04 seed. | too new to have an owning cleanup bead — flag for triage, not 6kur, since it's not legacy debt |
+| `source.raw_authority_artifact_census_receipts.applied_at_ms` | PURGE | Zero production SELECT found; only reference beyond DDL is maintenance/raw_authority_artifact_census.py, which is the writer. Added in schema v31 (feature/fix/raw-authority-census), after the 2026-08-04 seed. | too new to have an owning cleanup bead — flag for triage, not 6kur, since it's not legacy debt |
+| `source.raw_authority_artifact_census_receipts.tool_version` | PURGE | Zero production SELECT found; only reference beyond DDL is maintenance/raw_authority_artifact_census.py, which is the writer. Added in schema v31 (feature/fix/raw-authority-census), after the 2026-08-04 seed. | too new to have an owning cleanup bead — flag for triage, not 6kur, since it's not legacy debt |
+| `source.raw_authority_blockers.blocker_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.reason` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.expected_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.observed_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.created_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.resolved_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_blockers.resolution` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.ordinal` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.selected` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.outcome_status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.reason` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.next_action` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.application_receipt_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.outcome_recorded` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_plans.recorded_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_post_plans.census_id` | PURGE | Table absent from the measured live archive (legacy compatibility residue); PURGE-pending-execution delegated to polylogue-w6hql/polylogue-lr6dx, not re-derived — do not touch ahead of sibling raw-authority tables' gates per seed caveat. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_post_plans.plan_id` | PURGE | Table absent from the measured live archive (legacy compatibility residue); PURGE-pending-execution delegated to polylogue-w6hql/polylogue-lr6dx, not re-derived — do not touch ahead of sibling raw-authority tables' gates per seed caveat. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_census_post_plans.ordinal` | PURGE | Table absent from the measured live archive (legacy compatibility residue); PURGE-pending-execution delegated to polylogue-w6hql/polylogue-lr6dx, not re-derived — do not touch ahead of sibling raw-authority tables' gates per seed caveat. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.sequence_no` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.scope_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.residual_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.parser_fingerprint` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.mode` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.lifecycle_status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.quiescent` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.inventory_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.residual_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.post_inventory_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.post_residual_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.post_residual_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.post_plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.postflight_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.executable_plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.residual_plan_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.predecessor_census_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.fixed_point` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.created_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_censuses.completed_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_parser_census.raw_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_parser_census.parser_fingerprint` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_parser_census.status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_parser_census.logical_keys_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_parser_census.detail` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_parser_census.censused_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.plan_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.input_digest` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.input_raw_ids_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.logical_keys_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.authority_witness_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.source_preconditions_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.index_preconditions_json` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_plans.created_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_authority_verdicts.raw_id` | KEEP | `raw_authority_verdict_cache.py:80` SELECT | n/a |
+| `source.raw_authority_verdicts.logical_source_key` | KEEP | `raw_authority_verdict_cache.py:80` WHERE clause | n/a |
+| `source.raw_authority_verdicts.verdict` | KEEP | `raw_authority_verdict_cache.py:80` SELECT | n/a |
+| `source.raw_authority_verdicts.cohort_member_count` | PURGE | written (`:200` INSERT) but never selected anywhere | n/a |
+| `source.raw_authority_verdicts.cohort_fingerprint` | KEEP | `raw_authority_verdict_cache.py:80` SELECT | n/a |
+| `source.raw_authority_verdicts.computed_at_ms` | PURGE | written (`:200` INSERT) but never selected anywhere | n/a |
+| `source.raw_byte_duplicate_supersession_receipts.raw_id` | KEEP | `maintenance/schema_inference_gate.py:1096` `receipt_ids()` membership read | n/a |
+| `source.raw_byte_duplicate_supersession_receipts.blob_hash` | PURGE | write-only beyond raw_id read | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.blob_size` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.duplicate_of_raw_id` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.duplicate_of_session_id` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.previous_revision_authority` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.promoted_at_ms` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.tool_version` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.backup_manifest_path` | PURGE | write-only | 6kur |
+| `source.raw_byte_duplicate_supersession_receipts.detail` | PURGE | write-only | 6kur |
+| `source.raw_capture_observations.raw_id` | KEEP | raw_reads.py, storage/index_generation.py | n/a |
+| `source.raw_capture_observations.capture_mode` | KEEP | raw_reads.py; ambiguous/unambiguous mode resolution readers | n/a |
+| `source.raw_capture_observations.first_observed_at_ms` | KEEP | raw_reads.py (ordering/first-seen reads) | n/a |
+| `source.raw_container_coordinates.raw_id` | KEEP | blob_integrity.py:1061 LEFT JOIN; durable_change_train.py:2478 | n/a |
+| `source.raw_container_coordinates.coordinate_format` | KEEP | blob_integrity.py:1065-1079,1232 (repair path branches on it) | n/a |
+| `source.raw_container_coordinates.entry_ordinal` | KEEP | blob_integrity.py:1066,1080,1149-1236 (zip-member disambiguation) | n/a |
+| `source.raw_container_coordinates.split_index` | KEEP | blob_integrity.py:1067,1081,1150-1214 (JSONL split-index decode) | n/a |
+| `source.raw_failure_disposition_receipts.raw_id` | KEEP | idempotency-gate read, `raw_failure_disposition_apply.py:129` | n/a |
+| `source.raw_failure_disposition_receipts.artifact_id` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.origin` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.source_path` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.source_index` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.blob_hash` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.blob_size` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.previous_parse_error` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.previous_validation_status` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.previous_artifact_kind` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.previous_support_status` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.previous_classification_reason` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.disposition_kind` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.manifest_sha256` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.disposed_at_ms` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.tool_version` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.backup_manifest_path` | PURGE | write-only | 6kur |
+| `source.raw_failure_disposition_receipts.detail` | PURGE | write-only | 6kur |
+| `source.raw_hook_events.hook_event_id` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.origin` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.native_id` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.session_native_id` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.source_path` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.event_type` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.payload_json` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.observed_at_ms` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_hook_events.blob_hash` | KEEP | Readers: sources/hooks.py, storage/hook_payload_ref_reconciliation.py, storage/blob_ref_liveness.py, context/hermes_lifecycle_reconciliation.py, context/codex_spawn_edge_correlation.py, insights/hermes_integration_health.py. | n/a |
+| `source.raw_live_source_reconciliation_receipts.raw_id` | PURGE | write-only; no SELECT anywhere in `polylogue/` outside its own DDL/writer | 6kur (repair-machinery cull) |
+| `source.raw_live_source_reconciliation_receipts.verdict` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.previous_revision_authority` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.source_path` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.blob_hash` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.blob_size` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.compared_at_ms` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.tool_version` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.backup_manifest_path` | PURGE | write-only, same | 6kur |
+| `source.raw_live_source_reconciliation_receipts.detail` | PURGE | write-only, same | 6kur |
+| `source.raw_membership_census.raw_id` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_membership_census.parser_fingerprint` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_membership_census.status` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_membership_census.member_count` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_membership_census.censused_at_ms` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_membership_census.detail` | PURGE | Table-level PURGE-pending-execution inherited from the 2026-08-04 seed, delegated to polylogue-w6hql/polylogue-lr6dx per team-lead instruction — not re-derived column-by-column this pass. | blocked on polylogue-w6hql/polylogue-lr6dx clearing before this is an executable drop |
+| `source.raw_membership_writeback_receipts.raw_id` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.logical_source_key` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.provider_session_id` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.membership_decision` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.previous_revision_authority` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.promoted_at_ms` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.tool_version` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.backup_manifest_path` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_membership_writeback_receipts.detail` | PURGE | Zero-reader finding: only non-DDL reference is maintenance/raw_membership_writeback_apply.py, which is the writer. Table-level flip KEEP -> PURGE from the 2026-08-04 seed's stale/mistaken archive_verification.py/raw_reconciler.py citations (neither file references this table on current master). | 6kur (repair-machinery cull), gated by 60i5 durable-tier consent |
+| `source.raw_non_session_duplicate_exclusion_receipts.raw_id` | KEEP | `maintenance/schema_inference_gate.py:1098` `receipt_ids()` membership read | n/a |
+| `source.raw_non_session_duplicate_exclusion_receipts.blob_hash` | PURGE | write-only | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.blob_size` | PURGE | write-only | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.indexed_twin_raw_id` | PURGE | write-only | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.indexed_twin_session_id` | PURGE | write-only | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.parser_fingerprint` | PURGE | write-only | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.excluded_at_ms` | PURGE | write-only | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.tool_version` | PURGE | write-only — omitted from the original pass, added in owner reconciliation; only non-DDL/writer reference is `schema_inference_gate.py:1098`'s `receipt_ids()`, which reads only `raw_id` | 6kur |
+| `source.raw_non_session_duplicate_exclusion_receipts.detail` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.raw_id` | KEEP | `maintenance/schema_inference_gate.py:1097` `receipt_ids()` membership read | n/a |
+| `source.raw_quarantine_group_dedup_receipts.source_path` | PURGE | write-only beyond raw_id read | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.blob_hash` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.blob_size` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.representative_raw_id` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.representative_session_id` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.promoted_at_ms` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.tool_version` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.backup_manifest_path` | PURGE | write-only | 6kur |
+| `source.raw_quarantine_group_dedup_receipts.detail` | PURGE | write-only | 6kur |
+| `source.raw_session_memberships.raw_id` | KEEP | session_revision_membership.py, repair.py | n/a |
+| `source.raw_session_memberships.logical_source_key` | KEEP | session_revision_membership.py, raw_authority.py | n/a |
+| `source.raw_session_memberships.provider_session_id` | KEEP | raw_membership_writeback.py, revision_governance.py | n/a |
+| `source.raw_session_memberships.source_revision` | KEEP | raw_authority.py, revision_governance.py | n/a |
+| `source.raw_session_memberships.normalized_content_hash` | KEEP | repair.py, raw_authority.py | n/a |
+| `source.raw_session_memberships.message_count` | KEEP | repair.py, archive_readiness.py | n/a |
+| `source.raw_session_memberships.predecessor_raw_id` | KEEP | raw_membership_writeback.py, revision_backfill.py | n/a |
+| `source.raw_session_memberships.acquisition_generation` | KEEP | raw_authority.py, revision_governance.py | n/a |
+| `source.raw_session_memberships.revision_authority` | KEEP | raw_authority.py; ~10 consumers | n/a |
+| `source.raw_session_memberships.decision` | KEEP | session_revision_membership.py, raw_membership_writeback.py | n/a |
+| `source.raw_session_memberships.decided_at_ms` | KEEP | raw_membership_writeback.py | n/a |
+| `source.raw_sessions.raw_id` | KEEP | mappers_archive.py; raw_reads.py; ~50 production consumers | n/a |
+| `source.raw_sessions.origin` | KEEP | mappers_archive.py; ~140 production consumers | n/a |
+| `source.raw_sessions.capture_mode` | KEEP | raw_reads.py, live_source_reconciliation.py | n/a |
+| `source.raw_sessions.native_id` | KEEP | raw_writes.py, sessions_reads.py, codex_title_census.py | n/a |
+| `source.raw_sessions.source_path` | KEEP | raw_reads.py; ~50 consumers incl. blob_gc.py, cli/messages.py | n/a |
+| `source.raw_sessions.source_index` | KEEP | raw_reads.py, artifacts.py, source_freshness.py | n/a |
+| `source.raw_sessions.blob_hash` | KEEP | mappers_archive.py; blob_gc.py, event_bus.py | n/a |
+| `source.raw_sessions.blob_size` | KEEP | mappers_archive.py; daemon/status.py, cli/messages.py | n/a |
+| `source.raw_sessions.acquired_at_ms` | KEEP | mappers_archive.py; source_freshness.py, provenance.py | n/a |
+| `source.raw_sessions.file_mtime_ms` | KEEP | raw_writes.py, raw_reads.py, daemon/provenance.py | n/a |
+| `source.raw_sessions.parsed_at_ms` | KEEP | raw_state.py, source_freshness.py, daemon/status.py | n/a |
+| `source.raw_sessions.parse_error` | KEEP | raw_state.py, daemon/webui.py, mcp/payloads.py | n/a |
+| `source.raw_sessions.validated_at_ms` | KEEP | raw_state.py, daemon/convergence_stages.py | n/a |
+| `source.raw_sessions.validation_status` | KEEP | raw_state.py, artifacts.py, mcp/payloads.py | n/a |
+| `source.raw_sessions.validation_error` | KEEP | raw_state.py, daemon/web_shell_provenance.py, api/archive.py | n/a |
+| `source.raw_sessions.validation_drift_count` | KEEP | raw_state.py, mappers_archive.py | n/a |
+| `source.raw_sessions.validation_mode` | KEEP | raw_state.py, mappers_archive.py | n/a |
+| `source.raw_sessions.detection_warnings_json` | KEEP | raw_writes.py, daemon/status.py | n/a |
+| `source.raw_sessions.logical_source_key` | KEEP | revision_authority.py, session_revision_membership.py, raw_authority_verdict.py | n/a |
+| `source.raw_sessions.revision_kind` | KEEP | revision_authority.py, raw_authority_verdict.py, raw_reconciler.py | n/a |
+| `source.raw_sessions.source_revision` | KEEP | revision_authority.py, revision_replay.py, reindex_canary.py | n/a |
+| `source.raw_sessions.predecessor_source_revision` | KEEP | revision_authority.py, revision_replay.py | n/a |
+| `source.raw_sessions.predecessor_raw_id` | KEEP | revision_authority.py, raw_authority_verdict.py | n/a |
+| `source.raw_sessions.baseline_raw_id` | KEEP | revision_authority.py, revision_replay.py | n/a |
+| `source.raw_sessions.append_start_offset` | KEEP | revision_replay.py, revision_authority.py | n/a |
+| `source.raw_sessions.append_end_offset` | KEEP | revision_replay.py, revision_authority.py | n/a |
+| `source.raw_sessions.acquisition_generation` | KEEP | revision_replay.py, revision_authority.py | n/a |
+| `source.raw_sessions.revision_authority` | KEEP | revision_authority.py; ~20 consumers incl. schema_inference_gate.py | n/a |
+| `source.raw_sessions.revision_authority_evidence` | KEEP | raw_writes.py, live_source_reconciliation.py | n/a |
+| `source.raw_sessions.detected_provider` | KEEP | mappers_archive.py, raw_reads.py, raw_state.py | n/a |
+| `source.raw_unknown_export_reclassification_receipts.raw_id` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.previous_origin` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.new_origin` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.previous_capture_mode` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.new_capture_mode` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.embedded_provider` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.source_path` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.blob_hash` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.blob_size` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.reclassified_at_ms` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.tool_version` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.backup_manifest_path` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.index_reparse_required` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.raw_unknown_export_reclassification_receipts.detail` | UNCLEAR | Only reference beyond DDL/writer is maintenance/unknown_export_reclassification_apply.py:116, which checks sqlite_master for table existence (schema-currency probe), not a row read. No column confirmed read; flagged UNCLEAR rather than PURGE because this table records a one-time browser-capture reclassification (polylogue-s8s54) whose forensic value may still be load-bearing for that incident's audit trail. | operator call, not grep-decidable — settle whether s8s54's audit trail still needs this table live |
+| `source.sinex_publication_obligations.object_id` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.protocol_version` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.revision_id` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.manifest_digest` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.mode` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.status` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.attempt_count` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.last_attempt_at_ms` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.last_receipt_state` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.last_error` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.created_at_ms` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.updated_at_ms` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.retired_at_ms` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_obligations.next_attempt_at_ms` | KEEP | Readers: polylogue/sinex/obligations.py, polylogue/sinex/service.py, polylogue/sinex/models.py. | n/a |
+| `source.sinex_publication_payloads.object_id` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.protocol_version` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.revision_id` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.manifest_digest` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.manifest_bytes` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.manifest_sha256` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.manifest_size_bytes` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.segment_count` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.total_size_bytes` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_payloads.staged_at_ms` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_receipts.object_id` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.protocol_version` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.revision_id` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.manifest_digest` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.attempt_number` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.request_id` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.receipt_state` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.receipt_detail` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.error_code` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_receipts.received_at_ms` | KEEP | Same sinex reader set (sinex/service.py receipt/status reporting). | n/a |
+| `source.sinex_publication_segments.object_id` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.protocol_version` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.revision_id` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.manifest_digest` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.position` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.segment_name` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.segment_bytes` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.segment_sha256` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.sinex_publication_segments.size_bytes` | KEEP | Same sinex reader set as sinex_publication_obligations. | n/a |
+| `source.verified_blob_receipts.blob_hash` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
+| `source.verified_blob_receipts.st_dev` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
+| `source.verified_blob_receipts.st_ino` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
+| `source.verified_blob_receipts.st_size` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
+| `source.verified_blob_receipts.st_mtime_ns` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
+| `source.verified_blob_receipts.st_ctime_ns` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
+| `source.verified_blob_receipts.verified_at_ms` | KEEP | Reader: storage/raw_reconciler.py:346 (FROM verified_blob_receipts WHERE blob_hash = ?, full-row fingerprint comparison). r9xsj notes the live archive currently has zero rows — missing evidence, not evidence of a missing reader. | n/a |
 
 ### index.db
 
@@ -1071,39 +1067,6 @@ citation | unlocks / owning reference.
 | `index.work_evidence_nodes.execution_context_addressed` | KEEP | polylogue/insights/claude_workflow_materializer.py (+1 more outside-tier files) | n/a |
 | `index.work_evidence_nodes.association_state` | KEEP | polylogue/insights/claude_workflow_materializer.py (+6 more outside-tier files) | n/a |
 | `index.work_evidence_nodes.claim_text` | KEEP | devtools/continuity_evidence.py (+8 more outside-tier files) | n/a |
-| `index.messages_fts_config.k` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_config.v` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_data.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_data.block` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_docsize.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_docsize.sz` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_docsize.origin` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_idx.segid` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_idx.term` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.messages_fts_idx.pgno` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_config.k` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_config.v` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_data.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_data.block` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_docsize.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_docsize.sz` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_idx.segid` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_idx.term` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.blocks_command_trigram_idx.pgno` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_config.k` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_config.v` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_content.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_content.c0` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_content.c1` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_content.c2` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_content.c3` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_data.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_data.block` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_docsize.id` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_docsize.sz` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_idx.segid` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_idx.term` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
-| `index.session_work_events_fts_idx.pgno` | KEEP | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
 
 ### embeddings.db
 
@@ -1356,8 +1319,8 @@ citation | unlocks / owning reference.
 | `user.queries.definition_protocol_version` | KEEP | `query_objects.py:201,222` SELECT list | n/a |
 | `user.query_names.name` | KEEP | PK; `query_objects.py:226-236` `list_watched_queries` JOIN | n/a |
 | `user.query_names.query_hash` | KEEP | `query_objects.py:128,226-236` FK join target | n/a |
-| `user.query_names.supersedes_query_hash` | UNCLEAR | Write-only — see finding above. Not flagged PURGE per durable-tier conservatism. | n/a |
-| `user.query_names.updated_at_ms` | KEEP | `idx_query_names_query_hash`/`idx_query_names_watch` ordering, `query_objects.py:128` upsert-then-read cycle | n/a |
+| `user.query_names.supersedes_query_hash` | PURGE | Write-only, `query_objects.py:128-136`; zero SELECT anywhere — see owner adjudication above | n/a (60i5 durable-tier gate) |
+| `user.query_names.updated_at_ms` | PURGE | Write-only; only non-SELECT references are 2 index definitions (not application readers) — see owner adjudication above | n/a (60i5 durable-tier gate) |
 | `user.query_names.watch` | KEEP | `query_objects.py:226-236` `WHERE n.watch = 1`, `idx_query_names_watch` | n/a |
 | `user.result_sets.result_set_id` | KEEP | PK; `query_objects.py:248-300` `get_result_set`/`get_latest_result_set`/`get_watched_query_baseline` | n/a |
 | `user.result_sets.query_hash` | KEEP | `query_objects.py:248-300` SELECT list + FK filters | n/a |
@@ -1393,7 +1356,7 @@ citation | unlocks / owning reference.
 | `user.query_evaluation_receipts.created_at_ms` | KEEP | `query_objects.py:390-394` SELECT list, `idx_query_evaluation_receipts_query_time` | n/a |
 | `user.watched_query_baselines.query_hash` | KEEP | PK; `query_objects.py:289-300` JOIN target | n/a |
 | `user.watched_query_baselines.result_set_id` | KEEP | `query_objects.py:289-300` JOIN target | n/a |
-| `user.watched_query_baselines.updated_at_ms` | KEEP | referenced in watch-refresh comparison logic (put_watched_query_baseline read-before-write) | n/a |
+| `user.watched_query_baselines.updated_at_ms` | PURGE | Write-only; `put_watched_query_baseline` reads `result_sets`, not this table — see owner adjudication above | n/a (60i5 durable-tier gate) |
 | `user.result_set_holdout_policies.result_set_id` | KEEP | PK; `holdout_cohorts.py:124-131` `get_holdout_policy` | n/a |
 | `user.result_set_holdout_policies.frame` | KEEP | `holdout_cohorts.py:126-131` SELECT list | n/a |
 | `user.result_set_holdout_policies.selection_definition_json` | KEEP | `holdout_cohorts.py:126-131` SELECT list | n/a |
@@ -1449,75 +1412,139 @@ citation | unlocks / owning reference.
 | `user.context_deliveries.delivered_by_ref` | KEEP | `context_delivery_write.py:173` full-row read | n/a |
 | `user.context_deliveries.delivered_at_ms` | KEEP | `idx_context_deliveries_*` ordering, `context_delivery_write.py:214` ORDER BY | n/a |
 
+### index.db FTS5 shadow columns (inherited disposition — not separately classified)
+
+These 33 columns are SQLite's own FTS5 virtual-table implementation storage for the three
+production FTS5 tables above (`messages_fts`, `blocks_command_trigram`,
+`session_work_events_fts`, all confirmed KEEP in the table above). They inherit their parent's
+KEEP disposition rather than being independently classified — the correct removal trigger is
+dropping the parent FTS object, never a standalone column-level PURGE on a shadow table (see
+the `threads_fts` precedent in `f2bad6e62`, where the shadow tables were dropped only after
+their parent's own reader was proven absent). Listed individually here so every physical
+column in the schema appears exactly once in this artifact; excluded from the KEEP/PURGE/
+UNCLEAR tallies above since their disposition is not independently determined.
+
+| tier.table.column | verdict | evidence | unlocks / owning reference |
+|---|---|---|---|
+| `index.messages_fts_config.k` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_config.v` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_data.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_data.block` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_docsize.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_docsize.sz` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_docsize.origin` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_idx.segid` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_idx.term` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.messages_fts_idx.pgno` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `messages_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_config.k` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_config.v` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_data.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_data.block` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_docsize.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_docsize.sz` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_idx.segid` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_idx.term` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.blocks_command_trigram_idx.pgno` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `blocks_command_trigram` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_config.k` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_config.v` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_content.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_content.c0` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_content.c1` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_content.c2` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_content.c3` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_data.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_data.block` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_docsize.id` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_docsize.sz` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_idx.segid` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_idx.term` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+| `index.session_work_events_fts_idx.pgno` | KEEP (inherited) | SQLite FTS5 virtual-table implementation storage; inherits KEEP from parent `session_work_events_fts` (confirmed KEEP above). Not independently classified per the seed's rule (the correct removal trigger is dropping the parent FTS object, not a standalone column PURGE on shadow tables — see the `threads_fts` precedent in f2bad6e62). | n/a |
+
 ## Delegated / not re-derived this pass
 
-Per the team-lead's explicit instruction, the following were cited from prior work rather than
-re-audited column-by-column in this normalization pass:
+Per the team-lead's explicit instruction, the following were cited from prior/owning work
+rather than re-audited column-by-column in this normalization pass:
 
-- `source.raw_membership_census`, `raw_authority_parser_census`, `raw_authority_censuses`,
-  `raw_authority_plans`, `raw_authority_census_plans`, `raw_authority_census_post_plans`,
-  `raw_authority_blockers` (64 columns total): PURGE-pending-execution per `polylogue-w6hql`/
-  `polylogue-lr6dx` — current writers still feed open P0 reconciliation work; not an executable
-  drop yet.
-- `ops.ingest_attempts.status`/`.outcome_code`, `ops.embedding_catchup_runs.status`/
-  `.embedded_sessions`/`.skipped_sessions`/`.error_count` (run-status vocabulary columns):
+- **`source.raw_membership_census`, `raw_authority_parser_census`, `raw_authority_censuses`,
+  `raw_authority_plans`, `raw_authority_census_plans`, `raw_authority_blockers`,
+  `raw_authority_census_post_plans`** (64 columns total, the "inherited, PURGE-pending-
+  execution" bucket): owned by `polylogue-w6hql`/`polylogue-lr6dx` — current writers still
+  feed open P0 reconciliation work; not an executable drop yet, cited not re-derived.
+- **`ops.ingest_attempts.status`/`.outcome_code`, `ops.embedding_catchup_runs.status`/
+  `.embedded_sessions`/`.skipped_sessions`/`.error_count`** (run-status vocabulary columns):
   ownership cited to `polylogue-oj4oo`, not re-derived — their KEEP verdict here reflects real
-  readers today, independent of `oj4oo`'s pending unification work.
-- `source.blob_refs`, `raw_artifacts`, `history_sidecars`, `verified_blob_receipts`: checked
-  against `polylogue-r9xsj`'s required acceptance surface before considering PURGE — all
-  independently confirmed KEEP by reader evidence anyway, so r9xsj's blocking status was never
-  invoked as a fallback for these.
+  readers today, independent of `oj4oo`'s pending four-vocabulary unification work.
+- **`source.blob_refs`, `raw_artifacts`, `history_sidecars`, `verified_blob_receipts`**:
+  checked against `polylogue-r9xsj`'s required acceptance surface before considering PURGE —
+  all independently confirmed KEEP by fresh reader evidence anyway, so r9xsj's blocking status
+  was never invoked as a fallback for these.
 
-## Ten most consequential PURGE findings (ranked by what they unlock)
+## The 10 most consequential PURGE findings (ranked by what they unlock)
 
 Carried from the underlying audit's ranking (see individual rows above for full evidence):
 
-1. `index.agent_meta_sidecar_purge_receipts.*` (9 columns) — sole writer is the one-time
-   `agent_meta_sidecar_purge_apply.py` actuator; unlocks dropping the table, its index, and the
+1. `source.` receipt-ledger family (67 columns across 5 tables) —
+   `raw_live_source_reconciliation_receipts` (10, all), `raw_membership_writeback_receipts`
+   (9, all), `raw_append_chain_backfill_receipts` (13, all), plus the non-`raw_id` evidence
+   columns of `raw_byte_duplicate_supersession_receipts` (9 of 10) and
+   `raw_quarantine_group_dedup_receipts` (9 of 10). **Flips the seed's own KEEP verdict**: the
+   seed cited `maintenance/archive_verification.py` and `storage/raw_reconciler.py` as
+   readers, but neither file references these tables at all on current master. Unlocks
+   `polylogue-6kur` (repair-machinery cull), gated by `polylogue-60i5` durable-tier consent.
+2. `source.raw_failure_disposition_receipts` (17 of 18 columns, only `raw_id` read as an
+   idempotency-gate key) and `source.raw_non_session_duplicate_exclusion_receipts` (8 of 9,
+   including `tool_version` — missing from the first pass, added in reconciliation) — same
+   receipt-ledger pattern, same `6kur`/`60i5` disposition.
+3. `index.agent_meta_sidecar_purge_receipts.*` (9 columns) — sole writer is the one-time
+   `agent_meta_sidecar_purge_apply.py` actuator; the seed's own #1 highest-leverage index-tier
+   candidate, confirmed at column level. Unlocks dropping the table, its index, and the
    actuator once the purge's evidence obligation is discharged.
-2. `ops.fts_drift_samples.*` (10 columns) — full write→retention→read cycle exists, but its sole
-   reader (`list_fts_drift_samples`) has zero production or test callers.
-3. `ops.secret_scan_status.{scanned_at_ms,blocks_scanned,candidates_found}` (3 of 5 columns) —
-   the other 2 columns are genuinely read via a cross-database JOIN a same-DB grep missed; a
-   real partial-table PURGE, exactly the shape column granularity exists to catch.
-4. `ops.cursor_lag_samples.*` minus identity/join columns (6 of 9) — the daemon computes its own
-   rolling median fresh rather than reading the stored precomputed percentiles.
-5. `user.query_names.{supersedes_query_hash,updated_at_ms}` / `user.watched_query_baselines.
-   updated_at_ms` — flips the seed's blanket "no durable user-tier PURGE" call for the
-   `polylogue-4p1` query-object cluster (note: `supersedes_query_hash` is graded UNCLEAR above,
-   not PURGE, per this file's conservative re-grading — the other two remain PURGE).
-6. `embeddings.embedding_derivation_state.{message_count,updated_at_ms}` — flips the seed's
-   blanket KEEP; `embedding_status.message_count_embedded` is the actually-read analog.
-7. `index.session_profiles.workflow_shape_method` — zero production writer AND reader; its three
-   sibling `workflow_shape_*` columns are heavily used.
-8. `index.threads.dominant_repo_id` — an FK-typed join column never wired at the write side; the
-   plain-TEXT sibling `dominant_repo` is the live column.
-9. `source.otlp_spans.*` (12 columns, seed-carried) — only DDL/migration/migration-test
-   references; requires `polylogue-60i5` durable-migration admission before any drop.
-10. `ops.ingest_attempts.evidence_ref` — write-only; its siblings are all read by
-    `cursor_authority_reconcile.py:710`, but this one column never is.
+4. `ops.fts_drift_samples.*` (10 columns, new finding not in the seed) — a writer exists
+   (`drift_sampling.py:125`), but its sole reader (`list_fts_drift_samples`) has zero
+   production callers.
+5. `ops.cursor_lag_samples.*` (6 of 9 columns) — read only by a production-dead accessor pair
+   (`read_cursor_lag_sample`/`list_cursor_lag_samples`, test-only callers); the daemon
+   computes its own rolling median fresh from `lag_ms` rather than reading the stored
+   precomputed percentiles.
+6. `ops.secret_scan_status.{scanned_at_ms,blocks_scanned,candidates_found}` (3 of 5 columns)
+   — **corrects the seed in the other direction**: the seed flagged the whole table PURGE,
+   but `session_id`/`scanner_version` are genuinely read via a cross-database join the seed's
+   same-database grep missed. A real partial-table PURGE, exactly the shape column
+   granularity exists to catch.
+7. `index.session_profiles.workflow_shape_method` and `index.threads.dominant_repo_id` — two
+   brand-new dead columns the table-level seed could not have caught: both zero writer AND
+   zero reader, no owning bead. Worth filing before the `818fy` rebuild DDL window since
+   they're index-tier (cheap to drop now vs. rebuild-then-drop-again).
+8. `user.query_names.{supersedes_query_hash,updated_at_ms}` / `user.watched_query_baselines.
+   updated_at_ms` (3 columns, owner-adjudicated) — flips the seed's own claim of "no durable
+   user-tier PURGE is supported"; all three write-only in `polylogue/storage/sqlite/
+   query_objects.py`, verified line-by-line by the audit owner. Gated by `60i5` like every
+   other durable-tier finding, not an executable action on its own.
+9. `source.otlp_spans.*` (12 columns, seed-carried, now individually column-confirmed) — only
+   DDL/migration/migration-test references; requires `polylogue-60i5` durable-migration
+   admission before any drop.
+10. `embeddings.embedding_derivation_state.{message_count,updated_at_ms}` — both confirmed
+    write-only; `embedding_status.message_count_embedded` is the actually-read analog. The
+    only column-level PURGE finding in embeddings.db.
 
 ## Verification performed for this normalization pass
 
-- Every tier's table/column inventory was enumerated from live DDL: `SOURCE_DDL`, `INDEX_DDL`,
-  `OPS_DDL`, `USER_DDL` executed against an in-memory SQLite connection and read back via
-  `PRAGMA table_info`; `EMBEDDINGS_DDL` parsed as text (its `vec0` virtual table requires a
-  loadable extension not present in this environment).
-- index.db, ops.db, user.db, embeddings.db: every column-level verdict, evidence citation, and
-  unlocks note was carried verbatim from the underlying per-tier working files
-  (`.agent/scratch/gvzkr-cols-{index,ops,user,embeddings}.md`, not committed), whose row counts
-  matched live DDL exactly once independently recomputed here.
-- source.db: the 2 tables given full column-by-column treatment in the underlying working file
-  (`raw_sessions`, `blob_refs`) kept their per-column evidence verbatim; the other 35 tables'
-  table-level verdicts (KEEP-all / PURGE-candidate / UNCLEAR / PURGE-pending-execution) were
-  expanded to one row per live-DDL column, since the working file's per-column granularity
-  stopped at the table level for those 35 tables. No column's disposition was re-derived from
-  scratch — only expanded from an existing table-level verdict to match live DDL's actual
-  column list for that table.
-- Anti-vacuity check performed mechanically (not a new lint — a one-off script run during
-  authoring, per the dispatching instruction): every row's `tier.table.column` key was asserted
-  unique, and the row count for the tier was asserted equal to the DDL-derived column count
-  before this file was written. No duplicate or missing column exists in the table above.
+- Every tier's table/column inventory was enumerated from live DDL — `SOURCE_DDL`,
+  `INDEX_DDL`, `OPS_DDL`, `USER_DDL` executed against an in-memory SQLite connection and read
+  back via `PRAGMA table_info`; `EMBEDDINGS_DDL` parsed as text (its `vec0` virtual table
+  requires a loadable extension not present in this environment) — and every tier's row count
+  in this file was asserted to equal that independently-derived count before writing (see
+  "Independent DDL-denominator validation" above).
+- Every column-level verdict, evidence citation, and unlocks note was carried verbatim from
+  the underlying per-tier working files (`.agent/scratch/gvzkr-cols-
+  {source,index,embeddings,ops,user}.md`, not committed) as of the audit owner's final
+  reconciliation pass — no verdict was re-derived or re-graded in this normalization step.
+- Anti-vacuity check performed mechanically (a one-off script run during authoring, not a new
+  lint, per the dispatching instruction): every row's `tier.table.column` key was asserted
+  unique, and every tier's row count was asserted equal to both its working-file total and its
+  independently-derived DDL total before this file was written. 1,336 total rows (1,303
+  classified + 33 inherited-disposition FTS shadow), 1,336 unique keys, 0 duplicates, 0
+  missing.
 - No live-archive values, personal data, or absolute filesystem paths outside this repository
   appear in any row (checked by substring scan for `/realm/`, `/home/`, and the operator's
   username across every evidence/unlocks cell before commit).
