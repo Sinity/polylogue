@@ -84,6 +84,10 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+    ReconstructedRawRow,
+    insert_reconstructed_raw_row,
+)
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
@@ -2569,45 +2573,29 @@ def _stage_browser_origin_copy_forward_source(
     assert item.accepted_frontier is not None
     native_id = item.session_id.split(":", 1)[1]
     blob_hash = bytes.fromhex(item.blob_hash)
-    columns = {str(row[1]) for row in conn.execute(f"PRAGMA {source_schema}.table_info(raw_sessions)")}
-    names = [
-        "raw_id",
-        "origin",
-        "native_id",
-        "source_path",
-        "source_index",
-        "blob_hash",
-        "blob_size",
-        "acquired_at_ms",
-        "logical_source_key",
-        "revision_kind",
-        "source_revision",
-        "baseline_raw_id",
-        "acquisition_generation",
-        "revision_authority",
-    ]
-    values: list[object] = [
-        item.copy_forward_raw_id,
-        item.canonical_origin,
-        native_id,
-        item.copy_forward_source_path,
-        item.source_index,
-        blob_hash,
-        item.blob_size,
-        int(time.time() * 1000),
-        item.canonical_logical_source_key,
-        RawRevisionKind.FULL.value,
-        item.blob_hash,
-        item.copy_forward_raw_id,
-        0,
-        RawRevisionAuthority.BYTE_PROVEN.value,
-    ]
-    if "capture_mode" in columns:
-        names.insert(2, "capture_mode")
-        values.insert(2, item.canonical_provider)
-    conn.execute(
-        f"INSERT INTO {source_schema}.raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
-        values,
+    # polylogue-1fijp: copy-forward is a RECONSTRUCTION from evidence this
+    # repair plan already proved, not an observation of a source -- the source
+    # is gone. It is therefore the one named exemption from
+    # admit_raw_observation rather than an unmigrated call site; see
+    # insert_reconstructed_raw_row's docstring for why routing it through the
+    # chokepoint would discard the BYTE_PROVEN authority the plan established.
+    insert_reconstructed_raw_row(
+        conn,
+        ReconstructedRawRow(
+            raw_id=item.copy_forward_raw_id,
+            origin=item.canonical_origin,
+            capture_mode=item.canonical_provider,
+            native_id=native_id,
+            source_path=item.copy_forward_source_path,
+            source_index=item.source_index,
+            blob_hash=blob_hash,
+            blob_size=item.blob_size,
+            acquired_at_ms=int(time.time() * 1000),
+            logical_source_key=item.canonical_logical_source_key,
+            source_revision=item.blob_hash,
+            baseline_raw_id=item.copy_forward_raw_id,
+        ),
+        schema=source_schema,
     )
     acquired_at_ms = int(time.time() * 1000)
     conn.execute(

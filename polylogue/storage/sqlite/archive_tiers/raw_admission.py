@@ -654,6 +654,106 @@ def admit_raw_artifact_blob_observation(
     return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
 
 
+@dataclass(frozen=True, slots=True)
+class ReconstructedRawRow:
+    """Every column of a raw row rebuilt from already-proven evidence."""
+
+    raw_id: str
+    origin: str
+    capture_mode: str | None
+    native_id: str | None
+    source_path: str
+    source_index: int
+    blob_hash: bytes
+    blob_size: int
+    acquired_at_ms: int
+    logical_source_key: str
+    source_revision: str
+    baseline_raw_id: str
+
+
+def insert_reconstructed_raw_row(
+    conn: sqlite3.Connection,
+    row: ReconstructedRawRow,
+    *,
+    schema: str = "main",
+) -> None:
+    """Insert a raw row RECONSTRUCTED from proven evidence -- not an observation.
+
+    This is the one named exemption from :func:`admit_raw_observation`, and it
+    is architectural rather than a not-yet-migrated call site.
+
+    ``admit_raw_observation`` decides *what an observation means*: it takes
+    freshly read bytes plus the accepted head and resolves which revision
+    envelope those bytes earn. Every input to that decision is missing here.
+    A copy-forward repair (``storage/repair.py``'s browser-origin
+    reconstruction) is not observing a source at all -- the source it would
+    observe is gone. It is rewriting evidence the archive already holds and
+    has already adjudicated, under a corrected identity, from a repair plan
+    whose contents were proven before this call. Handing those bytes to the
+    chokepoint would ask it to re-derive a verdict that is an input here, and
+    it would derive a *different* one: with no prior head for the corrected
+    logical key it would resolve BASELINE/``ASSERTED``, discarding the
+    ``BYTE_PROVEN`` authority the repair plan established.
+
+    So the exemption is not "this write skips the typed arms". It is that the
+    arms have already been resolved, durably, elsewhere -- which is why every
+    envelope column is a required field of :class:`ReconstructedRawRow`
+    instead of a nullable this function could leave unset. The invariant the
+    chokepoint exists for (typed resolution, no nullable limbo) holds on this
+    path by construction; what does not apply is the resolution *step*.
+
+    Callers must be repair/migration paths writing under an explicit,
+    receipt-emitting plan. Acquisition routes must use
+    :func:`admit_raw_observation`.
+    """
+    if schema not in {"main", "source"}:
+        raise ValueError(f"unsupported source schema: {schema}")
+    if len(row.blob_hash) != 32:
+        raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+
+    columns = {str(info[1]) for info in conn.execute(f"PRAGMA {schema}.table_info(raw_sessions)")}
+    names = [
+        "raw_id",
+        "origin",
+        "native_id",
+        "source_path",
+        "source_index",
+        "blob_hash",
+        "blob_size",
+        "acquired_at_ms",
+        "logical_source_key",
+        "revision_kind",
+        "source_revision",
+        "baseline_raw_id",
+        "acquisition_generation",
+        "revision_authority",
+    ]
+    values: list[object] = [
+        row.raw_id,
+        row.origin,
+        row.native_id,
+        row.source_path,
+        row.source_index,
+        row.blob_hash,
+        row.blob_size,
+        row.acquired_at_ms,
+        row.logical_source_key,
+        RawRevisionKind.FULL.value,
+        row.source_revision,
+        row.baseline_raw_id,
+        0,
+        RawRevisionAuthority.BYTE_PROVEN.value,
+    ]
+    if "capture_mode" in columns:
+        names.insert(2, "capture_mode")
+        values.insert(2, row.capture_mode)
+    conn.execute(
+        f"INSERT INTO {schema}.raw_sessions ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+        values,
+    )
+
+
 def _admit_artifact(
     conn: sqlite3.Connection,
     *,
@@ -712,7 +812,9 @@ __all__ = [
     "PriorRawHead",
     "RawAdmissionArm",
     "RawAdmissionResult",
+    "ReconstructedRawRow",
     "admit_raw_artifact_blob_observation",
     "admit_raw_blob_observation",
     "admit_raw_observation",
+    "insert_reconstructed_raw_row",
 ]

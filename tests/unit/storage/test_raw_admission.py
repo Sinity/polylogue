@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import sqlite3
 from pathlib import Path
@@ -16,7 +17,9 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     PriorRawHead,
     RawAdmissionArm,
+    ReconstructedRawRow,
     admit_raw_observation,
+    insert_reconstructed_raw_row,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -634,3 +637,65 @@ def test_admit_raw_observation_rejects_grouped_with_prior_head(tmp_path: Path) -
             prior_head=PriorRawHead(raw_id="prior", source_revision="deadbeef", payload=b""),
             grouped=True,
         )
+
+
+def test_insert_reconstructed_raw_row_preserves_byte_proven_repair_authority(tmp_path: Path) -> None:
+    """polylogue-1fijp: the copy-forward exemption keeps the authority it was given.
+
+    ``storage/repair.py``'s browser-origin copy-forward rebuilds a raw row from
+    a plan that already proved the bytes. Routing it through
+    ``admit_raw_observation`` instead would resolve BASELINE/``asserted``
+    against the absent prior head for the corrected logical key and silently
+    downgrade that proof, which is exactly why this path is exempt. Pin the
+    authority so a future "just migrate the last call site" cannot erase it.
+    """
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"reconstructed": true}\n'
+    blob_hash = hashlib.sha256(payload).digest()
+
+    insert_reconstructed_raw_row(
+        conn,
+        ReconstructedRawRow(
+            raw_id="copy-forward-raw",
+            origin=Origin.CLAUDE_AI_EXPORT.value,
+            capture_mode=Provider.CLAUDE_AI.value,
+            native_id="native-42",
+            source_path="/copy-forward/session.json",
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=len(payload),
+            acquired_at_ms=1_767_000_000_000,
+            logical_source_key="claude-ai-export:native-42",
+            source_revision=blob_hash.hex(),
+            baseline_raw_id="copy-forward-raw",
+        ),
+    )
+
+    row = _row(conn, "copy-forward-raw")
+    assert row["revision_kind"] == RawRevisionKind.FULL.value
+    assert row["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value
+    assert row["logical_source_key"] == "claude-ai-export:native-42"
+    assert row["baseline_raw_id"] == "copy-forward-raw"
+
+
+def test_insert_reconstructed_raw_row_rejects_untrusted_schema_and_short_hash(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    row = ReconstructedRawRow(
+        raw_id="r",
+        origin=Origin.CLAUDE_AI_EXPORT.value,
+        capture_mode=None,
+        native_id=None,
+        source_path="/p",
+        source_index=0,
+        blob_hash=b"\x00" * 32,
+        blob_size=1,
+        acquired_at_ms=1,
+        logical_source_key="k",
+        source_revision="00",
+        baseline_raw_id="r",
+    )
+
+    with pytest.raises(ValueError, match="unsupported source schema"):
+        insert_reconstructed_raw_row(conn, row, schema="attached; DROP TABLE raw_sessions")
+    with pytest.raises(ValueError, match="32-byte"):
+        insert_reconstructed_raw_row(conn, dataclasses.replace(row, blob_hash=b"\x00" * 16))
