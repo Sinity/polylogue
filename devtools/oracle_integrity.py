@@ -381,7 +381,7 @@ def module_import_edges(
     import node, so its target set is empty and it classifies as
     ``NO_TARGETS`` -- silent, never a violation. Resolving a dynamic import
     string would mean evaluating an arbitrary expression, and a lint whose
-    product is a deletion worklist must not guess. 23 test modules currently
+    product is a deletion worklist must not guess. 6 test modules currently
     use ``importlib.import_module``; none are exempted, they are simply not
     audited for reachability.
 
