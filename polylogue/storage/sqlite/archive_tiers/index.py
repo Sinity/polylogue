@@ -451,7 +451,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # Grok, Antigravity, browser-capture, and Hermes titles. Existing parsed rows
 # require raw replay because an in-place schema operation cannot recover title
 # authorship from the stored untyped title text.
-INDEX_SCHEMA_VERSION = 68
+INDEX_SCHEMA_VERSION = 69
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -2119,7 +2119,7 @@ quarantined_rows AS (
     SELECT
         l.resolved_dst_session_id              AS parent_session_id,
         l.src_session_id                       AS child_session_id,
-        'quarantined'                            AS mapping_state,
+        l.status                               AS mapping_state,
         l.confidence                           AS link_confidence,
         l.method                               AS link_method,
         l.inheritance                          AS inheritance,

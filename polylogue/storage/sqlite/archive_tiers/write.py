@@ -29,6 +29,7 @@ from polylogue.archive.topology.edge import (
     HOOK_AUTHORITATIVE_LINK_METHOD,
     HOOK_CONTRADICTED_LINK_METHOD,
     HOOK_DERIVED_LINK_METHODS,
+    HOOK_SUPERSEDED_LINK_METHOD,
     TopologyEdgeStatus,
     TopologyEdgeType,
     branch_type_to_edge_type,
@@ -3724,6 +3725,62 @@ def _authoritative_parent_claim(
     return parent or None
 
 
+def _supersede_stale_authoritative_links(
+    conn: sqlite3.Connection,
+    *,
+    src_session_id: str,
+    link_type: str,
+    winning_dst_native_id: str,
+    observed_at_ms: int,
+) -> None:
+    """Demote any authoritative edge the newest hook claim disagrees with.
+
+    ``_authoritative_parent_claim`` already returns the NEWEST spawn-edge row
+    (``ORDER BY observed_at_ms DESC``), so newest-hook-wins is the rule. Without
+    this, a revised hook claim naming a different parent lands at a DIFFERENT
+    primary key, and the previous authoritative edge can be neither purged (it
+    is exempt from the projection purge) nor overwritten (the downgrade guard
+    refuses) -- leaving two permanent authoritative edges for one child and
+    handing composition an arrival-order choice between them. That is precisely
+    the defect this whole mechanism exists to remove, so it must not be
+    reintroduced by the mechanism's own durability rules.
+
+    The loser is re-marked, never deleted: both claims stay auditable, and the
+    typed state is the same ``AUTHORITY_CONTRADICTED`` an inferred loser gets,
+    because the outcome for composition is identical.
+    """
+    stale = conn.execute(
+        """
+        SELECT dst_native_id FROM session_links
+        WHERE src_session_id = ? AND link_type = ? AND method = ? AND dst_native_id != ?
+        """,
+        (src_session_id, link_type, HOOK_AUTHORITATIVE_LINK_METHOD, winning_dst_native_id),
+    ).fetchall()
+    for row in stale:
+        conn.execute(
+            """
+            UPDATE session_links
+               SET status = ?, method = ?, evidence_json = ?, resolved_dst_session_id = NULL,
+                   observed_at_ms = ?
+             WHERE src_session_id = ? AND link_type = ? AND dst_native_id = ?
+            """,
+            (
+                TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value,
+                HOOK_SUPERSEDED_LINK_METHOD,
+                _json_dumps(
+                    {
+                        "superseded_by_hook_parent": winning_dst_native_id,
+                        "superseded_hook_parent": str(row[0]),
+                    }
+                ),
+                observed_at_ms,
+                src_session_id,
+                link_type,
+                str(row[0]),
+            ),
+        )
+
+
 def _upsert_session_link(
     conn: sqlite3.Connection,
     *,
@@ -3826,6 +3883,13 @@ def _write_session_link(
         # Hook evidence can know a parent transcript inference never found.
         # Without this the authoritative edge would simply not exist.
         if hook_parent is not None:
+            _supersede_stale_authoritative_links(
+                conn,
+                src_session_id=session_id,
+                link_type=LinkType.SUBAGENT.value,
+                winning_dst_native_id=hook_parent,
+                observed_at_ms=observed_at_ms,
+            )
             _upsert_session_link(
                 conn,
                 src_session_id=session_id,
@@ -3889,7 +3953,23 @@ def _write_session_link(
         observed_at_ms=observed_at_ms,
     )
 
+    if agreeing and hook_parent is not None:
+        _supersede_stale_authoritative_links(
+            conn,
+            src_session_id=session_id,
+            link_type=link_type,
+            winning_dst_native_id=dst_native_id,
+            observed_at_ms=observed_at_ms,
+        )
+
     if contradicted and hook_parent is not None:
+        _supersede_stale_authoritative_links(
+            conn,
+            src_session_id=session_id,
+            link_type=link_type,
+            winning_dst_native_id=hook_parent,
+            observed_at_ms=observed_at_ms,
+        )
         _upsert_session_link(
             conn,
             src_session_id=session_id,
@@ -4206,6 +4286,26 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
     single blanket UPDATE) so each can be checked against
     ``sessions.parent_session_id`` before being resolved. A candidate whose
     resolution would close a loop or exhaust the walk budget is quarantined.
+
+    ``status IS NULL`` is the OPERATIVE exclusion gate, deliberately kept
+    stricter than ``topology_status_composes_sql()``. Any non-NULL status means
+    an intervention already happened for this edge, and an edge under
+    intervention must not silently acquire a resolved parent -- so the resolver
+    excludes every exceptional marker, including ``REPAIRED``, not just the
+    composition-excluded ones. Aligning it to the generated predicate would
+    LOOSEN it (``REPAIRED`` would become resolvable), which is a real semantic
+    change to a member that has no producer anywhere in the tree and therefore
+    could not be verified; that is why this reads ``status IS NULL`` rather than
+    the shared predicate.
+
+    Consequence worth stating plainly, because it changes how the exclusion set
+    should be read: a contradicted edge never resolves here, so composition can
+    never traverse it regardless of
+    ``COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES``. That set is defense-in-depth for
+    this member -- it covers an edge that resolved BEFORE acquiring a status
+    (the cycle-quarantine path, which marks an already-resolved edge) and any
+    future writer that sets a status post-resolution. It is not the mechanism
+    that keeps contradicted edges out of lineage today.
     """
     candidates = conn.execute(
         """
@@ -6322,7 +6422,7 @@ def _repair_stale_prefix_branch_points_db(
     rows make the child bail to its own tail. If the suffix maps to exactly one
     message in the resolved parent's composed transcript, update the edge to the
     composed message id. Ambiguous or unmappable rows stay visible to validation.
-    f"""
+    """
     params: list[object] = []
     scope_clause = ""
     if session_ids is not None:

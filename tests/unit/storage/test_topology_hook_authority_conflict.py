@@ -52,6 +52,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.topology.edge import (
     HOOK_AUTHORITATIVE_LINK_METHOD,
     HOOK_CONTRADICTED_LINK_METHOD,
+    HOOK_SUPERSEDED_LINK_METHOD,
     TopologyEdgeStatus,
 )
 from polylogue.core.enums import BlockType, LinkType, Origin, Provider
@@ -322,3 +323,81 @@ def test_no_hook_evidence_is_byte_identical_to_the_parser_only_path(tmp_path: Pa
     assert observed == baseline
     assert observed["method"] == "parser-parent"
     assert observed["status"] is None
+
+
+# ---------------------------------------------------------------------------
+# Composition exclusion, through the mechanism that actually enforces it
+# ---------------------------------------------------------------------------
+
+
+def test_contradicted_edge_is_excluded_from_composition(tmp_path: Path) -> None:
+    """The load-bearing behavioural claim: lineage never composes through a loser.
+
+    This pins the OPERATIVE mechanism -- ``_resolve_outbound_session_links``'
+    ``status IS NULL`` gate -- rather than the exclusion set. A cold review
+    established that removing ``AUTHORITY_CONTRADICTED`` from
+    ``COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES`` changes nothing observable,
+    because a contradicted edge never acquires ``resolved_dst_session_id`` in
+    the first place; the exclusion set is defense-in-depth for edges that
+    resolve BEFORE acquiring a status. So this asserts the real invariant at
+    the layer that enforces it: the contradicted edge stays unresolved, and the
+    child's composed parent is the hook's parent, never the parser's.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+
+    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
+
+    links = _links(index, child_id)
+    assert links[_PARSER_PARENT]["resolved_dst_session_id"] is None, (
+        "a contradicted edge must never resolve; if it did, composition could traverse it"
+    )
+    assert links[_HOOK_PARENT]["resolved_dst_session_id"] == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
+
+    composed_parent = index.execute(
+        "SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)
+    ).fetchone()[0]
+    assert composed_parent == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
+
+
+def test_revised_hook_claim_supersedes_the_previous_authoritative_edge(tmp_path: Path) -> None:
+    """Newest hook claim wins; the old authoritative edge is demoted, not left standing.
+
+    Without this, a revised ``codex_thread_spawn_edge`` lands at a DIFFERENT
+    primary key and the previous authoritative edge can be neither purged (it
+    is exempt) nor overwritten (the guard refuses), leaving TWO permanent
+    authoritative edges and handing composition an arrival-order choice --
+    exactly the defect the mechanism exists to remove.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+
+    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
+    write_parsed_session_to_archive(index, _session("revised-hook-parent"), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+    assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+
+    # The spool revises itself: a newer event names a different parent.
+    source.execute(
+        "UPDATE raw_hook_events SET observed_at_ms = ? WHERE hook_event_id = ?",
+        (1_760_000_000_000, f"codex-thread-spawn-edge:{_HOOK_PARENT}:{_CHILD}"),
+    )
+    _write_spawn_edge_event(source, parent="revised-hook-parent", child=_CHILD)
+    source.execute(
+        "UPDATE raw_hook_events SET observed_at_ms = ? WHERE hook_event_id = ?",
+        (1_770_000_000_000, f"codex-thread-spawn-edge:revised-hook-parent:{_CHILD}"),
+    )
+    source.commit()
+
+    write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+
+    links = _links(index, child_id)
+    authoritative = [name for name, row in links.items() if row["method"] == HOOK_AUTHORITATIVE_LINK_METHOD]
+    assert authoritative == ["revised-hook-parent"], "exactly one authoritative parent per child"
+    assert links[_HOOK_PARENT]["method"] == HOOK_SUPERSEDED_LINK_METHOD
+    assert links[_HOOK_PARENT]["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
+    assert links[_HOOK_PARENT]["resolved_dst_session_id"] is None

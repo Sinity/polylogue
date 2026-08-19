@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.config import Config
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -1918,6 +1919,7 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
             "unresolved_count": 0,
             "resolved_count": 0,
             "quarantined_count": 0,
+            "authority_contradicted_count": 0,
             "oldest_quarantined_at": None,
         }
     rows = conn.execute(
@@ -1933,12 +1935,22 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
         """
     ).fetchall()
     status_counts = {str(row[0]): int(row[1]) for row in rows}
-    oldest_row = conn.execute("SELECT MIN(resolved_at_ms) FROM session_links WHERE status = 'quarantined'").fetchone()
+    oldest_row = conn.execute(
+        "SELECT MIN(resolved_at_ms) FROM session_links WHERE status = ?", (TopologyEdgeStatus.QUARANTINED.value,)
+    ).fetchone()
     return {
         "table_present": True,
         "unresolved_count": int(status_counts.get("unresolved", 0)),
         "resolved_count": int(status_counts.get("resolved", 0)),
         "quarantined_count": int(status_counts.get("quarantined", 0)),
+        # The CASE above buckets by the raw status, so a contradicted edge
+        # already had its own bucket -- it was simply never read out here, and
+        # the counts therefore stopped summing to the table. Cycle-census
+        # intent: ``quarantined_count`` and ``oldest_quarantined_at`` stay
+        # cycle-specific (see TopologyEdgeStatus.QUARANTINED), so a provenance
+        # contradiction is reported as its own quantity rather than inflating
+        # a cycle-health metric.
+        "authority_contradicted_count": int(status_counts.get(TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value, 0)),
         "oldest_quarantined_at": oldest_row[0] if oldest_row else None,
     }
 

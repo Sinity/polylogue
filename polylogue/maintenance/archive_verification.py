@@ -1047,15 +1047,51 @@ def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: in
                 (HOOK_CONTRADICTED_LINK_METHOD, HOOK_AUTHORITATIVE_LINK_METHOD),
             ).fetchone()[0]
         )
+        # "Some winner exists" is not the invariant -- "exactly one" is. A
+        # revised hook claim lands at a DIFFERENT primary key, so without this
+        # a child could carry two permanent authoritative edges and composition
+        # would choose between them by arrival order, while a some-winner-exists
+        # check reported OK. Zero such children exist on the live corpus today;
+        # this is the latent case, gated before it can appear.
+        multi_authoritative_rows = conn.execute(
+            """
+            SELECT src_session_id, link_type, COUNT(*) AS n
+            FROM session_links
+            WHERE method = ?
+            GROUP BY src_session_id, link_type
+            HAVING n > 1
+            ORDER BY src_session_id
+            LIMIT ?
+            """,
+            (HOOK_AUTHORITATIVE_LINK_METHOD, sample_limit),
+        ).fetchall()
+        multi_authoritative_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT src_session_id FROM session_links
+                    WHERE method = ?
+                    GROUP BY src_session_id, link_type
+                    HAVING COUNT(*) > 1
+                )
+                """,
+                (HOOK_AUTHORITATIVE_LINK_METHOD,),
+            ).fetchone()[0]
+        )
     except sqlite3.Error as exc:
         return _error_check("hook-authority-topology-conflict", f"could not read index.db: {exc}", exc=exc)
     finally:
         conn.close()
 
-    status = OutcomeStatus.ERROR if unresolved_count else OutcomeStatus.OK
+    problems: list[str] = []
+    if unresolved_count:
+        problems.append(f"contradicted edge without an authoritative winner x{unresolved_count}")
+    if multi_authoritative_count:
+        problems.append(f"child with more than one authoritative parent x{multi_authoritative_count}")
+    status = OutcomeStatus.ERROR if problems else OutcomeStatus.OK
     summary = (
-        f"contradicted edge without an authoritative winner x{unresolved_count}"
-        if unresolved_count
+        "; ".join(problems)
+        if problems
         else (
             f"{contradicted_count} hook/inference contradiction(s), each resolved to authoritative evidence; "
             f"{authoritative_count} authoritative edge(s)"
@@ -1065,12 +1101,14 @@ def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: in
         name="hook-authority-topology-conflict",
         status=status,
         summary=summary,
-        count=unresolved_count,
+        count=unresolved_count + multi_authoritative_count,
         evidence={
             "contradicted_count": contradicted_count,
             "authoritative_count": authoritative_count,
             "unresolved_contradiction_count": unresolved_count,
             "unresolved_contradiction_sample": [str(row[0]) for row in unresolved_rows],
+            "multi_authoritative_count": multi_authoritative_count,
+            "multi_authoritative_sample": [f"{row[0]}:{row[1]}={row[2]}" for row in multi_authoritative_rows],
         },
     )
 

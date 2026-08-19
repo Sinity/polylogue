@@ -2674,12 +2674,19 @@ class DelegationAttemptPayload(SurfacePayloadModel):
     `delegations` view, polylogue-lph4 ObjectRef normalization).
 
     ``mapping_state`` mirrors the view's own vocabulary exactly --
-    resolved/unresolved/edge_only/quarantined -- never reinterpreted here
-    (polylogue-1vpm.7 retired 'ambiguous': with a provider-asserted content
-    or trivial-cohort join key, a cardinality mismatch is not a reachable
-    state). Action-observed rows (resolved/unresolved) always carry a
+    resolved/unresolved/edge_only/quarantined/authority-contradicted -- never
+    reinterpreted here (polylogue-1vpm.7 retired 'ambiguous': with a
+    provider-asserted content or trivial-cohort join key, a cardinality
+    mismatch is not a reachable state). The two excluded states are distinct
+    and must stay so for an operator reading this payload:
+    ``quarantined`` is a structural cycle-break (the graph SHAPE is wrong)
+    while ``authority-contradicted`` (polylogue-foee) is a provenance verdict
+    -- the shape is fine, but acquired hook evidence named a different parent
+    and this inferred edge lost. The view previously reported both as
+    ``quarantined``, documenting a provenance contradiction to the operator as
+    a cycle-break. Action-observed rows (resolved/unresolved) always carry a
     non-null ``instruction_tool_use_block_id``; edge-only rows (edge_only/
-    quarantined) never fabricate one. Instruction/artifact text is
+    quarantined/authority-contradicted) never fabricate one. Instruction/artifact text is
     length-bounded (never full-session content) to keep this a citable
     evidence pointer, not a transcript dump.
     """

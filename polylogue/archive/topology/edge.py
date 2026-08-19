@@ -98,6 +98,19 @@ COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES: tuple[TopologyEdgeStatus, ...] = (
 )
 
 
+#: String form of the excluded set, for the Python-side filters that cannot
+#: use a SQL predicate (``storage/insights/topology/derivation.py`` filters a
+#: materialized row mapping, not a query).
+COMPOSITION_EXCLUDED_STATUS_VALUES: frozenset[str] = frozenset(
+    status.value for status in COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES
+)
+
+
+def status_excludes_composition(status: object) -> bool:
+    """True when a ``session_links.status`` value bars an edge from composition."""
+    return isinstance(status, str) and status.strip() in COMPOSITION_EXCLUDED_STATUS_VALUES
+
+
 def _excluded_status_sql_list() -> str:
     return ", ".join(f"'{status.value}'" for status in COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES)
 
@@ -126,21 +139,37 @@ HOOK_AUTHORITATIVE_LINK_METHOD = "authoritative-hook-evidence"
 #: ``TopologyEdgeStatus.QUARANTINED`` so no projection composes through it.
 HOOK_CONTRADICTED_LINK_METHOD = "contradicted-by-hook-evidence"
 
+#: ``session_links.method`` token for an authoritative edge that a NEWER hook
+#: claim replaced. polylogue-foee's evidence spool can revise itself: a later
+#: ``codex_thread_spawn_edge`` naming a different parent for the same child
+#: must not leave two permanent authoritative edges at different primary keys,
+#: because composition would then pick between them by arrival order -- the
+#: exact defect this mechanism exists to remove. The older edge is re-marked
+#: rather than deleted, so both claims stay auditable.
+HOOK_SUPERSEDED_LINK_METHOD = "superseded-by-newer-hook-evidence"
+
 #: Tokens marking an edge whose state was decided from durable hook evidence
 #: rather than from the current parser payload. Neither may be replaced by an
 #: inference-only write, and neither is purged by a session full-replace.
-HOOK_DERIVED_LINK_METHODS = (HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD)
+HOOK_DERIVED_LINK_METHODS = (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+    HOOK_SUPERSEDED_LINK_METHOD,
+)
 
 
 __all__ = [
+    "COMPOSITION_EXCLUDED_STATUS_VALUES",
     "COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES",
     "HOOK_AUTHORITATIVE_LINK_METHOD",
     "HOOK_CONTRADICTED_LINK_METHOD",
+    "HOOK_SUPERSEDED_LINK_METHOD",
     "HOOK_DERIVED_LINK_METHODS",
     "TopologyEdgeRecord",
     "TopologyEdgeStatus",
     "TopologyEdgeType",
     "branch_type_to_edge_type",
+    "status_excludes_composition",
     "topology_status_composes_sql",
     "topology_status_excluded_sql",
 ]

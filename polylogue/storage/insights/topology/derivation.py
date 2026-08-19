@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+from polylogue.archive.topology.edge import status_excludes_composition
 from polylogue.core.types import SessionId
 from polylogue.insights.topology import (
     SessionTopology,
@@ -77,7 +78,12 @@ def _unresolved_edges_from_links(record: SessionRecord, links: Sequence[Mapping[
     for link in links:
         if link.get("resolved_dst_session_id") is not None:
             continue
-        if link.get("status") == "quarantined":
+        # Composability class: read the shared exclusion set, not a literal.
+        # A contradicted edge is unresolved BY CONSTRUCTION (the resolver's
+        # ``status IS NULL`` gate never resolves it), so a literal
+        # ``== "quarantined"`` filter here readmitted 100% of them into the
+        # unresolved-edge derivation.
+        if status_excludes_composition(link.get("status")):
             continue
         dst_native_id = link.get("dst_native_id")
         if not isinstance(dst_native_id, str) or not dst_native_id.strip():
