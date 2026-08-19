@@ -5,12 +5,10 @@ from __future__ import annotations
 import gc
 import json
 import os
-import shutil
 import sqlite3
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -250,46 +248,84 @@ def test_journal_mode_delete_reraises_lock_once_deadline_elapses(
 # ---------------------------------------------------------------------------
 
 
-def test_seeded_archive_key_is_stable_across_commits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A new commit must not invalidate the cache.
+_REUSE_PROBE = """
+import json, os, sys
+from pathlib import Path
+import tests.infra.workload_artifacts as artifacts
+
+artifacts._build_id = lambda: os.environ["FAKE_BUILD_ID"]
+cache_root = Path(sys.argv[1])
+artifact = artifacts.build_seeded_archive(cache_root=cache_root)
+print(json.dumps({
+    "key": artifact.manifest.key,
+    "root": str(artifact.root),
+    "published": len(list((cache_root / "artifacts").iterdir())),
+}))
+"""
+
+
+def test_seeded_archive_key_does_not_carry_the_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new commit must not change the cache key.
 
     Anti-vacuity: restoring ``build_id`` (``git rev-parse HEAD``) to
-    :class:`SeededArchiveKey` makes both halves of this fail -- the two keys
-    diverge, and the second build publishes a second artifact directory
-    holding identical bytes. That was the measured behavior before
-    polylogue-1xc.14.1: 223 immutable artifact directories, 560 MB, for a
-    catalog of about six distinct workloads.
+    :class:`SeededArchiveKey` makes both assertions fail. That was the
+    measured behavior before polylogue-1xc.14.1 -- 223 immutable artifact
+    directories, 560 MB, for a catalog of about six distinct workloads,
+    because each commit republished every workload it touched.
     """
     import tests.infra.workload_artifacts as artifacts
 
-    cache_root = Path(tempfile.mkdtemp(prefix="seeded-key-stability-"))
-    try:
-        monkeypatch.setattr(artifacts, "_build_id", lambda: "git:0000000000000000000000000000000000000000")
-        first_key = seeded_archive_key(())
-        first = build_seeded_archive(cache_root=cache_root)
+    monkeypatch.setattr(artifacts, "_build_id", lambda: "git:" + "0" * 40)
+    first = seeded_archive_key(())
+    monkeypatch.setattr(artifacts, "_build_id", lambda: "git:" + "f" * 40)
+    second = seeded_archive_key(())
 
-        monkeypatch.setattr(artifacts, "_build_id", lambda: "git:ffffffffffffffffffffffffffffffffffffffff")
-        # Clearing the memo is what makes this a test of the KEY rather than
-        # of the memo: the second call must find the artifact by identity, not
-        # by remembering it. That forces a real revalidation in this process,
-        # which re-opens the tiers the build just wrote -- so finalize the
-        # build's connections first. Without this, a loaded run trips the
-        # ``sqlite3_close_v2`` zombie-connection footgun documented on
-        # :func:`_journal_mode_delete_with_retry` (polylogue-lbgc) and fails
-        # with ``database is locked`` from the frontier read.
-        artifacts._VALIDATED_ARTIFACTS.clear()
-        gc.collect()
-        second_key = seeded_archive_key(())
-        second = build_seeded_archive(cache_root=cache_root)
+    assert first.value == second.value
+    assert not hasattr(first, "build_id")
 
-        assert first_key.value == second_key.value
-        assert first.root == second.root
-        assert len(list((cache_root / "artifacts").iterdir())) == 1
-        # The commit survives as provenance on the manifest, where it records
-        # which checkout published the bytes without gating their reuse.
-        assert first.manifest.build_id == "git:0000000000000000000000000000000000000000"
-    finally:
-        shutil.rmtree(cache_root, ignore_errors=True)
+
+@pytest.mark.uses_real_clock("spawns fresh interpreters; no timestamp assertions")
+def test_seeded_archive_is_reused_by_a_later_commit(tmp_path: Path) -> None:
+    """Two commits must share one published artifact.
+
+    Runs each build in its own interpreter rather than twice in this process.
+    That is both the case that matters -- a later commit's test run is always
+    a new process -- and the only way to test reuse without the
+    ``sqlite3_close_v2`` zombie-connection footgun documented on
+    :func:`_journal_mode_delete_with_retry` (polylogue-lbgc): revalidating an
+    artifact in the same process that just wrote it re-opens tiers whose
+    connections may not be finalized yet, which under load raises
+    ``database is locked``.
+
+    Anti-vacuity: returning ``build_id`` to the key makes ``published`` come
+    back as 2 with two different roots.
+    """
+    cache_root = tmp_path / "cache"
+    repo_root = Path(__file__).resolve().parents[3]
+
+    def build(fake_commit: str) -> dict[str, object]:
+        result = subprocess.run(
+            [sys.executable, "-c", _REUSE_PROBE, str(cache_root)],
+            cwd=repo_root,
+            env={**os.environ, "FAKE_BUILD_ID": f"git:{fake_commit}"},
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert result.returncode == 0, result.stderr
+        payload: dict[str, object] = json.loads(result.stdout.strip().splitlines()[-1])
+        return payload
+
+    first = build("0" * 40)
+    second = build("f" * 40)
+
+    assert first["key"] == second["key"]
+    assert first["root"] == second["root"]
+    assert second["published"] == 1
+    # The commit survives as provenance on the manifest, where it records
+    # which checkout published the bytes without gating their reuse.
+    manifest = json.loads((Path(str(first["root"])) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["build_id"] == "git:" + "0" * 40
 
 
 def test_seeded_archive_key_changes_with_archive_schema(monkeypatch: pytest.MonkeyPatch) -> None:
