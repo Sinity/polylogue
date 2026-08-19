@@ -1,0 +1,177 @@
+{
+  "entries": [
+    {
+      "code": "ambient_path_call",
+      "detail": "line 136: resolves an ambient location via Path.home()",
+      "path": "tests/integration/test_daemon_resilience.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 419: resolves an ambient location via Path.home()",
+      "path": "tests/unit/api/test_facade_contracts.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 318: resolves an ambient location via Path.home()",
+      "path": "tests/unit/archive/test_repo_identity.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 319: resolves an ambient location via Path.home()",
+      "path": "tests/unit/archive/test_repo_identity.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 169: resolves an ambient location via os.path.expandvars()",
+      "path": "tests/unit/cli/test_demo_command.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 121: resolves an ambient location via Path.home()",
+      "path": "tests/unit/core/test_sampling.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 2168: resolves an ambient location via Path.home()",
+      "path": "tests/unit/daemon/test_daemon_cli.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 2255: resolves an ambient location via Path.home()",
+      "path": "tests/unit/daemon/test_daemon_cli.py"
+    },
+    {
+      "code": "ambient_path_call",
+      "detail": "line 644: resolves an ambient location via Path.home()",
+      "path": "tests/unit/daemon/test_web_reader.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 22: reads ambient path '/realm/data'",
+      "path": "tests/unit/api/test_repo_facet_canonicalization.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 30: reads ambient path '/realm/data'",
+      "path": "tests/unit/api/test_repo_facet_canonicalization.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 35: reads ambient path '/realm/data'",
+      "path": "tests/unit/api/test_repo_facet_canonicalization.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 71: reads ambient path '/realm/data'",
+      "path": "tests/unit/api/test_repo_facet_canonicalization.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 91: reads ambient path '~/.claude'",
+      "path": "tests/unit/core/test_sources.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 92: reads ambient path '~/.codex'",
+      "path": "tests/unit/core/test_sources.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 207: reads ambient path '~/.claude'",
+      "path": "tests/unit/daemon/test_provenance_endpoint.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 1456: reads ambient path '~/.codex'",
+      "path": "tests/unit/daemon/test_web_reader.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 913: reads ambient path '/realm/state'",
+      "path": "tests/unit/scenarios/test_codex_804_live_proof.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 1096: reads ambient path '~/.codex'",
+      "path": "tests/unit/sources/test_assembly.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 1099: reads ambient path '~/.codex'",
+      "path": "tests/unit/sources/test_assembly.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 1172: reads ambient path '~/.codex'",
+      "path": "tests/unit/sources/test_assembly.py"
+    },
+    {
+      "code": "ambient_path_literal",
+      "detail": "line 1175: reads ambient path '~/.codex'",
+      "path": "tests/unit/sources/test_assembly.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.schemas.operator.schema_inference",
+      "path": "tests/unit/core/test_privacy_guards.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.schemas.operator.schema_inference",
+      "path": "tests/unit/core/test_schema_privacy.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.schemas.promotion_audit",
+      "path": "tests/unit/core/test_schema_promotion_audit.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.daemon.event_bus",
+      "path": "tests/unit/daemon/test_event_bus.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.judgment.experiments",
+      "path": "tests/unit/insights/judgment/test_experiments.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.alert_budget",
+      "path": "tests/unit/insights/measurement/test_alert_budget.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.evidence_ancestry",
+      "path": "tests/unit/insights/measurement/test_evidence_ancestry.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.registration",
+      "path": "tests/unit/insights/measurement/test_registration.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.uncertainty",
+      "path": "tests/unit/insights/measurement/test_uncertainty.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.schemas.promotion_audit",
+      "path": "tests/unit/schemas/test_promotion_audit_privacy_guard.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.security.precommit_scan",
+      "path": "tests/unit/security/test_precommit_scan.py"
+    },
+    {
+      "code": "certifies_dead_code",
+      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.sources.atomic_read",
+      "path": "tests/unit/sources/test_atomic_read.py"
+    }
+  ],
+  "generated_by": "devtools lab policy oracle-integrity --write-baseline",
+  "purpose": "Pre-existing oracle-integrity findings, exempted as a ratchet so the gate is adoptable today. Each entry is a WS-F deletion-sweep worklist item, not an endorsement. Adding an entry requires the same review as any other exemption; removing one is the goal.",
+  "schema_version": 1
+}
