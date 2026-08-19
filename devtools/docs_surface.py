@@ -336,6 +336,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "archive",
     ),
     _entry("Retrospective Index", "retro/README.md", "Index of historical incident retrospectives.", "archive"),
+    _entry(
+        "Schema Disposition Audit",
+        "schema-disposition-2026-08-19.md",
+        "Column-level KEEP/PURGE/UNCLEAR disposition for all five SQLite tiers (polylogue-gvzkr).",
+        "archive",
+    ),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (
