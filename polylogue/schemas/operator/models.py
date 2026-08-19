@@ -166,6 +166,7 @@ class SchemaPromoteRequest:
     db_path: Path
     with_samples: bool = False
     max_samples: int = 500
+    privacy_config: JSONDocument | None = None
 
 
 @dataclass(frozen=True)

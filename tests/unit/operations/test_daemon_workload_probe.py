@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-import devtools.daemon_workload_probe as workload_probe
-from devtools.daemon_workload_probe import (
+import polylogue.operations.daemon_workload_probe as workload_probe
+from polylogue.operations.daemon_workload_probe import (
     REPORT_VERSION,
     UNKNOWN_TABLE_COUNT,
     _table_count,

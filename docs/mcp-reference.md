@@ -4,6 +4,11 @@ Polylogue exposes an MCP (Model Context Protocol) server that coding agents can 
 AI chat archives during sessions. This is the primary continuity surface — richer than the
 CLI or Python API for agent-facing recall, corrections, and context assembly.
 
+For the 103-tool-to-10-verb collapse's closure evidence (per-tool operation
+inventory, role-gating matrix, measured token cost, retained exceptions, and
+proof-run results), see `docs/mcp-surface-report-2026-08.md` — a dated
+snapshot, not an ongoing reference.
+
 ## Tools
 
 10 top-level tools are registered across `polylogue/mcp/server_*.py`, each a parser-owned

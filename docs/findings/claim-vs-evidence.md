@@ -107,14 +107,17 @@ The calibration is small. The method therefore keeps 3,375 cases ambiguous inste
 
 ## First-party evidence boundary
 
-The command is read-only by default. With explicit `--materialize-evidence`, it
-records a content-addressed analysis definition, result-set membership,
-evaluation receipt, and finding through the archive's existing user-tier
-writers. It emits a public-claim declaration only when the run's own
-minimum-sample and classified-outcome gates pass. The surviving
-`PublicClaimProjection` applies publication, privacy, freshness, frame, and
-evidence-integrity state independently; report generation alone never upgrades
-this historical page into a supported current claim.
+The generating command was read-only by default. With explicit
+`--materialize-evidence`, it recorded a content-addressed analysis definition,
+result-set membership, evaluation receipt, and finding through the archive's
+existing user-tier writers, and emitted a public-claim declaration only when
+the run's own minimum-sample and classified-outcome gates passed. That
+harness was retired 2026-08 (the closed claim-vs-evidence campaign's
+private-report/calibration/publishing tooling — see #3950); the surviving
+`PublicClaimProjection` (`polylogue/insights/measurement/public_claims.py`)
+still applies publication, privacy, freshness, frame, and evidence-integrity
+state independently on ordinary production routes. This page remains a frozen
+historical record, not a currently regeneratable claim.
 
 ## Interpretation
 
@@ -122,39 +125,18 @@ The finding establishes that Polylogue can ask and operationalize a question ord
 
 It does not establish why the assistant proceeded, whether the outcome was eventually repaired, whether silence was harmful in every case, or how frequently the behavior occurs outside the sampled archive.
 
-## Reproduce the method without private data
+## Reproducing this finding
 
-```bash
-export POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-claim-vs-evidence-demo
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+The generating harness (formerly the devtools workspace claim-vs-evidence
+command, now deleted, and its private-report/calibration/publishing
+machinery) was retired 2026-08 once the
+closed campaign it served (`polylogue-sru`) had its terminal artifacts. This
+page is therefore frozen historical text: the numbers above are not
+regeneratable through a current command. The reusable query semantics behind
+them remain on ordinary production routes via `PublicClaimProjection`
+(`polylogue/insights/measurement/public_claims.py`).
 
-devtools workspace claim-vs-evidence \
-  --archive-root "$POLYLOGUE_ARCHIVE_ROOT" \
-  --limit 5000 \
-  --out-dir /tmp/polylogue-claim-vs-evidence-repro \
-  --json
-```
-
-The deterministic corpus reproduces the method and controls. It does not reproduce the private-archive prevalence result.
-
-## Regenerate the private packet locally
-
-Operators with the relevant archive can run:
-
-```bash
-devtools workspace claim-vs-evidence \
-  --limit 5000 \
-  --out-dir .local/evidence/claim-vs-evidence \
-  --json
-```
-
-## Evidence and caveats
-
-See:
-
-- `devtools/claim_vs_evidence.py`;
-- `tests/unit/devtools/test_claim_vs_evidence.py`;
-- the local `.local/evidence/claim-vs-evidence/` packet when generated.
-
-Publication requires the packet’s archive cursor, measure version, commit SHA, sample-frame predicate, and run date. If any is missing or stale, the finding page should refuse regeneration rather than silently retain an old number.
+Publication of any future finding of this shape still requires the packet's
+archive cursor, measure version, commit SHA, sample-frame predicate, and run
+date; a finding page should refuse regeneration rather than silently retain
+an old number when any of those is missing or stale.

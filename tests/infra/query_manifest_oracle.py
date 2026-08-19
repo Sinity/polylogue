@@ -65,7 +65,25 @@ class PlantedCodexSession:
                     "id": self.native_session_id,
                     "timestamp": self.timestamp,
                 },
-            }
+            },
+            {
+                "type": "response_item",
+                "timestamp": self.timestamp,
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"planted request for {self.native_session_id}"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "timestamp": self.timestamp,
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"planted reply for {self.native_session_id}"}],
+                },
+            },
         ]
         for index, call in enumerate(self.calls):
             records.append(

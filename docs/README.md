@@ -117,6 +117,8 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Audit Record Index](audits/README.md) | Index of retained investigation records. |
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
+| [MCP Surface Report 2026-08](mcp-surface-report-2026-08.md) | Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8). |
+| [Schema Disposition Audit](schema-disposition-2026-08-19.md) | Column-level KEEP/PURGE/UNCLEAR disposition for all five SQLite tiers (polylogue-gvzkr). |
 
 ## Contributor Workflow
 

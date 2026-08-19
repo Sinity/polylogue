@@ -4,7 +4,7 @@ Drives a real-shape synthetic corpus through ``LiveBatchProcessor`` +
 ``DaemonConverger`` (the same primitives ``polylogued run`` wires up at
 :func:`polylogue.daemon.cli.run_daemon_services`) and asserts the
 convergence shape using before/after snapshots from
-``devtools.daemon_workload_probe.probe`` and its arithmetic
+``polylogue.operations.daemon_workload_probe.probe`` and its arithmetic
 ``compare()``.
 
 This is the integration-level closure for slice B: prior runs produced
@@ -42,9 +42,9 @@ from typing import Any, cast
 
 import pytest
 
-from devtools.daemon_workload_probe import REPORT_VERSION, compare, probe
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
+from polylogue.operations.daemon_workload_probe import REPORT_VERSION, compare, probe
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource

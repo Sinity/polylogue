@@ -1108,7 +1108,7 @@ The report has a stable top-level shape carrying its `report_version`,
   amplification stats over completed attempts.
 - `boundary_table_counts` — mixed cheap evidence for the tables in
   `_BOUNDARY_TABLES`/`_OPS_BOUNDARY_TABLES`
-  (`devtools/daemon_workload_probe.py`, non-exhaustive here): exact counts for
+  (`polylogue/operations/daemon_workload_probe.py`, non-exhaustive here): exact counts for
   small/core archive cardinality tables and maintained rollups such as
   `sessions`, `raw_sessions`, `messages`, and `session_profiles`;
   planner-estimated counts only where exact counting would scan large derived

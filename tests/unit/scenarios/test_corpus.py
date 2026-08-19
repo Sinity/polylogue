@@ -109,6 +109,7 @@ class _PassiveRegistry(SchemaRegistryLike):
         cluster_id: str,
         *,
         samples: object | None = None,
+        privacy_config: object | None = None,
     ) -> str:
         raise AssertionError("promote_cluster should not be called in this test")
 

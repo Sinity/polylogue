@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from devtools import repo_root
-from devtools.daemon_workload_probe import probe
 from polylogue.demo import seed_demo_archive, verify_demo_archive
+from polylogue.operations.daemon_workload_probe import probe
 from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection, repair_stale_fts_rows
 from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import message_fts_search_readiness_sync

@@ -1100,36 +1100,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace temporal-read-profile",
-        "workspace",
-        "Measure read --view temporal phase timings on the active archive.",
-        "devtools.temporal_read_profile",
-        use_when=(
-            "Profile the shared temporal read-view builder before tuning query, projection, or rendering paths. "
-            "The command emits phase timings plus the temporal window summary and can write the report as a "
-            "dogfood/demo artifact."
-        ),
-        examples=(
-            "devtools workspace temporal-read-profile --query repo:polylogue --limit 1 --json",
-            "devtools workspace temporal-read-profile --query 'repo:polylogue devloop' --limit 3 --out .local/temporal-profile.json",
-        ),
-    ),
-    CommandSpec(
-        "workspace temporal-archive-aggregates",
-        "workspace",
-        "Build run-projection aggregate artifacts from the active archive.",
-        "devtools.temporal_archive_aggregates",
-        use_when=(
-            "Refresh private longitudinal run/observed-event/context-snapshot demo artifacts from "
-            "the canonical archive through one reusable command instead of copying raw sqlite3 "
-            "queries into README files."
-        ),
-        examples=(
-            "devtools workspace temporal-archive-aggregates --json",
-            "devtools workspace temporal-archive-aggregates --out-dir .local/temporal-archive-aggregates",
-        ),
-    ),
-    CommandSpec(
         "workspace lineage-validation",
         "workspace",
         "Validate lineage-count evidence before citing archive counts externally.",
@@ -1158,21 +1128,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace affordance-usage --days 7 --json",
             "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
             "devtools workspace affordance-usage --out-dir .local/evidence/agent-affordance-usage",
-        ),
-    ),
-    CommandSpec(
-        "workspace claim-vs-evidence",
-        "workspace",
-        "Analyze structured failures and the assistant behavior that followed.",
-        "devtools.claim_vs_evidence",
-        use_when=(
-            "Measure bounded, origin-stratified follow-up behavior from structural tool-result failures; "
-            "the report preserves ambiguous outcomes, calibration, sensitivity windows, and separate "
-            "usage/cost lanes instead of treating prose as the failure oracle."
-        ),
-        examples=(
-            "devtools workspace claim-vs-evidence --json",
-            "devtools workspace claim-vs-evidence --limit 5000 --out-dir .local/evidence/claim-vs-evidence",
         ),
     ),
     CommandSpec(
@@ -1231,24 +1186,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench slo",
             "devtools bench slo --json",
             "devtools bench slo --skip-benchmarks --json",
-        ),
-    ),
-    CommandSpec(
-        "bench help-latency",
-        "benchmarking",
-        "Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2).",
-        "devtools.help_latency_probe",
-        use_when=(
-            "Catch CLI import-tax regressions continuously. Runs `polylogue <cmd> --help` for a curated "
-            "set of root and nested subcommands as fresh subprocesses and compares the minimum wall time "
-            "against the 700ms cold-CLI budget from the 20d.14 interactive SLO tier. Fails when any "
-            "'required' target exceeds budget; 'informational' targets (currently `ops maintenance`, "
-            "known slow pending a lazy-import refactor) are reported but never block."
-        ),
-        examples=(
-            "devtools bench help-latency",
-            "devtools bench help-latency --json",
-            "devtools bench help-latency --repeats 5 --out .local/help-latency.json",
         ),
     ),
     CommandSpec(
@@ -1343,22 +1280,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools lab probe pipeline --provider chatgpt --stage parse",
             "devtools lab probe pipeline --input-mode archive-subset --capture-regression live-parse-drift",
-        ),
-    ),
-    CommandSpec(
-        "lab probe turso",
-        "verification lab",
-        "Probe Turso Database compatibility against Polylogue storage assumptions.",
-        "devtools.turso_probe",
-        use_when=(
-            "Collect executable evidence before changing production storage backends: "
-            "Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, "
-            "vector functions, ATTACH, and WAL pragma behavior."
-        ),
-        examples=(
-            "devtools lab probe turso --json",
-            "devtools lab probe turso --check",
-            "devtools lab probe turso --tursodb /nix/store/.../bin/tursodb --json",
         ),
     ),
     CommandSpec(

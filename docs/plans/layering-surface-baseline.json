@@ -6,16 +6,6 @@
   },
   {
     "target": "polylogue",
-    "file": "polylogue/cli/commands/diagnostics.py",
-    "import": "devtools.archive_space_report"
-  },
-  {
-    "target": "polylogue",
-    "file": "polylogue/cli/commands/diagnostics.py",
-    "import": "devtools.daemon_workload_probe"
-  },
-  {
-    "target": "polylogue",
     "file": "polylogue/scenarios/execution.py",
     "import": "devtools.command_catalog"
   },

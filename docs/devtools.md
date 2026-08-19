@@ -63,7 +63,6 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
 | `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
-| `devtools lab probe turso` | Collect executable evidence before changing production storage backends: Python binding availability, generated-column support, FTS compatibility, MVCC, CDC, vector functions, ATTACH, and WAL pragma behavior. |
 | `devtools lab run` | Run a scenario such as rebuild-safety through the direct lab command path. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
@@ -136,7 +135,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools lab probe turso` | Probe Turso Database compatibility against Polylogue storage assumptions. |
 | `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools lab run` | Run a named archive verification scenario. |
 | `devtools lab schema audit` | Run committed provider schema package quality checks. |
@@ -170,7 +168,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools bench help-latency` | Check `--help` wall-clock latency against the interactive-tier cold-CLI budget (polylogue-20d.2). |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
@@ -195,7 +192,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
-| `devtools workspace claim-vs-evidence` | Analyze structured failures and the assistant behavior that followed. |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
@@ -220,8 +216,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace raw-quarantine-group-dedup-apply` | Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
-| `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
-| `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
 | `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
 | `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |
 | `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
