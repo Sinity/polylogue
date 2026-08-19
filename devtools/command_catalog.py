@@ -1202,6 +1202,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),
     CommandSpec(
+        "lab policy oracle-integrity",
+        "verification lab",
+        "Verify tests certify production-reachable code and never read ambient user paths.",
+        "devtools.verify_oracle_integrity",
+        use_when=(
+            "Before a deletion sweep, and as a standing gate. Catches the two ways a green "
+            "test can certify nothing: its entire target set is unreachable from any production "
+            "entrypoint (dead-engine suites), or it reads a real ~/.codex / ~/.claude / /realm "
+            "path instead of a fixture. Reachability seeds four root classes import edges "
+            "miss -- Click lazy commands, `python -m` entrypoints, ancestor packages, and "
+            "literal-container registries -- and resolves facade re-exports per symbol, "
+            "because import edges alone under-report and this repo has four recorded wrong "
+            "deletions derived from grep."
+        ),
+        examples=(
+            "devtools lab policy oracle-integrity",
+            "devtools lab policy oracle-integrity --ignore-baseline --json",
+        ),
+    ),
+    CommandSpec(
         "lab policy bead-graph",
         "verification lab",
         "Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph.",
