@@ -505,3 +505,40 @@ def test_progress_plugin_merges_xdist_collection_facts_without_double_counting(
     assert summary["selected_count"] == 1
     assert summary["deselected_count"] == 1
     assert summary["collection_duration_s"] == 2.5
+
+
+def test_read_archive_ddl_counts_sums_every_worker_sidecar(tmp_path: Path) -> None:
+    """Per-worker tallies must aggregate; a corrupt sidecar must not lose the rest.
+
+    The counters live inside each pytest process, so the supervisor cannot
+    sample them from outside the way it samples RSS. Anti-vacuity: dropping
+    the summation makes the two-worker assertion fail, and letting the
+    JSON error escape makes the third assertion fail with the run's telemetry
+    lost rather than degraded.
+    """
+    (tmp_path / f"gw0-1{pytest_progress_plugin._DDL_SUFFIX}").write_text(
+        json.dumps({"index.ddl_fresh": 1, "ops.ddl_reapply": 4}), encoding="utf-8"
+    )
+    (tmp_path / f"gw1-2{pytest_progress_plugin._DDL_SUFFIX}").write_text(
+        json.dumps({"index.ddl_fresh": 2, "embeddings.ddl_fresh": 7}), encoding="utf-8"
+    )
+
+    assert pytest_progress_plugin.read_archive_ddl_counts(tmp_path) == {
+        "embeddings.ddl_fresh": 7,
+        "index.ddl_fresh": 3,
+        "ops.ddl_reapply": 4,
+    }
+
+    (tmp_path / f"gw2-3{pytest_progress_plugin._DDL_SUFFIX}").write_text("{ truncated", encoding="utf-8")
+    assert pytest_progress_plugin.read_archive_ddl_counts(tmp_path)["index.ddl_fresh"] == 3
+
+    assert pytest_progress_plugin.read_archive_ddl_counts(tmp_path / "absent") == {}
+
+
+def test_flush_archive_ddl_counts_is_inert_without_an_events_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Telemetry must never fail a run that did not ask for artifacts."""
+    monkeypatch.delenv(pytest_progress_plugin._EVENTS_DIR_ENV, raising=False)
+    pytest_progress_plugin._flush_archive_ddl_counts()
+    assert not list(tmp_path.iterdir())
