@@ -32,6 +32,7 @@ from polylogue.archive.topology.edge import (
     TopologyEdgeStatus,
     TopologyEdgeType,
     branch_type_to_edge_type,
+    topology_status_composes_sql,
 )
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, LinkType, Origin, PasteBoundary, Provider, SessionKind
@@ -2826,7 +2827,7 @@ def _union_with_existing_rows(
     is_prefix_sharing_parent = (
         conn.execute(
             "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
-            "AND COALESCE(TRIM(status), '') != 'quarantined' LIMIT 1",
+            f"AND {topology_status_composes_sql()} LIMIT 1",
             (session_id,),
         ).fetchone()
         is not None
@@ -3868,7 +3869,7 @@ def _write_session_link(
         evidence["codex_thread_spawn_edge_parent"] = hook_parent
     elif contradicted:
         method = HOOK_CONTRADICTED_LINK_METHOD
-        status = TopologyEdgeStatus.QUARANTINED.value
+        status = TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
         evidence["codex_thread_spawn_edge_parent"] = hook_parent
         evidence["contradiction"] = "authoritative hook evidence names a different parent"
 
@@ -4253,11 +4254,11 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         return
     seen.add(session_id)
     parent_link = conn.execute(
-        """
+        f"""
         SELECT resolved_dst_session_id, link_type
         FROM session_links
         WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL
-          AND COALESCE(TRIM(status), '') != 'quarantined'
+          AND {topology_status_composes_sql()}
         ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
         LIMIT 1
         """,
@@ -5932,14 +5933,14 @@ def _composed_db_signatures(
                 break
         own = own_signatures(cursor_session_id)
         edge = conn.execute(
-            """
+            f"""
             SELECT resolved_dst_session_id, branch_point_message_id
             FROM session_links
             WHERE src_session_id = ?
               AND inheritance = 'prefix-sharing'
               AND resolved_dst_session_id IS NOT NULL
               AND branch_point_message_id IS NOT NULL
-              AND COALESCE(TRIM(status), '') != 'quarantined'
+              AND {topology_status_composes_sql()}
             LIMIT 1
             """,
             (cursor_session_id,),
@@ -6321,7 +6322,7 @@ def _repair_stale_prefix_branch_points_db(
     rows make the child bail to its own tail. If the suffix maps to exactly one
     message in the resolved parent's composed transcript, update the edge to the
     composed message id. Ambiguous or unmappable rows stay visible to validation.
-    """
+    f"""
     params: list[object] = []
     scope_clause = ""
     if session_ids is not None:
@@ -6344,7 +6345,7 @@ def _repair_stale_prefix_branch_points_db(
         WHERE l.inheritance = 'prefix-sharing'
           AND l.resolved_dst_session_id IS NOT NULL
           AND l.branch_point_message_id IS NOT NULL
-          AND COALESCE(TRIM(l.status), '') != 'quarantined'
+          AND {topology_status_composes_sql("l.status")}
           {scope_clause}
           AND NOT EXISTS (
               SELECT 1 FROM messages m
@@ -6674,14 +6675,14 @@ def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tupl
     """Return ``(parent_session_id, branch_point_message_id)`` for a resolved
     prefix-sharing lineage edge, else ``None``. Mirrors the async reader."""
     row = conn.execute(
-        """
+        f"""
         SELECT resolved_dst_session_id, branch_point_message_id
         FROM session_links
         WHERE src_session_id = ?
           AND inheritance = 'prefix-sharing'
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
-          AND COALESCE(TRIM(status), '') != 'quarantined'
+          AND {topology_status_composes_sql()}
         LIMIT 1
         """,
         (session_id,),

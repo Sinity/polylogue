@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import get_args
 
 from polylogue.archive.revision_replay import ApplicationDecision
+from polylogue.archive.topology.edge import topology_status_composes_sql, topology_status_excluded_sql
 from polylogue.core.enums import (
     BranchType,
     LinkType,
@@ -1951,7 +1952,7 @@ resolved_children AS (
     FROM session_links l
     WHERE l.link_type = 'subagent'
       AND l.resolved_dst_session_id IS NOT NULL
-      AND (l.status IS NULL OR l.status != 'quarantined')
+      AND {topology_status_composes_sql("l.status")}
       AND EXISTS (
           SELECT 1 FROM delegation_refresh_scope scope
           WHERE scope.parent_session_id = l.resolved_dst_session_id
@@ -2128,7 +2129,7 @@ quarantined_rows AS (
         NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
     FROM session_links l
     WHERE l.link_type = 'subagent'
-      AND l.status = 'quarantined'
+      AND {topology_status_excluded_sql("l.status")}
       AND l.resolved_dst_session_id IS NOT NULL
       AND EXISTS (
           SELECT 1 FROM delegation_refresh_scope scope

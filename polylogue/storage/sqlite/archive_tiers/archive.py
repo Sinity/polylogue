@@ -63,6 +63,7 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
+from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import ActionResultState, Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
@@ -3067,13 +3068,13 @@ class ArchiveStore:
     def has_prefix_lineage(self, session_id: str) -> bool:
         """Return whether a session's logical transcript inherits a prefix."""
         row = self._conn.execute(
-            """
+            f"""
             SELECT 1
             FROM session_links
             WHERE src_session_id = ?
               AND inheritance = 'prefix-sharing'
               AND resolved_dst_session_id IS NOT NULL
-              AND COALESCE(TRIM(status), '') != 'quarantined'
+              AND {topology_status_composes_sql()}
             LIMIT 1
             """,
             (session_id,),

@@ -84,6 +84,37 @@ class TopologyEdgeRecord(BaseModel):
         return value
 
 
+#: The ``TopologyEdgeStatus`` values that remove an edge from lineage
+#: composition, ancestry, and every projection derived from them.
+#:
+#: This is the SINGLE definition every consumer must read. Before it existed,
+#: eight independent queries each hardcoded ``!= 'quarantined'``, so adding a
+#: second exclusion class meant finding and updating all eight -- and any miss
+#: would silently readmit an excluded edge into lineage. ``REPAIRED`` is
+#: deliberately absent: a repaired edge is one that was FIXED, so it composes.
+COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES: tuple[TopologyEdgeStatus, ...] = (
+    TopologyEdgeStatus.QUARANTINED,
+    TopologyEdgeStatus.AUTHORITY_CONTRADICTED,
+)
+
+
+def _excluded_status_sql_list() -> str:
+    return ", ".join(f"'{status.value}'" for status in COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES)
+
+
+def topology_status_composes_sql(column: str = "status") -> str:
+    """SQL predicate selecting edges that MAY participate in composition.
+
+    The values are interpolated from the enum, never from caller input.
+    """
+    return f"COALESCE(TRIM({column}), '') NOT IN ({_excluded_status_sql_list()})"
+
+
+def topology_status_excluded_sql(column: str = "status") -> str:
+    """SQL predicate selecting edges excluded from composition."""
+    return f"COALESCE(TRIM({column}), '') IN ({_excluded_status_sql_list()})"
+
+
 #: ``session_links.method`` token for an edge whose destination is backed by
 #: acquired ``codex_thread_spawn_edge`` hook evidence (polylogue-foee) rather
 #: than by transcript inference.
@@ -102,6 +133,7 @@ HOOK_DERIVED_LINK_METHODS = (HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_L
 
 
 __all__ = [
+    "COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES",
     "HOOK_AUTHORITATIVE_LINK_METHOD",
     "HOOK_CONTRADICTED_LINK_METHOD",
     "HOOK_DERIVED_LINK_METHODS",
@@ -109,4 +141,6 @@ __all__ = [
     "TopologyEdgeStatus",
     "TopologyEdgeType",
     "branch_type_to_edge_type",
+    "topology_status_composes_sql",
+    "topology_status_excluded_sql",
 ]

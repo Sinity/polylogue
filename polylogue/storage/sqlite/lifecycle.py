@@ -944,6 +944,20 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=69,
+        # session_links.status gains TopologyEdgeStatus.AUTHORITY_CONTRADICTED
+        # (polylogue-foee): a parser-inferred parent edge that acquired Codex
+        # hook evidence contradicts is now excluded from composition and
+        # retained as typed evidence, and the authoritative edge is written in
+        # its place. Widening the generated CHECK is inert for existing rows,
+        # but the new state is only PRODUCED by re-deriving edges against the
+        # durable hook spool during raw replay -- an existing generation
+        # cannot fast-forward into it, and its lineage projections would keep
+        # composing through parents the hook evidence overrules. That makes
+        # this parser-semantics-dependent, not a constraint-only widening.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

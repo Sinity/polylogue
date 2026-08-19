@@ -1023,7 +1023,7 @@ def test_contradiction_without_authoritative_winner_trips_the_check(tmp_path: Pa
                 src_session_id, dst_origin, dst_native_id, link_type,
                 status, method, observed_at_ms
             ) VALUES ('codex-session:session', 'codex-session', 'inferred-parent', 'subagent',
-                      'quarantined', ?, 100)
+                      'authority-contradicted', ?, 100)
             """,
             (HOOK_CONTRADICTED_LINK_METHOD,),
         )
@@ -1052,7 +1052,7 @@ def test_resolved_contradiction_is_reported_without_erroring(tmp_path: Path) -> 
             ) VALUES ('codex-session:session', 'codex-session', ?, 'subagent', ?, ?, 100)
             """,
             [
-                ("inferred-parent", "quarantined", HOOK_CONTRADICTED_LINK_METHOD),
+                ("inferred-parent", "authority-contradicted", HOOK_CONTRADICTED_LINK_METHOD),
                 ("hook-parent", None, HOOK_AUTHORITATIVE_LINK_METHOD),
             ],
         )

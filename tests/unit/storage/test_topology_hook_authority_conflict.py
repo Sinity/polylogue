@@ -25,13 +25,19 @@ Two structural facts drive the design under test:
    ingest and full raw replay -- survives a reindex, which is why this is a
    write-path concern rather than a convergence stage.
 
-The losing edge is marked with the EXISTING ``TopologyEdgeStatus.QUARANTINED``
-rather than a new status member, and distinguished by its ``method`` token.
-That is deliberate: six modules already exclude quarantined edges from
-composition with a hardcoded ``!= 'quarantined'`` predicate, so reusing the
-member makes exclusion correct by construction, whereas a new member would
-require every one of those call sites to be found and updated -- and any miss
-would silently readmit a contradicted edge into lineage composition.
+The losing edge carries ``TopologyEdgeStatus.AUTHORITY_CONTRADICTED``, a
+member distinct from ``QUARANTINED``. Both exclude an edge from composition,
+but they are different defects and must stay distinguishable forever: a
+quarantine is a structural cycle-break (the graph SHAPE is wrong), while an
+authority contradiction is a provenance verdict (the shape is fine; this
+particular claim was overruled). ``method`` is an unconstrained TEXT column
+and cannot carry that distinction safely.
+
+The eight queries that exclude edges from composition previously each
+hardcoded ``!= 'quarantined'``. They now read
+``topology_status_composes_sql()``, generated from
+``COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES``, so a future exclusion class cannot
+be silently readmitted by a call site nobody remembered to update.
 """
 
 from __future__ import annotations
@@ -170,7 +176,7 @@ def test_contradiction_resolves_to_the_hook_parent(tmp_path: Path) -> None:
     assert winner["resolved_dst_session_id"] == f"{Origin.CODEX_SESSION.value}:{_HOOK_PARENT}"
 
     loser = links[_PARSER_PARENT]
-    assert loser["status"] == TopologyEdgeStatus.QUARANTINED.value
+    assert loser["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
     assert loser["method"] == HOOK_CONTRADICTED_LINK_METHOD
     assert json.loads(loser["evidence_json"])["codex_thread_spawn_edge_parent"] == _HOOK_PARENT
 
@@ -221,7 +227,7 @@ def test_reparse_cannot_downgrade_authoritative_evidence(tmp_path: Path) -> None
         SELECT COUNT(*) FROM session_links
         WHERE src_session_id = ? AND status = ? AND method = ?
         """,
-        (child_id, TopologyEdgeStatus.QUARANTINED.value, HOOK_CONTRADICTED_LINK_METHOD),
+        (child_id, TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value, HOOK_CONTRADICTED_LINK_METHOD),
     ).fetchone()[0]
     assert quarantined == 1
 
@@ -242,7 +248,7 @@ def test_conflict_state_is_queryable_by_typed_status_and_method(tmp_path: Path) 
         FROM session_links
         WHERE status = ? AND method = ?
         """,
-        (TopologyEdgeStatus.QUARANTINED.value, HOOK_CONTRADICTED_LINK_METHOD),
+        (TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value, HOOK_CONTRADICTED_LINK_METHOD),
     ).fetchall()
     assert len(conflicts) == 1
     evidence = json.loads(conflicts[0]["evidence_json"])
