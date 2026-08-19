@@ -114,6 +114,7 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
+    BYTE_AUTHORITY_CENSUS_DETAIL,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
@@ -1872,7 +1873,8 @@ def record_current_parser_source_census(
     raw = conn.execute(
         """
         SELECT logical_source_key, revision_kind,
-               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0)
+               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+               source_index
         FROM raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -1899,7 +1901,28 @@ def record_current_parser_source_census(
         membership_logical_keys=membership_keys,
     )
     typed_non_session = bool(raw[2])
-    if typed_non_session:
+    # polylogue-39kcs: an append fragment is never parsed for identity --
+    # ``_persist_revision_census`` routes every ``source_index < 0`` raw
+    # straight to the byte-authority membership receipt because appends are
+    # governed by byte revision authority, not by semantic membership. That
+    # is a COMPLETE observation with an authoritative empty identity set,
+    # exactly like a typed non-session artifact, so it must be receipted as
+    # such. Recording it as ``failed`` instead left the fragment matching
+    # neither branch of ``uncensused_historical_revision_raw_ids``'s gate
+    # (complete + ``parser-observed:%``, or ``failed`` at the current
+    # resource-blocked fingerprint), so every pass re-censused it, rewrote
+    # the same receipt, and left raw-replay planning "paused until the
+    # persisted parser census completes" forever -- taking every ``full``
+    # snapshot in the same authority component down with it (the live
+    # codex 019f49d8 rollout: 767 fragments, 20 parsed fulls, ~20k messages
+    # acquired and censused but never materialized).
+    byte_governed_fragment = (
+        int(raw[3]) < 0
+        and membership_census is not None
+        and str(membership_census[0]) == "failed"
+        and str(membership_census[1]) == BYTE_AUTHORITY_CENSUS_DETAIL
+    )
+    if typed_non_session or byte_governed_fragment:
         # Terminal parser evidence and other typed non-session artifacts have
         # an authoritative empty identity set. Requiring a session logical key
         # here makes those durable dispositions impossible to freeze.
@@ -1917,7 +1940,7 @@ def record_current_parser_source_census(
         else tuple(sorted(canonical_authority_logical_key(key) for key in inherited_logical_keys or ()))
         if inherited_logical_keys is not None
         else ()
-        if typed_non_session
+        if typed_non_session or byte_governed_fragment
         else None
     )
     complete = (
@@ -1927,11 +1950,14 @@ def record_current_parser_source_census(
         and (
             bool(observed_keys)
             or typed_non_session
+            or byte_governed_fragment
             or (membership_census is not None and str(membership_census[0]) == "non_session")
         )
     )
     detail = (
-        "parser-observed: typed non-session admission established no parser identity"
+        "parser-observed: append fragment governed by byte revision authority"
+        if byte_governed_fragment and complete
+        else "parser-observed: typed non-session admission established no parser identity"
         if typed_non_session and complete
         else "parser-observed: membership census established durable authority identity"
         if membership_census is not None and complete
