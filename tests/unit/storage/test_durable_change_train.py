@@ -80,6 +80,11 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 from tests.infra.durable_schema_reset import reset_source_fixture_to_version
 
+#: Tests in this module monkeypatch ``ARCHIVE_DDL_BY_TIER``, so no test here may
+#: inherit or export a tier prototype minted from a synthetic DDL -- see
+#: ``clear_tier_prototypes`` (tests/conftest.py) and polylogue-s5iyt.
+pytestmark = pytest.mark.usefixtures("clear_tier_prototypes")
+
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
 _EMPTY_LIVENESS_DIGEST = hashlib.sha256(b"[]").hexdigest()
