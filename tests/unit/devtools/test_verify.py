@@ -106,6 +106,7 @@ def test_quick_verify_omits_pytest() -> None:
         "verify doc-commands",
         "lab schema roundtrip",
         "lab policy schema-versioning",
+        "lab policy oracle-integrity",
         "schema promotion audit",
     ]
 
