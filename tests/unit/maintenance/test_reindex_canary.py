@@ -55,6 +55,7 @@ from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite import lifecycle as lifecycle_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.lifecycle import (
     CanaryChangeOperation,
@@ -1143,8 +1144,15 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
         captured_receipt_path = cast(Path, request["schema_inference_receipt_path"])
         return Receipt()
 
-    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current_index: Path,
+        candidate_index: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured["session_ids"] = session_ids
+        captured.update(provenance)
         return _empty_comparison(current_index, candidate_index, session_ids)
 
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fake_rebuild)
@@ -1537,8 +1545,15 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
         captured["has_client_profile"] = "candidate_acceptance_checks" in request
         return Receipt()
 
-    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current_index: Path,
+        candidate_index: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured["session_ids"] = session_ids
+        captured.update(provenance)
         return _empty_comparison(current_index, candidate_index, session_ids)
 
     monkeypatch.setattr(
@@ -1570,7 +1585,11 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 ) -> None:
     root = tmp_path
     current = root / "index.db"
-    current.touch()
+    # A real database at a real pre-v44 version: the canary derives its expected
+    # signatures from the active generation's own declared schema version, so a
+    # zero-byte placeholder would silently exercise the source_version==0 path.
+    with sqlite3.connect(current) as connection:
+        connection.execute("PRAGMA user_version = 43")
     generation_id = "gen-canary"
     candidate = tmp_path / ".index-generations" / generation_id / "index.db"
     candidate.parent.mkdir(parents=True)
@@ -1611,8 +1630,15 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
         "polylogue.maintenance.reindex_canary._validate_authoritative_rebuild_receipt", lambda *args, **kwargs: None
     )
 
-    def fake_compare(current_path: Path, candidate_path: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current_path: Path,
+        candidate_path: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
+        captured.update(provenance)
         return _empty_comparison(current_path, candidate_path, session_ids)
 
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
@@ -1624,6 +1650,13 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
     assert result.comparison.candidate_index == candidate
     assert captured["paths"] == (current, candidate)
     assert captured["promote"] is False
+    # The classifier input is derived from the active generation, not ambient
+    # configuration: v43 is crossed by the packaged v44 title_ref declaration.
+    assert captured["source_index_version"] == 43
+    derived = cast("tuple[DeltaExpectation, ...]", captured["delta_expectations"])
+    assert derived
+    assert all(43 < item.version <= INDEX_SCHEMA_VERSION for item in derived)
+    assert any(item.table == "sessions" and "title_ref" in item.columns for item in derived)
 
 
 def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
