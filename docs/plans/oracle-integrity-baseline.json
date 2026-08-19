@@ -2,148 +2,206 @@
   "entries": [
     {
       "code": "ambient_path_call",
-      "detail": "line 165: resolves an ambient location via Path.home()",
+      "detail": "line 136: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/integration/test_daemon_resilience.py:361a3907b164eb99:0",
       "path": "tests/integration/test_daemon_resilience.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 419: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/api/test_facade_contracts.py:5c061908db118407:0",
       "path": "tests/unit/api/test_facade_contracts.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 318: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/archive/test_repo_identity.py:22e30da0d991ca09:0",
       "path": "tests/unit/archive/test_repo_identity.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 319: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/archive/test_repo_identity.py:c27b72e8f50ead32:0",
       "path": "tests/unit/archive/test_repo_identity.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 169: resolves an ambient location via os.path.expandvars()",
+      "fingerprint": "ambient_path_call:tests/unit/cli/test_demo_command.py:aa46a7bd18a77732:0",
       "path": "tests/unit/cli/test_demo_command.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 121: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/core/test_sampling.py:fe9b2034339d91a3:0",
       "path": "tests/unit/core/test_sampling.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 2168: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/daemon/test_daemon_cli.py:1db252b3440e1f0a:0",
       "path": "tests/unit/daemon/test_daemon_cli.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 2255: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/daemon/test_daemon_cli.py:1db252b3440e1f0a:1",
       "path": "tests/unit/daemon/test_daemon_cli.py"
     },
     {
       "code": "ambient_path_call",
       "detail": "line 644: resolves an ambient location via Path.home()",
+      "fingerprint": "ambient_path_call:tests/unit/daemon/test_web_reader.py:b07ee1d61685990a:0",
       "path": "tests/unit/daemon/test_web_reader.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 22: reads ambient path '/realm/data'",
+      "fingerprint": "ambient_path_literal:tests/unit/api/test_repo_facet_canonicalization.py:c4df12b532a48e77:0",
       "path": "tests/unit/api/test_repo_facet_canonicalization.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 30: reads ambient path '/realm/data'",
+      "fingerprint": "ambient_path_literal:tests/unit/api/test_repo_facet_canonicalization.py:684e317a2d65709e:0",
       "path": "tests/unit/api/test_repo_facet_canonicalization.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 35: reads ambient path '/realm/data'",
+      "fingerprint": "ambient_path_literal:tests/unit/api/test_repo_facet_canonicalization.py:a941a03d54af283e:0",
       "path": "tests/unit/api/test_repo_facet_canonicalization.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 71: reads ambient path '/realm/data'",
+      "fingerprint": "ambient_path_literal:tests/unit/api/test_repo_facet_canonicalization.py:fadae6753e2313c9:0",
       "path": "tests/unit/api/test_repo_facet_canonicalization.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 91: reads ambient path '~/.claude'",
+      "fingerprint": "ambient_path_literal:tests/unit/core/test_sources.py:d55727c043c8cfd9:0",
       "path": "tests/unit/core/test_sources.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 92: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/core/test_sources.py:9c3c4b401d018970:0",
       "path": "tests/unit/core/test_sources.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 207: reads ambient path '~/.claude'",
+      "fingerprint": "ambient_path_literal:tests/unit/daemon/test_provenance_endpoint.py:109443f4fa3b3522:0",
       "path": "tests/unit/daemon/test_provenance_endpoint.py"
     },
     {
       "code": "ambient_path_literal",
-      "detail": "line 1464: reads ambient path '~/.codex'",
+      "detail": "line 1456: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/daemon/test_web_reader.py:f46569ec66e263da:0",
       "path": "tests/unit/daemon/test_web_reader.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 989: reads ambient path '/realm/state'",
+      "fingerprint": "ambient_path_literal:tests/unit/scenarios/test_codex_804_live_proof.py:181294d7309992ae:0",
+      "note": "KNOWN FALSE POSITIVE. The flagged string is a workload-receipt note reading \"Sanitized structural witness only; no live /realm/state/polylogue access.\" -- prose ASSERTING the test does not touch that path, not a read of it. The hermeticity scan is syntactic and cannot distinguish a statement about a path from a use of one.",
       "path": "tests/unit/scenarios/test_codex_804_live_proof.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 1096: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/sources/test_assembly.py:208c84fb13ad7d4c:0",
       "path": "tests/unit/sources/test_assembly.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 1099: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/sources/test_assembly.py:c5dd1cf71483ef24:0",
       "path": "tests/unit/sources/test_assembly.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 1172: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/sources/test_assembly.py:208c84fb13ad7d4c:1",
       "path": "tests/unit/sources/test_assembly.py"
     },
     {
       "code": "ambient_path_literal",
       "detail": "line 1175: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/sources/test_assembly.py:6b578fb8b32ebe4e:0",
       "path": "tests/unit/sources/test_assembly.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.daemon.event_bus",
+      "fingerprint": "certifies_dead_code:tests/unit/daemon/test_event_bus.py:0094525965e44a00:0",
       "path": "tests/unit/daemon/test_event_bus.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.judgment.experiments",
+      "fingerprint": "certifies_dead_code:tests/unit/insights/judgment/test_experiments.py:30f1daccd947022f:0",
       "path": "tests/unit/insights/judgment/test_experiments.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.alert_budget",
+      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_alert_budget.py:3587d5dff72636b6:0",
       "path": "tests/unit/insights/measurement/test_alert_budget.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.evidence_ancestry",
+      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_evidence_ancestry.py:fda25e8d18180ee6:0",
       "path": "tests/unit/insights/measurement/test_evidence_ancestry.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.registration",
+      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_registration.py:56b1bf5b4258475f:0",
       "path": "tests/unit/insights/measurement/test_registration.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.uncertainty",
+      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_uncertainty.py:4167fdf8e3fb4e22:0",
       "path": "tests/unit/insights/measurement/test_uncertainty.py"
     },
     {
       "code": "certifies_dead_code",
       "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.sources.atomic_read",
+      "fingerprint": "certifies_dead_code:tests/unit/sources/test_atomic_read.py:391f771aae9ad69d:0",
       "path": "tests/unit/sources/test_atomic_read.py"
+    },
+    {
+      "code": "import_time_home_capture",
+      "detail": "line 106: module-level constant captures an ambient location via Path.home()",
+      "fingerprint": "import_time_home_capture:polylogue/schemas/observation_models.py:e210ef8d7f6a912f:0",
+      "note": "GUARDED, not an open escape. PROVIDERS' session_dir values are computed at import time, but the pattern is double-guarded (kmqwm's opt-in fallback flag and o8c3m's row_seen) and the autouse conftest guard repoints every provider session_dir per test. Baselined so the detector's coverage of this class stays visible without reporting a guarded constant as an escape. Independently AST-verified (y9106/hhg58 forensics) as the only member of this class repo-wide.",
+      "path": "polylogue/schemas/observation_models.py"
+    },
+    {
+      "code": "import_time_home_capture",
+      "detail": "line 113: module-level constant captures an ambient location via Path.home()",
+      "fingerprint": "import_time_home_capture:polylogue/schemas/observation_models.py:f809ab99c3f823d7:0",
+      "note": "GUARDED, not an open escape. PROVIDERS' session_dir values are computed at import time, but the pattern is double-guarded (kmqwm's opt-in fallback flag and o8c3m's row_seen) and the autouse conftest guard repoints every provider session_dir per test. Baselined so the detector's coverage of this class stays visible without reporting a guarded constant as an escape. Independently AST-verified (y9106/hhg58 forensics) as the only member of this class repo-wide.",
+      "path": "polylogue/schemas/observation_models.py"
+    },
+    {
+      "code": "import_time_home_capture",
+      "detail": "line 120: module-level constant captures an ambient location via Path.home()",
+      "fingerprint": "import_time_home_capture:polylogue/schemas/observation_models.py:ae46557e7caaf671:0",
+      "note": "GUARDED, not an open escape. PROVIDERS' session_dir values are computed at import time, but the pattern is double-guarded (kmqwm's opt-in fallback flag and o8c3m's row_seen) and the autouse conftest guard repoints every provider session_dir per test. Baselined so the detector's coverage of this class stays visible without reporting a guarded constant as an escape. Independently AST-verified (y9106/hhg58 forensics) as the only member of this class repo-wide.",
+      "path": "polylogue/schemas/observation_models.py"
+    },
+    {
+      "code": "import_time_home_capture",
+      "detail": "line 99: module-level constant captures an ambient location via Path.home()",
+      "fingerprint": "import_time_home_capture:polylogue/schemas/observation_models.py:77a04f0a77e677f1:0",
+      "note": "GUARDED, not an open escape. PROVIDERS' session_dir values are computed at import time, but the pattern is double-guarded (kmqwm's opt-in fallback flag and o8c3m's row_seen) and the autouse conftest guard repoints every provider session_dir per test. Baselined so the detector's coverage of this class stays visible without reporting a guarded constant as an escape. Independently AST-verified (y9106/hhg58 forensics) as the only member of this class repo-wide.",
+      "path": "polylogue/schemas/observation_models.py"
     }
   ],
   "generated_by": "devtools lab policy oracle-integrity --write-baseline",

@@ -13,9 +13,28 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from devtools import repo_root
 from devtools.oracle_integrity import BASELINE_PATH, check_oracle_integrity, load_baseline
+
+
+def _existing_notes(root: Path) -> dict[str, str]:
+    """Carry hand-written annotations across a regeneration.
+
+    A baseline entry may be annotated (for example, to record that a finding is
+    a known false positive). Regenerating must not silently drop that judgment,
+    so notes are re-attached by fingerprint.
+    """
+    path = root / BASELINE_PATH
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    notes: dict[str, str] = {}
+    for entry in payload.get("entries", []) if isinstance(payload, dict) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("fingerprint"), str) and isinstance(entry.get("note"), str):
+            notes[entry["fingerprint"]] = entry["note"]
+    return notes
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,14 +56,19 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = repo_root()
-    baseline: frozenset[tuple[str, str, str]] | None = (
-        frozenset() if (args.ignore_baseline or args.write_baseline) else None
-    )
+    baseline: frozenset[str] | None = frozenset() if (args.ignore_baseline or args.write_baseline) else None
     report = check_oracle_integrity(root, baseline=baseline)
 
     if args.write_baseline:
+        existing_notes = _existing_notes(root)
         entries = [
-            {"code": finding.code, "path": finding.path, "detail": finding.detail}
+            {
+                "code": finding.code,
+                "path": finding.path,
+                "detail": finding.detail,
+                "fingerprint": finding.fingerprint,
+                **({"note": existing_notes[finding.fingerprint]} if finding.fingerprint in existing_notes else {}),
+            }
             for finding in sorted(report.findings, key=lambda item: (item.code, item.path, item.detail))
         ]
         payload = {
@@ -59,17 +83,19 @@ def main(argv: list[str] | None = None) -> int:
         }
         target = root / BASELINE_PATH
         previous = load_baseline(root)
-        current = {(entry["code"], entry["path"], entry["detail"]) for entry in entries}
+        current = {str(entry["fingerprint"]) for entry in entries}
         added = sorted(current - previous)
         removed = sorted(previous - current)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"wrote {len(entries)} baseline entries to {BASELINE_PATH} (was {len(previous)})")
         # Regenerating a ratchet must never be a silent widening.
-        for code, path_value, detail in added:
-            print(f"  + {code} {path_value}: {detail}")
-        for code, path_value, detail in removed:
-            print(f"  - {code} {path_value}: {detail}")
+        by_fingerprint = {str(entry["fingerprint"]): entry for entry in entries}
+        for fingerprint in added:
+            entry = by_fingerprint[fingerprint]
+            print(f"  + {entry['code']} {entry['path']}: {entry['detail']}")
+        for fingerprint in removed:
+            print(f"  - {fingerprint}")
         if not added and not removed:
             print("  (no change)")
         return 0
