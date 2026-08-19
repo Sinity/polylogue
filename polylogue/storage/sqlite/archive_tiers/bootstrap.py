@@ -268,7 +268,22 @@ def _initialize_archive_tier_ddl(conn: sqlite3.Connection, tier: ArchiveTier) ->
         apply_index_benign_ddl_convergence(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
-    conn.execute(f"PRAGMA user_version = {spec.version}")
+    # Write the version ONLY when it actually changes. ``PRAGMA user_version = N``
+    # rewrites the database header even when N is already the stored value, so an
+    # unconditional write dirties a page on every same-version reapply and turns a
+    # no-op schema pass into a full commit fsync. Measured on NVMe: the whole
+    # reapply is 148.80ms with this write and 0.34ms without it, while the
+    # ``executescript`` it accompanies -- hundreds of no-op
+    # ``CREATE TABLE IF NOT EXISTS`` statements -- accounts for 0.33ms of that.
+    # The DDL was never the cost; the header write was (polylogue-c1jgh).
+    #
+    # Deliberately NOT a short-circuit of the schema pass itself: the reapply is
+    # how an existing same-version archive receives newly introduced OPS tables,
+    # and skipping it would also skip ``_ensure_schema_drift_samples_check``,
+    # which repairs a stale CHECK at an unchanged ``user_version``
+    # (#3451 / polylogue-u6tl). Only the redundant header write is removed.
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) != spec.version:
+        conn.execute(f"PRAGMA user_version = {spec.version}")
     conn.commit()
 
 
