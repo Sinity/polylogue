@@ -2330,8 +2330,16 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
     assert backlog["byte_authority_pending_count"] == 1
     assert targeted.success is False
     assert targeted.census_receipt is not None
-    assert targeted.census_receipt.quiescent is False
-    assert "persisted parser census" in targeted.detail
+    # polylogue-39kcs: the census IS quiescent here -- the current parser has
+    # fully observed this fragment and established that byte revision
+    # authority, not semantic membership, governs it. Reporting non-quiescence
+    # instead made the pass claim it was "paused until the persisted parser
+    # census completes" for a raw the census can never say anything more
+    # about, which livelocked every ``full`` snapshot sharing the component.
+    # The fragment is still debt -- just typed as the authority quarantine it
+    # actually is, rather than as unfinished census work.
+    assert targeted.census_receipt.quiescent is True
+    assert "append authority quarantine" in targeted.detail
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         cursor = source_conn.execute(
