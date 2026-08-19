@@ -127,8 +127,9 @@ It does not establish why the assistant proceeded, whether the outcome was event
 
 ## Reproducing this finding
 
-The generating harness (`devtools workspace claim-vs-evidence` and its
-private-report/calibration/publishing machinery) was retired 2026-08 once the
+The generating harness (formerly the devtools workspace claim-vs-evidence
+command, now deleted, and its private-report/calibration/publishing
+machinery) was retired 2026-08 once the
 closed campaign it served (`polylogue-sru`) had its terminal artifacts. This
 page is therefore frozen historical text: the numbers above are not
 regeneratable through a current command. The reusable query semantics behind
