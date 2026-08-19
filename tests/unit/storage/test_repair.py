@@ -5140,10 +5140,11 @@ def test_raw_materialization_converges_component_with_byte_governed_append_fragm
         store.commit()
 
     config = _config(tmp_path)
-    for _ in range(3):
-        result = repair_mod.repair_raw_materialization(config)
+    result = repair_mod.repair_raw_materialization(config)
+    for _ in range(2):
         if result.repaired_count:
             break
+        result = repair_mod.repair_raw_materialization(config)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         append_receipt = conn.execute(
