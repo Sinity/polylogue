@@ -141,10 +141,6 @@ def test_reindex_campaign_manifest_has_positive_denominators(tmp_path: Path) -> 
 # additionally load-sensitive. Each fails on exact master as well as this
 # branch -- verified by running them against master in an isolated worktree
 # -- so none is a regression from the work that marked them.
-@pytest.mark.xfail(
-    reason="polylogue-tjr4z: the canary reports 0 unexpected rows where this anti-vacuity assertion requires a real diff",
-    strict=False,
-)
 def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_duplicate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -221,6 +217,44 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
     assert not (
         {candidate.raw_id for candidate in duplicate_plan.duplicates} & set(corpus.manifest.parser_failure_raw_ids)
     )
+
+    # polylogue-tjr4z: give the canary a genuine, declared authority drift to
+    # find. The comparison below asserts unexpected_count > 0 to prove the
+    # canary read the candidate's real read model rather than a fabricated
+    # summary -- but that only proves anything while the two sides actually
+    # differ on the revision tables, and a faithful rebuild of this corpus now
+    # reproduces the active index exactly (measured: identical row counts and
+    # zero differences across every compared table).
+    #
+    # So perturb the ACTIVE index's accepted authority semantically, which is
+    # precisely the drift class the canary exists to surface. Both columns are
+    # semantic, not volatile: reindex_canary._VOLATILE_COLUMNS_BY_TABLE ignores
+    # decided_at_ms/decision_id on these tables specifically so that
+    # accepted/superseded authority drift stays visible, so a timestamp nudge
+    # would be correctly ignored and prove nothing.
+    with sqlite3.connect(root / "index.db") as drift_conn:
+        drifted_head = drift_conn.execute(
+            "SELECT logical_source_key, accepted_content_hash FROM raw_revision_heads"
+            " WHERE session_id IS NOT NULL ORDER BY logical_source_key LIMIT 1"
+        ).fetchone()
+        assert drifted_head is not None, "campaign corpus has no session-scoped accepted head to drift"
+        drift_conn.execute(
+            "UPDATE raw_revision_heads SET accepted_content_hash = ? WHERE logical_source_key = ?",
+            (bytes(reversed(bytes(drifted_head[1]))), drifted_head[0]),
+        )
+        drifted_application = drift_conn.execute(
+            "SELECT decision_id FROM raw_revision_applications"
+            " WHERE session_id IS NOT NULL AND decision != 'superseded' ORDER BY decision_id LIMIT 1"
+        ).fetchone()
+        assert drifted_application is not None, "campaign corpus has no session-scoped application to drift"
+        drift_conn.execute(
+            "UPDATE raw_revision_applications SET decision = 'superseded' WHERE decision_id = ?",
+            (drifted_application[0],),
+        )
+    # Re-anchor the untouched-active digest AFTER the deliberate drift, so the
+    # assertion after the canary still means "the canary did not write to the
+    # active index" rather than silently absorbing this edit.
+    active_before = _digest(root / "index.db")
 
     # Canary construction is daemon-writer-only. Start the production UDS
     # server and its standalone write coordinator against this exact archive;
