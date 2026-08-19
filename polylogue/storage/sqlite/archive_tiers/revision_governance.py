@@ -261,6 +261,67 @@ class ArchiveRawParsedWriteResult:
     counts: dict[str, int]
 
 
+def _reissue_accepted_head_reparse_receipt(
+    store: RawRevisionGovernanceHost,
+    *,
+    raw_id: str,
+    session_id: str,
+    content_hash: str,
+    decided_at_ms: int,
+) -> None:
+    """Move the accepted head when a reparse rewrites its own accepted raw.
+
+    polylogue-2tfug. ``raw_revision_heads`` records which raw is authoritative
+    for a logical source key AND the ``content_hash`` that raw was last known
+    to produce. An ordinary write that reparses the head's own raw into
+    different content (a parser fix, not new evidence) updated
+    ``sessions.content_hash`` and left the head's copy behind.
+    ``validate_raw_replay_application_receipt`` requires the two to agree, so
+    the stale pair reads as ledger inconsistency rather than as the legitimate
+    correction it is.
+
+    The condition is deliberately narrow -- same raw, same session, changed
+    hash -- because that is the only case where the head's authority is not in
+    question: no competing raw is claiming the key, so there is nothing to
+    adjudicate, only a recorded value to bring current. Anything else is a
+    real precedence question and still belongs to the replay path.
+    """
+    head = store._conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, acquisition_generation,
+               append_end_offset, logical_source_key
+        FROM raw_revision_heads WHERE session_id = ? AND accepted_raw_id = ?
+        """,
+        (session_id, raw_id),
+    ).fetchone()
+    if head is None:
+        return
+    accepted_content_hash = head["accepted_content_hash"]
+    new_content_hash = bytes.fromhex(content_hash)
+    if accepted_content_hash is not None and bytes(accepted_content_hash) == new_content_hash:
+        return
+    record_revision_application_sync(
+        store._conn,
+        RevisionApplicationReceipt(
+            raw_id=raw_id,
+            session_id=session_id,
+            logical_source_key=str(head["logical_source_key"]),
+            source_revision=str(head["accepted_source_revision"]),
+            acquisition_generation=int(head["acquisition_generation"]),
+            decision=ApplicationDecision.REPARSE_REAFFIRMATION,
+            accepted_raw_id=raw_id,
+            accepted_source_revision=str(head["accepted_source_revision"]),
+            accepted_content_hash=new_content_hash,
+            accepted_frontier_kind=str(head["accepted_frontier_kind"]),
+            accepted_frontier=int(head["accepted_frontier"]),
+            append_end_offset=head["append_end_offset"],
+            detail="reparse:accepted_head_content_correction",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+
+
 def _write_parsed_precedence_result(
     store: RawRevisionGovernanceHost,
     session: ParsedSession,
@@ -295,6 +356,13 @@ def _write_parsed_precedence_result(
     browser_precedence: BrowserCapturePrecedence = "default"
 
     if revision_authoritative:
+        _reissue_accepted_head_reparse_receipt(
+            store,
+            raw_id=raw_id,
+            session_id=session_id,
+            content_hash=content_hash,
+            decided_at_ms=int(time.time() * 1000),
+        )
         write_parsed_session_to_archive(
             store._conn,
             session,
@@ -423,6 +491,13 @@ def _write_parsed_precedence_result(
             counts=counts,
         )
 
+    _reissue_accepted_head_reparse_receipt(
+        store,
+        raw_id=raw_id,
+        session_id=session_id,
+        content_hash=content_hash,
+        decided_at_ms=int(time.time() * 1000),
+    )
     write_parsed_session_to_archive(
         store._conn,
         session,

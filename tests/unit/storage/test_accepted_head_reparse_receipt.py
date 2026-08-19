@@ -97,3 +97,44 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
         "raw_revision_heads.accepted_content_hash went stale against sessions.content_hash; "
         "validate_raw_replay_application_receipt rejects exactly this mismatch"
     )
+
+
+def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path) -> None:
+    """polylogue-2tfug AC4: idempotent re-ingest stays receipt-stable."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=PAYLOAD,
+            source_path=SOURCE_PATH,
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                LOGICAL_KEY,
+                RawRevisionKind.FULL,
+                hashlib.sha256(PAYLOAD).hexdigest(),
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        archive.apply_raw_revision_replay(plan, {raw_id: _session("stable parse")}, acquired_at_ms=1)
+
+    def receipt_count() -> int:
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0])
+
+    before = receipt_count()
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_parsed_for_retained_raw_result(
+            _session("stable parse"),
+            raw_id=raw_id,
+            source_path=SOURCE_PATH,
+            acquired_at_ms=2,
+        )
+
+    assert receipt_count() == before
