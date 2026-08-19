@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
 from polylogue.cli.shared.schema_rendering import render_schema_promote_result
 from polylogue.config import get_config
 from polylogue.schemas.operator.models import SchemaPromoteRequest
@@ -18,6 +20,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--with-samples", action="store_true", help="Re-load samples for full schema generation.")
     parser.add_argument("--max-samples", type=int, default=500, help="Max samples when using --with-samples.")
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
+    parser.add_argument(
+        "--privacy",
+        choices=("strict", "standard", "permissive"),
+        default=None,
+        help="Privacy preset level for the --with-samples candidate schema. Defaults to standard.",
+    )
+    parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
     return parser
 
 
@@ -25,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        privacy_config = build_schema_privacy_config(
+            privacy=args.privacy,
+            privacy_config_path=args.privacy_config,
+        )
         result = promote_schema_cluster(
             SchemaPromoteRequest(
                 provider=str(args.provider),
@@ -32,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=get_config().db_path,
                 with_samples=bool(args.with_samples),
                 max_samples=int(args.max_samples),
+                privacy_config=privacy_config,
             )
         )
     except ValueError as exc:
