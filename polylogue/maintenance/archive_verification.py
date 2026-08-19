@@ -48,6 +48,7 @@ from polylogue.logging import get_logger
 from polylogue.maintenance.corpus_fidelity import (
     audit_absences,
     audit_attachment_fidelity,
+    audit_chatgpt_content_conservation,
     audit_revision_fidelity,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -2667,6 +2668,217 @@ def _check_user_tier_refs_at_candidate(
 
 
 # ---------------------------------------------------------------------------
+# Check: active-leaf and title convergence (polylogue-2hwl)
+# ---------------------------------------------------------------------------
+
+
+def _check_active_leaf_title_convergence(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_active_leaf_title_convergence_at_index_path(_resolve_index_path(archive_root), sample_limit)
+
+
+def _check_active_leaf_title_convergence_at_index_path(index_path: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Post-convergence session-row state the streaming merge path must reach.
+
+    polylogue-2hwl's two defects both survive as *stored state*, which is why
+    this is a census and not only a parser regression test:
+
+    * ``merge_parsed_session_chunks`` recomputed ``is_active_leaf`` by
+      comparing ``provider_message_id`` against the last message's id. Retries
+      and regenerations legitimately reuse a native id at more than one
+      position, so every matching position was flagged and a session ended up
+      with several active leaves (103 sessions measured live, 2026-08-03).
+    * the merge kept ``existing.title`` unless it equalled the provider session
+      id, so a chunk-1 ``title=None`` was never replaced by a real title
+      arriving in chunk 2, and a placeholder could be stored while still
+      claiming ``title_source='origin'`` provenance.
+
+    Three predicates, all read from ``index.db`` ground truth:
+
+    1. at most one ``messages.is_active_leaf = 1`` row per session;
+    2. ``sessions.active_leaf_message_id``, when set, resolves to a message of
+       that same session -- a pointer into another session or into nothing is
+       the same convergence failure seen from the session row;
+    3. no session claims ``title_source = 'origin'`` (a real provider title)
+       while its ``title`` is missing, blank, or literally its own
+       ``native_id``. The bare-id fallback itself is legitimate and common
+       (``sources/parsers/chatgpt.py`` stores it deliberately) -- what is never
+       legitimate is stamping ORIGIN provenance onto it.
+
+    **Scope limit, stated rather than implied:** arrival-order-independent
+    winner selection is a property of the *merge function*, not of a snapshot.
+    No census over stored rows can replay a different chunk arrival order, so
+    that half of the invariant is owned by the parser-level regression tests
+    2hwl shipped. What a wrong winner leaves behind in storage is exactly
+    predicates 1--3, which is what this check measures.
+    """
+    if not index_path.exists():
+        return _skip_check("active-leaf-title-convergence", "index.db not present")
+    try:
+        conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("active-leaf-title-convergence", f"could not open index.db: {exc}", exc=exc)
+    try:
+        if not table_exists(conn, "sessions") or not table_exists(conn, "messages"):
+            return _skip_check("active-leaf-title-convergence", "sessions/messages tables not present")
+        multi_leaf_rows = conn.execute(
+            """
+            SELECT session_id, COUNT(*) AS leaf_count
+            FROM messages
+            WHERE is_active_leaf = 1
+            GROUP BY session_id
+            HAVING COUNT(*) > 1
+            ORDER BY leaf_count DESC, session_id
+            """
+        ).fetchall()
+        dangling_pointer_rows = conn.execute(
+            """
+            SELECT s.session_id, s.active_leaf_message_id
+            FROM sessions AS s
+            WHERE s.active_leaf_message_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM messages AS m
+                  WHERE m.message_id = s.active_leaf_message_id
+                    AND m.session_id = s.session_id
+              )
+            ORDER BY s.session_id
+            """
+        ).fetchall()
+        placeholder_title_rows = conn.execute(
+            """
+            SELECT session_id, native_id, COALESCE(title, '')
+            FROM sessions
+            WHERE title_source = 'origin'
+              AND (title IS NULL OR TRIM(title) = '' OR title = native_id)
+            ORDER BY session_id
+            """
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return _error_check("active-leaf-title-convergence", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    multi_leaf_sessions = len(multi_leaf_rows)
+    dangling_pointers = len(dangling_pointer_rows)
+    placeholder_titles = len(placeholder_title_rows)
+    offending = multi_leaf_sessions + dangling_pointers + placeholder_titles
+    details = [f"multi-leaf:{row[0]}({row[1]})" for row in multi_leaf_rows[:sample_limit]]
+    details.extend(f"dangling-active-leaf:{row[0]}" for row in dangling_pointer_rows[:sample_limit])
+    details.extend(f"origin-titled-placeholder:{row[0]}" for row in placeholder_title_rows[:sample_limit])
+    summary = (
+        f"{multi_leaf_sessions:,} session(s) with multiple active leaves, "
+        f"{dangling_pointers:,} unresolvable active-leaf pointer(s), "
+        f"{placeholder_titles:,} origin-titled placeholder(s)"
+        if offending
+        else "every session has at most one active leaf, a resolvable pointer, and no origin-titled placeholder"
+    )
+    return ArchiveVerificationCheck(
+        name="active-leaf-title-convergence",
+        status=OutcomeStatus.ERROR if offending else OutcomeStatus.OK,
+        summary=summary,
+        count=offending,
+        details=details[: sample_limit * 3],
+        evidence={
+            "multi_active_leaf_session_count": multi_leaf_sessions,
+            "worst_active_leaf_count": int(multi_leaf_rows[0][1]) if multi_leaf_rows else 0,
+            "unresolvable_active_leaf_pointer_count": dangling_pointers,
+            "origin_titled_placeholder_count": placeholder_titles,
+            "multi_active_leaf_sample": [
+                {"session_id": str(row[0]), "active_leaf_count": int(row[1])} for row in multi_leaf_rows[:sample_limit]
+            ],
+            "unresolvable_pointer_sample": [
+                {"session_id": str(row[0]), "active_leaf_message_id": str(row[1])}
+                for row in dangling_pointer_rows[:sample_limit]
+            ],
+            "origin_titled_placeholder_sample": [
+                {"session_id": str(row[0]), "native_id": str(row[1]), "title": str(row[2])}
+                for row in placeholder_title_rows[:sample_limit]
+            ],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: ChatGPT parse-boundary content conservation (polylogue-xofj)
+# ---------------------------------------------------------------------------
+
+
+def _check_chatgpt_content_conservation(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_chatgpt_content_conservation_at_index_path(
+        archive_root, _resolve_index_path(archive_root), sample_limit
+    )
+
+
+def _check_chatgpt_content_conservation_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Re-read acquired ChatGPT bytes and require every content unit to survive.
+
+    The detector class polylogue-xofj's parent note called for and this
+    registry lacked. Every other conservation check here compares one indexed
+    projection with another indexed relation, so a content unit the parser
+    never emitted is outside all of their universes by construction: nothing
+    counted it on the way in. This check's universe is the durable blob, so a
+    ``content_type`` the parser has no branch for -- the exact shape of the
+    ``tether_quote``/``sonic_webpage``/``system_error``/``citable_code_output``
+    class xofj fixed -- shows up as a drop with its provider content type
+    named, instead of as silence.
+    """
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    blob_root = archive_root / "blob"
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("chatgpt-content-conservation", "source.db or index.db not present")
+    if not blob_root.exists():
+        return _skip_check("chatgpt-content-conservation", "blob namespace not present")
+    try:
+        source = _open_ro(source_path)
+        index = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("chatgpt-content-conservation", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        if not table_exists(source, "raw_sessions"):
+            return _skip_check("chatgpt-content-conservation", "raw_sessions table not present")
+        evidence = audit_chatgpt_content_conservation(
+            source, index, BlobStore(blob_root).read_all, sample_limit=sample_limit
+        )
+    except sqlite3.Error as exc:
+        return _error_check("chatgpt-content-conservation", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index.close()
+        source.close()
+
+    dropped = int(evidence["content_units_dropped"])
+    conserved = int(evidence["content_units_conserved"])
+    if not evidence["documents_measured"]:
+        return ArchiveVerificationCheck(
+            name="chatgpt-content-conservation",
+            status=OutcomeStatus.OK,
+            summary="no indexed chatgpt-export document has acquired raw bytes to measure",
+            evidence=evidence,
+        )
+    summary = (
+        f"{dropped:,} content unit(s) dropped at the parse boundary across "
+        f"{evidence['documents_with_dropped_content']:,} document(s): "
+        + ", ".join(f"{name}={count:,}" for name, count in evidence["dropped_by_content_type"].items())
+        if dropped
+        else (
+            f"all {conserved:,} content unit(s) across {evidence['documents_measured']:,} "
+            "chatgpt-export document(s) materialize"
+        )
+    )
+    return ArchiveVerificationCheck(
+        name="chatgpt-content-conservation",
+        status=OutcomeStatus.ERROR if dropped else OutcomeStatus.OK,
+        summary=summary,
+        count=dropped,
+        details=[
+            f"{item['session_id']}:{item['provider_message_id']}[{item['content_type']}]"
+            for item in evidence["dropped_sample"]
+        ],
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
 
@@ -3150,6 +3362,45 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         ),
         candidate_mode=_CROSS_TIER,
         candidate_run=_check_corpus_revision_fidelity_at_index_path,
+        live_receipt_required=True,
+    ),
+    _registry_spec(
+        "active-leaf-title-convergence",
+        "At most one active leaf per session, a resolvable sessions.active_leaf_message_id, and no "
+        "origin-titled placeholder title (polylogue-2hwl).",
+        _check_active_leaf_title_convergence,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-2hwl",
+        universe_tables=("index.db.sessions", "index.db.messages"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "second active-leaf message in one session",
+            "test_second_active_leaf_trips_active_leaf_title_convergence",
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        daemon_schedule=_MEDIUM,
+        live_receipt_required=True,
+    ),
+    _registry_spec(
+        "chatgpt-content-conservation",
+        "Every content-bearing node in the newest acquired chatgpt-export revision materializes as an "
+        "indexed message; drops are reported by provider content_type (polylogue-xofj).",
+        _check_chatgpt_content_conservation,
+        ArchiveVerificationCheckClass.CONSERVATION,
+        incident_bead="polylogue-xofj",
+        universe_tables=("source.db.raw_sessions", "blob", "index.db.messages"),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "raw node whose content_type the parser drops",
+            "test_dropped_raw_node_trips_chatgpt_content_conservation",
+        ),
+        execution_phases=_phases(
+            ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE,
+            ArchiveVerificationExecutionPhase.CORPUS_FIDELITY,
+        ),
+        candidate_mode=_CROSS_TIER,
+        candidate_run=_check_chatgpt_content_conservation_at_index_path,
         live_receipt_required=True,
     ),
 )
