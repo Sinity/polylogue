@@ -336,6 +336,7 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
         request.provider,
         request.cluster_id,
         samples=samples,
+        privacy_config=_privacy_config(request.privacy_config),
     )
     return SchemaPromoteResult(
         provider=request.provider,
