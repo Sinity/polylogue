@@ -101,6 +101,97 @@ class ExpectedDifference:
 
 
 @dataclass(frozen=True, slots=True)
+class DeltaExpectation:
+    """A row-difference signature authorized by one declared index delta.
+
+    This is the *derived* half of the classifier.  ``ExpectedDifference`` is
+    hand-authored and pins an exact row identity; a delta declaration is written
+    before the rebuild runs and cannot know which rows it will touch, so it
+    states a shape instead: table, operations, the columns it may change, and
+    (for a targeted reprocess) the session scope it is allowed to touch.
+
+    Every narrowing here is load-bearing.  ``changed_columns`` must be a
+    non-empty subset of the declared columns, so a delta that declares one
+    column cannot absorb a row that also changed a second, undeclared one --
+    the same rule :func:`_validate_expected_review_authorities` applies to a
+    human review, applied automatically at comparison time.
+    """
+
+    version: int
+    table: str
+    operations: tuple[DifferenceOperation, ...]
+    columns: tuple[str, ...]
+    origin: str | None = None
+    session_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.table or not self.operations or not self.columns:
+            raise ValueError("delta expectations require a table, operation, and changed-column signature")
+
+    def matches(
+        self,
+        *,
+        table: str,
+        operation: DifferenceOperation,
+        identity: tuple[tuple[str, object], ...],
+        changed_columns: tuple[str, ...],
+    ) -> bool:
+        if self.table != table or operation not in self.operations:
+            return False
+        if not changed_columns or not set(changed_columns) <= set(self.columns):
+            return False
+        if self.origin is None and not self.session_ids:
+            return True
+        session_id = _session_id_from_identity(dict(identity))
+        if session_id is None:
+            return False
+        if self.origin is not None and not session_id.startswith(f"{self.origin}:"):
+            return False
+        return not self.session_ids or session_id in self.session_ids
+
+
+def index_delta_expectations(
+    source_version: int,
+    target_version: int,
+    *,
+    declarations: object = None,
+) -> tuple[DeltaExpectation, ...]:
+    """Derive the change signatures the crossed index deltas authorize.
+
+    ``source_version`` is the active generation's ``PRAGMA user_version`` and
+    ``target_version`` is the version the candidate was built at.  Only
+    declarations that actually claim semantic work contribute; a shape-only
+    delta cannot authorize a semantic row change and its declaration is refused
+    the chance to try (``IndexDeltaDeclaration.__post_init__`` already forbids
+    it from carrying canary changes at all).
+    """
+    from polylogue.storage.sqlite.lifecycle import (
+        IndexDeltaDeclaration,
+        index_delta_declarations_between,
+    )
+
+    typed = cast("tuple[IndexDeltaDeclaration, ...] | None", declarations)
+    crossed = index_delta_declarations_between(source_version, target_version, typed)
+    expectations: list[DeltaExpectation] = []
+    for declaration in crossed:
+        if not (declaration.requires_semantic_reparse or declaration.requires_targeted_reprocess):
+            continue
+        scope = declaration.reprocess_scope
+        for change in declaration.expected_canary_changes:
+            expectations.append(
+                DeltaExpectation(
+                    version=declaration.version,
+                    table=change.table,
+                    operations=tuple(DifferenceOperation(value) for value in change.operations),
+                    columns=tuple(change.columns),
+                    origin=None if scope is None else scope.origin,
+                    session_ids=() if scope is None else tuple(scope.session_ids),
+                )
+            )
+    return tuple(expectations)
+
+
+@dataclass(frozen=True, slots=True)
 class RowDifference:
     """One canonical row-level difference in the canary changelog."""
 
@@ -137,6 +228,13 @@ class CanaryDiffReport:
     missing_tables: tuple[str, ...]
     missing_columns: tuple[tuple[str, tuple[str, ...]], ...]
     differences: tuple[RowDifference, ...]
+    # Delta provenance for the classifier: the active generation's own index
+    # version, and the crossed versions that ship no declaration at all.  An
+    # undeclared version authorizes nothing, so its effects land in the
+    # unexpected bucket -- naming it keeps that a stated gap rather than an
+    # unexplained pile of rows.
+    source_index_version: int | None = None
+    undeclared_delta_versions: tuple[int, ...] = ()
 
     @property
     def expected_count(self) -> int:
@@ -164,6 +262,10 @@ class CanaryDiffReport:
             "compared_tables": list(self.compared_tables),
             "missing_tables": list(self.missing_tables),
             "missing_columns": [{"table": table, "columns": list(columns)} for table, columns in self.missing_columns],
+            "delta_coverage": {
+                "source_index_version": self.source_index_version,
+                "undeclared_delta_versions": list(self.undeclared_delta_versions),
+            },
             "summary": {
                 "difference_count": len(self.differences),
                 "expected_count": self.expected_count,
@@ -429,10 +531,16 @@ def run_reindex_canary(
             receipt=receipt,
         )
         _validate_authoritative_rebuild_receipt(receipt_payload, candidate_path)
+        from polylogue.storage.sqlite.lifecycle import undeclared_index_delta_versions
+
+        source_index_version = _index_user_version(current_index)
         comparison = compare_reindex_generations(
             current_index,
             candidate_path,
             session_ids=selection.selected_session_ids,
+            delta_expectations=index_delta_expectations(source_index_version, INDEX_SCHEMA_VERSION),
+            source_index_version=source_index_version,
+            undeclared_delta_versions=undeclared_index_delta_versions(source_index_version, INDEX_SCHEMA_VERSION),
         )
         if comparison.session_ids != selection.selected_session_ids:
             raise CanarySelectionError("canary comparator scope does not match the selected sessions")
@@ -447,6 +555,16 @@ def run_reindex_canary(
         comparison=comparison,
         rebuild_receipt=receipt_payload,
     )
+
+
+def _index_user_version(path: Path) -> int:
+    """Read the active generation's own declared index schema version."""
+
+    with _open_read_only(path) as connection:
+        row = connection.execute("PRAGMA user_version").fetchone()
+    if row is None:
+        raise CanarySelectionError(f"index has no declared schema version: {path}")
+    return int(row[0])
 
 
 def _discard_canary_candidate(archive_root: Path, receipt: object) -> list[BaseException]:
@@ -1823,6 +1941,13 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
         if not (declaration.requires_semantic_reparse or declaration.requires_targeted_reprocess):
             unrelated_reviews.append(f"delta {authority_id} does not declare a semantic reparse")
             continue
+        # A SEMANTIC_REPARSE declaration ships no fast-forward SQL by design --
+        # it routes to a full rebuild instead -- so its comparable table scope
+        # cannot come from ``operations``.  Reading it from the declaration's
+        # own ``expected_canary_changes`` is what lets a semantic delta author
+        # an expected difference at all; sourcing it only from ``operations``
+        # made every semantic delta structurally unable to approve the very
+        # rows a reindex exists to change.
         declared_tables = {
             object_name
             for operation in declaration.operations
@@ -1924,6 +2049,9 @@ def compare_reindex_generations(
     *,
     session_ids: Iterable[str] = (),
     expected: Iterable[ExpectedDifference] = (),
+    delta_expectations: Iterable[DeltaExpectation] = (),
+    source_index_version: int | None = None,
+    undeclared_delta_versions: Iterable[int] = (),
 ) -> CanaryDiffReport:
     """Compare real generation read models without mutating either database.
 
@@ -1942,6 +2070,7 @@ def compare_reindex_generations(
         raise FileNotFoundError(f"candidate index does not exist: {candidate_path}")
 
     reviewed = tuple(expected)
+    declared = tuple(delta_expectations)
     with _open_read_only(current_path) as current, _open_read_only(candidate_path) as candidate:
         current_tables = _read_model_tables(current)
         candidate_tables = _read_model_tables(candidate)
@@ -1970,6 +2099,7 @@ def compare_reindex_generations(
                     after=after,
                     changed_columns=changed_columns,
                     expected=reviewed,
+                    delta_expectations=declared,
                 )
             )
         for table in compared_tables:
@@ -1989,6 +2119,7 @@ def compare_reindex_generations(
                         after=None,
                         changed_columns=(column,),
                         expected=reviewed,
+                        delta_expectations=declared,
                     )
                 )
             for column in sorted(only_candidate):
@@ -2001,6 +2132,7 @@ def compare_reindex_generations(
                         after={"table": table, "column": column},
                         changed_columns=(column,),
                         expected=reviewed,
+                        delta_expectations=declared,
                     )
                 )
         selected_sessions = _selected_session_ids(current, candidate, session_ids)
@@ -2013,6 +2145,7 @@ def compare_reindex_generations(
                     candidate,
                     session_ids=selected_sessions,
                     expected=reviewed,
+                    delta_expectations=declared,
                 )
             )
 
@@ -2024,6 +2157,8 @@ def compare_reindex_generations(
         missing_tables=missing_tables,
         missing_columns=tuple(missing_columns),
         differences=tuple(differences),
+        source_index_version=source_index_version,
+        undeclared_delta_versions=tuple(undeclared_delta_versions),
     )
 
 
@@ -2109,6 +2244,7 @@ def _compare_table(
     *,
     session_ids: tuple[str, ...],
     expected: tuple[ExpectedDifference, ...],
+    delta_expectations: tuple[DeltaExpectation, ...] = (),
 ) -> list[RowDifference]:
     current_columns = _table_columns(current, table)
     candidate_columns = _table_columns(candidate, table)
@@ -2150,6 +2286,7 @@ def _compare_table(
                 after=after,
                 changed_columns=changed_columns,
                 expected=expected,
+                delta_expectations=delta_expectations,
             )
         )
     return differences
@@ -2164,6 +2301,7 @@ def _build_difference(
     after: dict[str, object] | None,
     changed_columns: tuple[str, ...],
     expected: tuple[ExpectedDifference, ...],
+    delta_expectations: tuple[DeltaExpectation, ...] = (),
 ) -> RowDifference:
     matching = next(
         (
@@ -2173,6 +2311,37 @@ def _build_difference(
         ),
         None,
     )
+    delta_match = (
+        None
+        if matching is not None
+        else next(
+            (
+                item
+                for item in delta_expectations
+                if item.matches(
+                    table=table,
+                    operation=operation,
+                    identity=identity,
+                    changed_columns=changed_columns,
+                )
+            ),
+            None,
+        )
+    )
+    if matching is None and delta_match is not None:
+        return RowDifference(
+            table=table,
+            operation=operation,
+            identity=identity,
+            before=before,
+            after=after,
+            changed_columns=changed_columns,
+            classification=DifferenceClassification.EXPECTED,
+            rationale=(
+                f"index delta {delta_match.version}: declared canary change for "
+                f"{delta_match.table}.{'/'.join(delta_match.columns)}"
+            ),
+        )
     return RowDifference(
         table=table,
         operation=operation,
@@ -2241,6 +2410,7 @@ __all__ = [
     "CanarySelection",
     "CanarySelectionError",
     "DurableCanaryReport",
+    "DeltaExpectation",
     "DifferenceClassification",
     "DifferenceOperation",
     "ExpectedDifference",
@@ -2249,6 +2419,7 @@ __all__ = [
     "approve_canary_report",
     "approve_canary_report_under_daemon_ownership",
     "compare_reindex_generations",
+    "index_delta_expectations",
     "load_canary_report",
     "run_reindex_canary",
     "select_canary_sessions",
