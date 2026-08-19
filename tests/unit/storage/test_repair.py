@@ -5042,3 +5042,114 @@ def test_raw_materialization_whale_pass_commit_batches_bounded(tmp_path: Path) -
     assert coarse_count >= 1
     assert fine_count > coarse_count
     assert fine_count <= raw_count
+
+
+def test_raw_materialization_converges_component_with_byte_governed_append_fragment(
+    tmp_path: Path,
+) -> None:
+    """polylogue-39kcs: a byte-governed append fragment must not pause planning forever.
+
+    Codex rollout captures grow in place, so one logical source accumulates
+    both ``full`` snapshots and ``append`` fragments. Append fragments are
+    deliberately never parsed for identity -- ``_persist_revision_census``
+    routes every ``source_index < 0`` raw straight to the byte-authority
+    membership receipt (``BYTE_AUTHORITY_CENSUS_DETAIL``) instead. That in
+    turn makes ``record_raw_authority_parser_census`` write a ``failed``
+    parser receipt carrying the same detail, which satisfies neither branch
+    of ``uncensused_historical_revision_raw_ids``'s census-complete gate
+    (``parser-observed:%`` complete, or a resource-blocked ``failed``
+    receipt at the current envelope). The fragment is therefore reported
+    uncensused on every pass, planning stays "paused until the persisted
+    parser census completes", and every ``full`` snapshot sharing the
+    component is never replayed -- the live 019f49d8 rollout
+    (767 append fragments, 20 cleanly parsed fulls, ~20k messages) has sat
+    unmaterialized in exactly this state.
+
+    Drives the real ``repair_raw_materialization`` entry point, not the
+    census helper directly, because the livelock is a property of the pass's
+    census/planning handshake rather than of either half alone.
+    """
+    from polylogue.archive.revision_authority import (
+        RawRevisionAuthority,
+        RawRevisionEnvelope,
+        RawRevisionKind,
+    )
+    from polylogue.sources.revision_backfill import uncensused_historical_revision_raw_ids
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    key = "codex:growing-rollout"
+    baseline = _codex_conversation_bytes("growing-rollout")
+    grown = baseline + (
+        b'{"type":"response_item","payload":{"type":"message","id":"m-second",'
+        b'"role":"assistant","content":[{"type":"output_text","text":"tail"}]}}\n'
+    )
+    tail = grown[len(baseline) :]
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
+        full_raw_ids = []
+        for index, payload in enumerate((baseline, grown)):
+            raw_id = store.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="rollout.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            store.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    key,
+                    RawRevisionKind.FULL,
+                    raw_id,
+                    0,
+                    authority=RawRevisionAuthority.QUARANTINED,
+                ),
+            )
+            full_raw_ids.append(raw_id)
+        # An orphan append fragment: byte-governed, never parsed, and (like
+        # the live 019f49d8 fragments) chained to a predecessor revision that
+        # has no full row of its own, so it can never be promoted.
+        append_raw_id = store.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=tail,
+            source_path="rollout.jsonl",
+            source_index=-1,
+            acquired_at_ms=3,
+        )
+        store.bind_raw_revision(
+            append_raw_id,
+            RawRevisionEnvelope(
+                key,
+                RawRevisionKind.APPEND,
+                append_raw_id,
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+                predecessor_source_revision="0" * 64,
+                append_start_offset=len(baseline),
+                append_end_offset=len(grown),
+            ),
+        )
+        store.commit()
+
+    config = _config(tmp_path)
+    for _ in range(3):
+        result = repair_mod.repair_raw_materialization(config)
+        if result.repaired_count:
+            break
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        append_receipt = conn.execute(
+            "SELECT status, detail FROM raw_authority_parser_census WHERE raw_id = ?",
+            (append_raw_id,),
+        ).fetchone()
+
+    # The fragment's parser receipt must be a terminal, census-complete
+    # answer -- not a 'failed' row the census gate re-selects forever.
+    assert append_receipt is not None
+    assert uncensused_historical_revision_raw_ids(tmp_path, [append_raw_id]) == ()
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        sessions = conn.execute("SELECT session_id FROM sessions").fetchall()
+    assert sessions == [("codex-session:growing-rollout",)], (
+        f"component never materialized; append receipt={append_receipt!r} detail={result.detail!r}"
+    )
