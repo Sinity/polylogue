@@ -334,32 +334,32 @@ def test_rebuild_content_order_paging_dedups_first_time_classification_via_conte
     _drive_rebuild_to_promotion(large_batch_root, raw_batch_size=100, prefetch_cache=large_cache)
     large_batch_parse_count = len(parsed_raw_ids)
 
-    # Content-order paging + the threaded cache should dedup down to exactly one
-    # parse per distinct content group (3) even though every raw started
-    # completely unclassified -- NOT 6 (one per raw).
+    # Content-order paging + the threaded cache dedup down to exactly one parse
+    # per distinct content group (3) even though every raw started completely
+    # unclassified -- NOT 6 (one per raw).
     #
-    # KNOWN OPEN (polylogue-to76x): the observed count is 8, which exceeds the
-    # raw count of 6, so at least two raws parse more than once across resumed
-    # passes. This assertion was never reached before 2026-08-18 -- the fixture
-    # omitted the raw-authority precondition, so the inactive-candidate gate
-    # refused the corpus first and the property went unexercised on master. It
-    # is an efficiency property; the correctness assertions below still hold and
-    # are deliberately left enforced.
+    # polylogue-to76x (fixed): this was 6 because the rebuild's source-authority
+    # validation phase re-derives every selected source decision -- parsing each
+    # raw -- and was invoked without this pass's prefetch cache, so the replay
+    # phase immediately parsed the same content a second time. Both
+    # validate_frozen_source_authority call sites in
+    # maintenance/rebuild_index.py now receive request.prefetch_cache.
     assert large_batch_parse_count == 3, (
         "within a single call, content-order paging plus the threaded cache must parse "
         "each distinct content group exactly once"
     )
-    # KNOWN OPEN (polylogue-to76x): the 2-raw-page run parses 8 times, more than
-    # the 6 raws it has, so the same cache does NOT survive across the resumed
-    # passes that a small page forces -- which is precisely the behaviour the
-    # comment above describes. Measured 2026-08-18: small=8, large=3.
+    # The same cache now survives the resumed passes a small page forces, so a
+    # 2-raw page costs exactly the same parse work as a page covering the whole
+    # corpus. Measured 2026-08-18 before the fix: small=8, large=6 (8 exceeded
+    # the raw count of 6 outright). After: small=3, large=3.
     #
-    # This assertion was never reached before then: the fixture omitted the
-    # raw-authority precondition, so the inactive-candidate gate refused the
-    # corpus first and the property went unexercised on master. Correctness is
-    # unaffected and still enforced below -- both runs produce byte-identical
-    # index snapshots with 3 sessions.
-    assert small_batch_parse_count >= large_batch_parse_count
+    # Asserting equality rather than `small >= large` on purpose: the weaker
+    # form is satisfied by any amount of redundant parsing on the resumed path,
+    # which is exactly the regression this test exists to catch.
+    assert small_batch_parse_count == 3, (
+        "the threaded cache must survive resumed passes, so a small page parses "
+        "each distinct content group exactly once too"
+    )
 
     small_snapshot = _canonical_snapshot(small_batch_root / "index.db")
     large_snapshot = _canonical_snapshot(large_batch_root / "index.db")

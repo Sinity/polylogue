@@ -1609,7 +1609,16 @@ async def _rebuild_index_from_source_owned(
                 transaction = generation_store.load_transaction(request.operation_id)
                 transaction = _reconcile_active_generation_transaction(generation_store, transaction)
             else:
-                validate_frozen_source_authority(root)
+                # polylogue-to76x: share this pass's parse cache with the
+                # validation phase. validate_frozen_source_authority re-derives
+                # every source decision, which parses every selected raw; the
+                # replay phase below then parses the SAME content again because
+                # it only ever sees an empty cache. Threading the caller's cache
+                # in makes the second phase reuse the first phase's parses
+                # instead of repeating them. When no caller supplied one (every
+                # CLI/HTTP path) this stays None and behaviour is unchanged --
+                # the replay phase still warms its own cache further down.
+                validate_frozen_source_authority(root, prefetch_cache=request.prefetch_cache)
                 transaction = _create_rebuild_transaction_after_receipt_validation(
                     generation_store, request, provenance
                 )
@@ -1693,9 +1702,15 @@ async def _rebuild_index_from_source_owned(
             selected_raw_count = len(selected_raw_ids)
             skipped_by_blob_limit_count = 0
             if not transaction_created_here and selected_raw_ids:
+                # polylogue-to76x: the resumed-pass twin of the first-pass
+                # validation below. Same reason it needs the cache: this
+                # re-derives every selected source decision (parsing this
+                # page's raws) immediately before the replay phase parses the
+                # same page again.
                 validate_frozen_source_authority(
                     root,
                     selected_raw_ids=selected_raw_ids,
+                    prefetch_cache=request.prefetch_cache,
                 )
         else:
             selection_started_at = time.perf_counter()
