@@ -480,6 +480,24 @@ def compose_vintage_variant_pair(
     ``extract_new_shape`` mirror what two different parser versions would
     do, letting a test prove extracted content is equal despite the wire
     difference.
+
+    Scope, deliberately narrow (``polylogue-0qfy`` composer-fidelity note,
+    2026-08-04). This is a GENERIC illustrative shape pair. Its ``old``/``new``
+    documents belong to no real provider schema, and the extractors above are
+    hand-written stand-ins -- no production parser or classifier reads them. It
+    therefore demonstrates the general "same content, different wire vintage"
+    mechanism and nothing more.
+
+    In particular it does NOT exercise the branch the measured claude-ai-export
+    cohort hit (redundant single text ``content_blocks`` presence flipping
+    ``_message_hash_payload``, which read as a real membership conflict). Do not
+    treat this composer as evidence for that bug or for the ``ey4ro`` zoo's
+    ``content-blocks-vintage`` row. The real-route proof for that cohort is
+    ``tests/infra/claude_vintage_live_proof.py`` /
+    ``tests/unit/infra/test_claude_vintage_live_proof.py``, built on
+    ``pathology_zoo._claude_vintage_live_proof_payload``, which drives the
+    production ``parse_ai`` -> ``session_revision_projection`` ->
+    ``classify_membership_revisions`` route and carries its own red mutation.
     """
     resolved_turns = turns or (("user", "Hello"), ("assistant", "Hi there!"), ("user", "How are you?"))
 
