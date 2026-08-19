@@ -2712,6 +2712,15 @@ def build_verify_steps(
                 # failure surfaces as an unqueryable live archive rather than
                 # as a test failure.
                 ("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")),
+                # Static, seconds-scale, archive-independent. A test whose
+                # entire target set is production-unreachable stays green
+                # forever regardless of live behaviour, and a test that reads
+                # ~/.codex reads the developer's machine -- neither failure can
+                # surface as a test failure, by construction, which is why the
+                # gate has to live here rather than in the suite it audits.
+                # Ratcheted against docs/plans/oracle-integrity-baseline.json:
+                # pre-existing findings are exempt, new ones fail.
+                ("lab policy oracle-integrity", _devtools_cmd("lab policy oracle-integrity")),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.

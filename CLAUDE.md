@@ -697,6 +697,20 @@ Core loop:
   remedy, why it selected what it did, non-green tests, failing steps. Use it
   before hand-reading receipt JSON.
 - `devtools lab …` — executable schema/provider/pipeline/lane checks.
+- `devtools lab policy oracle-integrity` — the anti-vacuity gate, in
+  `devtools verify --quick`. Fails a test module whose **entire** production
+  target set is unreachable from an entrypoint ("certifies dead code") and any
+  test that reads an ambient `~/.codex` / `~/.claude` / `/realm` path instead
+  of a fixture. Reachability is module-level over the import graph and
+  additionally seeded from the string-keyed dispatch registries (Click lazy
+  commands, `REPAIR_HANDLERS`, `ARCHIVE_VERIFICATION_CHECKS`), because import
+  edges alone under-report — this repo has four recorded wrong deletions
+  derived from grep. `--ignore-baseline` prints the pre-existing findings,
+  which are the WS-F deletion worklist in
+  `docs/plans/oracle-integrity-baseline.json`; `--write-baseline` regenerates
+  it. A `[type-only]` module reaches production **only** through a
+  `TYPE_CHECKING` import: reported for a human, never failed, and never proof
+  of dead code.
 - `devtools workspace …` — task history, worktree-gc, evidence.
 
 Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
