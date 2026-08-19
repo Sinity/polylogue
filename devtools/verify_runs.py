@@ -1237,6 +1237,12 @@ def aggregate_pytest_statistics(
             "complete": True
             if isinstance(parent_cleanup, str) and parent_cleanup
             else containment.get("tmpfs_cleanup_complete"),
+            # Carried so an incomplete cleanup explains itself. `complete` gates
+            # release-baseline authority, and until 2026-08-19 a False here left
+            # no evidence of which reclaimer failed or what survived
+            # (polylogue-b9yw7).
+            "reason": containment.get("tmpfs_cleanup_reason"),
+            "residual": containment.get("tmpfs_cleanup_residual"),
             "termination_reason": containment.get("termination_reason"),
             "escalated_to_sigkill": containment.get("escalated_to_sigkill"),
             "exit_code": containment.get("exit_code", (step_result or {}).get("exit")),

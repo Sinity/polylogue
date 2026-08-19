@@ -24,6 +24,7 @@ from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
     cleanup_managed_tmpfs_path,
+    describe_managed_tmpfs_cleanup,
     read_receipt,
     signal_process_identity,
     termination_request_path,
@@ -81,6 +82,52 @@ def test_cleanup_managed_tmpfs_path_removes_read_only_artifact_trees(tmp_path: P
             for candidate in sorted(run_root.rglob("*"), reverse=True):
                 with contextlib.suppress(OSError):
                     candidate.chmod(candidate.stat().st_mode | 0o200)
+
+
+def test_managed_tmpfs_cleanup_explains_each_outcome(tmp_path: Path) -> None:
+    """An incomplete cleanup must say why: it silently gates release authority."""
+    run_root = Path("/dev/shm") / f"pytest-polylogue-explain-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        run_root.mkdir()
+        (run_root / "payload").write_text("temporary", encoding="utf-8")
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(run_root)
+        assert (complete, residual) == (True, [])
+        assert "reclaimed" in reason
+
+        # Already gone is a completed cleanup, not a failed one.
+        assert describe_managed_tmpfs_cleanup(run_root)[0] is True
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(None)
+        assert complete is False
+        assert reason and residual == []
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(tmp_path / "pytest-polylogue-not-tmpfs")
+        assert complete is False
+        assert "/dev/shm" in reason
+    finally:
+        shutil.rmtree(run_root, ignore_errors=True)
+
+
+def test_managed_tmpfs_cleanup_reports_survivors_when_the_tree_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A surviving tree names its survivors, so a leak is separable from a race."""
+    run_root = Path("/dev/shm") / f"pytest-polylogue-survive-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        run_root.mkdir()
+        (run_root / "nested").mkdir()
+        (run_root / "nested" / "held-open").write_text("still here", encoding="utf-8")
+
+        # Stand in for the real races that defeat rmtree(ignore_errors=True):
+        # a concurrent reclaimer, or an escaped writer recreating entries.
+        monkeypatch.setattr(pytest_supervisor.shutil, "rmtree", lambda *a, **k: None)
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(run_root)
+        assert complete is False
+        assert reason == "tree survived rmtree"
+        assert "nested/held-open" in residual
+    finally:
         shutil.rmtree(run_root, ignore_errors=True)
 
 
