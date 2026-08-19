@@ -1212,7 +1212,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "entrypoint (dead-engine suites), or it reads a real ~/.codex / ~/.claude / /realm "
             "path instead of a fixture. Reachability seeds four root classes import edges "
             "miss -- Click lazy commands, `python -m` entrypoints, ancestor packages, and "
-            "literal-container registries -- and resolves facade re-exports per symbol, "
+            "literal-container registries -- resolves facade re-exports per symbol, and "
+            "flags module-level Path.home()/expanduser constants in polylogue/** that "
+            "capture an ambient location at import time, "
             "because import edges alone under-report and this repo has four recorded wrong "
             "deletions derived from grep."
         ),

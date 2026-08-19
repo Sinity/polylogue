@@ -69,9 +69,10 @@ lint's output must treat ``type_only`` as "needs a human", not as "safe".
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -147,9 +148,19 @@ class OracleFinding:
     code: str
     path: str
     detail: str
+    #: Line-independent identity used for baseline matching. ``detail`` stays
+    #: human-readable (it carries the line number); ``fingerprint`` is what the
+    #: ratchet compares, so an unrelated edit ABOVE a baselined finding no
+    #: longer invalidates its exemption.
+    fingerprint: str = ""
 
     def to_dict(self) -> dict[str, str]:
-        return {"code": self.code, "path": self.path, "detail": self.detail}
+        return {
+            "code": self.code,
+            "path": self.path,
+            "detail": self.detail,
+            "fingerprint": self.fingerprint,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +609,41 @@ def classify_test_module(
 # ---------------------------------------------------------------------------
 
 
+def finding_fingerprint(code: str, path: str, source_line: str, ordinal: int) -> str:
+    """Line-independent identity for one finding.
+
+    Keying the ratchet on the rendered ``detail`` (which embeds a line number)
+    made every baselined entry brittle: an unrelated edit higher in the file
+    shifted the line, invalidated the exemption, and forced a regeneration --
+    twice in one night, in PRs that had nothing to do with the finding.
+    Dropping the line entirely was rejected earlier for a good reason: two
+    ``~/.codex`` reads in one file would collapse onto a single key and a newly
+    added one would inherit the old exemption, which is the ratchet hole cold
+    review already found once.
+
+    This keeps both properties by keying on the SOURCE LINE'S TEXT plus an
+    ordinal among identical texts in the same file. Unrelated edits above do
+    not change it; a genuinely new occurrence either has different text (new
+    key) or is byte-identical to an existing one (same text, next ordinal, so
+    still a new key).
+    """
+    digest = hashlib.sha256(source_line.strip().encode("utf-8")).hexdigest()[:16]
+    return f"{code}:{path}:{digest}:{ordinal}"
+
+
+class _FingerprintCounter:
+    """Assign stable ordinals to findings sharing one source-line text."""
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[str, str, str], int] = {}
+
+    def fingerprint(self, code: str, path: str, source_line: str) -> str:
+        key = (code, path, source_line.strip())
+        ordinal = self._seen.get(key, 0)
+        self._seen[key] = ordinal + 1
+        return finding_fingerprint(code, path, source_line, ordinal)
+
+
 def _docstring_nodes(tree: ast.Module) -> frozenset[int]:
     """Ids of every docstring constant, which are prose rather than reads."""
     found: set[int] = set()
@@ -613,7 +659,7 @@ def _docstring_nodes(tree: ast.Module) -> frozenset[int]:
     return frozenset(found)
 
 
-def scan_hermeticity(path: Path, tree: ast.Module) -> tuple[OracleFinding, ...]:
+def scan_hermeticity(path: Path, tree: ast.Module, source_lines: Sequence[str]) -> tuple[OracleFinding, ...]:
     """Flag ambient user/archive reads in a test module.
 
     This enforces an ESCAPE, it does not re-implement isolation. The sanctioned
@@ -624,7 +670,12 @@ def scan_hermeticity(path: Path, tree: ast.Module) -> tuple[OracleFinding, ...]:
     check is a source scan rather than a runtime sandbox.
     """
     findings: list[OracleFinding] = []
+    counter = _FingerprintCounter()
     docstrings = _docstring_nodes(tree)
+
+    def line_at(lineno: int) -> str:
+        return source_lines[lineno - 1] if 0 < lineno <= len(source_lines) else ""
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if id(node) in docstrings:
@@ -640,6 +691,7 @@ def scan_hermeticity(path: Path, tree: ast.Module) -> tuple[OracleFinding, ...]:
                             "ambient_path_literal",
                             str(path),
                             f"line {node.lineno}: reads ambient path {marker!r}",
+                            counter.fingerprint("ambient_path_literal", str(path), line_at(node.lineno)),
                         )
                     )
         elif isinstance(node, ast.Call):
@@ -650,6 +702,7 @@ def scan_hermeticity(path: Path, tree: ast.Module) -> tuple[OracleFinding, ...]:
                         "ambient_path_call",
                         str(path),
                         f"line {node.lineno}: resolves an ambient location via {dotted}()",
+                        counter.fingerprint("ambient_path_call", str(path), line_at(node.lineno)),
                     )
                 )
     return tuple(findings)
@@ -662,6 +715,82 @@ def _dotted_name(node: ast.AST) -> str | None:
         parent = _dotted_name(node.value)
         return None if parent is None else f"{parent}.{node.attr}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Production scan: import-time home capture
+# ---------------------------------------------------------------------------
+
+
+#: Nodes whose bodies execute later, not at module import.
+_DEFERRED_NODES = (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _walk_eager(node: ast.AST) -> Iterator[ast.AST]:
+    """Walk an expression, pruning subtrees that are NOT evaluated eagerly.
+
+    ``ast.walk`` descends into everything, so a lambda or comprehension body
+    inside a module-level assignment would be reported as an import-time
+    capture even though its body runs later. Pruning those subtrees is what
+    makes ``RESOLVER = lambda: Path.home()`` correctly silent while
+    ``PROVIDERS = {...Path.home()...}`` is correctly flagged.
+    """
+    if isinstance(node, _DEFERRED_NODES):
+        # The assignment's own value can BE the deferred node
+        # (``RESOLVER = lambda: Path.home()``), so the root needs the same
+        # pruning as any child -- checking only children silently let that
+        # exact shape through.
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _walk_eager(child)
+
+
+def scan_import_time_home_capture(
+    path: Path, tree: ast.Module, source_lines: Sequence[str]
+) -> tuple[OracleFinding, ...]:
+    """Flag ambient-location calls evaluated at MODULE IMPORT time.
+
+    A different failure shape from the test-side scan, and one the test-side
+    scan structurally cannot see because it only reads ``tests/**``. A
+    production module-level constant computed from ``Path.home()`` or
+    ``expanduser`` is evaluated once, at first import -- which in a test process
+    happens BEFORE any per-test environment patching. Every later test then
+    reads a value captured from the developer's real home directory no matter
+    how carefully it patches ``HOME``/XDG, and no test-side fixture can undo it.
+
+    Only module scope is reported. The identical call inside a function body is
+    fine: it is evaluated per call, so it observes whatever environment is
+    patched at that moment. That distinction is the whole check -- flagging
+    every occurrence would report ~109 sites in this package and mean nothing.
+    """
+    findings: list[OracleFinding] = []
+    counter = _FingerprintCounter()
+
+    def line_at(lineno: int) -> str:
+        return source_lines[lineno - 1] if 0 < lineno <= len(source_lines) else ""
+
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = statement.value
+        if value is None:
+            continue
+        for node in _walk_eager(value):
+            if not isinstance(node, ast.Call):
+                continue
+            dotted = _dotted_name(node.func)
+            if dotted is None or dotted not in AMBIENT_CALL_MARKERS:
+                continue
+            findings.append(
+                OracleFinding(
+                    "import_time_home_capture",
+                    str(path),
+                    f"line {node.lineno}: module-level constant captures an ambient location via {dotted}()",
+                    counter.fingerprint("import_time_home_capture", str(path), line_at(node.lineno)),
+                )
+            )
+    return tuple(findings)
 
 
 # ---------------------------------------------------------------------------
@@ -727,8 +856,8 @@ def _allowlisted(path: Path, source_root: Path, allowlist: Sequence[OracleAllowl
 BASELINE_PATH = Path("docs/plans/oracle-integrity-baseline.json")
 
 
-def load_baseline(source_root: Path, *, path: Path | None = None) -> frozenset[tuple[str, str, str]]:
-    """Load ``(code, path, detail)`` triples that are exempt because they pre-existed.
+def load_baseline(source_root: Path, *, path: Path | None = None) -> frozenset[str]:
+    """Load the fingerprints that are exempt because they pre-existed.
 
     Keyed on the DETAIL as well as the file, per-entry, the way the layering
     baseline is. Keying on ``(code, path)`` alone exempted an entire FILE once
@@ -742,14 +871,11 @@ def load_baseline(source_root: Path, *, path: Path | None = None) -> frozenset[t
         return frozenset()
     payload = json.loads(baseline_path.read_text(encoding="utf-8"))
     entries = payload.get("entries", []) if isinstance(payload, dict) else []
-    triples: set[tuple[str, str, str]] = set()
+    fingerprints: set[str] = set()
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        code, path_value, detail = entry.get("code"), entry.get("path"), entry.get("detail")
-        if isinstance(code, str) and isinstance(path_value, str) and isinstance(detail, str):
-            triples.add((code, path_value, detail))
-    return frozenset(triples)
+        if isinstance(entry, dict) and isinstance(entry.get("fingerprint"), str) and entry["fingerprint"]:
+            fingerprints.add(entry["fingerprint"])
+    return frozenset(fingerprints)
 
 
 def check_oracle_integrity(
@@ -758,7 +884,7 @@ def check_oracle_integrity(
     test_root: Path | None = None,
     reachability_allowlist: Sequence[OracleAllowlistEntry] = REACHABILITY_ALLOWLIST,
     hermeticity_allowlist: Sequence[OracleAllowlistEntry] = HERMETICITY_ALLOWLIST,
-    baseline: frozenset[tuple[str, str, str]] | None = None,
+    baseline: frozenset[str] | None = None,
 ) -> OracleIntegrityReport:
     """Run both oracle-integrity sweeps over the test corpus."""
     source_root = source_root.resolve()
@@ -786,14 +912,16 @@ def check_oracle_integrity(
     for path in sorted(tests_dir.rglob("test_*.py")):
         scanned += 1
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
         except SyntaxError as exc:
             findings.append(OracleFinding("unparseable_test", str(path), str(exc)))
             continue
+        source_lines = source.splitlines()
         module_name = _module_name(path, source_root)
 
         if not _allowlisted(path, source_root, hermeticity_allowlist):
-            findings.extend(scan_hermeticity(path.relative_to(source_root), tree))
+            findings.extend(scan_hermeticity(path.relative_to(source_root), tree, source_lines))
 
         if _allowlisted(path, source_root, reachability_allowlist):
             continue
@@ -803,17 +931,33 @@ def check_oracle_integrity(
         elif verdict is ReachabilityVerdict.TYPE_ONLY:
             type_only_modules.append(path.relative_to(source_root).as_posix())
         elif verdict is ReachabilityVerdict.UNREACHABLE:
+            relative = path.relative_to(source_root).as_posix()
+            # Module-scoped finding: no source line to key on, so the identity
+            # is the module plus its unreachable target set. Adding a NEW dead
+            # import to an already-baselined module changes that set and
+            # therefore the fingerprint, so the exemption does not silently
+            # widen -- the same property the line-text key gives the
+            # line-scoped findings.
             findings.append(
                 OracleFinding(
                     "certifies_dead_code",
-                    path.relative_to(source_root).as_posix(),
+                    relative,
                     "every production symbol this module imports is unreachable from a "
                     f"production entrypoint: {', '.join(symbols)}",
+                    finding_fingerprint("certifies_dead_code", relative, ",".join(symbols), 0),
                 )
             )
 
+    for path in sorted(production_root.rglob("*.py")):
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            continue
+        findings.extend(scan_import_time_home_capture(path.relative_to(source_root), tree, source.splitlines()))
+
     exempt = load_baseline(source_root) if baseline is None else baseline
-    retained = tuple(finding for finding in findings if (finding.code, finding.path, finding.detail) not in exempt)
+    retained = tuple(finding for finding in findings if finding.fingerprint not in exempt)
     return OracleIntegrityReport(
         findings=retained,
         baselined=len(findings) - len(retained),
@@ -837,5 +981,7 @@ __all__ = [
     "check_oracle_integrity",
     "load_baseline",
     "classify_test_module",
+    "finding_fingerprint",
     "scan_hermeticity",
+    "scan_import_time_home_capture",
 ]

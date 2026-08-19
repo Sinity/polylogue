@@ -708,7 +708,14 @@ Core loop:
   (`REPAIR_HANDLERS`, `ARCHIVE_VERIFICATION_CHECKS`). A symbol re-exported
   through an unreachable facade resolves per-symbol to its defining module, so
   a pass-through never reads as dead. Import edges alone under-report — this
-  repo has four recorded wrong deletions derived from grep. `--ignore-baseline` prints the pre-existing findings,
+  repo has four recorded wrong deletions derived from grep. It also scans
+  `polylogue/**` for **import-time home capture**: a module-level constant
+  computed from `Path.home()`/`expanduser` is evaluated once at first import,
+  before any per-test env patching, so no test fixture can undo it (the same
+  call inside a function body is fine and is not flagged). Baseline entries are
+  keyed by a line-independent fingerprint, so an unrelated edit above a finding
+  does not invalidate its exemption; entries carrying a `note` are annotated
+  judgments (a guarded pattern or a known false positive), not worklist items. `--ignore-baseline` prints the pre-existing findings,
   which are the WS-F deletion worklist in
   `docs/plans/oracle-integrity-baseline.json`; `--write-baseline` regenerates
   it. A `[type-only]` module reaches production **only** through a
