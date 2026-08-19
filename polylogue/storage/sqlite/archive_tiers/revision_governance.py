@@ -29,7 +29,7 @@ possibly many times), this module decides:
   (``finalize_raw_parse_state``, ``mark_raw_parse_failed/succeeded``) and the
   narrow raw-write paths that hand a parsed session to this authority
   (``write_raw_and_parsed*``, ``write_parsed_for_retained_raw*``,
-  ``write_raw_blob_and_parsed*``, ``_index_parsed_for_retained_raw``).
+  ``_index_parsed_for_retained_raw``).
 
 ## What this module refuses
 
@@ -114,6 +114,7 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
+    BYTE_AUTHORITY_CENSUS_DETAIL,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
@@ -261,6 +262,67 @@ class ArchiveRawParsedWriteResult:
     counts: dict[str, int]
 
 
+def _reissue_accepted_head_reparse_receipt(
+    store: RawRevisionGovernanceHost,
+    *,
+    raw_id: str,
+    session_id: str,
+    content_hash: str,
+    decided_at_ms: int,
+) -> None:
+    """Move the accepted head when a reparse rewrites its own accepted raw.
+
+    polylogue-2tfug. ``raw_revision_heads`` records which raw is authoritative
+    for a logical source key AND the ``content_hash`` that raw was last known
+    to produce. An ordinary write that reparses the head's own raw into
+    different content (a parser fix, not new evidence) updated
+    ``sessions.content_hash`` and left the head's copy behind.
+    ``validate_raw_replay_application_receipt`` requires the two to agree, so
+    the stale pair reads as ledger inconsistency rather than as the legitimate
+    correction it is.
+
+    The condition is deliberately narrow -- same raw, same session, changed
+    hash -- because that is the only case where the head's authority is not in
+    question: no competing raw is claiming the key, so there is nothing to
+    adjudicate, only a recorded value to bring current. Anything else is a
+    real precedence question and still belongs to the replay path.
+    """
+    head = store._conn.execute(
+        """
+        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, acquisition_generation,
+               append_end_offset, logical_source_key
+        FROM raw_revision_heads WHERE session_id = ? AND accepted_raw_id = ?
+        """,
+        (session_id, raw_id),
+    ).fetchone()
+    if head is None:
+        return
+    accepted_content_hash = head["accepted_content_hash"]
+    new_content_hash = bytes.fromhex(content_hash)
+    if accepted_content_hash is not None and bytes(accepted_content_hash) == new_content_hash:
+        return
+    record_revision_application_sync(
+        store._conn,
+        RevisionApplicationReceipt(
+            raw_id=raw_id,
+            session_id=session_id,
+            logical_source_key=str(head["logical_source_key"]),
+            source_revision=str(head["accepted_source_revision"]),
+            acquisition_generation=int(head["acquisition_generation"]),
+            decision=ApplicationDecision.REPARSE_REAFFIRMATION,
+            accepted_raw_id=raw_id,
+            accepted_source_revision=str(head["accepted_source_revision"]),
+            accepted_content_hash=new_content_hash,
+            accepted_frontier_kind=str(head["accepted_frontier_kind"]),
+            accepted_frontier=int(head["accepted_frontier"]),
+            append_end_offset=head["append_end_offset"],
+            detail="reparse:accepted_head_content_correction",
+        ),
+        decided_at_ms=decided_at_ms,
+    )
+
+
 def _write_parsed_precedence_result(
     store: RawRevisionGovernanceHost,
     session: ParsedSession,
@@ -295,6 +357,13 @@ def _write_parsed_precedence_result(
     browser_precedence: BrowserCapturePrecedence = "default"
 
     if revision_authoritative:
+        _reissue_accepted_head_reparse_receipt(
+            store,
+            raw_id=raw_id,
+            session_id=session_id,
+            content_hash=content_hash,
+            decided_at_ms=int(time.time() * 1000),
+        )
         write_parsed_session_to_archive(
             store._conn,
             session,
@@ -423,6 +492,13 @@ def _write_parsed_precedence_result(
             counts=counts,
         )
 
+    _reissue_accepted_head_reparse_receipt(
+        store,
+        raw_id=raw_id,
+        session_id=session_id,
+        content_hash=content_hash,
+        decided_at_ms=int(time.time() * 1000),
+    )
     write_parsed_session_to_archive(
         store._conn,
         session,
@@ -521,6 +597,18 @@ def write_raw_payload(
     ``parse_retained_raw_sessions``) can recover the same identity it was
     written with without the identity ever having been spliced into the
     stored bytes.
+
+    ``post_parse=False`` does NOT go through the raw-admission chokepoint: it
+    writes a bare row with whatever ``revision`` envelope the caller supplies
+    (possibly none). polylogue-1fijp surveyed this branch rather than migrating
+    it, because no live acquisition route reaches it -- every production
+    acquisition caller (``sources/live/append_ingest.py``,
+    ``sources/live/batch.py``) passes ``post_parse=True`` and resolves the
+    ``POST_PARSE_PENDING`` arm. What remains on this branch is fixture seeding:
+    ``durable_change_train.py``'s temp-archive self-probes and ``tests/infra``
+    corpus builders, which need to plant specific row shapes that admission
+    would normalize away. Treat a NEW production caller of this branch as a
+    chokepoint bypass, not as precedent.
     """
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
@@ -579,7 +667,12 @@ def write_raw_blob_ref(
     revision: RawRevisionEnvelope | None = None,
     post_parse: bool = False,
 ) -> str:
-    """Commit a prepublished raw blob reference before parsing it."""
+    """Commit a prepublished raw blob reference before parsing it.
+
+    See :func:`write_raw_payload` for why the ``post_parse=False`` branch is a
+    surveyed fixture-seeding path rather than a migrated admission route
+    (polylogue-1fijp); the only caller reaching it here is test infrastructure.
+    """
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     if post_parse:
@@ -1872,7 +1965,8 @@ def record_current_parser_source_census(
     raw = conn.execute(
         """
         SELECT logical_source_key, revision_kind,
-               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0)
+               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+               source_index
         FROM raw_sessions WHERE raw_id = ?
         """,
         (raw_id,),
@@ -1899,7 +1993,28 @@ def record_current_parser_source_census(
         membership_logical_keys=membership_keys,
     )
     typed_non_session = bool(raw[2])
-    if typed_non_session:
+    # polylogue-39kcs: an append fragment is never parsed for identity --
+    # ``_persist_revision_census`` routes every ``source_index < 0`` raw
+    # straight to the byte-authority membership receipt because appends are
+    # governed by byte revision authority, not by semantic membership. That
+    # is a COMPLETE observation with an authoritative empty identity set,
+    # exactly like a typed non-session artifact, so it must be receipted as
+    # such. Recording it as ``failed`` instead left the fragment matching
+    # neither branch of ``uncensused_historical_revision_raw_ids``'s gate
+    # (complete + ``parser-observed:%``, or ``failed`` at the current
+    # resource-blocked fingerprint), so every pass re-censused it, rewrote
+    # the same receipt, and left raw-replay planning "paused until the
+    # persisted parser census completes" forever -- taking every ``full``
+    # snapshot in the same authority component down with it (the live
+    # codex 019f49d8 rollout: 767 fragments, 20 parsed fulls, ~20k messages
+    # acquired and censused but never materialized).
+    byte_governed_fragment = (
+        int(raw[3]) < 0
+        and membership_census is not None
+        and str(membership_census[0]) == "failed"
+        and str(membership_census[1]) == BYTE_AUTHORITY_CENSUS_DETAIL
+    )
+    if typed_non_session or byte_governed_fragment:
         # Terminal parser evidence and other typed non-session artifacts have
         # an authoritative empty identity set. Requiring a session logical key
         # here makes those durable dispositions impossible to freeze.
@@ -1917,7 +2032,7 @@ def record_current_parser_source_census(
         else tuple(sorted(canonical_authority_logical_key(key) for key in inherited_logical_keys or ()))
         if inherited_logical_keys is not None
         else ()
-        if typed_non_session
+        if typed_non_session or byte_governed_fragment
         else None
     )
     complete = (
@@ -1927,11 +2042,14 @@ def record_current_parser_source_census(
         and (
             bool(observed_keys)
             or typed_non_session
+            or byte_governed_fragment
             or (membership_census is not None and str(membership_census[0]) == "non_session")
         )
     )
     detail = (
-        "parser-observed: typed non-session admission established no parser identity"
+        "parser-observed: append fragment governed by byte revision authority"
+        if byte_governed_fragment and complete
+        else "parser-observed: typed non-session admission established no parser identity"
         if typed_non_session and complete
         else "parser-observed: membership census established durable authority identity"
         if membership_census is not None and complete
@@ -3671,7 +3789,10 @@ def admit_raw_and_parsed_result(
     by its physical acquisition evidence (``native_id`` is NULL and no
     per-session revision envelope is attached), while the caller records each
     parsed session in ``raw_session_memberships``. This keeps raw identity
-    independent of grouped-session write order.
+    independent of grouped-session write order. It resolves
+    ``admit_raw_observation``'s ``SHARED_GROUPED`` arm rather than issuing its
+    own raw write, so this function creates no ``raw_sessions`` row outside
+    the chokepoint on either branch.
     """
 
     def add_timing(name: str, started_at: float) -> None:
@@ -3695,7 +3816,7 @@ def admit_raw_and_parsed_result(
     add_timing("source_connect", t0)
     t0 = time.perf_counter()
     if shared_raw:
-        resolved_raw_id = write_source_raw_session(
+        admission = admit_raw_observation(
             source_conn,
             origin=origin_from_provider(session.source_name),
             capture_mode=session.source_name,
@@ -3703,12 +3824,19 @@ def admit_raw_and_parsed_result(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
-            native_id=None,
             raw_id=raw_id,
+            logical_source_key=logical_source_key,
+            grouped=True,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=attachment_blob_refs,
             manage_transaction=True,
         )
+        resolved_raw_id = admission.raw_id
+        if admission.arm is not RawAdmissionArm.SHARED_GROUPED:
+            raise RuntimeError(
+                f"admit_raw_and_parsed_result: expected a SHARED_GROUPED admission for "
+                f"shared_raw=True, got {admission.arm!r} instead"
+            )
     else:
         admission = admit_raw_observation(
             source_conn,
@@ -3749,109 +3877,5 @@ def admit_raw_and_parsed_result(
     )
     with source_conn:
         record_current_parser_source_census(source_conn, resolved_raw_id, parser_sessions=[session])
-    add_timing("index_parsed_write", t0)
-    return result
-
-
-def write_raw_blob_and_parsed(
-    store: RawRevisionGovernanceHost,
-    session: ParsedSession,
-    *,
-    blob_hash_hex: str,
-    blob_size: int,
-    source_path: str,
-    acquired_at_ms: int,
-    source_index: int = 0,
-    raw_id: str | None = None,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "full",
-    manage_transaction: bool = True,
-    blob_publication_receipt_id: str | None = None,
-    finalize_raw_parse: bool = True,
-) -> tuple[str, str]:
-    """Write parsed session metadata for an already-materialized raw blob."""
-    result = write_raw_blob_and_parsed_result(
-        store,
-        session,
-        blob_hash_hex=blob_hash_hex,
-        blob_size=blob_size,
-        source_path=source_path,
-        acquired_at_ms=acquired_at_ms,
-        source_index=source_index,
-        raw_id=raw_id,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        finalize_raw_parse=finalize_raw_parse,
-    )
-    return result.raw_id, result.session_id
-
-
-def write_raw_blob_and_parsed_result(
-    store: RawRevisionGovernanceHost,
-    session: ParsedSession,
-    *,
-    blob_hash_hex: str,
-    blob_size: int,
-    source_path: str,
-    acquired_at_ms: int,
-    source_index: int = 0,
-    raw_id: str | None = None,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "full",
-    manage_transaction: bool = True,
-    blob_publication_receipt_id: str | None = None,
-    finalize_raw_parse: bool = True,
-) -> ArchiveRawParsedWriteResult:
-    """Write parsed metadata for a raw blob and return write/skip counts.
-
-    See :meth:`write_raw_and_parsed_result` for the transaction contract.
-    """
-
-    def add_timing(name: str, started_at: float) -> None:
-        if stage_timings_s is not None:
-            key = f"{stage_timing_prefix}.{name}"
-            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
-
-    preacquired_attachments, attachment_blob_refs = store._preacquire_attachment_blobs(
-        session,
-        source_path=source_path,
-        acquired_at_ms=acquired_at_ms,
-    )
-    if store._blob_publisher is not None:
-        store._blob_publisher.flush()
-    t0 = time.perf_counter()
-    source_conn = store._ensure_source_conn()
-    add_timing("source_connect", t0)
-    t0 = time.perf_counter()
-    raw_id = write_source_raw_session_blob_ref(
-        source_conn,
-        origin=origin_from_provider(session.source_name),
-        capture_mode=session.source_name,
-        source_path=source_path,
-        source_index=source_index,
-        native_id=session.provider_session_id,
-        raw_id=raw_id,
-        blob_hash=bytes.fromhex(blob_hash_hex),
-        blob_size=blob_size,
-        acquired_at_ms=acquired_at_ms,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        additional_blob_refs=attachment_blob_refs,
-        manage_transaction=True,
-    )
-    add_timing("source_raw_blob_ref_write", t0)
-    t0 = time.perf_counter()
-    result = _index_parsed_for_retained_raw(
-        store,
-        session,
-        raw_id=raw_id,
-        source_index=source_index,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        preacquired_attachment_blobs=preacquired_attachments,
-        finalize_raw_parse=finalize_raw_parse,
-    )
     add_timing("index_parsed_write", t0)
     return result
