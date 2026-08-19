@@ -41,12 +41,41 @@ pytestmark = [
     ),
     pytest.mark.slow,
     pytest.mark.integration,
-    # Real daemon subprocesses started under a 15s deadline: xdist worker
-    # contention starves the interpreter startup and flakes the whole gate
-    # (failed twice in-lane on 2026-08-18, green standalone at ~2s both
-    # times). Wall-clock-bound -> the isolated serial lane owns it.
+    # Real daemon subprocesses started under a wall-clock deadline: the parallel
+    # lane's full worker count starves interpreter startup and flakes the whole
+    # gate (failed twice in-lane on 2026-08-18, green standalone at ~2s both
+    # times). Wall-clock-bound -> the bounded `load_sensitive` lane owns it,
+    # capped at devtools.verify.SERIAL_LANE_MAX_WORKERS.
     pytest.mark.load_sensitive,
 ]
+
+# Bin-packing for the bounded lane.
+#
+# The lane runs under `--dist=loadgroup`, which keeps one group on one worker
+# and hands whole groups out as workers free up. Left to xdist's dynamic
+# scheduling these tests pack badly: the longest one (`test_large_session_file`,
+# ~23s of real 50K-message ingest) is declared sixth of seven, so it starts last
+# and the lane's makespan becomes "when the longest test happened to begin"
+# rather than its duration -- 35.1s against a 23.2s floor when measured at four
+# workers.
+#
+# These four groups are longest-processing-time bins over the measured per-test
+# call durations (2026-08-19 receipt 20260818T184401Z-full-1494889-23438ba4):
+#
+#   a  large_session_file 23.18                                = 23.18
+#   b  sigkill_recovery 16.30 + sigterm_with_locked_ops 7.27    = 23.57
+#   c  concurrent_access 11.55 + wal_checkpoint 8.05            = 19.60
+#   d  memory_pressure 8.80 + sigterm_read_only 1.27            = 10.07
+#
+# so the makespan is bounded by the largest bin instead of by arrival order.
+# The bins are a scheduling hint, not a correctness contract: every test here is
+# independent (its own archive root via `workspace_env`, its own loopback port),
+# so a wrong or missing group costs wall-clock, never a false result. Re-measure
+# and rebalance when adding a test or when a member's cost moves materially.
+_BIN_A = pytest.mark.xdist_group("daemon-resilience-a")
+_BIN_B = pytest.mark.xdist_group("daemon-resilience-b")
+_BIN_C = pytest.mark.xdist_group("daemon-resilience-c")
+_BIN_D = pytest.mark.xdist_group("daemon-resilience-d")
 
 # ---------------------------------------------------------------------------
 # Session file writer (matches test_daemon_convergence_evidence.py)
@@ -249,6 +278,7 @@ def _wait_for_messages(
     )
 
 
+@_BIN_D
 def test_sigterm_read_only_daemon_records_forensics(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -301,6 +331,7 @@ def test_sigterm_read_only_daemon_records_forensics(
     assert "Current thread" in log_text
 
 
+@_BIN_B
 def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -487,6 +518,7 @@ def _has_systemd_scope() -> bool:
 # ---------------------------------------------------------------------------
 
 
+@_BIN_B
 def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     """Kill the daemon mid-ingest and verify clean recovery on restart.
 
@@ -606,6 +638,7 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
 # ---------------------------------------------------------------------------
 
 
+@_BIN_C
 def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
     """Verify WAL checkpoint succeeds, and large-WAL recovery is clean.
 
@@ -729,6 +762,7 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
 
 
 @pytest.mark.skipif(not _has_systemd_scope(), reason="systemd-run --user --scope not available")
+@_BIN_D
 def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
     """Start daemon under a cgroup memory limit and assert it stays within budget.
 
@@ -803,6 +837,7 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
 # ---------------------------------------------------------------------------
 
 
+@_BIN_A
 def test_large_session_file(workspace_env: dict[str, Path]) -> None:
     """Generate a 50K-message JSONL file and verify the daemon ingests it.
 
@@ -919,6 +954,7 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
 # ---------------------------------------------------------------------------
 
 
+@_BIN_C
 def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     """Verify WAL read-during-write safety and daemon pidfile locking.
 

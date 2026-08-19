@@ -41,7 +41,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
@@ -2597,6 +2597,7 @@ def _native_pytest_steps(
     testmon_mode: str,
     testmon_environment: str,
     parallel_worker_args: Sequence[str],
+    serial_worker_args: Sequence[str],
 ) -> list[tuple[str, list[str]]]:
     pytest_cmd = [
         sys.executable,
@@ -2655,8 +2656,7 @@ def _native_pytest_steps(
             *native_args,
             "-p",
             "no:randomly",
-            "-n",
-            "0",
+            *serial_worker_args,
         ]
     )
     return [
@@ -2674,10 +2674,15 @@ def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bo
     worker_request = pytest_command_worker_request(cmd)
     if len(environment_args) != 1 or worker_request is None or not worker_request.isdigit():
         return False
+    # Only the labelled lane's command is compared below, so reconstructing both
+    # lanes from the observed worker request is exact for the lane under test and
+    # irrelevant for its sibling.
+    observed_worker_args = ("--dist=loadgroup", "-n", worker_request)
     expected_steps = _native_pytest_steps(
         testmon_mode=match.group(2),
         testmon_environment=environment_args[0].removeprefix("--testmon-env="),
-        parallel_worker_args=("--dist=loadgroup", "-n", worker_request),
+        parallel_worker_args=observed_worker_args,
+        serial_worker_args=observed_worker_args,
     )
     expected = dict(expected_steps).get(label)
     return expected is not None and list(cmd) == expected
@@ -2755,6 +2760,7 @@ def build_verify_steps(
                 testmon_mode=testmon_mode,
                 testmon_environment=testmon_environment,
                 parallel_worker_args=_pytest_worker_args(),
+                serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
             )
         )
 
@@ -2863,6 +2869,27 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+#: Worker ceiling for the `load_sensitive` lane.
+#:
+#: The lane exists because these tests drive real daemon subprocesses under
+#: wall-clock deadlines, and the parallel lane's full worker count starves
+#: interpreter startup badly enough to flake them. It does NOT follow that the
+#: lane must be strictly serial: measured on the 7-test corpus (2026-08-19,
+#: tests/integration/test_daemon_resilience.py, same host and containment),
+#:
+#:   -n 0  71.95s  green
+#:   -n 4  35.08s  green
+#:   -n 5 107.76s  1 failed (SIGTERM deadline starved)
+#:   -n 7  95.20s  2 failed (both SIGTERM tests, 90s subprocess timeout blown)
+#:
+#: so 4 is the last concurrency the deadline-sensitive members survive, with a
+#: clear cliff immediately above it. Raising this needs the same measurement,
+#: repeated, not an assumption that a faster host has more headroom -- the
+#: failures are starvation of an idle-scheduled containment slice, not a
+#: shortage of cores.
+SERIAL_LANE_MAX_WORKERS: Final = 4
 
 
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:

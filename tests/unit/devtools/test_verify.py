@@ -31,6 +31,7 @@ from devtools.verify import (
     PYTEST_PROGRESS_PATH,
     PYTEST_REPORT_PATH,
     ROOT,
+    SERIAL_LANE_MAX_WORKERS,
     _anchor_verification_paths,
     _format_completion_notification,
     _native_lane_failure_requires_stop,
@@ -136,7 +137,10 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
     assert _pytest_marker_expr(parallel) == "not load_sensitive"
     assert _pytest_marker_expr(serial) == "load_sensitive"
     assert parallel[parallel.index("-n") + 1] == "8"
-    assert serial[serial.index("-n") + 1] == "0"
+    # The load_sensitive lane is bounded, not serial: it is capped at
+    # SERIAL_LANE_MAX_WORKERS rather than pinned to a single process.
+    assert serial[serial.index("-n") + 1] == str(min(8, SERIAL_LANE_MAX_WORKERS))
+    assert "--dist=loadgroup" in serial
     for _label, command in pytest_steps:
         assert "--testmon" in command
         assert "--testmon-env=env-digest" in command
