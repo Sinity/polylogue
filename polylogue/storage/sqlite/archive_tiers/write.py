@@ -27,7 +27,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
 from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
+from polylogue.core.enums import BlockType, LinkType, Origin, PasteBoundary, Provider, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -323,8 +323,14 @@ def write_parsed_session_to_archive(
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
+
+    ``source_conn`` (optional) is the durable ``source.db`` handle. It is used
+    only to consult acquired ``codex_thread_spawn_edge`` hook evidence when
+    writing this session's topology edge; passing ``None`` leaves every edge
+    exactly as parser inference alone would write it.
 
     ``prepared`` (polylogue-623q, default ``None``) is an optional
     ``PreparedSessionRows`` computed off this thread (typically by the daemon
@@ -846,6 +852,7 @@ def write_parsed_session_to_archive(
                 session,
                 branch_point_message_id=branch_point_message_id,
                 inheritance=lineage_inheritance,
+                source_conn=source_conn,
             )
             add_timing("index.session_link", t0)
             t0 = time.perf_counter()
@@ -1033,7 +1040,23 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "DELETE FROM session_events WHERE session_id = ? AND event_type != 'capture_gap'",
         (session_id,),
     )
-    conn.execute("DELETE FROM session_links WHERE src_session_id = ?", (session_id,))
+    # Hook-derived edges survive a full replace for the same reason capture_gap
+    # events just did: they are acquired durable evidence (polylogue-foee's
+    # codex_thread_spawn_edge spool), not projections owned by whichever parser
+    # payload currently wins source precedence. Without this exemption a plain
+    # re-parse DELETEs the authoritative edge and, when the caller has no
+    # source handle to re-derive it from, silently reinstates the inferred
+    # parent -- the "later inference overwrites the authoritative result" hole
+    # in its most destructive form. The contradicted marker is preserved with
+    # it so composition stays deterministic rather than falling back to an
+    # observed_at_ms race between two unqualified edges.
+    conn.execute(
+        """
+        DELETE FROM session_links
+        WHERE src_session_id = ? AND COALESCE(method, '') NOT IN (?, ?)
+        """,
+        (session_id, HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD),
+    )
 
 
 def _purge_session_message_fts_when_delete_trigger_missing(conn: sqlite3.Connection, session_id: str) -> None:
@@ -3653,6 +3676,126 @@ def _write_parent_links(
         )
 
 
+#: ``method`` token for an edge whose destination is backed by acquired
+#: ``codex_thread_spawn_edge`` hook evidence rather than transcript inference.
+HOOK_AUTHORITATIVE_LINK_METHOD = "authoritative-hook-evidence"
+
+#: ``method`` token for a parser-inferred edge that names a DIFFERENT parent
+#: than the authoritative hook evidence does for the same child. The row is
+#: retained (both evidence sources survive) but quarantined so no projection
+#: composes through it.
+HOOK_CONTRADICTED_LINK_METHOD = "contradicted-by-hook-evidence"
+
+#: Both tokens mark an edge whose state was decided from durable hook evidence
+#: rather than from the current parser payload, so neither may be silently
+#: replaced by an inference-only write.
+_HOOK_DERIVED_LINK_METHODS = (HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD)
+
+
+def _authoritative_parent_claim(
+    source_conn: sqlite3.Connection | None,
+    *,
+    origin: str,
+    child_native_id: str,
+) -> str | None:
+    """Return the hook-asserted parent thread id for ``child_native_id``.
+
+    polylogue-foee acquired ``codex_thread_spawn_edge`` rows into the durable
+    ``source.db`` hook spool, keyed by ``session_native_id = parent_thread_id``
+    (``sources/codex_state_evidence.py``). A child-side lookup therefore cannot
+    use ``list_hook_events(session_native_id=...)``; it matches the payload's
+    own ``child_thread_id`` instead. ``None`` means "hook evidence is silent
+    about this child", which is not the same as "hook evidence disagrees" --
+    only the latter is a conflict.
+    """
+    if source_conn is None or origin != Origin.CODEX_SESSION.value or not child_native_id:
+        return None
+    try:
+        row = source_conn.execute(
+            """
+            SELECT json_extract(payload_json, '$.parent_thread_id')
+            FROM raw_hook_events
+            WHERE event_type = 'codex_thread_spawn_edge'
+              AND json_extract(payload_json, '$.child_thread_id') = ?
+            ORDER BY observed_at_ms DESC
+            LIMIT 1
+            """,
+            (child_native_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        # An index-only harness (or a source tier predating the hook spool)
+        # has no such table. Absent evidence is silence, never a conflict.
+        return None
+    if row is None or row[0] is None:
+        return None
+    parent = str(row[0]).strip()
+    return parent or None
+
+
+def _upsert_session_link(
+    conn: sqlite3.Connection,
+    *,
+    src_session_id: str,
+    dst_origin: str,
+    dst_native_id: str,
+    link_type: str,
+    branch_point_message_id: str | None,
+    inheritance: str | None,
+    status: str | None,
+    parent_tool_use_block_id: str | None,
+    method: str,
+    confidence: float,
+    evidence_json: str,
+    observed_at_ms: int,
+) -> None:
+    """Write one edge without letting inference downgrade hook authority.
+
+    This replaces a bare ``INSERT OR REPLACE``. That statement rewrote every
+    column of an existing row, so an ordinary re-parse of a child silently
+    reset an ``authoritative-hook-evidence`` edge back to ``parser-parent``
+    with ``status = NULL`` -- the "later inference overwrites the
+    authoritative result" hole this guard closes. The idiom mirrors
+    ``revision_authority_refuses_write``: a lower-authority writer is refused
+    rather than allowed to win by last-writer-wins.
+    """
+    existing = conn.execute(
+        """
+        SELECT method FROM session_links
+        WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+        """,
+        (src_session_id, dst_origin, dst_native_id, link_type),
+    ).fetchone()
+    if (
+        existing is not None
+        and str(existing[0] or "") in _HOOK_DERIVED_LINK_METHODS
+        and method not in _HOOK_DERIVED_LINK_METHODS
+    ):
+        return
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO session_links (
+            src_session_id, dst_origin, dst_native_id, link_type,
+            branch_point_message_id, inheritance,
+            status, parent_tool_use_block_id, method, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            src_session_id,
+            dst_origin,
+            dst_native_id,
+            link_type,
+            branch_point_message_id,
+            inheritance,
+            status,
+            parent_tool_use_block_id,
+            method,
+            confidence,
+            evidence_json,
+            observed_at_ms,
+        ),
+    )
+
+
 def _write_session_link(
     conn: sqlite3.Connection,
     session_id: str,
@@ -3660,8 +3803,52 @@ def _write_session_link(
     *,
     branch_point_message_id: str | None = None,
     inheritance: str | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> None:
+    """Write this child's outbound parent edge, honouring hook authority.
+
+    ``source_conn`` is the durable ``source.db`` handle carrying polylogue-foee's
+    acquired ``codex_thread_spawn_edge`` evidence. It is optional exactly as it
+    is on ``revision_authority_refuses_write``: an index-only harness passes
+    ``None`` and every behaviour below collapses to the pre-existing
+    parser-only path.
+
+    Why this lives on the write path rather than in a post-ingest
+    reconciliation pass: ``session_links`` is in the REBUILDABLE index tier
+    while hook evidence is in the DURABLE source tier, so every reindex
+    reconstructs these rows from scratch. Only a derivation that runs inside
+    ``write_parsed_session_to_archive`` -- the single choke point shared by
+    live incremental ingest and full raw replay -- survives a rebuild by
+    construction. A convergence-stage applier would silently lose the
+    authoritative marking on the next reindex.
+    """
+    origin = origin_from_provider(session.source_name).value
+    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0
+    hook_parent = _authoritative_parent_claim(
+        source_conn,
+        origin=origin,
+        child_native_id=(session.provider_session_id or "").strip(),
+    )
+
     if not session.parent_session_provider_id:
+        # Hook evidence can know a parent transcript inference never found.
+        # Without this the authoritative edge would simply not exist.
+        if hook_parent is not None:
+            _upsert_session_link(
+                conn,
+                src_session_id=session_id,
+                dst_origin=origin,
+                dst_native_id=hook_parent,
+                link_type=LinkType.SUBAGENT.value,
+                branch_point_message_id=branch_point_message_id,
+                inheritance=inheritance,
+                status=None,
+                parent_tool_use_block_id=None,
+                method=HOOK_AUTHORITATIVE_LINK_METHOD,
+                confidence=1.0,
+                evidence_json=_json_dumps({"codex_thread_spawn_edge_parent": hook_parent, "parser_parent": None}),
+                observed_at_ms=observed_at_ms,
+            )
         return
     # polylogue-lyr2: normalize the same way ``_stored_session_native_id``
     # normalizes ``sessions.native_id`` -- the resolver below matches this
@@ -3675,28 +3862,62 @@ def _write_session_link(
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
     parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
     method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO session_links (
-            src_session_id, dst_origin, dst_native_id, link_type,
-            branch_point_message_id, inheritance,
-            status, parent_tool_use_block_id, method, confidence, evidence_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
-        """,
-        (
-            session_id,
-            origin_from_provider(session.source_name).value,
-            dst_native_id,
-            link_type,
-            branch_point_message_id,
-            inheritance,
-            parent_tool_use_block_id,
-            method,
-            1.0,
-            _json_dumps({"parent_session_provider_id": session.parent_session_provider_id}),
-            _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0,
-        ),
+    evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    status: str | None = None
+
+    # A conflict is scoped to (child, link_type), NOT to the primary key.
+    # Because the PK carries dst_native_id, two contradictory parents would
+    # otherwise land as two coexisting, independently resolvable rows with
+    # nothing recording that they compete -- and _refresh_session_projection
+    # would then pick one by observed_at_ms order.
+    agreeing = hook_parent is not None and hook_parent == dst_native_id
+    contradicted = hook_parent is not None and hook_parent != dst_native_id
+    if agreeing:
+        method = HOOK_AUTHORITATIVE_LINK_METHOD
+        evidence["codex_thread_spawn_edge_parent"] = hook_parent
+    elif contradicted:
+        method = HOOK_CONTRADICTED_LINK_METHOD
+        status = TopologyEdgeStatus.QUARANTINED.value
+        evidence["codex_thread_spawn_edge_parent"] = hook_parent
+        evidence["contradiction"] = "authoritative hook evidence names a different parent"
+
+    _upsert_session_link(
+        conn,
+        src_session_id=session_id,
+        dst_origin=origin,
+        dst_native_id=dst_native_id,
+        link_type=link_type,
+        branch_point_message_id=branch_point_message_id,
+        inheritance=inheritance,
+        status=status,
+        parent_tool_use_block_id=parent_tool_use_block_id,
+        method=method,
+        confidence=1.0,
+        evidence_json=_json_dumps(evidence),
+        observed_at_ms=observed_at_ms,
     )
+
+    if contradicted and hook_parent is not None:
+        _upsert_session_link(
+            conn,
+            src_session_id=session_id,
+            dst_origin=origin,
+            dst_native_id=hook_parent,
+            link_type=link_type,
+            branch_point_message_id=branch_point_message_id,
+            inheritance=inheritance,
+            status=None,
+            parent_tool_use_block_id=parent_tool_use_block_id,
+            method=HOOK_AUTHORITATIVE_LINK_METHOD,
+            confidence=1.0,
+            evidence_json=_json_dumps(
+                {
+                    "codex_thread_spawn_edge_parent": hook_parent,
+                    "superseded_parser_parent": dst_native_id,
+                }
+            ),
+            observed_at_ms=observed_at_ms,
+        )
 
 
 def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
