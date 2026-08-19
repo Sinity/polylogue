@@ -220,12 +220,33 @@ def _interpreter_guard(worktree: Path, expected: Path) -> str | None:
     return None
 
 
+#: Devshell-exported variables that describe the DEVSHELL's interpreter and
+#: silently reroute a different interpreter's ``sysconfig``. A harness-spawned
+#: lane inherits these, and the lane venv's Python then resolves build
+#: configuration belonging to another build entirely -- pytest dies before
+#: collecting anything, with ``AttributeError: 'installed_base'`` or
+#: ``ModuleNotFoundError: No module named '_sysconfigdata_...'`` depending on
+#: which pair of builds collide. Observed 2026-08-19 in a lane and in the
+#: coordinator checkout (polylogue-l218h).
+_INTERPRETER_DESCRIBING_ENV = (
+    "_PYTHON_SYSCONFIGDATA_NAME",
+    "_PYTHON_HOST_PLATFORM",
+    "PYTHONPYCACHEPREFIX",
+)
+
+
 def _lane_env(worktree: Path) -> dict[str, str]:
     """Return an environment that cannot inherit another checkout's Python."""
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
+    # Not merely hygiene: these describe a specific interpreter BUILD, so
+    # inheriting them into a venv built from a different one is fatal, and
+    # PYTHONPYCACHEPREFIX additionally points bytecode caching at the
+    # coordinator's .cache.
+    for key in _INTERPRETER_DESCRIBING_ENV:
+        env.pop(key, None)
     # uv's project-routing environment variables override subprocess.cwd.
     # Leaving either behind can install the coordinator checkout into this
     # lane's otherwise correctly selected .venv.
@@ -372,6 +393,24 @@ def _seed_testmon_graph(root: Path, worktree: Path) -> tuple[str, bool]:
     return f"seeded and matched this lane's environment ({digest[:24]}...); verifies start warm", True
 
 
+def dispatch_env_lines(worktree: Path) -> tuple[str, ...]:
+    """Environment a dispatched agent must apply before running lane tooling.
+
+    ``_lane_env`` only sanitises the subprocesses lane-init itself spawns. An
+    agent that later opens this worktree inherits the operator's or harness's
+    environment untouched, so the same interpreter-describing variables that
+    would have broken provisioning break its very first ``devtools test``
+    instead. Printing the remedy next to the worker budget is the only place a
+    dispatcher reliably reads.
+    """
+    lines = [f"export VIRTUAL_ENV={worktree / '.venv'}", 'export PATH="$VIRTUAL_ENV/bin:$PATH"']
+    lines.extend(f"unset {key}" for key in _INTERPRETER_DESCRIBING_ENV)
+    # gh / pr-scope reach GitHub over TLS; a devshell without this resolves no
+    # CA bundle and every API call fails with a certificate error.
+    lines.append("export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
+    return tuple(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = repo_root()
@@ -433,6 +472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     record["testmon_graph"] = graph_note
     record["testmon_warm"] = graph_warm
     record["interpreter"] = str(interpreter) if interpreter is not None else None
+    record["dispatch_env"] = list(dispatch_env_lines(worktree))
     ledger_path = append_ledger(coordinator_root(root), record)
 
     if args.as_json:
@@ -452,6 +492,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  beads: {', '.join(beads)}")
         print(f"  ledger: {ledger_path}")
         print(f"  dispatch env: POLYLOGUE_PYTEST_WORKERS={workers}  (for {args.expected_lanes} concurrent lanes)")
+        for line in dispatch_env_lines(worktree):
+            print(f"    {line}")
     return 0
 
 

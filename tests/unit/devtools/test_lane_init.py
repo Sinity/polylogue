@@ -465,3 +465,48 @@ def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
 
     assert warm is False
     assert "warmth unverified" in note
+
+
+# ---------------------------------------------------------------------------
+# Interpreter-describing environment must not reach a lane (polylogue-l218h)
+# ---------------------------------------------------------------------------
+
+
+def test_lane_env_scrubs_interpreter_describing_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RED TWIN: these describe a BUILD, so inheriting them is fatal, not untidy.
+
+    A devshell exports ``_PYTHON_SYSCONFIGDATA_NAME`` for its own interpreter.
+    Applied to a venv built from a different one, ``sysconfig`` resolves
+    another build's configuration and pytest dies before collecting anything
+    (``AttributeError: 'installed_base'`` or ``ModuleNotFoundError: No module
+    named '_sysconfigdata_...'``, depending on which builds collide).
+    Restoring any of these to the inherited set reproduces a lane that
+    provisions cleanly and cannot run one test.
+    """
+    monkeypatch.setenv("_PYTHON_SYSCONFIGDATA_NAME", "_sysconfigdata_t_linux_x86_64-linux-gnu")
+    monkeypatch.setenv("_PYTHON_HOST_PLATFORM", "linux-x86_64")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", "/coordinator/.cache/pycache")
+
+    env = lane_init._lane_env(tmp_path / "lane")
+
+    assert "_PYTHON_SYSCONFIGDATA_NAME" not in env
+    assert "_PYTHON_HOST_PLATFORM" not in env
+    assert "PYTHONPYCACHEPREFIX" not in env
+
+
+def test_dispatch_env_lines_carry_the_unsets_and_the_ca_bundle(tmp_path: Path) -> None:
+    """The lane's own venv, the fatal unsets, and the CA bundle gh/pr-scope need.
+
+    ``_lane_env`` only sanitises lane-init's OWN subprocesses; an agent that
+    opens the worktree later inherits the harness environment untouched, so
+    the remedy has to be printed where a dispatcher reads it.
+    """
+    lane = tmp_path / "lane"
+    lines = lane_init.dispatch_env_lines(lane)
+    joined = "\n".join(lines)
+
+    assert f"export VIRTUAL_ENV={lane / '.venv'}" in lines
+    for key in lane_init._INTERPRETER_DESCRIBING_ENV:
+        assert f"unset {key}" in lines
+    assert "export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in lines
+    assert "$VIRTUAL_ENV/bin:$PATH" in joined
