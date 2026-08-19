@@ -1970,8 +1970,15 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
         captured["request"] = request
         return Receipt()
 
-    def fake_compare(current: Path, candidate: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current: Path,
+        candidate: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured["compare"] = (current, candidate, session_ids)
+        captured.update(provenance)
         return CanaryDiffReport(
             current_index=current,
             candidate_index=candidate,
