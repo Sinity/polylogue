@@ -269,7 +269,16 @@ def test_seeded_archive_key_is_stable_across_commits(monkeypatch: pytest.MonkeyP
         first = build_seeded_archive(cache_root=cache_root)
 
         monkeypatch.setattr(artifacts, "_build_id", lambda: "git:ffffffffffffffffffffffffffffffffffffffff")
+        # Clearing the memo is what makes this a test of the KEY rather than
+        # of the memo: the second call must find the artifact by identity, not
+        # by remembering it. That forces a real revalidation in this process,
+        # which re-opens the tiers the build just wrote -- so finalize the
+        # build's connections first. Without this, a loaded run trips the
+        # ``sqlite3_close_v2`` zombie-connection footgun documented on
+        # :func:`_journal_mode_delete_with_retry` (polylogue-lbgc) and fails
+        # with ``database is locked`` from the frontier read.
         artifacts._VALIDATED_ARTIFACTS.clear()
+        gc.collect()
         second_key = seeded_archive_key(())
         second = build_seeded_archive(cache_root=cache_root)
 
