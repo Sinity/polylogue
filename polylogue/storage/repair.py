@@ -84,7 +84,7 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
-from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+from polylogue.storage.sqlite.archive_tiers.source_write import (
     ReconstructedRawRow,
     insert_reconstructed_raw_row,
 )

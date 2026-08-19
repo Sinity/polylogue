@@ -17,11 +17,13 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     PriorRawHead,
     RawAdmissionArm,
-    ReconstructedRawRow,
     admit_raw_observation,
+)
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ReconstructedRawRow,
+    bind_source_raw_revision,
     insert_reconstructed_raw_row,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
