@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from devtools.archive_space_report import build_space_report
 from polylogue.cli.commands.maintenance._backup_plan import _backup_plan_payload
+from polylogue.operations.archive_space_report import build_space_report
 from polylogue.storage.blob_gc import run_blob_gc
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

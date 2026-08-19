@@ -13,6 +13,7 @@ from polylogue.archive.semantic.pricing import (
     _normalize_model,
     estimate_cost,
     estimate_session_cost,
+    pricing_catalog_source,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words_split
@@ -122,6 +123,7 @@ def compute_session_cost(
         norm = breakdown.normalized_model
         api_cost = 0.0
         credit_cost = 0.0
+        catalog_priced = norm is not None and pricing_catalog_source(norm) is not None
 
         if norm:
             api_cost = estimate_cost(
@@ -146,6 +148,16 @@ def compute_session_cost(
         if credit_rate and credit_cost > 0:
             sub_equivalent = round(credits_to_usd(credit_cost, tier=subscription_tier or "pro"), 6)
 
+        # A model with real, non-zero reported/estimated tokens but no catalog
+        # price entry (e.g. a newly-released model the pricing catalog hasn't
+        # caught up with) must not surface as a confidently-priced $0.00 --
+        # estimate_cost() silently returns 0.0 for an unpriced model, which is
+        # indistinguishable from a genuinely free one unless the confidence is
+        # downgraded here (polylogue-iuyr).
+        effective_confidence = breakdown.confidence
+        if norm and not catalog_priced and breakdown.confidence in ("reported", "estimated"):
+            effective_confidence = "unknown"
+
         updated = SessionCostBreakdown(
             normalized_model=norm,
             provider_model_name=breakdown.provider_model_name,
@@ -157,7 +169,7 @@ def compute_session_cost(
             api_cost_usd=round(api_cost, 6),
             credit_cost=credit_cost,
             subscription_equivalent_usd=sub_equivalent,
-            confidence=breakdown.confidence,
+            confidence=effective_confidence,
             provenance=breakdown.provenance,
         )
         breakdowns.append(updated)

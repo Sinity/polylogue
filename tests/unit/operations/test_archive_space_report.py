@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 
-from devtools.archive_space_report import build_space_report, main
+from polylogue.operations.archive_space_report import build_space_report, main
 
 
 def _seed_db(path: Path) -> None:
