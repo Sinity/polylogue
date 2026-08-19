@@ -29,7 +29,7 @@ possibly many times), this module decides:
   (``finalize_raw_parse_state``, ``mark_raw_parse_failed/succeeded``) and the
   narrow raw-write paths that hand a parsed session to this authority
   (``write_raw_and_parsed*``, ``write_parsed_for_retained_raw*``,
-  ``write_raw_blob_and_parsed*``, ``_index_parsed_for_retained_raw``).
+  ``_index_parsed_for_retained_raw``).
 
 ## What this module refuses
 
@@ -596,6 +596,18 @@ def write_raw_payload(
     ``parse_retained_raw_sessions``) can recover the same identity it was
     written with without the identity ever having been spliced into the
     stored bytes.
+
+    ``post_parse=False`` does NOT go through the raw-admission chokepoint: it
+    writes a bare row with whatever ``revision`` envelope the caller supplies
+    (possibly none). polylogue-1fijp surveyed this branch rather than migrating
+    it, because no live acquisition route reaches it -- every production
+    acquisition caller (``sources/live/append_ingest.py``,
+    ``sources/live/batch.py``) passes ``post_parse=True`` and resolves the
+    ``POST_PARSE_PENDING`` arm. What remains on this branch is fixture seeding:
+    ``durable_change_train.py``'s temp-archive self-probes and ``tests/infra``
+    corpus builders, which need to plant specific row shapes that admission
+    would normalize away. Treat a NEW production caller of this branch as a
+    chokepoint bypass, not as precedent.
     """
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
@@ -654,7 +666,12 @@ def write_raw_blob_ref(
     revision: RawRevisionEnvelope | None = None,
     post_parse: bool = False,
 ) -> str:
-    """Commit a prepublished raw blob reference before parsing it."""
+    """Commit a prepublished raw blob reference before parsing it.
+
+    See :func:`write_raw_payload` for why the ``post_parse=False`` branch is a
+    surveyed fixture-seeding path rather than a migrated admission route
+    (polylogue-1fijp); the only caller reaching it here is test infrastructure.
+    """
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     if post_parse:
@@ -3834,109 +3851,5 @@ def admit_raw_and_parsed_result(
     )
     with source_conn:
         record_current_parser_source_census(source_conn, resolved_raw_id, parser_sessions=[session])
-    add_timing("index_parsed_write", t0)
-    return result
-
-
-def write_raw_blob_and_parsed(
-    store: RawRevisionGovernanceHost,
-    session: ParsedSession,
-    *,
-    blob_hash_hex: str,
-    blob_size: int,
-    source_path: str,
-    acquired_at_ms: int,
-    source_index: int = 0,
-    raw_id: str | None = None,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "full",
-    manage_transaction: bool = True,
-    blob_publication_receipt_id: str | None = None,
-    finalize_raw_parse: bool = True,
-) -> tuple[str, str]:
-    """Write parsed session metadata for an already-materialized raw blob."""
-    result = write_raw_blob_and_parsed_result(
-        store,
-        session,
-        blob_hash_hex=blob_hash_hex,
-        blob_size=blob_size,
-        source_path=source_path,
-        acquired_at_ms=acquired_at_ms,
-        source_index=source_index,
-        raw_id=raw_id,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        finalize_raw_parse=finalize_raw_parse,
-    )
-    return result.raw_id, result.session_id
-
-
-def write_raw_blob_and_parsed_result(
-    store: RawRevisionGovernanceHost,
-    session: ParsedSession,
-    *,
-    blob_hash_hex: str,
-    blob_size: int,
-    source_path: str,
-    acquired_at_ms: int,
-    source_index: int = 0,
-    raw_id: str | None = None,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "full",
-    manage_transaction: bool = True,
-    blob_publication_receipt_id: str | None = None,
-    finalize_raw_parse: bool = True,
-) -> ArchiveRawParsedWriteResult:
-    """Write parsed metadata for a raw blob and return write/skip counts.
-
-    See :meth:`write_raw_and_parsed_result` for the transaction contract.
-    """
-
-    def add_timing(name: str, started_at: float) -> None:
-        if stage_timings_s is not None:
-            key = f"{stage_timing_prefix}.{name}"
-            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
-
-    preacquired_attachments, attachment_blob_refs = store._preacquire_attachment_blobs(
-        session,
-        source_path=source_path,
-        acquired_at_ms=acquired_at_ms,
-    )
-    if store._blob_publisher is not None:
-        store._blob_publisher.flush()
-    t0 = time.perf_counter()
-    source_conn = store._ensure_source_conn()
-    add_timing("source_connect", t0)
-    t0 = time.perf_counter()
-    raw_id = write_source_raw_session_blob_ref(
-        source_conn,
-        origin=origin_from_provider(session.source_name),
-        capture_mode=session.source_name,
-        source_path=source_path,
-        source_index=source_index,
-        native_id=session.provider_session_id,
-        raw_id=raw_id,
-        blob_hash=bytes.fromhex(blob_hash_hex),
-        blob_size=blob_size,
-        acquired_at_ms=acquired_at_ms,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        additional_blob_refs=attachment_blob_refs,
-        manage_transaction=True,
-    )
-    add_timing("source_raw_blob_ref_write", t0)
-    t0 = time.perf_counter()
-    result = _index_parsed_for_retained_raw(
-        store,
-        session,
-        raw_id=raw_id,
-        source_index=source_index,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        preacquired_attachment_blobs=preacquired_attachments,
-        finalize_raw_parse=finalize_raw_parse,
-    )
     add_timing("index_parsed_write", t0)
     return result

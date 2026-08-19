@@ -2416,6 +2416,51 @@ def _probe_raw_blob_source_replacement(replacer: Callable[..., object], archive_
     return f"surveyed raw-backed blob reference debt: {scanned} row(s), {candidates} candidate(s), dry run"
 
 
+def _seed_probe_raw_row(
+    connection: sqlite3.Connection,
+    *,
+    raw_id: str,
+    source_path: str,
+    blob_hash: bytes,
+    source_index: int = 0,
+    blob_size: int = 0,
+    origin: str = "claude-code-session",
+    acquired_at_ms: int = 1_780_000_000_000,
+    detected_provider: str | None = None,
+    parse_error: str | None = None,
+) -> None:
+    """Seed one synthetic ``raw_sessions`` row inside a throwaway probe archive.
+
+    polylogue-1fijp: this is the only ``INSERT INTO raw_sessions`` left in the
+    tree outside ``source_write.py``'s writer primitives, and a census should
+    be able to tell at a glance that it is NOT an acquisition path. Every
+    caller is a ``_probe_*`` function operating on a
+    ``tempfile.TemporaryDirectory`` archive deleted before the function
+    returns; nothing here ever touches a real archive.
+
+    These rows also cannot go through
+    :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`
+    or through ``insert_reconstructed_raw_row``, and the reason is the point of
+    the probes: each seeds a DELIBERATELY unusual row -- a ``detected_provider``
+    that disagrees with ``origin``, a row carrying a ``parse_error``, a bare row
+    with no revision envelope -- precisely to prove a migrated reader still
+    handles that shape. Both of those writers would normalize the row into a
+    well-formed envelope and destroy the condition under test.
+    """
+    columns = ["raw_id", "origin", "source_path", "source_index", "blob_hash", "blob_size", "acquired_at_ms"]
+    values: list[object] = [raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms]
+    if detected_provider is not None:
+        columns.append("detected_provider")
+        values.append(detected_provider)
+    if parse_error is not None:
+        columns.append("parse_error")
+        values.append(parse_error)
+    connection.execute(
+        f"INSERT INTO raw_sessions ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        values,
+    )
+
+
 def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
     """Exercise the zip-member coordinate write against a migrated source tier.
 
@@ -2459,13 +2504,12 @@ def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             connection = archive._ensure_source_conn()
             for raw_id in (matching_raw_id, "durable-change-train-unrelated-raw"):
-                connection.execute(
-                    """
-                    INSERT INTO raw_sessions (
-                        raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-                    ) VALUES (?, 'claude-code-session', ?, ?, ?, 0, ?)
-                    """,
-                    (raw_id, source_path, source_index, bytes.fromhex(blob_hash), 1_780_000_000_000),
+                _seed_probe_raw_row(
+                    connection,
+                    raw_id=raw_id,
+                    source_path=source_path,
+                    source_index=source_index,
+                    blob_hash=bytes.fromhex(blob_hash),
                 )
             writer(archive, _record(matching_raw_id), source_raw_id=matching_raw_id, blob_hash=blob_hash)
             writer(
@@ -2540,21 +2584,12 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
         with sqlite3.connect(source_path) as connection:
             connection.row_factory = sqlite3.Row
             initialize_archive_tier(connection, ArchiveTier.SOURCE)
-            connection.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, origin, source_path, source_index, blob_hash, blob_size,
-                    acquired_at_ms, detected_provider
-                ) VALUES (?, ?, ?, 0, ?, 0, ?, ?)
-                """,
-                (
-                    "durable-change-train-hydration-raw",
-                    "claude-code-session",
-                    "/durable-change-train/hydration-probe.jsonl",
-                    b"\0" * 32,
-                    1_780_000_000_000,
-                    "codex",
-                ),
+            _seed_probe_raw_row(
+                connection,
+                raw_id="durable-change-train-hydration-raw",
+                source_path="/durable-change-train/hydration-probe.jsonl",
+                blob_hash=b"\0" * 32,
+                detected_provider="codex",
             )
             row = connection.execute(
                 "SELECT * FROM raw_sessions WHERE raw_id = ?",
@@ -2605,21 +2640,12 @@ def _probe_raw_failure_disposition_apply(actuator: Callable[..., object], archiv
         source_path = root / "source.db"
         with sqlite3.connect(source_path) as connection:
             initialize_archive_tier(connection, ArchiveTier.SOURCE)
-            connection.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, origin, source_path, source_index, blob_hash, blob_size,
-                    acquired_at_ms, parse_error
-                ) VALUES (?, ?, ?, 0, ?, 0, ?, ?)
-                """,
-                (
-                    "durable-change-train-disposition-raw",
-                    "claude-code-session",
-                    "/durable-change-train/disposition-probe.jsonl",
-                    b"\0" * 32,
-                    1_780_000_000_000,
-                    "durable change train probe failure",
-                ),
+            _seed_probe_raw_row(
+                connection,
+                raw_id="durable-change-train-disposition-raw",
+                source_path="/durable-change-train/disposition-probe.jsonl",
+                blob_hash=b"\0" * 32,
+                parse_error="durable change train probe failure",
             )
             connection.execute(
                 """
