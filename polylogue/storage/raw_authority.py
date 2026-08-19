@@ -1439,6 +1439,7 @@ def validate_raw_replay_application_receipt(
         ApplicationDecision.SELECTED_BASELINE,
         ApplicationDecision.APPLIED_APPEND,
         ApplicationDecision.SUPERSEDED,
+        ApplicationDecision.REPARSE_REAFFIRMATION,
     }
     application_pairs = {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in application_rows}
     if any(row.get("decision") not in terminal_application_decisions for row in application_rows):

@@ -32,12 +32,14 @@ from polylogue.maintenance.reindex_canary import (
     CanaryDiffReport,
     CanarySelection,
     CanarySelectionError,
+    DeltaExpectation,
     DifferenceClassification,
     DifferenceOperation,
     ExpectedDifference,
     RowDifference,
     UnclassifiedCanaryDiffError,
     compare_reindex_generations,
+    index_delta_expectations,
     load_canary_report,
     load_canary_review_manifest,
     run_reindex_canary,
@@ -50,9 +52,21 @@ from polylogue.sources.revision_backfill import (
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
+from polylogue.storage.sqlite import lifecycle as lifecycle_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.lifecycle import (
+    CanaryChangeOperation,
+    DerivedDeltaClass,
+    ExpectedCanaryChange,
+    FastForwardOperation,
+    FastForwardOperationKind,
+    IndexDeltaDeclaration,
+    TargetedReprocessScope,
+    undeclared_index_delta_versions,
+)
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
@@ -1130,8 +1144,15 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
         captured_receipt_path = cast(Path, request["schema_inference_receipt_path"])
         return Receipt()
 
-    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current_index: Path,
+        candidate_index: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured["session_ids"] = session_ids
+        captured.update(provenance)
         return _empty_comparison(current_index, candidate_index, session_ids)
 
     monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_canary_rebuild", fake_rebuild)
@@ -1524,8 +1545,15 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
         captured["has_client_profile"] = "candidate_acceptance_checks" in request
         return Receipt()
 
-    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current_index: Path,
+        candidate_index: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured["session_ids"] = session_ids
+        captured.update(provenance)
         return _empty_comparison(current_index, candidate_index, session_ids)
 
     monkeypatch.setattr(
@@ -1557,7 +1585,11 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 ) -> None:
     root = tmp_path
     current = root / "index.db"
-    current.touch()
+    # A real database at a real pre-v44 version: the canary derives its expected
+    # signatures from the active generation's own declared schema version, so a
+    # zero-byte placeholder would silently exercise the source_version==0 path.
+    with sqlite3.connect(current) as connection:
+        connection.execute("PRAGMA user_version = 43")
     generation_id = "gen-canary"
     candidate = tmp_path / ".index-generations" / generation_id / "index.db"
     candidate.parent.mkdir(parents=True)
@@ -1598,8 +1630,15 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
         "polylogue.maintenance.reindex_canary._validate_authoritative_rebuild_receipt", lambda *args, **kwargs: None
     )
 
-    def fake_compare(current_path: Path, candidate_path: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    def fake_compare(
+        current_path: Path,
+        candidate_path: Path,
+        *,
+        session_ids: tuple[str, ...],
+        **provenance: object,
+    ) -> CanaryDiffReport:
         captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
+        captured.update(provenance)
         return _empty_comparison(current_path, candidate_path, session_ids)
 
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
@@ -1611,6 +1650,13 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
     assert result.comparison.candidate_index == candidate
     assert captured["paths"] == (current, candidate)
     assert captured["promote"] is False
+    # The classifier input is derived from the active generation, not ambient
+    # configuration: v43 is crossed by the packaged v44 title_ref declaration.
+    assert captured["source_index_version"] == 43
+    derived = cast("tuple[DeltaExpectation, ...]", captured["delta_expectations"])
+    assert derived
+    assert all(43 < item.version <= INDEX_SCHEMA_VERSION for item in derived)
+    assert any(item.table == "sessions" and "title_ref" in item.columns for item in derived)
 
 
 def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2420,3 +2466,203 @@ def test_canary_report_cleans_temporary_file_when_replace_fails(
 
     assert not report_path.exists()
     assert list(report_path.parent.glob(f".{report_path.name}.*.tmp")) == []
+
+
+def _semantic_declaration(
+    version: int,
+    *,
+    table: str,
+    columns: tuple[str, ...],
+    operations: tuple[CanaryChangeOperation, ...] = ("changed",),
+    scope: TargetedReprocessScope | None = None,
+) -> IndexDeltaDeclaration:
+    """Build one packaged-shape declaration for classifier tests.
+
+    Real declarations are product data that changes as the schema advances, so
+    the classifier tests state their own input rather than binding to whichever
+    live delta happens to carry a signature today.
+    """
+
+    classes = (
+        (DerivedDeltaClass.SHAPE_FORWARD_TARGETED_REPROCESS,)
+        if scope is not None
+        else (DerivedDeltaClass.SEMANTIC_REPARSE,)
+    )
+    return IndexDeltaDeclaration(
+        version=version,
+        classes=classes,
+        reprocess_scope=scope,
+        expected_canary_changes=(ExpectedCanaryChange(table=table, operations=operations, columns=columns),),
+    )
+
+
+def test_declared_semantic_delta_classifies_its_own_predicted_difference(tmp_path: Path) -> None:
+    """The crossed deltas -- not a hand-written manifest -- account for the diff."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate, profile_message_count=2)
+
+    expectations = index_delta_expectations(
+        40,
+        41,
+        declarations=(_semantic_declaration(41, table="session_profiles", columns=("message_count",)),),
+    )
+    report = compare_reindex_generations(current, candidate, delta_expectations=expectations)
+
+    profile_changes = [item for item in report.differences if item.table == "session_profiles"]
+    assert profile_changes
+    assert all(item.classification is DifferenceClassification.EXPECTED for item in profile_changes)
+    assert all("index delta 41" in item.rationale for item in profile_changes)
+    assert report.unexpected_count == 0
+
+
+def test_declared_delta_does_not_swallow_a_planted_undeclared_change(tmp_path: Path) -> None:
+    """Anti-vacuity (Ref polylogue-tjr4z): a real semantic diff stays unexpected.
+
+    The planted difference is a genuine read-model change on a column no crossed
+    delta declares, on the *same table* a delta does declare.  A classifier that
+    matched by table -- or that reported a fabricated zero -- would call this
+    expected; the real comparator must surface it.
+    """
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate, block_text="planted divergent transcript")
+    with sqlite3.connect(candidate) as connection:
+        connection.execute("UPDATE session_profiles SET tags_json = ?", ('{"planted":true}',))
+        connection.commit()
+
+    expectations = index_delta_expectations(
+        40,
+        41,
+        declarations=(_semantic_declaration(41, table="session_profiles", columns=("message_count",)),),
+    )
+    report = compare_reindex_generations(current, candidate, delta_expectations=expectations)
+
+    planted = [item for item in report.differences if item.table in {"blocks", "session_profiles"}]
+    assert {item.table for item in planted} == {"blocks", "session_profiles"}
+    assert all(item.classification is DifferenceClassification.UNEXPECTED for item in planted)
+    assert report.unexpected_count >= 2
+    assert report.expected_count == 0
+
+
+def test_declared_delta_cannot_absorb_a_row_that_also_changed_an_undeclared_column(tmp_path: Path) -> None:
+    """A partially declared row is unexpected in whole, never partly waived."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate, profile_message_count=2)
+    with sqlite3.connect(candidate) as connection:
+        connection.execute("UPDATE session_profiles SET tags_json = ?", ('{"extra":true}',))
+        connection.commit()
+
+    expectations = index_delta_expectations(
+        40,
+        41,
+        declarations=(_semantic_declaration(41, table="session_profiles", columns=("message_count",)),),
+    )
+    report = compare_reindex_generations(current, candidate, delta_expectations=expectations)
+
+    profile_changes = [item for item in report.differences if item.table == "session_profiles"]
+    assert len(profile_changes) == 1
+    assert set(profile_changes[0].changed_columns) == {"tags_json", "message_count"}
+    assert profile_changes[0].classification is DifferenceClassification.UNEXPECTED
+
+
+def test_declared_delta_scope_does_not_reach_another_origin(tmp_path: Path) -> None:
+    """A targeted reprocess authorizes only the population it names."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    sessions = ("alpha", "beta")
+    origins = ("codex-session", "chatgpt-export")
+    _seed_index(current, sessions=sessions, origins=origins)
+    _seed_index(candidate, sessions=sessions, origins=origins, profile_message_count=2)
+
+    expectations = index_delta_expectations(
+        40,
+        41,
+        declarations=(
+            _semantic_declaration(
+                41,
+                table="session_profiles",
+                columns=("message_count",),
+                scope=TargetedReprocessScope(origin="codex-session"),
+            ),
+        ),
+    )
+    report = compare_reindex_generations(current, candidate, delta_expectations=expectations)
+
+    by_session = {
+        str(dict(item.identity)["session_id"]): item for item in report.differences if item.table == "session_profiles"
+    }
+    assert by_session["codex-session:alpha"].classification is DifferenceClassification.EXPECTED
+    assert by_session["chatgpt-export:beta"].classification is DifferenceClassification.UNEXPECTED
+
+
+def test_shape_only_delta_contributes_no_expectations() -> None:
+    """Only declarations that claim semantic work can authorize a row change."""
+
+    shape_only = IndexDeltaDeclaration(
+        version=41,
+        classes=(DerivedDeltaClass.VIEW_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v41-view-only",
+                kind=FastForwardOperationKind.REPLACE_VIEW,
+                objects=(("view", "actions"),),
+            ),
+        ),
+    )
+
+    assert index_delta_expectations(40, 41, declarations=(shape_only,)) == ()
+
+
+def test_semantic_reparse_delta_can_authorize_a_reviewed_difference(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A semantic delta ships no fast-forward SQL, and still declares table scope.
+
+    Sourcing comparable table scope only from ``operations`` made every
+    SEMANTIC_REPARSE declaration unable to approve anything, because that class
+    routes to a full rebuild and declares no SQL surface at all.
+    """
+
+    declaration = _semantic_declaration(41, table="session_profiles", columns=("message_count",))
+    difference = RowDifference(
+        table="session_profiles",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:alpha"),),
+        before={"message_count": 1},
+        after={"message_count": 2},
+        changed_columns=("message_count",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    review = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:41",
+        rationale="the declared semantic reparse recomputes this aggregate",
+    )
+
+    monkeypatch.setattr(lifecycle_module, "INDEX_DELTA_DECLARATIONS", (declaration,))
+    reindex_canary_module._validate_expected_review_authorities((review,))
+
+
+def test_undeclared_crossed_versions_are_reported_not_silently_expected() -> None:
+    """A crossed version with no declaration authorizes nothing, and says so."""
+
+    declarations = (_semantic_declaration(41, table="session_profiles", columns=("message_count",)),)
+
+    assert index_delta_expectations(40, 43, declarations=declarations) == (
+        DeltaExpectation(
+            version=41,
+            table="session_profiles",
+            operations=(DifferenceOperation.CHANGED,),
+            columns=("message_count",),
+        ),
+    )
+    assert undeclared_index_delta_versions(40, 43, declarations) == (42, 43)

@@ -6,6 +6,7 @@ incoherence it claims to detect -- not merely that *some* check fails.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from dataclasses import replace
@@ -1907,6 +1908,278 @@ def test_raw_quarantine_group_dedup_passes_on_coherent_archive(tmp_path: Path) -
     assert check.evidence["group_count"] == 0
 
 
+# ---------------------------------------------------------------------------
+# active-leaf / title convergence (polylogue-2hwl)
+# ---------------------------------------------------------------------------
+
+
+def _insert_leaf_message(conn: sqlite3.Connection, native_id: str, position: int, *, active_leaf: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO messages(session_id, native_id, position, role, material_origin, content_hash, is_active_leaf)
+        VALUES ('codex-session:session', ?, ?, 'assistant', 'assistant_authored', ?, ?)
+        """,
+        (native_id, position, bytes([position + 1]) * 32, active_leaf),
+    )
+
+
+def test_active_leaf_title_convergence_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("active-leaf-title-convergence",))
+
+    check = _check(report, "active-leaf-title-convergence")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["multi_active_leaf_session_count"] == 0
+    assert check.evidence["unresolvable_active_leaf_pointer_count"] == 0
+    assert check.evidence["origin_titled_placeholder_count"] == 0
+
+
+def test_second_active_leaf_trips_active_leaf_title_convergence(tmp_path: Path) -> None:
+    """polylogue-2hwl defect (2): duplicate provider ids across merged chunks
+    flagged every matching position, so one session carried several active
+    leaves. 103 live sessions were in this state when the detector was first
+    run (2026-08-03)."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        _insert_leaf_message(conn, "retry-a", 1, active_leaf=1)
+        _insert_leaf_message(conn, "retry-b", 2, active_leaf=1)
+
+    report = verify_archive(tmp_path, checks=("active-leaf-title-convergence",))
+
+    check = _check(report, "active-leaf-title-convergence")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["multi_active_leaf_session_count"] == 1
+    assert check.evidence["worst_active_leaf_count"] == 2
+    assert check.evidence["multi_active_leaf_sample"][0]["session_id"] == "codex-session:session"
+
+
+def test_single_active_leaf_does_not_trip_active_leaf_title_convergence(tmp_path: Path) -> None:
+    """Anti-vacuity for the red twin above: one flagged leaf is the normal,
+    converged state and must stay green, so the check is not merely counting
+    ``is_active_leaf`` rows."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        _insert_leaf_message(conn, "only-leaf", 1, active_leaf=1)
+        (leaf_message_id,) = conn.execute("SELECT message_id FROM messages WHERE native_id = 'only-leaf'").fetchone()
+        conn.execute(
+            "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = 'codex-session:session'",
+            (leaf_message_id,),
+        )
+
+    report = verify_archive(tmp_path, checks=("active-leaf-title-convergence",))
+
+    assert _check(report, "active-leaf-title-convergence").status is OutcomeStatus.OK
+
+
+def test_unresolvable_active_leaf_pointer_trips_active_leaf_title_convergence(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = 'codex-session:session'",
+            ("codex-session:session:does-not-exist",),
+        )
+
+    report = verify_archive(tmp_path, checks=("active-leaf-title-convergence",))
+
+    check = _check(report, "active-leaf-title-convergence")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unresolvable_active_leaf_pointer_count"] == 1
+
+
+def test_origin_titled_placeholder_trips_active_leaf_title_convergence(tmp_path: Path) -> None:
+    """polylogue-2hwl defect (1): the merge kept a placeholder/None title even
+    once a real one arrived. A bare native id stored *as* an ORIGIN-provenance
+    title is that bug's stored residue."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE sessions SET title = native_id, title_source = 'origin'")
+
+    report = verify_archive(tmp_path, checks=("active-leaf-title-convergence",))
+
+    check = _check(report, "active-leaf-title-convergence")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["origin_titled_placeholder_count"] == 1
+    assert check.evidence["origin_titled_placeholder_sample"][0]["title"] == "session"
+
+
+def test_untitled_session_without_origin_provenance_stays_green(tmp_path: Path) -> None:
+    """The bare-id title fallback is legitimate when it does not claim ORIGIN
+    provenance -- ``sources/parsers/chatgpt.py`` stores exactly that shape on
+    purpose. Only the provenance lie is the defect."""
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("UPDATE sessions SET title = native_id, title_source = NULL")
+
+    report = verify_archive(tmp_path, checks=("active-leaf-title-convergence",))
+
+    assert _check(report, "active-leaf-title-convergence").status is OutcomeStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# ChatGPT parse-boundary content conservation (polylogue-xofj)
+# ---------------------------------------------------------------------------
+
+
+def _chatgpt_node(node_id: str, message_id: str, content: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "message": {"id": message_id, "author": {"role": "assistant"}, "content": content},
+    }
+
+
+def _seed_chatgpt_conversation(
+    root: Path,
+    *,
+    nodes: dict[str, Any],
+    materialized_native_ids: tuple[str, ...],
+    conversation_id: str = "conv-1",
+    raw_id: str = "raw-chatgpt",
+    acquired_at_ms: int = 1_000,
+) -> None:
+    """Add one acquired chatgpt-export conversation plus its indexed session."""
+    payload = {"id": conversation_id, "title": "Conversation", "mapping": nodes}
+    blob_hash, size = BlobStore(root / "blob").write_from_bytes(json.dumps(payload).encode())
+    with _connect(root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES (?, 'chatgpt-export', ?, '/chatgpt.json', ?, ?, ?)
+            """,
+            (raw_id, conversation_id, bytes.fromhex(blob_hash), size, acquired_at_ms),
+        )
+    with _connect(root / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO sessions(
+                native_id, origin, raw_id, parser_fingerprint, lowering_fingerprint, content_hash, message_count
+            ) VALUES (?, 'chatgpt-export', ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                raw_id,
+                parser_fingerprint_for_origin("chatgpt-export"),
+                lowering_fingerprint(),
+                b"c" * 32,
+                len(materialized_native_ids),
+            ),
+        )
+        for position, native_id in enumerate(materialized_native_ids):
+            conn.execute(
+                """
+                INSERT INTO messages(session_id, native_id, position, role, material_origin, content_hash)
+                VALUES (?, ?, ?, 'assistant', 'assistant_authored', ?)
+                """,
+                (
+                    f"chatgpt-export:{conversation_id}",
+                    native_id,
+                    position,
+                    bytes([position + 1]) * 32,
+                ),
+            )
+
+
+_CONSERVED_NODES: dict[str, Any] = {
+    "n1": _chatgpt_node("n1", "m1", {"content_type": "text", "parts": ["hello"]}),
+    "n2": _chatgpt_node("n2", "m2", {"content_type": "sonic_webpage", "result": "browsed page body"}),
+}
+
+
+def test_chatgpt_content_conservation_passes_when_every_node_materializes(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    _seed_chatgpt_conversation(tmp_path, nodes=_CONSERVED_NODES, materialized_native_ids=("m1", "m2"))
+
+    report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
+
+    check = _check(report, "chatgpt-content-conservation")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["content_units_conserved"] == 2
+    assert check.evidence["conserved_by_content_type"] == {"sonic_webpage": 1, "text": 1}
+
+
+def test_dropped_raw_node_trips_chatgpt_content_conservation(tmp_path: Path) -> None:
+    """polylogue-xofj's class: a content_type the parser has no branch for hits
+    ``extract_messages_from_mapping``'s ``if not text and not content_blocks:
+    continue`` and leaves no row, no event, and no typed refusal. Only
+    re-reading the acquired bytes can see it, which is why this check's
+    universe is the blob rather than any indexed relation."""
+    _seed_coherent_archive(tmp_path)
+    _seed_chatgpt_conversation(tmp_path, nodes=_CONSERVED_NODES, materialized_native_ids=("m1",))
+
+    report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
+
+    check = _check(report, "chatgpt-content-conservation")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["content_units_dropped"] == 1
+    assert check.evidence["dropped_by_content_type"] == {"sonic_webpage": 1}
+    assert check.evidence["dropped_sample"][0]["provider_message_id"] == "m2"
+    assert check.evidence["documents_with_dropped_content"] == 1
+
+
+def test_chatgpt_conservation_ignores_nodes_with_no_content_payload(tmp_path: Path) -> None:
+    """A node whose ``content`` carries only descriptors conserves nothing, so
+    the parser dropping it is not a finding. Without this the census would be
+    red on every export's empty code stubs."""
+    _seed_coherent_archive(tmp_path)
+    nodes = {
+        "n1": _chatgpt_node("n1", "m1", {"content_type": "text", "parts": ["hello"]}),
+        "n2": _chatgpt_node("n2", "m2", {"content_type": "code", "language": "python", "text": ""}),
+    }
+    _seed_chatgpt_conversation(tmp_path, nodes=nodes, materialized_native_ids=("m1",))
+
+    report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
+
+    check = _check(report, "chatgpt-content-conservation")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["content_units_conserved"] == 1
+
+
+def test_chatgpt_conservation_measures_only_the_newest_acquired_revision(tmp_path: Path) -> None:
+    """A branch the user deleted in ChatGPT is legitimately absent from the
+    current index; measuring superseded revisions would report supersession as
+    a parser drop."""
+    _seed_coherent_archive(tmp_path)
+    _seed_chatgpt_conversation(
+        tmp_path,
+        nodes=_CONSERVED_NODES,
+        materialized_native_ids=("m1",),
+        raw_id="raw-chatgpt-old",
+        acquired_at_ms=1_000,
+    )
+    _seed_chatgpt_conversation(
+        tmp_path,
+        nodes={"n1": _chatgpt_node("n1", "m1", {"content_type": "text", "parts": ["hello"]})},
+        materialized_native_ids=(),
+        raw_id="raw-chatgpt-new",
+        acquired_at_ms=2_000,
+    )
+
+    report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
+
+    check = _check(report, "chatgpt-content-conservation")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["content_units_conserved"] == 1
+    assert check.evidence["content_units_dropped"] == 0
+
+
+def test_chatgpt_conservation_excludes_documents_absent_from_the_index(tmp_path: Path) -> None:
+    """A whole conversation missing from the index is ``corpus-absences``'
+    finding; attributing its every node to the parser here would double-count
+    one defect as two."""
+    _seed_coherent_archive(tmp_path)
+    _seed_chatgpt_conversation(tmp_path, nodes=_CONSERVED_NODES, materialized_native_ids=("m1", "m2"))
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM messages WHERE session_id = 'chatgpt-export:conv-1'")
+        conn.execute("DELETE FROM sessions WHERE session_id = 'chatgpt-export:conv-1'")
+
+    report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
+
+    check = _check(report, "chatgpt-content-conservation")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["documents_absent_from_index"] == 1
+    assert check.evidence["documents_measured"] == 0
+
+
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
 def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
     check_name: str, seeded_archive: SeededArchiveArtifact
@@ -1924,6 +2197,32 @@ def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
 
     check = _check(report, check_name)
     assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
+
+
+def test_new_convergence_checks_measure_a_real_population_on_the_pipeline_corpus(
+    seeded_archive: SeededArchiveArtifact,
+) -> None:
+    """Anti-vacuity for the two polylogue-t0m73 graduations: the parametrized
+    corpus test above only asserts "not error", which a check that measured
+    nothing would also satisfy. These two are the checks whose universes are
+    origin-scoped (chatgpt raws) or population-scoped (sessions carrying an
+    active leaf), so their green result is only meaningful if the population
+    was non-empty."""
+    report = verify_archive(
+        seeded_archive.root,
+        checks=("active-leaf-title-convergence", "chatgpt-content-conservation"),
+    )
+
+    active_leaf = _check(report, "active-leaf-title-convergence")
+    assert active_leaf.status is OutcomeStatus.OK
+    assert active_leaf.evidence["sessions_measured"] > 0
+    assert active_leaf.evidence["sessions_with_active_leaf"] > 0
+
+    conservation = _check(report, "chatgpt-content-conservation")
+    assert conservation.status is OutcomeStatus.OK
+    assert conservation.evidence["documents_measured"] > 0
+    assert conservation.evidence["content_units_conserved"] > 0
+    assert conservation.evidence["raws_scanned"] > 0
 
 
 def test_report_to_json_is_json_document(tmp_path: Path) -> None:

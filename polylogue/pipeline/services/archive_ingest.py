@@ -165,11 +165,20 @@ async def parse_sources_archive(
             if session.source_name is Provider.HERMES and blob_hash_str is not None:
                 raw_id = hermes_profile_raw_id(source_path, source_index, blob_hash_str)
             shared_key: tuple[str, str, int, str] | None = None
-            if raw_id is None and blob_hash_str is not None:
+            if blob_hash_str is not None:
                 # Keyed by origin (not provider) to match deterministic_raw_session_id
                 # below -- origin_from_provider is non-injective (GEMINI and DRIVE
                 # both collapse to AISTUDIO_DRIVE), so two sessions with different
                 # `source_name` but the same origin must still share one raw_id.
+                #
+                # polylogue-1fijp: this deliberately does NOT skip a payload that
+                # already has an explicit raw_id. A Hermes state.db is exactly the
+                # grouped shape -- hermes_profile_raw_id is keyed per SNAPSHOT and
+                # excludes the session id (Hermes session ids are unique only
+                # within a profile), so one snapshot carries N sessions under one
+                # acquisition id. Treating each as its own BASELINE observation
+                # made the second one collide with the first's row and abort the
+                # whole batch.
                 shared_key = (
                     origin_from_provider(session.source_name).value,
                     source_path,
@@ -193,7 +202,10 @@ async def parse_sources_archive(
                     )
                     write_result = retained_result
                 else:
-                    if shared_key is not None and blob_hash_str is not None:
+                    if shared_key is not None and blob_hash_str is not None and raw_id is None:
+                        # A route that already computed a snapshot-scoped identity
+                        # (Hermes) keeps it; only routes with no identity of their
+                        # own derive the generic native_id-free one here.
                         raw_id = deterministic_raw_session_id(
                             origin_from_provider(session.source_name),
                             source_path,

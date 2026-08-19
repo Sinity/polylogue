@@ -928,6 +928,22 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # produce trustworthy title_source values.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=68,
+        # polylogue-2tfug: ApplicationDecision gains REPARSE_REAFFIRMATION, and
+        # raw_revision_applications.decision's CHECK is generated from that
+        # enum, so the constraint widens. Purely permissive: every value the
+        # old CHECK admitted the new one still admits, no stored row changes
+        # meaning, and no parser semantics are involved.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v68-reparse-reaffirmation-decision",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "raw_revision_applications"),),
+            ),
+        ),
+    ),
 )
 
 
@@ -1068,6 +1084,48 @@ def get_semantic_reparse_blocking_version_pair(
     return None
 
 
+def index_delta_declarations_between(
+    source_version: int,
+    target_version: int,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> tuple[IndexDeltaDeclaration, ...]:
+    """Return every declaration crossed by ``source_version -> target_version``.
+
+    Unlike :func:`index_fast_forward_plan` this deliberately does not require a
+    contiguous, SQL-fast-forwardable run.  The reindex canary exists precisely
+    for the semantic-reparse case, where no fast-forward plan is available and
+    the declarations are the only statement of what the rebuild is supposed to
+    change.  Gaps are reported separately by
+    :func:`undeclared_index_delta_versions` rather than silently widening what
+    a canary may call expected.
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+    return tuple(
+        sorted(
+            (declaration for declaration in declarations if source_version < declaration.version <= target_version),
+            key=lambda declaration: declaration.version,
+        )
+    )
+
+
+def undeclared_index_delta_versions(
+    source_version: int,
+    target_version: int,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> tuple[int, ...]:
+    """Return crossed versions that ship no declaration at all.
+
+    A crossed version with no declaration can authorize nothing, so anything it
+    changes surfaces as UNEXPECTED.  Callers report these versions so the gap is
+    visible evidence instead of an unexplained pile of unexpected rows.
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+    declared = {declaration.version for declaration in declarations}
+    return tuple(version for version in range(source_version + 1, target_version + 1) if version not in declared)
+
+
 __all__ = [
     "CanaryChangeOperation",
     "DerivedDeltaClass",
@@ -1083,6 +1141,8 @@ __all__ = [
     "get_latest_sql_fast_forwardable_version",
     "get_semantic_reparse_blocking_version_pair",
     "index_delta_declaration_report",
+    "index_delta_declarations_between",
     "index_fast_forward_plan",
     "resolve_canonical_index_objects",
+    "undeclared_index_delta_versions",
 ]
