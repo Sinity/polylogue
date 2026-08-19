@@ -37,6 +37,7 @@ _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
 _COUNTS_SUFFIX = ".counts.json"
+_DDL_SUFFIX = ".archive-ddl.json"
 #: Completed/failed tallies flushed every N completions so the supervisor
 #: heartbeat can print live progress and an ETA without replaying event logs.
 _COUNTS_FLUSH_EVERY = 20
@@ -423,6 +424,49 @@ def _flush_counts(*, force: bool = False) -> None:
         os.replace(temporary, path)
 
 
+def _flush_archive_ddl_counts() -> None:
+    """Publish this worker's archive tier-initialization tally.
+
+    Written once per worker at session end, mirroring ``_flush_counts``: the
+    counters live in the pytest process, so the supervisor cannot sample them
+    from the outside the way it samples RSS or I/O. Without this the split
+    between page-copy restores and real DDL executions -- the difference
+    between microseconds and an fsync-bound executescript -- is invisible in
+    the receipt, and sizing any fix for it requires re-instrumenting by hand.
+    """
+    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
+    if not raw_dir:
+        return
+    try:
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_init_counts
+
+        counts = archive_tier_init_counts()
+    except Exception:  # pragma: no cover - telemetry must never fail a run
+        return
+    if not counts:
+        return
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "controller").replace("/", "-")
+    path = Path(raw_dir) / f"{worker}-{os.getpid()}{_DDL_SUFFIX}"
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+
+
+def read_archive_ddl_counts(events_dir: Path) -> dict[str, int]:
+    """Sum every worker's archive tier-initialization tallies."""
+    totals: dict[str, int] = {}
+    for path in events_dir.glob(f"*{_DDL_SUFFIX}"):
+        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            for key, value in data.items():
+                totals[str(key)] = totals.get(str(key), 0) + int(value)
+    return dict(sorted(totals.items()))
+
+
 def read_progress_counts(events_dir: Path) -> tuple[int, int]:
     """Sum every worker's published (completed, failed) tallies."""
     completed = failed = 0
@@ -459,6 +503,7 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
     _flush_counts(force=True)
+    _flush_archive_ddl_counts()
     try:
         # Worker processes have their own in-memory slowest lists. The controller
         # receives the forwarded timings and is the only writer for the shared
@@ -477,6 +522,11 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
         }
         if "collection_duration_s" in collection_payload:
             payload["collection_duration_s"] = collection_payload["collection_duration_s"]
+        events_dir = os.environ.get(_EVENTS_DIR_ENV)
+        if events_dir:
+            ddl_counts = read_archive_ddl_counts(Path(events_dir))
+            if ddl_counts:
+                payload["archive_tier_init_counts"] = ddl_counts
         _write_summary(payload)
     finally:
         if _SESSION_STATE_STACK:

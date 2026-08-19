@@ -105,9 +105,48 @@ def archive_tier_spec(tier: ArchiveTier) -> ArchiveTierSpec:
 # that require the sqlite-vec extension to be loaded on the connection doing the
 # creating, so a page copy would silently skip that requirement.
 _TIER_PROTOTYPE_LOCK = threading.Lock()
+#: Per-process tally of how each tier initialization resolved, keyed
+#: ``(tier, outcome)``. Three outcomes, because they have three different
+#: costs and three different fixes:
+#:
+#: * ``prototype_hit``  -- restored by page copy from this process's cache.
+#: * ``ddl_fresh``      -- verifiably-empty database, real DDL executed. Paid
+#:   once per tier per process for cacheable tiers; once per archive for
+#:   EMBEDDINGS, which is excluded from the cache.
+#: * ``ddl_reapply``    -- NON-empty database, whole-tier DDL re-executed for
+#:   its ``IF NOT EXISTS`` idempotence and the same-version convergence steps
+#:   that follow it. Every one of these is a fully redundant executescript
+#:   plus its commit fsync.
+#:
+#: Kept because the split is not observable from the outside: all three look
+#: like "initialize a tier" to a caller, while on NVMe with the default
+#: ``synchronous`` the two DDL outcomes measured ~200x the page-copy path.
+#: An integer increment against work that already runs SQL; the read side is
+#: :func:`archive_tier_init_counts`.
+_TIER_INIT_COUNTS: dict[tuple[str, str], int] = {}
+_TIER_INIT_COUNTS_LOCK = threading.Lock()
+
 _TIER_PROTOTYPES: dict[tuple[str, int], Path] = {}
 _TIER_PROTOTYPE_DIR: Path | None = None
 _PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier) - {ArchiveTier.EMBEDDINGS}
+
+
+def _record_tier_init(tier: ArchiveTier, outcome: str) -> None:
+    with _TIER_INIT_COUNTS_LOCK:
+        key = (tier.value, outcome)
+        _TIER_INIT_COUNTS[key] = _TIER_INIT_COUNTS.get(key, 0) + 1
+
+
+def archive_tier_init_counts() -> dict[str, int]:
+    """This process's tier-initialization tally as ``"tier.outcome" -> count``."""
+    with _TIER_INIT_COUNTS_LOCK:
+        return {f"{tier}.{outcome}": count for (tier, outcome), count in sorted(_TIER_INIT_COUNTS.items())}
+
+
+def reset_archive_tier_init_counts() -> None:
+    """Clear the tally; for tests asserting on a known window."""
+    with _TIER_INIT_COUNTS_LOCK:
+        _TIER_INIT_COUNTS.clear()
 
 
 def _tier_prototype_dir() -> Path:
@@ -182,11 +221,21 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         if object_count == 0:
             if _restore_tier_prototype(conn, tier, spec.version):
                 conn.execute("PRAGMA foreign_keys = ON")
+                _record_tier_init(tier, "prototype_hit")
                 return
             _initialize_archive_tier_ddl(conn, tier)
             _record_tier_prototype(conn, tier, spec.version)
+            _record_tier_init(tier, "ddl_fresh")
             return
+        _initialize_archive_tier_ddl(conn, tier)
+        _record_tier_init(tier, "ddl_reapply")
+        return
+    # EMBEDDINGS: never prototype-cached, so classify it the same way rather
+    # than lumping every call together. One COUNT over ``sqlite_master`` on a
+    # database this call is about to run a whole schema against.
+    empty = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) == 0
     _initialize_archive_tier_ddl(conn, tier)
+    _record_tier_init(tier, "ddl_fresh" if empty else "ddl_reapply")
 
 
 def _initialize_archive_tier_ddl(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
