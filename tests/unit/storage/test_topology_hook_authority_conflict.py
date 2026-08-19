@@ -43,16 +43,16 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.topology.edge import TopologyEdgeStatus
+from polylogue.archive.topology.edge import (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+    TopologyEdgeStatus,
+)
 from polylogue.core.enums import BlockType, LinkType, Origin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    HOOK_AUTHORITATIVE_LINK_METHOD,
-    HOOK_CONTRADICTED_LINK_METHOD,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 _CHILD = "child-thread"
 _HOOK_PARENT = "hook-parent-thread"
