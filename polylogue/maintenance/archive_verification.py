@@ -2752,6 +2752,15 @@ def _check_active_leaf_title_convergence_at_index_path(index_path: Path, sample_
             ORDER BY session_id
             """
         ).fetchall()
+        # Measured population, so a green result is distinguishable from a
+        # green-because-empty one both in the receipt and in the corpus test.
+        (sessions_measured,) = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        (sessions_with_active_leaf,) = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM messages WHERE is_active_leaf = 1"
+        ).fetchone()
+        (origin_titled_sessions,) = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE title_source = 'origin'"
+        ).fetchone()
     except sqlite3.Error as exc:
         return _error_check("active-leaf-title-convergence", f"could not read index.db: {exc}", exc=exc)
     finally:
@@ -2778,6 +2787,9 @@ def _check_active_leaf_title_convergence_at_index_path(index_path: Path, sample_
         count=offending,
         details=details[: sample_limit * 3],
         evidence={
+            "sessions_measured": int(sessions_measured),
+            "sessions_with_active_leaf": int(sessions_with_active_leaf),
+            "origin_titled_session_count": int(origin_titled_sessions),
             "multi_active_leaf_session_count": multi_leaf_sessions,
             "worst_active_leaf_count": int(multi_leaf_rows[0][1]) if multi_leaf_rows else 0,
             "unresolvable_active_leaf_pointer_count": dangling_pointers,

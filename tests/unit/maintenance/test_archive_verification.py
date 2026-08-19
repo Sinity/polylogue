@@ -2199,6 +2199,32 @@ def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
     assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
 
 
+def test_new_convergence_checks_measure_a_real_population_on_the_pipeline_corpus(
+    seeded_archive: SeededArchiveArtifact,
+) -> None:
+    """Anti-vacuity for the two polylogue-t0m73 graduations: the parametrized
+    corpus test above only asserts "not error", which a check that measured
+    nothing would also satisfy. These two are the checks whose universes are
+    origin-scoped (chatgpt raws) or population-scoped (sessions carrying an
+    active leaf), so their green result is only meaningful if the population
+    was non-empty."""
+    report = verify_archive(
+        seeded_archive.root,
+        checks=("active-leaf-title-convergence", "chatgpt-content-conservation"),
+    )
+
+    active_leaf = _check(report, "active-leaf-title-convergence")
+    assert active_leaf.status is OutcomeStatus.OK
+    assert active_leaf.evidence["sessions_measured"] > 0
+    assert active_leaf.evidence["sessions_with_active_leaf"] > 0
+
+    conservation = _check(report, "chatgpt-content-conservation")
+    assert conservation.status is OutcomeStatus.OK
+    assert conservation.evidence["documents_measured"] > 0
+    assert conservation.evidence["content_units_conserved"] > 0
+    assert conservation.evidence["raws_scanned"] > 0
+
+
 def test_report_to_json_is_json_document(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
 
