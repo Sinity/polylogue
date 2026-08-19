@@ -171,6 +171,42 @@ def test_compute_session_cost_downgrades_to_partial_when_one_model_unknown_along
     assert "unknown" in confidences
 
 
+def test_catalog_gap_model_with_real_tokens_is_not_a_confident_zero() -> None:
+    """polylogue-iuyr: a model with genuine, nonzero reported tokens but no
+    pricing-catalog entry (e.g. claude-opus-5, a confirmed live catalog gap)
+    must not surface as ``confidence='reported'``/``total_api_cost_usd=0.0`` --
+    that is indistinguishable from a provider that genuinely billed zero.
+    ``estimate_cost()`` silently returns 0.0 for an unpriced model; the
+    confidence must be downgraded to 'unknown' instead of trusting that zero.
+    """
+
+    model_usage = [ModelUsageTotals(model_name="claude-opus-5", input_tokens=1000, output_tokens=500)]
+    session = make_conv(id="catalog-gap-session", provider="claude-code", messages=[])
+
+    summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
+
+    assert summary.total_api_cost_usd == 0.0
+    assert summary.cost_confidence == "unknown"
+    (breakdown,) = summary.per_model
+    assert breakdown.confidence == "unknown"
+    assert breakdown.total_tokens > 0, "the tokens are real -- this must not be the zero-token 9kjtc case"
+
+
+def test_catalogued_model_with_real_tokens_stays_reported() -> None:
+    """Anti-vacuity twin: a genuinely priced model is unaffected by the
+    catalog-gap downgrade."""
+
+    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=1000, output_tokens=500)]
+    session = make_conv(id="catalogued-session", provider="chatgpt", messages=[])
+
+    summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
+
+    assert summary.cost_confidence == "reported"
+    (breakdown,) = summary.per_model
+    assert breakdown.confidence == "reported"
+    assert breakdown.api_cost_usd > 0.0
+
+
 def test_compute_session_cost_defaults_to_pro_tier_subscription_equivalent() -> None:
     """No explicit ``subscription_tier`` keeps the conservative ``pro`` default
     (polylogue-at44 AC: "cost compute reads it with a sane default")."""

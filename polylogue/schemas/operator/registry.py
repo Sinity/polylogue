@@ -8,6 +8,7 @@ from typing import Protocol
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaResolution, SchemaVersionPackage
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.tooling_models import ClusterManifest, SchemaDiff
 
 
@@ -61,6 +62,7 @@ class SchemaRegistryLike(RuntimeSchemaRegistryLike, Protocol):
         cluster_id: str,
         *,
         samples: Sequence[Mapping[str, object]] | None = None,
+        privacy_config: SchemaPrivacyConfig | None = None,
     ) -> str: ...
 
 

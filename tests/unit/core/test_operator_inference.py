@@ -71,6 +71,115 @@ def _seed_chatgpt_raw(workspace_env: dict[str, Path]) -> Path:
     return index_db
 
 
+def _seed_chatgpt_raw_with_planted_field(workspace_env: dict[str, Path], *, values: list[str]) -> Path:
+    """Store several real ChatGPT-shaped raw payloads carrying a shared
+    low-cardinality top-level field (``region_code``), one raw session per
+    value in ``values``, all with the same structural shape so they cluster
+    together for ``promote_schema_cluster``'s ``with_samples=True`` route.
+    """
+    index_db = db_setup(workspace_env)
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        for index, value in enumerate(values):
+            payload = json.dumps(
+                {
+                    "id": f"conversation-{index}",
+                    "title": "Schema inference",
+                    "region_code": value,
+                    "create_time": 1_700_000_000.0 + index,
+                    "update_time": 1_700_000_060.0 + index,
+                    "mapping": {
+                        "node-1": {
+                            "id": "node-1",
+                            "parent": None,
+                            "children": [],
+                            "message": {
+                                "id": f"message-{index}",
+                                "author": {"role": "user"},
+                                "content": {"content_type": "text", "parts": ["infer this schema"]},
+                                "create_time": 1_700_000_000.0 + index,
+                            },
+                        }
+                    },
+                }
+            ).encode()
+            get_blob_store().write_from_bytes(payload)
+            write_source_raw_session(
+                conn,
+                origin=origin_from_provider(Provider.CHATGPT),
+                source_path=f"/fixtures/chatgpt-export-{index}.json",
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=1_700_000_000_000 + index,
+            )
+    return index_db
+
+
+def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_operator_route(
+    workspace_env: dict[str, Path],
+) -> None:
+    """polylogue-f47j, completed: verifies the fix is reachable from the
+    actual production caller, not just the library function.
+
+    ``devtools schema-promote --with-samples`` -> ``promote_schema_cluster``
+    -> ``registry.promote_cluster`` -> ``generate_schema_from_samples`` is
+    the real chain a live promotion runs. The library-level fix alone
+    (threading ``privacy_config`` into ``generate_schema_from_samples``) was
+    unreachable from here until ``SchemaPromoteRequest`` grew a
+    ``privacy_config`` field and ``promote_schema_cluster`` forwarded it --
+    without that, every real ``devtools schema-promote`` run stayed exactly
+    as unredacted as before the library fix landed.
+
+    Anti-vacuity: the baseline call (no ``privacy_config``) must still leak
+    the planted field's values, proving this is a genuine red/green pair and
+    not a heuristic that would have redacted it anyway.
+    """
+    index_db = _seed_chatgpt_raw_with_planted_field(workspace_env, values=["us-east", "eu-west"])
+    inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
+    assert inferred.manifest is not None
+    cluster_id = inferred.manifest.clusters[0].cluster_id
+
+    baseline = promote_schema_cluster(
+        SchemaPromoteRequest(
+            provider="chatgpt",
+            cluster_id=cluster_id,
+            db_path=index_db,
+            with_samples=True,
+            max_samples=100,
+        )
+    )
+    assert baseline.schema is not None
+    baseline_properties = baseline.schema["properties"]
+    assert isinstance(baseline_properties, dict)
+    assert baseline_properties["region_code"].get("x-polylogue-values") == ["us-east", "eu-west"]
+
+    # Reset the cluster's promotion state so it can be promoted a second
+    # time in this same test -- promote_cluster refuses to re-promote an
+    # already-promoted cluster, and this is the same cluster on purpose (the
+    # point is to compare identical input with and without privacy_config).
+    registry = SchemaRegistry()
+    manifest = registry.load_cluster_manifest("chatgpt")
+    assert manifest is not None
+    for cluster in manifest.clusters:
+        if cluster.cluster_id == cluster_id:
+            cluster.promoted_package_version = None
+    registry.save_cluster_manifest(manifest)
+
+    protected = promote_schema_cluster(
+        SchemaPromoteRequest(
+            provider="chatgpt",
+            cluster_id=cluster_id,
+            db_path=index_db,
+            with_samples=True,
+            max_samples=100,
+            privacy_config={"field_overrides": {"$.region_code": "deny"}},
+        )
+    )
+    assert protected.schema is not None
+    protected_properties = protected.schema["properties"]
+    assert isinstance(protected_properties, dict)
+    assert "x-polylogue-values" not in protected_properties["region_code"]
+
+
 def test_infer_schema_builds_schema_from_source_tier_raw(workspace_env: dict[str, Path]) -> None:
     index_db = _seed_chatgpt_raw(workspace_env)
 
