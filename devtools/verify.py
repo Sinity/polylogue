@@ -119,6 +119,7 @@ from devtools.verify_runs import (
     pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     start_checkout_mutation_monitor,
+    sweep_stale_managed_basetemps,
     utc_now,
     worktree_fingerprint,
     xdist_uninterruptible_stall_reason,
@@ -2109,6 +2110,7 @@ def _run_step(
     runtime_policy = None
     pytest_concurrency = 0
     basetemp_cleanup: Path | None = None
+    swept: list[Path] = []
     if is_pytest or has_managed_pytest_child:
         try:
             if has_managed_pytest_child:
@@ -2120,6 +2122,13 @@ def _run_step(
                 env = force_managed_pytest_scratch(env)
             if is_pytest:
                 pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
+            # Reclaim prior runs' leaked tmpfs trees BEFORE admission, not only
+            # at exit. Cleanup used to be purely trailing, so a tree that failed
+            # to unlink stayed resident until someone noticed -- 16 of them and
+            # two blocked merges on 2026-08-19 (polylogue-b9yw7). Sweeping here
+            # also feeds the decision immediately below: the space it returns is
+            # headroom the basetemp admission policy can then admit against.
+            swept = sweep_stale_managed_basetemps()
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
@@ -2241,6 +2250,7 @@ def _run_step(
         metadata["postmortem_path"] = str(CURRENT_POSTMORTEM_PATH)
         metadata["containment_path"] = str(PYTEST_CONTAINMENT_PATH)
         metadata["basetemp_cleanup"] = str(basetemp_cleanup) if basetemp_cleanup is not None else None
+        metadata["basetemp_swept"] = [str(path) for path in swept]
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
         ]

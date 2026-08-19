@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import itertools
 import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -2737,6 +2740,50 @@ def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> Non
 
     assert cleaned == basetemp
     assert not basetemp.exists()
+
+
+def test_sweep_reclaims_a_dead_runs_read_only_tree_but_spares_live_and_shared_ones() -> None:
+    """Eager sweep: reclaim finished runs' debt, never a live run or the shared cache.
+
+    Cleanup used to run only at a run's own exit, so a tree that failed to
+    unlink stayed resident until a human noticed -- 16 leaked trees and two
+    blocked merges on 2026-08-19 (polylogue-b9yw7).
+    """
+    stamp = uuid.uuid4().hex
+    dead = Path("/dev/shm") / f"pytest-polylogue-sweepdead-{stamp}"
+    shared = Path("/dev/shm") / f"pytest-polylogue-seeded-{stamp}"
+    unclaimed = Path("/dev/shm") / f"pytest-polylogue-sweepunclaimed-{stamp}"
+    created = [dead, shared, unclaimed]
+    try:
+        for root in created:
+            (root / "work").mkdir(parents=True)
+            (root / "work" / "payload").write_text("x", encoding="utf-8")
+        # Read-only, exactly as a published seeded-archive artifact is left.
+        for path in sorted((dead / "work").rglob("*"), reverse=True):
+            path.chmod(path.stat().st_mode & ~stat.S_IWUSR)
+        (dead / "work").chmod((dead / "work").stat().st_mode & ~stat.S_IWUSR)
+
+        # A claim naming a pid that cannot be alive => positively dead owner.
+        verify_runs.pytest_basetemp_claim_path(dead, kind="managed").write_text("999999:1", encoding="utf-8")
+        # `unclaimed` carries no claim at all: owner unknown, so it is left alone.
+
+        reclaimed = verify_runs.sweep_stale_managed_basetemps()
+
+        assert dead in reclaimed
+        assert not dead.exists()
+        assert shared.exists(), "the shared -seeded- corpus cache is not run debt"
+        assert unclaimed.exists(), "an unknown owner must not be reclaimed"
+    finally:
+        for root in created:
+            if root.exists():
+                for path in sorted(root.rglob("*"), reverse=True):
+                    with contextlib.suppress(OSError):
+                        path.chmod(path.stat().st_mode | stat.S_IWUSR | stat.S_IXUSR)
+                shutil.rmtree(root, ignore_errors=True)
+            with contextlib.suppress(OSError):
+                verify_runs.pytest_basetemp_claim_path(root, kind="managed").unlink()
+            with contextlib.suppress(OSError):
+                verify_runs.pytest_basetemp_claim_path(root, kind="lock").unlink()
 
 
 def test_pytest_basetemp_claim_path_canonicalizes_symlink_aliases(tmp_path: Path) -> None:
