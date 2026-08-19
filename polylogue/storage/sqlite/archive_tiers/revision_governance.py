@@ -3671,7 +3671,10 @@ def admit_raw_and_parsed_result(
     by its physical acquisition evidence (``native_id`` is NULL and no
     per-session revision envelope is attached), while the caller records each
     parsed session in ``raw_session_memberships``. This keeps raw identity
-    independent of grouped-session write order.
+    independent of grouped-session write order. It resolves
+    ``admit_raw_observation``'s ``SHARED_GROUPED`` arm rather than issuing its
+    own raw write, so this function creates no ``raw_sessions`` row outside
+    the chokepoint on either branch.
     """
 
     def add_timing(name: str, started_at: float) -> None:
@@ -3695,7 +3698,7 @@ def admit_raw_and_parsed_result(
     add_timing("source_connect", t0)
     t0 = time.perf_counter()
     if shared_raw:
-        resolved_raw_id = write_source_raw_session(
+        admission = admit_raw_observation(
             source_conn,
             origin=origin_from_provider(session.source_name),
             capture_mode=session.source_name,
@@ -3703,12 +3706,19 @@ def admit_raw_and_parsed_result(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
-            native_id=None,
             raw_id=raw_id,
+            logical_source_key=logical_source_key,
+            grouped=True,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=attachment_blob_refs,
             manage_transaction=True,
         )
+        resolved_raw_id = admission.raw_id
+        if admission.arm is not RawAdmissionArm.SHARED_GROUPED:
+            raise RuntimeError(
+                f"admit_raw_and_parsed_result: expected a SHARED_GROUPED admission for "
+                f"shared_raw=True, got {admission.arm!r} instead"
+            )
     else:
         admission = admit_raw_observation(
             source_conn,

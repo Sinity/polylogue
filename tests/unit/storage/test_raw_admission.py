@@ -611,8 +611,11 @@ def test_admit_raw_observation_grouped_shares_one_raw_across_sessions(tmp_path: 
     assert row is not None
     # Identity is the acquisition coordinate, not a provider session id.
     assert row["native_id"] is None
-    # No per-session revision envelope is asserted for a shared raw.
-    assert row["revision_kind"] is None
+    # No per-session revision envelope is asserted for a shared raw: the row
+    # keeps source.db's `revision_kind` default with a NULL logical key. That
+    # persisted shape is deliberately IDENTICAL to what the pre-chokepoint
+    # bare write produced -- this change moves the decision, not the bytes.
+    assert row["revision_kind"] == "unknown"
     assert row["logical_source_key"] is None
 
 
