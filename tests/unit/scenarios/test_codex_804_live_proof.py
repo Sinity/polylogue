@@ -11,6 +11,30 @@ The live archive and the real 2026-07-31 witness are unavailable to this lane.
 The remaining confidence gap is therefore the live-operation receipt tracked
 by ``polylogue-live-operation-receipts`` and the terminal production proof
 ``polylogue-reindex-final-proof``.
+
+Where the three audited defects are enforced. A Codex post-merge audit of
+PR #3855 named three ways this harness could accept a bad run. Each now has a
+named postcondition here plus a red-mutation test at the bottom of the module,
+so a future reader does not have to re-derive them from the audit comments:
+
+``comment 3728404649`` -- revisions regenerating timestamps for provider IDs
+    that already exist, letting a growth chain pass through conflict fallback
+    instead of containment. Enforced by ``_assert_baseline_timestamps_are_stable``
+    (per revision) and, in total form, by ``_WirePrefixPreservationWitness``,
+    which requires revision ``N``'s leading bytes to hash to revision ``N-1``'s
+    whole-file digest for all 804 revisions.
+``comment 3728830133`` -- a kill that waits until the transaction is already
+    paused, missing the pre-checkpoint crash window. Enforced by the
+    ``precheckpoint_script`` subprocess, which hard-exits *inside*
+    ``checkpoint_transaction`` before the original call can publish durable
+    paused state, and by ``_assert_precheckpoint_state``.
+``comment 3728830142`` -- a final postcondition accepting zero memberships or
+    quarantined authority, admitting unresolved historical revisions. Enforced
+    by ``_assert_exact_authority_census``, which requires every raw to be
+    ``byte_proven`` with exactly one application row resolving to the terminal
+    raw. The zero semantic-membership census is asserted exactly (not merely
+    tolerated) because this fixture is the byte-revision authority route; the
+    application ledger is its coverage relation.
 """
 
 from __future__ import annotations
@@ -92,6 +116,50 @@ def _baseline_message_timestamps(path: Path) -> tuple[str, ...]:
 def _assert_baseline_timestamps_are_stable(actual: tuple[str, ...]) -> None:
     """Require every observed wire revision to retain the baseline timestamps."""
     assert actual == _BASELINE_MESSAGE_TIMESTAMPS
+
+
+def _prefix_sha256(path: Path, byte_count: int) -> str:
+    digest = hashlib.sha256()
+    remaining = byte_count
+    with path.open("rb") as handle:
+        while remaining:
+            chunk = handle.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise AssertionError(f"{path} is shorter than the previous revision ({byte_count} bytes)")
+            digest.update(chunk)
+            remaining -= len(chunk)
+    return digest.hexdigest()
+
+
+class _WirePrefixPreservationWitness:
+    """Assert every revision extends its predecessor's bytes without rewriting them.
+
+    The two baseline messages checked by ``_assert_baseline_timestamps_are_stable``
+    are the shallow form of the audited defect (Codex comment 3728404649:
+    revisions regenerating timestamps for provider IDs that already exist, so a
+    growth chain passes through conflict fallback instead of containment). This
+    is the total form: revision ``N``'s first ``len(revision N-1)`` bytes must
+    hash to revision ``N-1``'s whole-file digest. That covers every already-seen
+    provider ID, timestamp, and payload field at once -- including the milestone
+    records appended at revisions 1/800/801/802, which the two-message check
+    never reaches -- rather than a hand-picked pair near the file head.
+    """
+
+    def __init__(self) -> None:
+        self.previous_size: int | None = None
+        self.previous_sha256: str | None = None
+        self.verified_revisions: list[int] = []
+
+    def observe(self, revision: int, path: Path, sha256: str) -> None:
+        if self.previous_size is not None and self.previous_sha256 is not None:
+            observed = _prefix_sha256(path, self.previous_size)
+            assert observed == self.previous_sha256, (
+                f"revision {revision} rewrote existing wire bytes: "
+                f"prefix sha256 {observed} != revision {revision - 1} digest {self.previous_sha256}"
+            )
+            self.verified_revisions.append(revision)
+        self.previous_size = path.stat().st_size
+        self.previous_sha256 = sha256
 
 
 def _assert_precheckpoint_state(
@@ -283,9 +351,12 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     acquire_started = time.perf_counter()
     observed_revisions: list[int] = []
 
+    prefix_witness = _WirePrefixPreservationWitness()
+
     def observe_revision(revision: int, path: Path) -> None:
         assert revision == len(observed_revisions)
         _assert_baseline_timestamps_are_stable(_baseline_message_timestamps(path))
+        prefix_witness.observe(revision, path, _file_sha256(path))
         observed_revisions.append(revision)
 
     acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(
@@ -308,6 +379,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     )
     assert len(acquired_raw_ids) == REVISION_COUNT
     assert observed_revisions == list(range(REVISION_COUNT))
+    assert prefix_witness.verified_revisions == list(range(1, REVISION_COUNT))
     assert len(set(acquired_raw_ids)) == REVISION_COUNT
     assert len(sizes) == REVISION_COUNT
     assert sizes[0] == 4_096
@@ -978,3 +1050,27 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
             session_id="codex-session:fixture",
             terminal_raw_id="raw-001",
         )
+
+
+def test_codex_804_rewritten_prefix_red_mutation_is_rejected(tmp_path: Path) -> None:
+    """A revision that rewrites an existing byte fails the prefix witness."""
+    first = tmp_path / "revision-000.jsonl"
+    first.write_bytes(b'{"id":"m0","timestamp":"2026-07-31T04:25:20Z"}\n')
+    first_sha256 = _file_sha256(first)
+
+    witness = _WirePrefixPreservationWitness()
+    witness.observe(0, first, first_sha256)
+
+    # Same length, one regenerated timestamp digit -- exactly the audited shape.
+    rewritten = tmp_path / "revision-001.jsonl"
+    rewritten.write_bytes(b'{"id":"m0","timestamp":"2026-07-31T04:25:21Z"}\n{"pad":1}\n')
+    with pytest.raises(AssertionError, match="rewrote existing wire bytes"):
+        witness.observe(1, rewritten, _file_sha256(rewritten))
+
+    # The append-only control case is accepted.
+    appended = tmp_path / "revision-002.jsonl"
+    appended.write_bytes(first.read_bytes() + b'{"pad":1}\n')
+    control = _WirePrefixPreservationWitness()
+    control.observe(0, first, first_sha256)
+    control.observe(1, appended, _file_sha256(appended))
+    assert control.verified_revisions == [1]

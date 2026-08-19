@@ -32,10 +32,24 @@ records alternate (``main`` at wire rows 0-3, ``other`` at 4, ``main`` at 5-10,
 ``other`` at 11, ``main`` at 12), so no route can see either session as one
 contiguous run.
 
+What this does and does not claim. Since ``polylogue-taj0o`` collapsed eager
+grouping and the streaming contiguous-run chunker onto one shared walk
+(``dispatch.py``'s ``_claude_code_multiway_parse``), route equivalence is
+*structural* rather than coincidental: the eager and streaming entry points
+differ only in whether ``payloads`` is a materialized list or a one-pass
+iterator. This module is therefore a regression lock on that collapse -- it
+fails loudly if a future change re-splits the routes -- not a discovery that
+two independent implementations happen to agree. Likewise, reassembling a
+JSONL record across a read boundary is ``io.BufferedReader``'s job, so the
+``chunked-<n>`` routes prove the production decoder *composes correctly* with
+the bounded-read handle shape that ``blob_store.open`` hands it for multi-GiB
+files; they do not prove polylogue-owned reassembly logic, which does not
+exist.
+
 Anti-vacuity: the comparison is over the full ``model_dump(mode="json")``
-serialization of every parsed session, so dropping ``order_session_events``
-from either path, resetting per-chunk record indexes, or losing the shared
-UUID/sidecar accumulator state changes the canonical snapshot and fails
+serialization of every parsed session, so dropping ``order_session_events``,
+re-splitting eager onto the pre-taj0o grouped-records shortcut, or losing the
+shared UUID/sidecar accumulator state changes the canonical snapshot and fails
 :func:`test_every_production_route_produces_one_canonical_normalization`.
 :func:`test_chunked_reader_actually_splits_records` proves the chunked routes
 are not silently degenerating into whole-line reads.
