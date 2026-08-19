@@ -84,7 +84,27 @@ class TopologyEdgeRecord(BaseModel):
         return value
 
 
+#: ``session_links.method`` token for an edge whose destination is backed by
+#: acquired ``codex_thread_spawn_edge`` hook evidence (polylogue-foee) rather
+#: than by transcript inference.
+HOOK_AUTHORITATIVE_LINK_METHOD = "authoritative-hook-evidence"
+
+#: ``session_links.method`` token for a parser-inferred edge naming a DIFFERENT
+#: parent than the authoritative hook evidence does for the same child. The row
+#: is retained so both evidence sources survive, but carries
+#: ``TopologyEdgeStatus.QUARANTINED`` so no projection composes through it.
+HOOK_CONTRADICTED_LINK_METHOD = "contradicted-by-hook-evidence"
+
+#: Tokens marking an edge whose state was decided from durable hook evidence
+#: rather than from the current parser payload. Neither may be replaced by an
+#: inference-only write, and neither is purged by a session full-replace.
+HOOK_DERIVED_LINK_METHODS = (HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD)
+
+
 __all__ = [
+    "HOOK_AUTHORITATIVE_LINK_METHOD",
+    "HOOK_CONTRADICTED_LINK_METHOD",
+    "HOOK_DERIVED_LINK_METHODS",
     "TopologyEdgeRecord",
     "TopologyEdgeStatus",
     "TopologyEdgeType",

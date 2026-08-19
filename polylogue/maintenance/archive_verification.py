@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.archive.revision_authority import logical_head_cohort_sql
+from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.logging import get_logger
@@ -973,6 +974,103 @@ def _check_lineage_sanity(archive_root: Path, sample_limit: int) -> ArchiveVerif
             "dangling_resolved_dst_sample": dangling_dst_sample,
             "dangling_branch_point_count": dangling_branch_point_count,
             "dangling_branch_point_sample": dangling_branch_point_sample,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: hook-authority-topology-conflict (polylogue-hook-authority-conflict-proof)
+# ---------------------------------------------------------------------------
+
+
+def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Census contradictions between hook evidence and transcript inference.
+
+    A contradiction is not an error: acquired ``codex_thread_spawn_edge``
+    evidence disagreeing with a parser-inferred parent is exactly the case the
+    write path is designed to resolve, and the quarantined loser is the
+    recorded proof that it did. What WOULD be a defect is a contradiction that
+    left no authoritative winner, so that is the only condition reported as an
+    error here -- the count itself is reported as observability.
+    """
+    index_path = _resolve_index_path(archive_root)
+    if not index_path.exists():
+        return _skip_check("hook-authority-topology-conflict", "index.db not present")
+    try:
+        conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("hook-authority-topology-conflict", f"could not open index.db: {exc}", exc=exc)
+    try:
+        if not table_exists(conn, "session_links"):
+            return _skip_check("hook-authority-topology-conflict", "session_links table not present")
+        contradicted_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM session_links WHERE method = ?",
+                (HOOK_CONTRADICTED_LINK_METHOD,),
+            ).fetchone()[0]
+        )
+        authoritative_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM session_links WHERE method = ?",
+                (HOOK_AUTHORITATIVE_LINK_METHOD,),
+            ).fetchone()[0]
+        )
+        # Every contradicted edge must have an authoritative sibling for the
+        # same child: that sibling IS the resolution. A contradicted edge alone
+        # means inference was overruled by nothing.
+        unresolved_rows = conn.execute(
+            """
+            SELECT loser.src_session_id FROM session_links AS loser
+            WHERE loser.method = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM session_links AS winner
+                  WHERE winner.src_session_id = loser.src_session_id
+                    AND winner.link_type = loser.link_type
+                    AND winner.method = ?
+              )
+            LIMIT ?
+            """,
+            (HOOK_CONTRADICTED_LINK_METHOD, HOOK_AUTHORITATIVE_LINK_METHOD, sample_limit),
+        ).fetchall()
+        unresolved_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM session_links AS loser
+                WHERE loser.method = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM session_links AS winner
+                      WHERE winner.src_session_id = loser.src_session_id
+                        AND winner.link_type = loser.link_type
+                        AND winner.method = ?
+                  )
+                """,
+                (HOOK_CONTRADICTED_LINK_METHOD, HOOK_AUTHORITATIVE_LINK_METHOD),
+            ).fetchone()[0]
+        )
+    except sqlite3.Error as exc:
+        return _error_check("hook-authority-topology-conflict", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    status = OutcomeStatus.ERROR if unresolved_count else OutcomeStatus.OK
+    summary = (
+        f"contradicted edge without an authoritative winner x{unresolved_count}"
+        if unresolved_count
+        else (
+            f"{contradicted_count} hook/inference contradiction(s), each resolved to authoritative evidence; "
+            f"{authoritative_count} authoritative edge(s)"
+        )
+    )
+    return ArchiveVerificationCheck(
+        name="hook-authority-topology-conflict",
+        status=status,
+        summary=summary,
+        count=unresolved_count,
+        evidence={
+            "contradicted_count": contradicted_count,
+            "authoritative_count": authoritative_count,
+            "unresolved_contradiction_count": unresolved_count,
+            "unresolved_contradiction_sample": [str(row[0]) for row in unresolved_rows],
         },
     )
 
@@ -3008,6 +3106,22 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         universe_tables=("index.db.session_links", "index.db.sessions", "index.db.messages"),
         red_twin=_red_twin(
             "coherent-archive", "dangling lineage destination", "test_dangling_resolved_dst_trips_lineage_sanity"
+        ),
+        execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
+        candidate_mode=_INDEX_ROOT,
+        live_receipt_required=True,
+    ),
+    _registry_spec(
+        "hook-authority-topology-conflict",
+        "Every hook/inference parent contradiction resolved to an authoritative winner (polylogue-foee).",
+        _check_hook_authority_topology_conflict,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+        incident_bead="polylogue-foee",
+        universe_tables=("index.db.session_links",),
+        red_twin=_red_twin(
+            "coherent-archive",
+            "contradicted edge with no authoritative winner",
+            "test_contradiction_without_authoritative_winner_trips_the_check",
         ),
         execution_phases=_phases(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE),
         candidate_mode=_INDEX_ROOT,

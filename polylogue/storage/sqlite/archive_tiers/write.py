@@ -25,7 +25,14 @@ from urllib.parse import urlparse
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
-from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType, branch_type_to_edge_type
+from polylogue.archive.topology.edge import (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+    HOOK_DERIVED_LINK_METHODS,
+    TopologyEdgeStatus,
+    TopologyEdgeType,
+    branch_type_to_edge_type,
+)
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, LinkType, Origin, PasteBoundary, Provider, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -3676,22 +3683,6 @@ def _write_parent_links(
         )
 
 
-#: ``method`` token for an edge whose destination is backed by acquired
-#: ``codex_thread_spawn_edge`` hook evidence rather than transcript inference.
-HOOK_AUTHORITATIVE_LINK_METHOD = "authoritative-hook-evidence"
-
-#: ``method`` token for a parser-inferred edge that names a DIFFERENT parent
-#: than the authoritative hook evidence does for the same child. The row is
-#: retained (both evidence sources survive) but quarantined so no projection
-#: composes through it.
-HOOK_CONTRADICTED_LINK_METHOD = "contradicted-by-hook-evidence"
-
-#: Both tokens mark an edge whose state was decided from durable hook evidence
-#: rather than from the current parser payload, so neither may be silently
-#: replaced by an inference-only write.
-_HOOK_DERIVED_LINK_METHODS = (HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD)
-
-
 def _authoritative_parent_claim(
     source_conn: sqlite3.Connection | None,
     *,
@@ -3767,8 +3758,8 @@ def _upsert_session_link(
     ).fetchone()
     if (
         existing is not None
-        and str(existing[0] or "") in _HOOK_DERIVED_LINK_METHODS
-        and method not in _HOOK_DERIVED_LINK_METHODS
+        and str(existing[0] or "") in HOOK_DERIVED_LINK_METHODS
+        and method not in HOOK_DERIVED_LINK_METHODS
     ):
         return
     conn.execute(
