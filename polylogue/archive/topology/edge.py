@@ -84,9 +84,92 @@ class TopologyEdgeRecord(BaseModel):
         return value
 
 
+#: The ``TopologyEdgeStatus`` values that remove an edge from lineage
+#: composition, ancestry, and every projection derived from them.
+#:
+#: This is the SINGLE definition every consumer must read. Before it existed,
+#: eight independent queries each hardcoded ``!= 'quarantined'``, so adding a
+#: second exclusion class meant finding and updating all eight -- and any miss
+#: would silently readmit an excluded edge into lineage. ``REPAIRED`` is
+#: deliberately absent: a repaired edge is one that was FIXED, so it composes.
+COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES: tuple[TopologyEdgeStatus, ...] = (
+    TopologyEdgeStatus.QUARANTINED,
+    TopologyEdgeStatus.AUTHORITY_CONTRADICTED,
+)
+
+
+#: String form of the excluded set, for the Python-side filters that cannot
+#: use a SQL predicate (``storage/insights/topology/derivation.py`` filters a
+#: materialized row mapping, not a query).
+COMPOSITION_EXCLUDED_STATUS_VALUES: frozenset[str] = frozenset(
+    status.value for status in COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES
+)
+
+
+def status_excludes_composition(status: object) -> bool:
+    """True when a ``session_links.status`` value bars an edge from composition."""
+    return isinstance(status, str) and status.strip() in COMPOSITION_EXCLUDED_STATUS_VALUES
+
+
+def _excluded_status_sql_list() -> str:
+    return ", ".join(f"'{status.value}'" for status in COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES)
+
+
+def topology_status_composes_sql(column: str = "status") -> str:
+    """SQL predicate selecting edges that MAY participate in composition.
+
+    The values are interpolated from the enum, never from caller input.
+    """
+    return f"COALESCE(TRIM({column}), '') NOT IN ({_excluded_status_sql_list()})"
+
+
+def topology_status_excluded_sql(column: str = "status") -> str:
+    """SQL predicate selecting edges excluded from composition."""
+    return f"COALESCE(TRIM({column}), '') IN ({_excluded_status_sql_list()})"
+
+
+#: ``session_links.method`` token for an edge whose destination is backed by
+#: acquired ``codex_thread_spawn_edge`` hook evidence (polylogue-foee) rather
+#: than by transcript inference.
+HOOK_AUTHORITATIVE_LINK_METHOD = "authoritative-hook-evidence"
+
+#: ``session_links.method`` token for a parser-inferred edge naming a DIFFERENT
+#: parent than the authoritative hook evidence does for the same child. The row
+#: is retained so both evidence sources survive, but carries
+#: ``TopologyEdgeStatus.QUARANTINED`` so no projection composes through it.
+HOOK_CONTRADICTED_LINK_METHOD = "contradicted-by-hook-evidence"
+
+#: ``session_links.method`` token for an authoritative edge that a NEWER hook
+#: claim replaced. polylogue-foee's evidence spool can revise itself: a later
+#: ``codex_thread_spawn_edge`` naming a different parent for the same child
+#: must not leave two permanent authoritative edges at different primary keys,
+#: because composition would then pick between them by arrival order -- the
+#: exact defect this mechanism exists to remove. The older edge is re-marked
+#: rather than deleted, so both claims stay auditable.
+HOOK_SUPERSEDED_LINK_METHOD = "superseded-by-newer-hook-evidence"
+
+#: Tokens marking an edge whose state was decided from durable hook evidence
+#: rather than from the current parser payload. Neither may be replaced by an
+#: inference-only write, and neither is purged by a session full-replace.
+HOOK_DERIVED_LINK_METHODS = (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+    HOOK_SUPERSEDED_LINK_METHOD,
+)
+
+
 __all__ = [
+    "COMPOSITION_EXCLUDED_STATUS_VALUES",
+    "COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES",
+    "HOOK_AUTHORITATIVE_LINK_METHOD",
+    "HOOK_CONTRADICTED_LINK_METHOD",
+    "HOOK_SUPERSEDED_LINK_METHOD",
+    "HOOK_DERIVED_LINK_METHODS",
     "TopologyEdgeRecord",
     "TopologyEdgeStatus",
     "TopologyEdgeType",
     "branch_type_to_edge_type",
+    "status_excludes_composition",
+    "topology_status_composes_sql",
+    "topology_status_excluded_sql",
 ]

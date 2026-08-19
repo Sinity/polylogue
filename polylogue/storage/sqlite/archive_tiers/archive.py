@@ -63,6 +63,7 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
+from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import ActionResultState, Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
@@ -2092,6 +2093,19 @@ class ArchiveStore:
         """
         self._conn.interrupt()
 
+    def _optional_source_conn(self) -> sqlite3.Connection | None:
+        """Return the source.db handle for evidence reads, or ``None``.
+
+        Topology hook-evidence consultation is strictly additive: a store whose
+        source tier is absent or unopenable (index-only harnesses, a read-only
+        candidate without the durable tier staged) must behave exactly as it did
+        before hook authority existed rather than fail a session write.
+        """
+        try:
+            return self._ensure_source_conn()
+        except sqlite3.Error:
+            return None
+
     def _ensure_source_conn(self) -> sqlite3.Connection:
         """Return the persistent source.db connection, opening it lazily."""
         if self._source_conn is None:
@@ -2174,6 +2188,7 @@ class ArchiveStore:
             session,
             content_hash=content_hash,
             preacquired_attachment_blobs=acquired,
+            source_conn=self._optional_source_conn(),
         )
         self._pending_index_blob_receipts.extend(
             (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
@@ -3053,13 +3068,13 @@ class ArchiveStore:
     def has_prefix_lineage(self, session_id: str) -> bool:
         """Return whether a session's logical transcript inherits a prefix."""
         row = self._conn.execute(
-            """
+            f"""
             SELECT 1
             FROM session_links
             WHERE src_session_id = ?
               AND inheritance = 'prefix-sharing'
               AND resolved_dst_session_id IS NOT NULL
-              AND COALESCE(TRIM(status), '') != 'quarantined'
+              AND {topology_status_composes_sql()}
             LIMIT 1
             """,
             (session_id,),

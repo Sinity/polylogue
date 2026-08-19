@@ -405,7 +405,25 @@ class TopologyEdgeStatus(PolylogueStrEnum):
     """
 
     REPAIRED = "repaired"
+    #: A cycle-break: resolving this edge would close a loop or exhaust the
+    #: ancestry walk budget, so the DAG invariant every projection assumes
+    #: forced it out. The defect is in the SHAPE of the graph.
     QUARANTINED = "quarantined"
+    #: An authority contradiction (polylogue-foee): acquired hook evidence
+    #: names a different parent than this parser-inferred edge does for the
+    #: same child, so the inferred edge lost and is excluded while both
+    #: evidence sources are retained. The graph shape is fine; the defect is
+    #: in the PROVENANCE of this particular claim.
+    #:
+    #: Deliberately distinct from ``QUARANTINED``. Both exclude an edge from
+    #: composition, but a reader (or an operator triaging a live archive) must
+    #: be able to tell a structural cycle-break from an overruled inference
+    #: forever, and ``method`` is an unconstrained TEXT column that cannot
+    #: carry that distinction safely. Every consumer that excludes edges from
+    #: composition reads ``COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES`` rather
+    #: than matching either literal, so adding a member here cannot silently
+    #: readmit an excluded edge.
+    AUTHORITY_CONTRADICTED = "authority-contradicted"
 
 
 class StopReason(PolylogueStrEnum):
