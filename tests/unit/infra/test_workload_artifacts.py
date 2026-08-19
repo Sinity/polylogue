@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
+import shutil
 import sqlite3
+import stat
 import subprocess
+import sys
+import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
     _journal_mode_delete_with_retry,
@@ -235,3 +243,242 @@ def test_journal_mode_delete_reraises_lock_once_deadline_elapses(
 
     with pytest.raises(sqlite3.OperationalError, match="database is locked"):
         _journal_mode_delete_with_retry(_AlwaysLockedConnection(), name="index.db")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Cache identity: what a published artifact is, and is not, a function of
+# ---------------------------------------------------------------------------
+
+
+def test_seeded_archive_key_is_stable_across_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new commit must not invalidate the cache.
+
+    Anti-vacuity: restoring ``build_id`` (``git rev-parse HEAD``) to
+    :class:`SeededArchiveKey` makes both halves of this fail -- the two keys
+    diverge, and the second build publishes a second artifact directory
+    holding identical bytes. That was the measured behavior before
+    polylogue-1xc.14.1: 223 immutable artifact directories, 560 MB, for a
+    catalog of about six distinct workloads.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = Path(tempfile.mkdtemp(prefix="seeded-key-stability-"))
+    try:
+        monkeypatch.setattr(artifacts, "_build_id", lambda: "git:0000000000000000000000000000000000000000")
+        first_key = seeded_archive_key(())
+        first = build_seeded_archive(cache_root=cache_root)
+
+        monkeypatch.setattr(artifacts, "_build_id", lambda: "git:ffffffffffffffffffffffffffffffffffffffff")
+        artifacts._VALIDATED_ARTIFACTS.clear()
+        second_key = seeded_archive_key(())
+        second = build_seeded_archive(cache_root=cache_root)
+
+        assert first_key.value == second_key.value
+        assert first.root == second.root
+        assert len(list((cache_root / "artifacts").iterdir())) == 1
+        # The commit survives as provenance on the manifest, where it records
+        # which checkout published the bytes without gating their reuse.
+        assert first.manifest.build_id == "git:0000000000000000000000000000000000000000"
+    finally:
+        shutil.rmtree(cache_root, ignore_errors=True)
+
+
+def test_seeded_archive_key_changes_with_archive_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Archive DDL is part of the artifact's identity.
+
+    ``recipe_id`` hashes a fixed six-file list that names ``bootstrap.py`` but
+    none of the ``archive_tiers`` DDL modules, so before this key component a
+    schema change arriving through ``index.py`` (the normal route) left the
+    key untouched and a stale-schema artifact reusable.
+    """
+    baseline = seeded_archive_key(())
+
+    bumped = dict(ARCHIVE_DDL_BY_TIER)
+    bumped[ArchiveTier.INDEX] = ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX] + "\nCREATE TABLE later_addition(id TEXT);"
+    monkeypatch.setattr("tests.infra.workload_artifacts.ARCHIVE_DDL_BY_TIER", bumped)
+
+    assert seeded_archive_key(()).value != baseline.value
+    assert seeded_archive_key(()).archive_schema_id != baseline.archive_schema_id
+
+
+def test_seeded_archive_key_ignores_ddl_reordering() -> None:
+    """The schema component names the DDL, not the module text around it.
+
+    Hashing the rendered per-tier DDL rather than the Python source of the
+    modules that build it keeps a comment or docstring edit in ``index.py``
+    from invalidating every cached artifact -- the same over-invalidation, one
+    layer down, that dropping ``build_id`` exists to stop.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    assert artifacts._archive_schema_id() == artifacts._archive_schema_id()
+    assert artifacts._archive_schema_id().startswith("archive-schema:sha256:")
+
+
+# ---------------------------------------------------------------------------
+# Validate-once-per-process memo
+# ---------------------------------------------------------------------------
+
+
+def test_seeded_archive_memo_skips_revalidation_within_a_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The second hit in a process must not re-run the full validation.
+
+    Anti-vacuity: deleting the memo lookup in ``build_seeded_archive`` makes
+    this fail, because ``_validate_artifact`` is then called on every hit --
+    which is exactly the per-cache-hit cost (re-SHA256 of every tier, five
+    ``PRAGMA quick_check`` runs, the planted-facts query, and the
+    frontier-convergence read) the memo exists to stop paying per test.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    first = build_seeded_archive(cache_root=cache_root)
+
+    calls = 0
+    real_validate = artifacts._validate_artifact
+
+    def counting_validate(root: Path, key: artifacts.SeededArchiveKey) -> object:
+        nonlocal calls
+        calls += 1
+        return real_validate(root, key)
+
+    monkeypatch.setattr(artifacts, "_validate_artifact", counting_validate)
+    second = build_seeded_archive(cache_root=cache_root)
+
+    assert calls == 0
+    assert second.root == first.root
+    assert second.manifest.manifest_id == first.manifest.manifest_id
+
+
+def test_seeded_archive_memo_is_dropped_when_the_artifact_is_unplaced(tmp_path: Path) -> None:
+    """A memo must not survive the artifact being deleted under a live process."""
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    index_path = original.root / "index.db"
+    index_path.chmod(index_path.stat().st_mode | os.W_OK)
+    index_path.unlink()
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert rebuilt.root == original.root
+    assert rebuilt.root.joinpath("index.db").is_file()
+
+
+_FRESH_PROCESS_PROBE = """
+import json, sys
+from pathlib import Path
+from tests.infra.workload_artifacts import build_seeded_archive
+
+cache_root = Path(sys.argv[1])
+artifact = build_seeded_archive(cache_root=cache_root)
+print(json.dumps({"key": artifact.manifest.key, "root": str(artifact.root)}))
+"""
+
+
+@pytest.mark.uses_real_clock("spawns a fresh interpreter; no timestamp assertions")
+def test_seeded_archive_corruption_is_refused_by_a_fresh_process(tmp_path: Path) -> None:
+    """The memo is per-process: a NEW process still validates in full.
+
+    Red twin for the validate-once memo. Corrupts ``index.db`` in place
+    without changing its size, so the cheap presence/size check a warm
+    process uses cannot see it -- only the full SHA-256 comparison can. A
+    freshly spawned interpreter has no memo, must therefore run that full
+    validation, must reject the artifact, and must republish it.
+
+    Anti-vacuity: making the memo process-global (a file on disk, or an
+    unconditional trust of the published manifest without re-hashing) makes
+    this fail, because the fresh process would accept the corrupted bytes.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+
+    index_path = original.root / "index.db"
+    # ``stat.S_IWUSR``, not ``os.W_OK``: the latter is 2, which as a mode bit
+    # is ``S_IWOTH`` and grants this process nothing.
+    index_path.chmod(index_path.stat().st_mode | stat.S_IWUSR)
+    size_before = index_path.stat().st_size
+    with index_path.open("r+b") as handle:
+        handle.seek(size_before // 2)
+        handle.write(b"\xde\xad\xbe\xef")
+    assert index_path.stat().st_size == size_before
+
+    result = subprocess.run(
+        [sys.executable, "-c", _FRESH_PROCESS_PROBE, str(cache_root)],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+
+    assert result.returncode == 0, result.stderr
+    republished = json.loads(result.stdout.strip().splitlines()[-1])
+    # Same cache identity, freshly generated bytes: the artifact is rebuilt in
+    # place, not accepted. ``manifest_id`` deliberately is NOT compared -- it
+    # digests the per-file SHA-256 list, and a rebuild produces byte-different
+    # SQLite files for identical logical content, so equality there would be
+    # asserting determinism the pipeline never promised.
+    assert republished["key"] == original.manifest.key
+    assert republished["root"] == str(original.root)
+    with index_path.open("rb") as handle:
+        handle.seek(size_before // 2)
+        assert handle.read(4) != b"\xde\xad\xbe\xef"
+
+
+# ---------------------------------------------------------------------------
+# Cache-root placement
+# ---------------------------------------------------------------------------
+
+
+def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host without ``/realm`` must not crash every consumer of this module.
+
+    ``mkdir(parents=True)`` cannot create a directory under a nonexistent
+    mount point, so the previously hard-coded ``/realm/tmp`` root made the
+    seeded-archive cache raise ``OSError`` on any cloud sandbox. Mirrors
+    ``devtools.verify_runs.resolve_pytest_basetemp_root``'s placement family.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    monkeypatch.setattr(Path, "is_dir", lambda self: False)
+    assert artifacts.default_cache_root() == artifacts._CLOUD_CACHE_ROOT
+
+    monkeypatch.undo()
+    if artifacts._SCRATCH_CACHE_ROOT.parent.is_dir():
+        assert artifacts.default_cache_root() == artifacts._SCRATCH_CACHE_ROOT
+
+
+# ---------------------------------------------------------------------------
+# Read-only fixture path
+# ---------------------------------------------------------------------------
+
+
+def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
+    named_seeded_archive_ro: Callable[[str], Path],
+) -> None:
+    """The read-only fixture hands back the shared artifact, not a copy of it.
+
+    Anti-vacuity: reintroducing a clone makes the ``artifacts/`` containment
+    assertion fail, and reverting the artifact to writable makes the
+    read-only mode assertion fail -- the two properties that let every worker
+    and every test share one copy.
+    """
+    db_path = named_seeded_archive_ro("cli-chatgpt")
+
+    assert db_path.is_file()
+    assert db_path.name == "index.db"
+    assert "artifacts" in db_path.parts
+    assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(db_path.parent)
+    assert not (db_path.parent.stat().st_mode & os.W_OK)
+
+    with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
+        assert archive.count_sessions() > 0
