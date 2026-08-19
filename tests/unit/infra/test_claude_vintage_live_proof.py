@@ -94,6 +94,52 @@ def test_red_mutation_restores_the_vintage_conflict_verdict(monkeypatch: pytest.
     assert result.ambiguous_raw_ids == ("fixture-new",)
 
 
+def test_composer_still_isolates_the_content_blocks_presence_axis() -> None:
+    """Composer-drift guard for the cited cohort's classifier branch.
+
+    ``polylogue-0qfy``'s measurement is specific: two claude-ai-export vintages
+    whose message text is byte-identical, differing only in whether the message
+    also carries a redundant single text ``content`` segment. If the composer
+    ever drifts -- different text between vintages, a second differing message,
+    or the vintage difference disappearing -- the equivalence verdict above
+    would still be *reachable* for the wrong reason. This pins the payload pair
+    to that one axis so the branch the receipt reports stays the branch the real
+    cohort exercised.
+    """
+    old_payload = _claude_vintage_live_proof_payload(nested_target=False)
+    new_payload = _claude_vintage_live_proof_payload(nested_target=True)
+
+    old_messages = old_payload["chat_messages"]
+    new_messages = new_payload["chat_messages"]
+    assert isinstance(old_messages, list) and isinstance(new_messages, list)
+    assert len(old_messages) == len(new_messages) == 3
+
+    differing = [
+        index for index, (left, right) in enumerate(zip(old_messages, new_messages, strict=True)) if left != right
+    ]
+    assert differing == [2], f"exactly one message may differ across vintages, got indexes {differing}"
+
+    assert {key: value for key, value in old_payload.items() if key != "chat_messages"} == {
+        key: value for key, value in new_payload.items() if key != "chat_messages"
+    }
+
+    old_target, new_target = old_messages[2], new_messages[2]
+    assert old_target["uuid"] == new_target["uuid"]
+    # Old vintage: text at the top level, no content segments at all.
+    assert "content" not in old_target
+    text = old_target["text"]
+    # New vintage: the same text, carried as exactly one redundant text segment.
+    assert "text" not in new_target
+    assert new_target["content"] == [{"type": "text", "text": text}]
+
+    # The redundant-block axis is what the receipt's parser branch reports.
+    old_session = parse_ai(old_payload, "old-fallback")
+    new_session = parse_ai(new_payload, "new-fallback")
+    assert len(old_session.messages[2].blocks) == 0
+    assert len(new_session.messages[2].blocks) == 1
+    assert (old_session.messages[2].text or "") == (new_session.messages[2].text or "") == text
+
+
 def test_registry_records_the_unrecovered_live_evidence_gap() -> None:
     member = next(item for item in PATHOLOGY_ZOO_MANIFEST if item.member_id == "claude-vintage-live-proof")
     assert member.session_ids == (f"claude-ai-export:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",)

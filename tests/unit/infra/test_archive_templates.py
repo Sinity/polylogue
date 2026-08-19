@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import sqlite3
 import stat
 import subprocess
@@ -121,4 +120,7 @@ def test_finalized_template_checkpoints_real_wal_before_freezing_and_cloning(tmp
     with contextlib.closing(sqlite3.connect(clone / "source.db")) as conn:
         assert conn.execute("SELECT value FROM entries").fetchall() == [("written-through-wal",)]
 
-    assert not (template.stat().st_mode & os.W_OK)
+    # ``stat.S_IWUSR``, not ``os.W_OK``: the latter is 2, which as a mode
+    # bit is ``S_IWOTH``, so the check would pass with owner-write set --
+    # exactly the bit that decides whether this template is immutable.
+    assert not (template.stat().st_mode & stat.S_IWUSR)

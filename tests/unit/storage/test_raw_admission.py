@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import sqlite3
 from pathlib import Path
@@ -18,7 +19,11 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionArm,
     admit_raw_observation,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ReconstructedRawRow,
+    bind_source_raw_revision,
+    insert_reconstructed_raw_row,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -545,3 +550,154 @@ def test_admit_raw_observation_requires_logical_source_key(tmp_path: Path) -> No
             logical_source_key="",
             prior_head=None,
         )
+
+
+def test_admit_raw_observation_baseline_honors_caller_supplied_raw_id(tmp_path: Path) -> None:
+    """polylogue-1fijp: the BASELINE arm must not discard an explicit raw id.
+
+    Every other arm forwards ``raw_id`` to ``write_source_raw_session``. The
+    BASELINE arm dropped it, so a caller with a route-specific identity scheme
+    (``hermes_profile_raw_id`` in ``pipeline/services/archive_ingest.py``, and
+    the grouped-capture ``deterministic_raw_session_id(..., native_id=None)``
+    key) silently got a *different* raw row than the one it addressed -- and
+    then recorded memberships/coordinates against the id it thought it wrote.
+    """
+    conn = _connect(tmp_path / "source.db")
+
+    result = admit_raw_observation(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/tmp/rollout.jsonl",
+        payload=b"line-1\n",
+        acquired_at_ms=1_767_000_000_000,
+        logical_source_key="codex:/tmp/rollout.jsonl",
+        prior_head=None,
+        raw_id="explicit-baseline-raw-id",
+    )
+
+    assert result.arm is RawAdmissionArm.BASELINE
+    assert result.raw_id == "explicit-baseline-raw-id"
+    row = _row(conn, "explicit-baseline-raw-id")
+    assert row["revision_kind"] == "full"
+
+
+def test_admit_raw_observation_grouped_shares_one_raw_across_sessions(tmp_path: Path) -> None:
+    """polylogue-1fijp: grouped capture resolves a typed arm, not a bare INSERT.
+
+    A grouped JSONL file parses into many sessions that share identical bytes.
+    Its raw row is keyed by physical acquisition evidence alone (``native_id``
+    is NULL; session identity lives in ``raw_session_memberships``), which is
+    why it cannot carry a per-session revision envelope. That is a *decision*,
+    and before this it was made by bypassing the chokepoint entirely with a
+    bare ``write_source_raw_session`` call inside
+    ``admit_raw_and_parsed_result``. Route it through the chokepoint so the
+    outcome is a named arm.
+    """
+    conn = _connect(tmp_path / "source.db")
+
+    result = admit_raw_observation(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/grouped.jsonl",
+        payload=b'{"a": 1}\n{"b": 2}\n',
+        acquired_at_ms=1_767_000_000_000,
+        logical_source_key="claude-code-session:/tmp/grouped.jsonl",
+        prior_head=None,
+        grouped=True,
+        raw_id="grouped-raw-id",
+    )
+
+    assert result.arm is RawAdmissionArm.SHARED_GROUPED
+    assert result.raw_id == "grouped-raw-id"
+    row = conn.execute(
+        "SELECT native_id, revision_kind, logical_source_key FROM raw_sessions WHERE raw_id = ?",
+        ("grouped-raw-id",),
+    ).fetchone()
+    assert row is not None
+    # Identity is the acquisition coordinate, not a provider session id.
+    assert row["native_id"] is None
+    # No per-session revision envelope is asserted for a shared raw: the row
+    # keeps source.db's `revision_kind` default with a NULL logical key. That
+    # persisted shape is deliberately IDENTICAL to what the pre-chokepoint
+    # bare write produced -- this change moves the decision, not the bytes.
+    assert row["revision_kind"] == "unknown"
+    assert row["logical_source_key"] is None
+
+
+def test_admit_raw_observation_rejects_grouped_with_prior_head(tmp_path: Path) -> None:
+    """A shared grouped raw has no revision chain to compare against."""
+    conn = _connect(tmp_path / "source.db")
+
+    with pytest.raises(ValueError, match="grouped"):
+        admit_raw_observation(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/grouped.jsonl",
+            payload=b"x\n",
+            acquired_at_ms=1_767_000_000_000,
+            logical_source_key="claude-code-session:/tmp/grouped.jsonl",
+            prior_head=PriorRawHead(raw_id="prior", source_revision="deadbeef", payload=b""),
+            grouped=True,
+        )
+
+
+def test_insert_reconstructed_raw_row_preserves_byte_proven_repair_authority(tmp_path: Path) -> None:
+    """polylogue-1fijp: the copy-forward exemption keeps the authority it was given.
+
+    ``storage/repair.py``'s browser-origin copy-forward rebuilds a raw row from
+    a plan that already proved the bytes. Routing it through
+    ``admit_raw_observation`` instead would resolve BASELINE/``asserted``
+    against the absent prior head for the corrected logical key and silently
+    downgrade that proof, which is exactly why this path is exempt. Pin the
+    authority so a future "just migrate the last call site" cannot erase it.
+    """
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"reconstructed": true}\n'
+    blob_hash = hashlib.sha256(payload).digest()
+
+    insert_reconstructed_raw_row(
+        conn,
+        ReconstructedRawRow(
+            raw_id="copy-forward-raw",
+            origin=Origin.CLAUDE_AI_EXPORT.value,
+            capture_mode=Provider.CLAUDE_AI.value,
+            native_id="native-42",
+            source_path="/copy-forward/session.json",
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=len(payload),
+            acquired_at_ms=1_767_000_000_000,
+            logical_source_key="claude-ai-export:native-42",
+            source_revision=blob_hash.hex(),
+            baseline_raw_id="copy-forward-raw",
+        ),
+    )
+
+    row = _row(conn, "copy-forward-raw")
+    assert row["revision_kind"] == RawRevisionKind.FULL.value
+    assert row["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value
+    assert row["logical_source_key"] == "claude-ai-export:native-42"
+    assert row["baseline_raw_id"] == "copy-forward-raw"
+
+
+def test_insert_reconstructed_raw_row_rejects_untrusted_schema_and_short_hash(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    row = ReconstructedRawRow(
+        raw_id="r",
+        origin=Origin.CLAUDE_AI_EXPORT.value,
+        capture_mode=None,
+        native_id=None,
+        source_path="/p",
+        source_index=0,
+        blob_hash=b"\x00" * 32,
+        blob_size=1,
+        acquired_at_ms=1,
+        logical_source_key="k",
+        source_revision="00",
+        baseline_raw_id="r",
+    )
+
+    with pytest.raises(ValueError, match="unsupported source schema"):
+        insert_reconstructed_raw_row(conn, row, schema="attached; DROP TABLE raw_sessions")
+    with pytest.raises(ValueError, match="32-byte"):
+        insert_reconstructed_raw_row(conn, dataclasses.replace(row, blob_hash=b"\x00" * 16))

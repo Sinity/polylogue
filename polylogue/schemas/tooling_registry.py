@@ -13,6 +13,7 @@ from polylogue.core.json import json_document, json_document_list, require_json_
 from polylogue.schemas.observation import schema_cluster_id
 from polylogue.schemas.observation_models import SchemaClusterPayload
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.runtime_registry import (
     ElementSchemaMap,
     PublicSchemaDocument,
@@ -287,6 +288,7 @@ class SchemaRegistryToolingMixin:
         cluster_id: str,
         *,
         samples: Sequence[SchemaPayload] | None = None,
+        privacy_config: SchemaPrivacyConfig | None = None,
     ) -> str:
         provider_token = canonical_schema_provider(provider)
         manifest = self.load_cluster_manifest(provider_token)
@@ -303,7 +305,7 @@ class SchemaRegistryToolingMixin:
         if samples:
             from polylogue.schemas.generation.workflow import generate_schema_from_samples
 
-            schema = json_document(generate_schema_from_samples(samples))
+            schema = json_document(generate_schema_from_samples(samples, privacy_config=privacy_config))
         else:
             schema = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
