@@ -702,10 +702,13 @@ Core loop:
   target set is unreachable from an entrypoint ("certifies dead code") and any
   test that reads an ambient `~/.codex` / `~/.claude` / `/realm` path instead
   of a fixture. Reachability is module-level over the import graph and
-  additionally seeded from the string-keyed dispatch registries (Click lazy
-  commands, `REPAIR_HANDLERS`, `ARCHIVE_VERIFICATION_CHECKS`), because import
-  edges alone under-report — this repo has four recorded wrong deletions
-  derived from grep. `--ignore-baseline` prints the pre-existing findings,
+  additionally seeded from four root classes import edges alone miss: Click
+  lazy commands, `python -m`-invoked modules (`if __name__ == "__main__"`),
+  ancestor packages of a reachable module, and literal-container registries
+  (`REPAIR_HANDLERS`, `ARCHIVE_VERIFICATION_CHECKS`). A symbol re-exported
+  through an unreachable facade resolves per-symbol to its defining module, so
+  a pass-through never reads as dead. Import edges alone under-report — this
+  repo has four recorded wrong deletions derived from grep. `--ignore-baseline` prints the pre-existing findings,
   which are the WS-F deletion worklist in
   `docs/plans/oracle-integrity-baseline.json`; `--write-baseline` regenerates
   it. A `[type-only]` module reaches production **only** through a

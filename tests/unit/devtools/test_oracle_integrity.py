@@ -189,6 +189,38 @@ def test_repository_is_clean_against_its_baseline() -> None:
     assert report.reachable_modules > 500
 
 
+#: Pinned so regenerating the ratchet is a VISIBLE diff, never a silent grow.
+#: A cold review widened the baseline 34 -> 35 by appending a new ambient-path
+#: read to an already-baselined file; with the count pinned and the key
+#: including the finding detail, that can no longer pass unnoticed.
+EXPECTED_BASELINE_ENTRIES = 29
+
+
+def test_baseline_entry_count_is_pinned() -> None:
+    payload = json.loads((_REPO_ROOT / "docs/plans/oracle-integrity-baseline.json").read_text(encoding="utf-8"))
+    assert len(payload["entries"]) == EXPECTED_BASELINE_ENTRIES, (
+        "baseline size changed; update EXPECTED_BASELINE_ENTRIES in the same commit "
+        "so growing the ratchet is reviewable"
+    )
+
+
+def test_baseline_key_includes_the_finding_detail(tmp_path: Path) -> None:
+    """A new finding in an already-baselined file must still fail.
+
+    Regression guard for the ratchet hole cold review found: keying exemptions
+    on ``(code, path)`` exempted the whole FILE, so appending a second ambient
+    read to a baselined test stayed green.
+    """
+    root = _fake_repo(tmp_path, include_dead=False)
+    _write(root, "tests/unit/test_two.py", 'def test_x() -> None:\n    read("~/.codex/a")\n    read("~/.claude/b")\n')
+    every = check_oracle_integrity(root, baseline=frozenset())
+    assert len(every.findings) == 2
+
+    exempt_first = frozenset({(every.findings[0].code, every.findings[0].path, every.findings[0].detail)})
+    remaining = check_oracle_integrity(root, baseline=exempt_first)
+    assert [finding.detail for finding in remaining.findings] == [every.findings[1].detail]
+
+
 def test_baseline_entries_are_structured_and_current() -> None:
     """Every baseline entry names a real finding code and an existing file."""
     payload = json.loads((_REPO_ROOT / "docs/plans/oracle-integrity-baseline.json").read_text(encoding="utf-8"))
@@ -222,3 +254,91 @@ def test_no_targets_module_is_not_a_violation(tmp_path: Path) -> None:
         ast.parse(path.read_text(encoding="utf-8")), "tests.unit.test_pure", closure=closure
     )
     assert verdict is ReachabilityVerdict.NO_TARGETS
+
+
+# ---------------------------------------------------------------------------
+# Root classes cold review reproduced as false-DEAD channels
+# ---------------------------------------------------------------------------
+
+
+def test_python_m_invoked_module_is_a_root(tmp_path: Path) -> None:
+    """``if __name__ == "__main__":`` is an entrypoint no import edge records.
+
+    Live cases this dissolved: ``security/precommit_scan`` (run from
+    ``.beads-hooks/pre-commit``) and ``schemas/promotion_audit`` (run from
+    ``devtools/verify.py``, three lines from where this gate inserts itself).
+    """
+    root = _fake_repo(tmp_path, include_dead=True)
+    _write(
+        root,
+        "polylogue/orphan.py",
+        'def never_called() -> None:\n    return None\n\n\nif __name__ == "__main__":\n    never_called()\n',
+    )
+    _write(root, "tests/unit/test_orphan.py", "from polylogue.orphan import never_called\n")
+
+    report = check_oracle_integrity(root, baseline=frozenset())
+    assert [f for f in report.findings if f.code == "certifies_dead_code"] == []
+
+
+def test_ancestor_packages_of_a_reachable_module_are_reachable(tmp_path: Path) -> None:
+    """Importing ``pkg.sub`` executes ``pkg/__init__.py`` -- that is import semantics.
+
+    Omitting this reported 53 live parent packages (``polylogue.core`` among
+    them) as dead, and accounted for the lint's only ``type_only`` module.
+    """
+    root = _fake_repo(tmp_path, include_dead=False)
+    _write(root, "polylogue/pkg/__init__.py", "")
+    _write(root, "polylogue/pkg/leaf.py", "def leaf() -> None:\n    return None\n")
+    _write(root, "polylogue/live.py", "from polylogue.pkg.leaf import leaf\n\n\ndef serve() -> None:\n    leaf()\n")
+    _write(root, "tests/unit/test_pkg.py", "import polylogue.pkg\n")
+
+    closure = build_import_closure(root, ["polylogue.cli.main"])
+    assert "polylogue.pkg" in closure.reachable
+    assert "polylogue.pkg.leaf" in closure.reachable
+
+
+def test_symbol_reexported_through_an_unreachable_facade_is_not_dead(tmp_path: Path) -> None:
+    """A live symbol reached via a pass-through facade certifies live code."""
+    root = _fake_repo(tmp_path, include_dead=False)
+    _write(root, "polylogue/facade.py", 'from polylogue.live import serve\n\n__all__ = ["serve"]\n')
+    _write(root, "tests/unit/test_facade.py", "from polylogue.facade import serve\n")
+
+    report = check_oracle_integrity(root, baseline=frozenset())
+    assert [f for f in report.findings if f.code == "certifies_dead_code"] == []
+
+
+def test_facade_upgrade_is_symbol_precise_not_module_wide(tmp_path: Path) -> None:
+    """Importing a DEAD symbol from a facade is still dead code.
+
+    Guards the tightening: a module-level "imports something reachable" rule
+    would upgrade nearly every dead module in the tree, since almost all of
+    them import some live enum -- trading false positives for false negatives,
+    and a false negative here is a deletion sweep never hearing about real
+    dead code.
+    """
+    root = _fake_repo(tmp_path, include_dead=False)
+    _write(root, "polylogue/dead_impl.py", "def dead_fn() -> None:\n    return None\n")
+    _write(
+        root,
+        "polylogue/facade.py",
+        "from polylogue.dead_impl import dead_fn\nfrom polylogue.live import serve\n",
+    )
+    _write(root, "tests/unit/test_facade_dead.py", "from polylogue.facade import dead_fn\n")
+
+    report = check_oracle_integrity(root, baseline=frozenset())
+    assert [f.path for f in report.findings if f.code == "certifies_dead_code"] == ["tests/unit/test_facade_dead.py"]
+
+
+def test_literal_container_registry_seeds_check_functions() -> None:
+    """``ARCHIVE_VERIFICATION_CHECKS``' tuple-of-calls shape must be walked.
+
+    Cold review measured the literal-container seeding at ZERO net
+    contribution: the non-recursive pass saw only the ``ast.Call`` elements and
+    never reached the ``_check_*`` reference inside each call's arguments.
+    """
+    from devtools.oracle_integrity import _literal_container_roots
+    from devtools.production_reachability import _parse_modules
+
+    modules = _parse_modules(_REPO_ROOT, (_REPO_ROOT / "polylogue",))
+    roots = _literal_container_roots([m.tree for m in modules], [m.name for m in modules])
+    assert any("_check_" in root for root in roots), "registry check functions are not seeded"

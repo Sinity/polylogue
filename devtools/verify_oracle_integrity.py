@@ -15,7 +15,7 @@ import argparse
 import json
 
 from devtools import repo_root
-from devtools.oracle_integrity import BASELINE_PATH, check_oracle_integrity
+from devtools.oracle_integrity import BASELINE_PATH, check_oracle_integrity, load_baseline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,7 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = repo_root()
-    baseline: frozenset[tuple[str, str]] | None = frozenset() if (args.ignore_baseline or args.write_baseline) else None
+    baseline: frozenset[tuple[str, str, str]] | None = (
+        frozenset() if (args.ignore_baseline or args.write_baseline) else None
+    )
     report = check_oracle_integrity(root, baseline=baseline)
 
     if args.write_baseline:
@@ -56,9 +58,20 @@ def main(argv: list[str] | None = None) -> int:
             "entries": entries,
         }
         target = root / BASELINE_PATH
+        previous = load_baseline(root)
+        current = {(entry["code"], entry["path"], entry["detail"]) for entry in entries}
+        added = sorted(current - previous)
+        removed = sorted(previous - current)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        print(f"wrote {len(entries)} baseline entries to {BASELINE_PATH}")
+        print(f"wrote {len(entries)} baseline entries to {BASELINE_PATH} (was {len(previous)})")
+        # Regenerating a ratchet must never be a silent widening.
+        for code, path_value, detail in added:
+            print(f"  + {code} {path_value}: {detail}")
+        for code, path_value, detail in removed:
+            print(f"  - {code} {path_value}: {detail}")
+        if not added and not removed:
+            print("  (no change)")
         return 0
 
     if args.json:

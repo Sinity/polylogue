@@ -33,7 +33,25 @@ inbound import edge may still be live:
 
 This module therefore seeds the reachability closure from those registries
 explicitly (:func:`_registry_roots`) in addition to the packaging entrypoints,
-rather than pretending import edges are the whole graph.
+rather than pretending import edges are the whole graph. Four seeded classes,
+each one a channel that produced a measured false "dead code" verdict:
+
+* Click lazy commands (``cli/commands/*`` has no inbound edge at all).
+* ``python -m``-invoked modules -- ``if __name__ == "__main__":`` is a real
+  external entrypoint. ``security/precommit_scan`` (run from the pre-commit
+  hook) and ``schemas/promotion_audit`` (run from ``devtools/verify.py``) were
+  both reported dead without it.
+* Ancestor packages -- importing ``pkg.sub`` executes ``pkg/__init__.py``.
+  Omitting this reported 53 live parents, ``polylogue.core`` among them.
+* Literal-container registries. Note the walk must RECURSE into call
+  arguments: ``ARCHIVE_VERIFICATION_CHECKS`` is a tuple of ``_registry_spec(...)``
+  calls, so a non-recursive pass saw only ``ast.Call`` nodes and contributed
+  exactly zero roots.
+
+A symbol re-exported through an unreachable facade is resolved per SYMBOL to
+its defining module, so a pass-through never reads as dead -- deliberately not
+per module, since "this module imports something reachable" would upgrade
+nearly every dead module in the tree.
 
 TYPE_CHECKING is reported, never guessed. An import under ``if TYPE_CHECKING:``
 is erased at runtime, so it cannot make a symbol execute in production --
@@ -190,6 +208,60 @@ def _packaging_entrypoints(source_root: Path) -> tuple[str, ...]:
     return tuple(sorted(roots))
 
 
+def _main_module_roots(source_root: Path) -> tuple[str, ...]:
+    """Modules invoked as ``python -m pkg.mod`` are entrypoints too.
+
+    ``if __name__ == "__main__":`` is a real, externally-reachable entry that no
+    import edge records. Two live cases were reported DEAD without this:
+    ``security/precommit_scan`` (invoked from ``.beads-hooks/pre-commit``) and
+    ``schemas/promotion_audit`` (invoked from ``devtools/verify.py`` -- three
+    lines below where this very gate inserts itself). Both are exactly the
+    census-incident class where a tool is live but has no importer.
+    """
+    production_root = source_root / PRODUCTION_PACKAGE
+    roots: set[str] = set()
+    for path in sorted(production_root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            if not isinstance(test, ast.Compare) or not isinstance(test.left, ast.Name):
+                continue
+            if test.left.id != "__name__":
+                continue
+            if any(isinstance(c, ast.Constant) and c.value == "__main__" for c in test.comparators):
+                roots.add(_module_name(path, source_root))
+                break
+    return tuple(sorted(roots))
+
+
+def _lazy_attribute_map_roots(source_root: Path) -> tuple[str, ...]:
+    """``polylogue/__init__.py``'s lazy ``__getattr__`` name -> module map.
+
+    Another string registry: the package exposes attributes by importing a
+    module named in a dict at access time, so the mapped modules have no static
+    inbound edge.
+    """
+    init_path = source_root / PRODUCTION_PACKAGE / "__init__.py"
+    if not init_path.is_file():
+        return ()
+    tree = ast.parse(init_path.read_text(encoding="utf-8"))
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            candidate = node.value
+            if (
+                candidate.startswith(f"{PRODUCTION_PACKAGE}.")
+                and (source_root / (candidate.replace(".", "/") + ".py")).is_file()
+            ):
+                roots.add(candidate)
+    return tuple(sorted(roots))
+
+
 def _literal_container_roots(modules: Iterable[ast.Module], module_names: Sequence[str]) -> tuple[str, ...]:
     """Names held as DIRECT references inside module-level dict/tuple literals.
 
@@ -213,25 +285,27 @@ def _literal_container_roots(modules: Iterable[ast.Module], module_names: Sequen
             value = statement.value
             if value is None:
                 continue
-            for element in _literal_elements(value):
-                if not isinstance(element, ast.Name):
-                    continue
-                resolved = local.get(element.id) or bindings.get(element.id)
+            for element in _walk_literal_references(value):
+                resolved = local.get(element) or bindings.get(element)
                 if resolved is not None and resolved.startswith(f"{PRODUCTION_PACKAGE}."):
                     roots.add(resolved)
     return tuple(sorted(roots))
 
 
-def _literal_elements(value: ast.expr) -> tuple[ast.expr, ...]:
-    if isinstance(value, ast.Dict):
-        return tuple(value.values)
-    if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
-        return tuple(value.elts)
-    if isinstance(value, ast.Call):
-        # ``_registry_spec("name", "desc", _check_fn, ...)`` -- the callable is
-        # an ordinary positional argument, so the reference is still direct.
-        return tuple(value.args)
-    return ()
+def _walk_literal_references(value: ast.expr) -> tuple[str, ...]:
+    """Bare names referenced anywhere inside a literal container.
+
+    Recurses through nested containers AND call arguments, because the
+    registry shape that matters is a TUPLE OF CALLS --
+    ``ARCHIVE_VERIFICATION_CHECKS = (_registry_spec("name", "desc", _check_fn,
+    ...), ...)``. A non-recursive pass saw only the ``ast.Call`` elements and
+    never reached ``_check_fn``, so the registry contributed nothing.
+    """
+    names: list[str] = []
+    for node in ast.walk(value):
+        if isinstance(node, ast.Name):
+            names.append(node.id)
+    return tuple(names)
 
 
 def _click_lazy_roots(source_root: Path) -> tuple[str, ...]:
@@ -271,7 +345,16 @@ def _click_lazy_roots(source_root: Path) -> tuple[str, ...]:
 
 def _registry_roots(source_root: Path, trees: Sequence[ast.Module], names: Sequence[str]) -> tuple[str, ...]:
     """Every root that static import edges alone would miss."""
-    return tuple(sorted({*_literal_container_roots(trees, names), *_click_lazy_roots(source_root)}))
+    return tuple(
+        sorted(
+            {
+                *_literal_container_roots(trees, names),
+                *_click_lazy_roots(source_root),
+                *_main_module_roots(source_root),
+                *_lazy_attribute_map_roots(source_root),
+            }
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +375,15 @@ def module_import_edges(
     tree: ast.Module, module_name: str, *, is_package: bool = False
 ) -> tuple[frozenset[str], frozenset[str]]:
     """Return ``(runtime_modules, type_checking_only_modules)`` this module imports.
+
+    Known blind spot, deliberately not guessed at: a test that reaches
+    production through ``importlib.import_module("polylogue.x")`` has no static
+    import node, so its target set is empty and it classifies as
+    ``NO_TARGETS`` -- silent, never a violation. Resolving a dynamic import
+    string would mean evaluating an arbitrary expression, and a lint whose
+    product is a deletion worklist must not guess. 23 test modules currently
+    use ``importlib.import_module``; none are exempted, they are simply not
+    audited for reachability.
 
     Reachability is computed at MODULE granularity, not symbol granularity.
     That is the coarser and therefore safer choice, and it is what
@@ -342,6 +434,25 @@ def module_import_edges(
     return frozenset(runtime), frozenset(type_only - runtime)
 
 
+def _reexport_bindings(tree: ast.Module, module_name: str, *, is_package: bool = False) -> dict[str, str]:
+    """``{imported name: defining production module}`` for one module."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        resolved = node.module or ""
+        if node.level:
+            parts = module_name.split(".")
+            keep = len(parts) - node.level + 1 if is_package else len(parts) - node.level
+            resolved = ".".join((*parts[: max(0, keep)], *(resolved.split(".") if resolved else ())))
+        if not resolved.startswith(PRODUCTION_PACKAGE):
+            continue
+        for alias in node.names:
+            if alias.name != "*":
+                bindings[alias.asname or alias.name] = resolved
+    return bindings
+
+
 @dataclass(frozen=True, slots=True)
 class ImportClosure:
     """Module-level reachability over the production import graph."""
@@ -350,6 +461,23 @@ class ImportClosure:
     type_only_reachable: frozenset[str]
     known_modules: frozenset[str]
     roots: tuple[str, ...]
+
+    #: ``module -> {names it re-exports}`` resolved to their defining modules.
+    #: ``module -> {exported name -> defining module}`` for ``from X import n``
+    #: bindings, so a facade's pass-through resolves per SYMBOL.
+    reexport_bindings: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def reexports_symbol_from_reachable(self, module: str, symbol: str) -> bool:
+        """True when ``module`` binds ``symbol`` from a module that is live.
+
+        Deliberately symbol-precise rather than module-precise. "This module
+        imports something reachable" would upgrade almost every dead module in
+        the tree -- nearly all import ``polylogue.core.enums`` -- trading the
+        lint's false positives for false NEGATIVES, and a false negative here
+        means a deletion sweep never hears about real dead code.
+        """
+        source = self.reexport_bindings.get(module, {}).get(symbol)
+        return source is not None and source in self.reachable
 
     def status(self, module: str) -> ReachabilityVerdict:
         if module in self.reachable:
@@ -365,6 +493,7 @@ def build_import_closure(source_root: Path, roots: Sequence[str]) -> ImportClosu
     runtime_edges: dict[str, frozenset[str]] = {}
     type_edges: dict[str, frozenset[str]] = {}
     known: set[str] = set()
+    reexport_bindings: dict[str, dict[str, str]] = {}
     for path in sorted(production_root.rglob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -373,6 +502,7 @@ def build_import_closure(source_root: Path, roots: Sequence[str]) -> ImportClosu
         name = _module_name(path, source_root)
         known.add(name)
         runtime_edges[name], type_edges[name] = module_import_edges(tree, name, is_package=path.name == "__init__.py")
+        reexport_bindings[name] = _reexport_bindings(tree, name, is_package=path.name == "__init__.py")
 
     def _walk(edge_map: dict[str, frozenset[str]], seeds: Iterable[str]) -> set[str]:
         seen: set[str] = set()
@@ -388,16 +518,43 @@ def build_import_closure(source_root: Path, roots: Sequence[str]) -> ImportClosu
                 pending.append(candidate if candidate in edge_map else candidate.rsplit(".", 1)[0])
         return seen
 
+    def _with_ancestors(modules: set[str]) -> set[str]:
+        """A reachable ``pkg.sub`` makes every ancestor ``__init__`` reachable.
+
+        Importing ``polylogue.storage.sqlite.queries.x`` executes every
+        ancestor package's ``__init__.py`` -- that is Python's import
+        semantics, not an approximation. Omitting this reported 53 live parent
+        packages (including ``polylogue.core``) as dead.
+        """
+        expanded = set(modules)
+        for module in modules:
+            parts = module.split(".")
+            for depth in range(1, len(parts)):
+                ancestor = ".".join(parts[:depth])
+                if ancestor in known:
+                    expanded.add(ancestor)
+        return expanded
+
     seed_modules = {root.rsplit(".", 1)[0] if root not in runtime_edges else root for root in roots}
-    reachable = _walk(runtime_edges, seed_modules & known)
+    reachable = _with_ancestors(_walk(runtime_edges, seed_modules & known))
     combined = {name: runtime_edges[name] | type_edges[name] for name in runtime_edges}
-    type_reachable = _walk(combined, seed_modules & known) - reachable
+    type_reachable = _with_ancestors(_walk(combined, seed_modules & known)) - reachable
     return ImportClosure(
+        reexport_bindings=reexport_bindings,
         reachable=frozenset(reachable),
         type_only_reachable=frozenset(type_reachable),
         known_modules=frozenset(known),
         roots=tuple(sorted(roots)),
     )
+
+
+def _imported_symbol_names(tree: ast.Module) -> frozenset[str]:
+    """Bare names a module imported from the production package."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(PRODUCTION_PACKAGE):
+            names.update(alias.name for alias in node.names if alias.name != "*")
+    return frozenset(names)
 
 
 def classify_test_module(
@@ -416,6 +573,17 @@ def classify_test_module(
         return ReachabilityVerdict.NO_TARGETS, ()
 
     statuses = {target: closure.status(target) for target in targets}
+    # Root class (c): re-export facades. A test importing a LIVE symbol through
+    # an unreachable facade module is not certifying dead code -- the facade is
+    # a pass-through, and the definition it re-exports runs in production. So
+    # an unreachable target is re-checked at symbol granularity: if the module
+    # binds the imported name via ``from <reachable> import <name>``, the test
+    # exercises live code and the verdict upgrades.
+    for target, status in list(statuses.items()):
+        if status is ReachabilityVerdict.REACHABLE:
+            continue
+        if any(closure.reexports_symbol_from_reachable(target, s) for s in _imported_symbol_names(tree)):
+            statuses[target] = ReachabilityVerdict.REACHABLE
     if any(status is ReachabilityVerdict.REACHABLE for status in statuses.values()):
         return ReachabilityVerdict.REACHABLE, ()
     if any(status is ReachabilityVerdict.TYPE_ONLY for status in statuses.values()):
@@ -559,18 +727,29 @@ def _allowlisted(path: Path, source_root: Path, allowlist: Sequence[OracleAllowl
 BASELINE_PATH = Path("docs/plans/oracle-integrity-baseline.json")
 
 
-def load_baseline(source_root: Path, *, path: Path | None = None) -> frozenset[tuple[str, str]]:
-    """Load ``(code, path)`` pairs that are exempt because they pre-existed."""
+def load_baseline(source_root: Path, *, path: Path | None = None) -> frozenset[tuple[str, str, str]]:
+    """Load ``(code, path, detail)`` triples that are exempt because they pre-existed.
+
+    Keyed on the DETAIL as well as the file, per-entry, the way the layering
+    baseline is. Keying on ``(code, path)`` alone exempted an entire FILE once
+    any finding in it was baselined -- a reviewer appended a brand-new
+    ``~/.codex`` read to an already-baselined file and the gate stayed green
+    while ``baselined`` silently rose 34 -> 35. A ratchet that can be widened
+    by editing an exempted file is not a ratchet.
+    """
     baseline_path = path or (source_root / BASELINE_PATH)
     if not baseline_path.is_file():
         return frozenset()
     payload = json.loads(baseline_path.read_text(encoding="utf-8"))
     entries = payload.get("entries", []) if isinstance(payload, dict) else []
-    pairs: set[tuple[str, str]] = set()
+    triples: set[tuple[str, str, str]] = set()
     for entry in entries:
-        if isinstance(entry, dict) and isinstance(entry.get("code"), str) and isinstance(entry.get("path"), str):
-            pairs.add((entry["code"], entry["path"]))
-    return frozenset(pairs)
+        if not isinstance(entry, dict):
+            continue
+        code, path_value, detail = entry.get("code"), entry.get("path"), entry.get("detail")
+        if isinstance(code, str) and isinstance(path_value, str) and isinstance(detail, str):
+            triples.add((code, path_value, detail))
+    return frozenset(triples)
 
 
 def check_oracle_integrity(
@@ -579,7 +758,7 @@ def check_oracle_integrity(
     test_root: Path | None = None,
     reachability_allowlist: Sequence[OracleAllowlistEntry] = REACHABILITY_ALLOWLIST,
     hermeticity_allowlist: Sequence[OracleAllowlistEntry] = HERMETICITY_ALLOWLIST,
-    baseline: frozenset[tuple[str, str]] | None = None,
+    baseline: frozenset[tuple[str, str, str]] | None = None,
 ) -> OracleIntegrityReport:
     """Run both oracle-integrity sweeps over the test corpus."""
     source_root = source_root.resolve()
@@ -634,7 +813,7 @@ def check_oracle_integrity(
             )
 
     exempt = load_baseline(source_root) if baseline is None else baseline
-    retained = tuple(finding for finding in findings if (finding.code, finding.path) not in exempt)
+    retained = tuple(finding for finding in findings if (finding.code, finding.path, finding.detail) not in exempt)
     return OracleIntegrityReport(
         findings=retained,
         baselined=len(findings) - len(retained),

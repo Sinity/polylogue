@@ -1210,8 +1210,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Before a deletion sweep, and as a standing gate. Catches the two ways a green "
             "test can certify nothing: its entire target set is unreachable from any production "
             "entrypoint (dead-engine suites), or it reads a real ~/.codex / ~/.claude / /realm "
-            "path instead of a fixture. Reachability consults the string-keyed dispatch "
-            "registries (Click lazy commands, REPAIR_HANDLERS, ARCHIVE_VERIFICATION_CHECKS), "
+            "path instead of a fixture. Reachability seeds four root classes import edges "
+            "miss -- Click lazy commands, `python -m` entrypoints, ancestor packages, and "
+            "literal-container registries -- and resolves facade re-exports per symbol, "
             "because import edges alone under-report and this repo has four recorded wrong "
             "deletions derived from grep."
         ),
