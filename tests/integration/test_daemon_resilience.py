@@ -278,6 +278,44 @@ def _wait_for_messages(
     )
 
 
+def _wait_for_api_ready(
+    proc: subprocess.Popen[bytes],
+    port: int,
+    *,
+    timeout_s: float = 120.0,
+) -> None:
+    """Wait until the daemon's HTTP surface answers, i.e. startup has finished.
+
+    ``_wait_for_lifecycle_start`` is NOT a readiness signal. It returns as soon
+    as ``DaemonLifecycle.start`` has persisted its row, which happens early in
+    ``polylogue.daemon.cli``: signal handlers are installed just after it, and
+    the startup lifecycle event, source-root creation and the maintenance loops
+    all run later and all write the ops tier. A test that acts on the lifecycle
+    row alone is racing the rest of startup, and the race widens exactly when
+    the host is busy.
+
+    Two observed consequences, both intermittent and both load-dependent:
+    signalling in that window can reach the process before its SIGTERM handler
+    exists, and taking an EXCLUSIVE ops-tier lock in that window parks a
+    startup write inside a blocking ``sqlite3_step``, where the interpreter
+    cannot run the Python signal handler until the busy timeout expires. The
+    second is what held a signalled daemon past the 90s ``wait`` bound in a
+    strictly serial run on 2026-08-19 (1 failure in 3 repeats under host load).
+
+    Answering on the API port happens after that startup sequence, so it is the
+    signal these tests actually want.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        _assert_daemon_alive(proc)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1.0)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.1)
+    raise TimeoutError(f"timed out waiting for daemon API readiness on port {port}")
+
+
 @_BIN_D
 def test_sigterm_read_only_daemon_records_forensics(
     workspace_env: dict[str, Path],
@@ -307,6 +345,7 @@ def test_sigterm_read_only_daemon_records_forensics(
         )
         try:
             _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
+            _wait_for_api_ready(daemon, api_port)
             daemon.send_signal(signal.SIGTERM)
             assert daemon.wait(timeout=90) == 128 + signal.SIGTERM
         finally:
@@ -357,6 +396,7 @@ def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
     lock = sqlite3.connect(archive_root / "ops.db")
     try:
         _wait_for_lifecycle_start(daemon, archive_root / "ops.db")
+        _wait_for_api_ready(daemon, api_port)
         lock.execute("BEGIN EXCLUSIVE")
         started = time.monotonic()
         daemon.send_signal(signal.SIGTERM)
