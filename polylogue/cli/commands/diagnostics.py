@@ -62,7 +62,7 @@ def workload_command(
     compare: tuple[Path, Path] | None,
 ) -> None:
     """Inspect daemon ingest workload, convergence debt, and hot query plans."""
-    from devtools.daemon_workload_probe import main as workload_main
+    from polylogue.operations.daemon_workload_probe import main as workload_main
 
     argv: list[str] = []
     if db is not None:
@@ -91,7 +91,7 @@ def workload_command(
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 def space_command(db: Path | None, limit: int, objects: bool, json_output: bool) -> None:
     """Report SQLite archive file, page, table, and index space."""
-    from devtools.archive_space_report import main as space_main
+    from polylogue.operations.archive_space_report import main as space_main
 
     argv: list[str] = []
     if db is not None:
