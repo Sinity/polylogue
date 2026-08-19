@@ -13,17 +13,22 @@ One invocation, from the coordinator's checkout:
   1. Creates the worktree + branch if missing (from ``--base``, default
      ``origin/master``); reuses them if already present.
   2. Provisions an isolated venv via ``uv sync`` (``--frozen`` when
-     ``uv.lock`` exists). With a warm uv cache this is seconds, not minutes.
+     ``uv.lock`` exists), pinned to the coordinator's own interpreter and
+     verified to have actually been built from it. With a warm uv cache this
+     is seconds, not minutes.
   3. Proves the guard invariant: the lane venv's ``import polylogue`` must
      resolve inside the lane worktree, else exit non-zero loudly.
   4. Runs the standard ``verify-worktree`` checks (linked, distinct,
      expected branch).
-  5. Appends a lane record to the coordinator-side ledger
+  5. Seeds the coordinator's testmon graph and reports whether it actually
+     covers this lane's environment digest -- a lane whose first verify will
+     bootstrap says so instead of claiming warmth.
+  6. Appends a lane record to the coordinator-side ledger
      ``.cache/fanout/lanes.jsonl`` (append-only JSONL: lane name, worktree,
      branch, base sha, bead ids, venv state, timestamp) -- the resumable
      fanout state polylogue-in94 asks for, seeded here so dispatch/recovery
      tooling has one place to look.
-  6. Prints the recommended per-lane resource env for the requested
+  7. Prints the recommended per-lane resource env for the requested
      concurrency (``POLYLOGUE_PYTEST_WORKERS``) so 16 lanes do not
      oversubscribe the host by default.
 
@@ -36,6 +41,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import subprocess
@@ -145,12 +151,102 @@ def _ensure_worktree(root: Path, worktree: Path, branch: str, base: str) -> str 
     return None
 
 
+def _base_executable_of(python: Path) -> Path | None:
+    """Resolve the real interpreter behind a venv's ``python`` shim.
+
+    ``sys._base_executable`` is the interpreter a venv was created FROM, which
+    is what ``uv venv --python`` needs and what the testmon environment digest
+    fingerprints. ``sys.executable`` inside a venv is the shim, not the build.
+    """
+    probe = _run([str(python), "-c", "import sys; print(sys._base_executable or sys.executable)"])
+    if probe.returncode != 0:
+        return None
+    text = probe.stdout.strip()
+    return Path(text) if text else None
+
+
+def coordinator_base_interpreter(root: Path) -> Path | None:
+    """The interpreter every lane must be built from: the coordinator's own.
+
+    A lane provisioned with a DIFFERENT Python is not merely stylistically
+    inconsistent, it is broken in two separate ways, both observed
+    2026-08-19 (polylogue-l218h):
+
+    1. ``uv`` left to its own resolution downloaded a free-threaded CPython
+       3.14.5 for a lane whose coordinator runs Nix CPython 3.14.4. On that
+       build ``import hypothesis`` raises ``AttributeError: 'installed_base'``
+       from ``sysconfig``, so ``tests/conftest.py`` fails to import and EVERY
+       ``devtools test`` invocation in the lane dies during collection. The
+       lane looks provisioned and cannot run a single test.
+    2. The interpreter is an input to the testmon environment digest, so a
+       divergent one guarantees the lane's seeded graph can never match and
+       its first verify pays a full bootstrap (~9.5x a warm run).
+
+    Derived from the coordinator's venv rather than hardcoded: the store path
+    changes on every nixpkgs bump, and a pinned literal would rot silently
+    into the same class of mismatch it exists to prevent.
+    """
+    venv_python = root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        resolved = _base_executable_of(venv_python)
+        if resolved is not None and resolved.exists():
+            return resolved
+    fallback = getattr(sys, "_base_executable", None) or sys.executable
+    candidate = Path(fallback)
+    return candidate if candidate.exists() else None
+
+
+def _interpreter_guard(worktree: Path, expected: Path) -> str | None:
+    """Prove the provisioned lane venv was actually built from ``expected``.
+
+    ``uv sync --python`` can silently fall back (an already-present ``.venv``
+    built from another interpreter is reused rather than rebuilt), so pinning
+    the request is not the same as verifying the result.
+    """
+    python = worktree / ".venv" / "bin" / "python"
+    if not python.exists():
+        return f"no venv python at {python}"
+    actual = _base_executable_of(python)
+    if actual is None:
+        return f"could not resolve the lane interpreter behind {python}"
+    if actual.resolve() != expected.resolve():
+        return (
+            "lane interpreter does not match the coordinator's:\n"
+            f"  expected: {expected}\n"
+            f"  actual:   {actual}\n"
+            "a lane built from a different Python cannot share the coordinator's "
+            "testmon graph, and has been observed unable to import hypothesis at all"
+        )
+    return None
+
+
+#: Devshell-exported variables that describe the DEVSHELL's interpreter and
+#: silently reroute a different interpreter's ``sysconfig``. A harness-spawned
+#: lane inherits these, and the lane venv's Python then resolves build
+#: configuration belonging to another build entirely -- pytest dies before
+#: collecting anything, with ``AttributeError: 'installed_base'`` or
+#: ``ModuleNotFoundError: No module named '_sysconfigdata_...'`` depending on
+#: which pair of builds collide. Observed 2026-08-19 in a lane and in the
+#: coordinator checkout (polylogue-l218h).
+_INTERPRETER_DESCRIBING_ENV = (
+    "_PYTHON_SYSCONFIGDATA_NAME",
+    "_PYTHON_HOST_PLATFORM",
+    "PYTHONPYCACHEPREFIX",
+)
+
+
 def _lane_env(worktree: Path) -> dict[str, str]:
     """Return an environment that cannot inherit another checkout's Python."""
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
+    # Not merely hygiene: these describe a specific interpreter BUILD, so
+    # inheriting them into a venv built from a different one is fatal, and
+    # PYTHONPYCACHEPREFIX additionally points bytecode caching at the
+    # coordinator's .cache.
+    for key in _INTERPRETER_DESCRIBING_ENV:
+        env.pop(key, None)
     # uv's project-routing environment variables override subprocess.cwd.
     # Leaving either behind can install the coordinator checkout into this
     # lane's otherwise correctly selected .venv.
@@ -160,10 +256,14 @@ def _lane_env(worktree: Path) -> dict[str, str]:
     return env
 
 
-def _provision_venv(worktree: Path) -> str | None:
+def _provision_venv(worktree: Path, interpreter: Path | None = None) -> str | None:
     # dev-common+speed = the devshell's effective test/verify surface without
     # platform-fragile extras (atheris has no cp314t wheel).
     cmd = ["uv", "sync", "--extra", "dev-common", "--extra", "speed"]
+    if interpreter is not None:
+        # Without this uv picks an interpreter by its own resolution order and
+        # will happily download one that does not match the coordinator.
+        cmd.extend(["--python", str(interpreter)])
     if (worktree / "uv.lock").exists():
         cmd.append("--frozen")
     result = _run(cmd, cwd=worktree, env=_lane_env(worktree))
@@ -197,21 +297,71 @@ def _guard_check(worktree: Path) -> str | None:
     return None
 
 
-def _seed_testmon_graph(root: Path, worktree: Path) -> str:
-    """Copy the main checkout's testmon graph into a fresh lane.
+def lane_environment_digest(worktree: Path) -> str | None:
+    """The testmon environment name this lane's own interpreter computes."""
+    python = worktree / ".venv" / "bin" / "python"
+    if not python.exists():
+        return None
+    probe = _run(
+        [
+            str(python),
+            "-c",
+            (
+                "from pathlib import Path; "
+                "from devtools.testmon_bootstrap import testmon_environment_digest; "
+                "print(testmon_environment_digest(Path.cwd()))"
+            ),
+        ],
+        cwd=worktree,
+        env=_lane_env(worktree),
+    )
+    if probe.returncode != 0:
+        return None
+    return probe.stdout.strip() or None
 
-    A lane without a graph pays a complete-corpus bootstrap (~9.5x a warm
-    run) on its first verify. The verify preflight can copy the graph
-    lazily, but only when the main checkout's copy is valid AT THAT MOMENT;
-    seeding at provision time makes the lane warm from the start and
-    independent of later main-checkout state. Failure is a note, not an
-    error -- the lazy preflight copy remains as fallback.
+
+def graph_environments(path: Path) -> set[str]:
+    """Environment names a testmon graph actually holds, empty if unreadable."""
+    import sqlite3
+
+    if not path.is_file():
+        return set()
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)) as conn:
+            return {str(row[0]) for row in conn.execute("SELECT DISTINCT environment_name FROM environment")}
+    except (OSError, sqlite3.Error):
+        return set()
+
+
+def _seed_testmon_graph(root: Path, worktree: Path) -> tuple[str, bool]:
+    """Copy the coordinator's testmon graph into a lane, and say whether it helps.
+
+    Returns ``(note, warm)``. ``warm`` is True only when the copied graph
+    actually contains an environment matching the digest THIS LANE computes --
+    which is the only thing that makes a lane's first verify an
+    affected-selection run instead of a complete-corpus bootstrap.
+
+    This used to report "seeded from main checkout (lane verifies start warm)"
+    whenever the file copy succeeded, which is a claim about the wrong fact. A
+    graph is useless to a lane unless it carries that lane's environment, and
+    a copy can succeed while carrying none: the digest is invalidated by an
+    interpreter change, a dependency bump, or an edit to ``tests/**/conftest.py``
+    or ``devtools/pytest*.py``, so after any of those the coordinator's own
+    graph goes stale for the coordinator too. Advertising warmth there sends a
+    lane into a ~45-minute bootstrap it was told to expect in seconds
+    (polylogue-l218h).
+
+    A cold seed is reported, not fatal. A stale graph is the NORMAL state
+    right after a dependency bump or conftest edit, and refusing to provision
+    would break every lane for an expected condition; the honest note plus the
+    ``testmon_warm`` field in the ledger record is what lets a coordinator
+    decide to bootstrap once centrally instead of per lane.
     """
     from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
 
     source = root / TESTMON_DATA_RELPATH
     if not source.is_file():
-        return "no main-checkout graph to seed (first lane verify will bootstrap or copy later)"
+        return "no coordinator graph to seed (first lane verify will bootstrap)", False
     destination = worktree / TESTMON_DATA_RELPATH
     import sqlite3
 
@@ -225,8 +375,40 @@ def _seed_testmon_graph(root: Path, worktree: Path) -> str:
         ):
             source_conn.backup(destination_conn)
     except (OSError, sqlite3.Error) as exc:
-        return f"graph seed failed ({exc}); first lane verify will copy or bootstrap"
-    return "seeded from main checkout (lane verifies start warm)"
+        return f"graph seed failed ({exc}); first lane verify will bootstrap", False
+
+    environments = graph_environments(destination)
+    if not environments:
+        return "seeded graph holds no environments; first lane verify will bootstrap", False
+    digest = lane_environment_digest(worktree)
+    if digest is None:
+        return (
+            f"seeded {len(environments)} environment(s) but could not compute this lane's digest; warmth unverified"
+        ), False
+    if digest not in environments:
+        return (
+            f"seeded {len(environments)} environment(s), NONE matching this lane ({digest[:24]}...); "
+            "first lane verify will bootstrap the complete corpus"
+        ), False
+    return f"seeded and matched this lane's environment ({digest[:24]}...); verifies start warm", True
+
+
+def dispatch_env_lines(worktree: Path) -> tuple[str, ...]:
+    """Environment a dispatched agent must apply before running lane tooling.
+
+    ``_lane_env`` only sanitises the subprocesses lane-init itself spawns. An
+    agent that later opens this worktree inherits the operator's or harness's
+    environment untouched, so the same interpreter-describing variables that
+    would have broken provisioning break its very first ``devtools test``
+    instead. Printing the remedy next to the worker budget is the only place a
+    dispatcher reliably reads.
+    """
+    lines = [f"export VIRTUAL_ENV={worktree / '.venv'}", 'export PATH="$VIRTUAL_ENV/bin:$PATH"']
+    lines.extend(f"unset {key}" for key in _INTERPRETER_DESCRIBING_ENV)
+    # gh / pr-scope reach GitHub over TLS; a devshell without this resolves no
+    # CA bundle and every API call fails with a certificate error.
+    lines.append("export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
+    return tuple(lines)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -240,11 +422,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"lane-init: {error}", file=sys.stderr)
         return 1
 
+    interpreter = None if args.no_venv else coordinator_base_interpreter(root)
     if not args.no_venv:
-        error = _provision_venv(worktree)
+        error = _provision_venv(worktree, interpreter)
         if error:
             print(f"lane-init: {error}", file=sys.stderr)
             return 1
+        if interpreter is not None:
+            error = _interpreter_guard(worktree, interpreter)
+            if error:
+                print(f"lane-init: {error}", file=sys.stderr)
+                return 1
         error = _guard_check(worktree)
         if error:
             print(f"lane-init: {error}", file=sys.stderr)
@@ -270,7 +458,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("lane-init: verify-worktree failed", file=sys.stderr)
         return 1
 
-    graph_note = _seed_testmon_graph(root, worktree)
+    graph_note, graph_warm = _seed_testmon_graph(root, worktree)
     base_sha = _run(["git", "-C", str(worktree), "rev-parse", "--short=9", "HEAD"]).stdout.strip()
     workers = recommended_workers(args.expected_lanes)
     record = lane_record(
@@ -282,6 +470,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         workers=workers,
     )
     record["testmon_graph"] = graph_note
+    record["testmon_warm"] = graph_warm
+    record["interpreter"] = str(interpreter) if interpreter is not None else None
+    record["dispatch_env"] = list(dispatch_env_lines(worktree))
     ledger_path = append_ledger(coordinator_root(root), record)
 
     if args.as_json:
@@ -292,11 +483,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"  venv: {'provisioned (guard-verified)' if not args.no_venv else 'SKIPPED -- lane cannot run devtools/pytest'}"
         )
+        if interpreter is not None:
+            print(f"  interpreter: {interpreter} (verified)")
         print(f"  testmon graph: {graph_note}")
+        if not graph_warm and not args.no_venv:
+            print("  NOTE: this lane's first devtools verify will be a complete-corpus bootstrap.")
         if beads:
             print(f"  beads: {', '.join(beads)}")
         print(f"  ledger: {ledger_path}")
         print(f"  dispatch env: POLYLOGUE_PYTEST_WORKERS={workers}  (for {args.expected_lanes} concurrent lanes)")
+        for line in dispatch_env_lines(worktree):
+            print(f"    {line}")
     return 0
 
 
