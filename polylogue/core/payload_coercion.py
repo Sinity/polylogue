@@ -148,6 +148,32 @@ def row_int(value: object) -> int:
     return 0
 
 
+def row_iso_from_epoch_ms(value: object) -> str | None:
+    """Coerce an epoch-millisecond row value to a UTC ISO-8601 string, or None.
+
+    None, bool, and unparseable strings all coerce to None rather than a
+    default timestamp -- callers with a non-optional field pre-coerce with
+    :func:`row_int` (which always yields a plain ``int``) so this always
+    returns a string for them.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        epoch_ms = value
+    elif isinstance(value, float):
+        epoch_ms = int(value)
+    elif isinstance(value, str):
+        try:
+            epoch_ms = int(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
+
+
 def row_float(value: object) -> float | None:
     """Coerce a value to float or None; strict on bool (returns None)."""
     if isinstance(value, bool):
@@ -203,6 +229,7 @@ __all__ = [
     "required_str",
     "row_float",
     "row_int",
+    "row_iso_from_epoch_ms",
     "string_int_mapping",
     "string_sequence",
 ]

@@ -30,10 +30,10 @@ import base64
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
@@ -86,25 +86,6 @@ def _display_source_path(raw_path: str | None) -> str | None:
     if home and home != "/" and (raw_path == home or raw_path.startswith(home + os.sep)):
         return "~" + raw_path[len(home) :]
     return raw_path
-
-
-def _iso_from_epoch_ms(value: object) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        epoch_ms = value
-    elif isinstance(value, float):
-        epoch_ms = int(value)
-    elif isinstance(value, str):
-        try:
-            epoch_ms = int(value)
-        except ValueError:
-            return None
-    else:
-        return None
-    return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
 
 
 def _fetch_archive_provenance_row(
