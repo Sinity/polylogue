@@ -195,12 +195,17 @@ rules:
       Production must not depend on the repo control plane. `devtools` exists to
       verify and release this package; a production import inverts that, so a
       developer tool becomes a runtime dependency that escapes the catalog's own
-      doc/CI discipline. This direction had NO rule at all until now, which is
-      how `polylogue ops diagnostics workload` came to be implemented by
-      devtools/daemon_workload_probe.py (3,165 lines) without appearing in the
-      devtools command catalog. The three existing importers are an audited
-      allowlist, not an accepted pattern: new ones fail, and the right fix for
-      an entry is to move the code into polylogue/ where its caller lives.
+      doc/CI discipline. This direction had NO rule at all until it was added,
+      which is how `polylogue ops diagnostics workload` came to be implemented
+      by devtools/daemon_workload_probe.py (3,165 lines) without appearing in
+      the devtools command catalog; that entry and archive_space_report's were
+      pruned from the baseline once both modules relocated into
+      polylogue/operations/ (WS-C tranche 3). The two remaining importers
+      (click_app.py's checkout_guard safety check, scenarios/execution.py's
+      command_catalog reference, tracked as the tranche-2 60gzo scenario-
+      layering item) are an audited allowlist, not an accepted pattern: new
+      ones fail, and the right fix for an entry is to move the code into
+      polylogue/ where its caller lives.
     disallow:
       from: [devtools]
       baseline: docs/plans/layering-surface-baseline.json
