@@ -118,17 +118,21 @@ def _assert_baseline_timestamps_are_stable(actual: tuple[str, ...]) -> None:
     assert actual == _BASELINE_MESSAGE_TIMESTAMPS
 
 
-def _prefix_sha256(path: Path, byte_count: int) -> str:
-    digest = hashlib.sha256()
-    remaining = byte_count
+def _prefix_and_whole_sha256(path: Path, prefix_bytes: int) -> tuple[str, str]:
+    """Digest the leading ``prefix_bytes`` and the whole file in one read pass."""
+    prefix_digest = hashlib.sha256()
+    whole_digest = hashlib.sha256()
+    remaining = prefix_bytes
     with path.open("rb") as handle:
-        while remaining:
-            chunk = handle.read(min(1024 * 1024, remaining))
-            if not chunk:
-                raise AssertionError(f"{path} is shorter than the previous revision ({byte_count} bytes)")
-            digest.update(chunk)
-            remaining -= len(chunk)
-    return digest.hexdigest()
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            whole_digest.update(chunk)
+            if remaining:
+                span = min(remaining, len(chunk))
+                prefix_digest.update(chunk[:span])
+                remaining -= span
+    if remaining:
+        raise AssertionError(f"{path} is shorter than the previous revision ({prefix_bytes} bytes)")
+    return prefix_digest.hexdigest(), whole_digest.hexdigest()
 
 
 class _WirePrefixPreservationWitness:
@@ -146,20 +150,20 @@ class _WirePrefixPreservationWitness:
     """
 
     def __init__(self) -> None:
-        self.previous_size: int | None = None
+        self.previous_size: int = 0
         self.previous_sha256: str | None = None
         self.verified_revisions: list[int] = []
 
-    def observe(self, revision: int, path: Path, sha256: str) -> None:
-        if self.previous_size is not None and self.previous_sha256 is not None:
-            observed = _prefix_sha256(path, self.previous_size)
-            assert observed == self.previous_sha256, (
+    def observe(self, revision: int, path: Path) -> None:
+        prefix_sha256, whole_sha256 = _prefix_and_whole_sha256(path, self.previous_size)
+        if self.previous_sha256 is not None:
+            assert prefix_sha256 == self.previous_sha256, (
                 f"revision {revision} rewrote existing wire bytes: "
-                f"prefix sha256 {observed} != revision {revision - 1} digest {self.previous_sha256}"
+                f"prefix sha256 {prefix_sha256} != revision {revision - 1} digest {self.previous_sha256}"
             )
             self.verified_revisions.append(revision)
         self.previous_size = path.stat().st_size
-        self.previous_sha256 = sha256
+        self.previous_sha256 = whole_sha256
 
 
 def _assert_precheckpoint_state(
@@ -356,7 +360,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     def observe_revision(revision: int, path: Path) -> None:
         assert revision == len(observed_revisions)
         _assert_baseline_timestamps_are_stable(_baseline_message_timestamps(path))
-        prefix_witness.observe(revision, path, _file_sha256(path))
+        prefix_witness.observe(revision, path)
         observed_revisions.append(revision)
 
     acquired_raw_ids, sizes, fixture_sha256s = acquire_codex_revision_chain(
@@ -1056,21 +1060,20 @@ def test_codex_804_rewritten_prefix_red_mutation_is_rejected(tmp_path: Path) -> 
     """A revision that rewrites an existing byte fails the prefix witness."""
     first = tmp_path / "revision-000.jsonl"
     first.write_bytes(b'{"id":"m0","timestamp":"2026-07-31T04:25:20Z"}\n')
-    first_sha256 = _file_sha256(first)
 
     witness = _WirePrefixPreservationWitness()
-    witness.observe(0, first, first_sha256)
+    witness.observe(0, first)
 
     # Same length, one regenerated timestamp digit -- exactly the audited shape.
     rewritten = tmp_path / "revision-001.jsonl"
     rewritten.write_bytes(b'{"id":"m0","timestamp":"2026-07-31T04:25:21Z"}\n{"pad":1}\n')
     with pytest.raises(AssertionError, match="rewrote existing wire bytes"):
-        witness.observe(1, rewritten, _file_sha256(rewritten))
+        witness.observe(1, rewritten)
 
     # The append-only control case is accepted.
     appended = tmp_path / "revision-002.jsonl"
     appended.write_bytes(first.read_bytes() + b'{"pad":1}\n')
     control = _WirePrefixPreservationWitness()
-    control.observe(0, first, first_sha256)
-    control.observe(1, appended, _file_sha256(appended))
+    control.observe(0, first)
+    control.observe(1, appended)
     assert control.verified_revisions == [1]
