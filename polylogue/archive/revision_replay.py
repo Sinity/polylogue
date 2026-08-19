@@ -19,6 +19,12 @@ class ApplicationDecision(PolylogueStrEnum):
     """
 
     SELECTED_BASELINE = "selected_baseline"
+    # polylogue-2tfug: a reparse of the raw that is ALREADY the accepted head
+    # re-derives different content from identical, unchallenged evidence. It is
+    # not a replay decision an operator requested, so it gets its own token
+    # rather than borrowing SELECTED_BASELINE's "this raw won a contest"
+    # meaning -- but it is terminal, and it does move the head.
+    REPARSE_REAFFIRMATION = "reparse_reaffirmation"
     APPLIED_APPEND = "applied_append"
     SUPERSEDED = "superseded"
     AMBIGUOUS = "ambiguous"

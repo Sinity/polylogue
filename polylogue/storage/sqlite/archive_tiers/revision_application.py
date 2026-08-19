@@ -281,6 +281,7 @@ def record_revision_application_sync(
     if receipt.accepted_raw_id is None or receipt.decision not in {
         ApplicationDecision.SELECTED_BASELINE,
         ApplicationDecision.APPLIED_APPEND,
+        ApplicationDecision.REPARSE_REAFFIRMATION,
     }:
         return
     assert receipt.accepted_source_revision is not None
