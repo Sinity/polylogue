@@ -86,6 +86,10 @@ EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(
         "archive_verification_user_tier_refs",
         "archive_verification_excluded_cursor_vocabulary_honesty",
         "archive_verification_stalled_append_cursor_freshness",
+        # polylogue-2hwl: multi-active-leaf and origin-titled-placeholder
+        # residue is produced by the live streaming merge path, so it needs a
+        # scheduled live tier and not only the reindex candidate gate.
+        "archive_verification_active_leaf_title_convergence",
         # #3362: provider format-drift sentinel over live ingest.
         "schema_drift",
     }
