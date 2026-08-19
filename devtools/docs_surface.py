@@ -337,6 +337,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Retrospective Index", "retro/README.md", "Index of historical incident retrospectives.", "archive"),
     _entry(
+        "MCP Surface Report 2026-08",
+        "mcp-surface-report-2026-08.md",
+        "Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8).",
+        "archive",
+    ),
+    _entry(
         "Schema Disposition Audit",
         "schema-disposition-2026-08-19.md",
         "Column-level KEEP/PURGE/UNCLEAR disposition for all five SQLite tiers (polylogue-gvzkr).",
