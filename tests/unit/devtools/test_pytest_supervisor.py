@@ -121,7 +121,7 @@ def test_managed_tmpfs_cleanup_reports_survivors_when_the_tree_persists(
 
         # Stand in for the real races that defeat rmtree(ignore_errors=True):
         # a concurrent reclaimer, or an escaped writer recreating entries.
-        monkeypatch.setattr(pytest_supervisor.shutil, "rmtree", lambda *a, **k: None)
+        monkeypatch.setattr("devtools.pytest_supervisor.shutil.rmtree", lambda *a, **k: None)
 
         complete, reason, residual = describe_managed_tmpfs_cleanup(run_root)
         assert complete is False
