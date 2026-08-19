@@ -44,6 +44,9 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
 _ARTIFACT_PROTOCOL_VERSION = 2
+#: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
+#: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
+_BUILD_LOCK_ATTEMPTS = 3
 _SCRATCH_CACHE_ROOT = Path("/realm/tmp/polylogue-seeded-artifacts")
 _CLOUD_CACHE_ROOT = Path("/tmp/polylogue-seeded-artifacts")
 
@@ -577,83 +580,99 @@ def build_seeded_archive(
             return cached
         if final_root.exists():
             _remove_tree(final_root)
-        staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
-        staging.mkdir()
-        try:
-            corpus_root = staging / "wire"
-            written_batches = tuple(
-                SyntheticCorpus.write_spec_artifacts(spec, corpus_root / spec.provider, prefix=f"seed-{index:02d}")
-                for index, spec in enumerate(selected_specs)
-            )
-            sources = []
-            for spec, written in zip(selected_specs, written_batches, strict=True):
-                if spec.provider == "antigravity":
-                    sources.append(Source(name=spec.provider, path=written.files[0].parent.parent))
-                else:
-                    sources.extend(Source(name=spec.provider, path=path) for path in written.files)
-            with _configured_archive_root(staging):
-                with patch(
-                    "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-                    SyntheticAntigravityLanguageServerClient,
-                ):
-                    asyncio.run(parse_sources_archive(staging, sources))
-            inspect_raw_authority_frontier(
-                Config(
-                    archive_root=staging,
-                    render_root=staging / "render",
-                    sources=[],
-                    db_path=staging / "index.db",
+        for attempt in range(1, _BUILD_LOCK_ATTEMPTS + 1):
+            staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
+            staging.mkdir()
+            try:
+                corpus_root = staging / "wire"
+                written_batches = tuple(
+                    SyntheticCorpus.write_spec_artifacts(spec, corpus_root / spec.provider, prefix=f"seed-{index:02d}")
+                    for index, spec in enumerate(selected_specs)
                 )
-            )
-            facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
-            _sqlite_integrity(staging)
-            _validate_facts(staging, facts)
-            _validate_frontier_convergence(staging)
-            archive_id = f"archive:seeded:{final_root.name}"
-            profile_id = _profile_id(key)
-            build_id = _build_id()
-            receipt = WorkloadReceipt.from_observations(
-                spec=_archive_build_spec(key=key, archive_id=archive_id, profile_id=profile_id),
-                status=WorkloadRunStatus.SUCCEEDED,
-                build_id=build_id,
-                runtime_id="synthetic-real-pipeline",
-                archive_id=archive_id,
-                generation_id=key.value,
-                frame_id=None,
-                phases=(
-                    WorkloadPhaseObservation(name="generate"),
-                    WorkloadPhaseObservation(name="acquire"),
-                    WorkloadPhaseObservation(name="parse"),
-                    WorkloadPhaseObservation(name="materialize"),
-                    WorkloadPhaseObservation(name="index"),
-                    WorkloadPhaseObservation(name="raw_authority_frontier"),
-                    WorkloadPhaseObservation(name="validate"),
-                    WorkloadPhaseObservation(name="publish", cleanup_complete=True, quiescent=True),
-                ),
-                cleanup_complete=True,
-            )
-            manifest = SeededArchiveManifest(
-                protocol_version=_ARTIFACT_PROTOCOL_VERSION,
-                key=key.value,
-                archive_id=archive_id,
-                profile_id=profile_id,
-                build_id=build_id,
-                recipe_id=key.recipe_id,
-                source_semantics_id=key.source_semantics_id,
-                archive_schema_id=key.archive_schema_id,
-                facts=facts,
-                files=_archive_files(staging),
-                receipt=dict(receipt.to_payload()),
-            )
-            (staging / "manifest.json").write_text(
-                json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            _make_read_only(staging)
-            os.replace(staging, final_root)
-        except Exception:
-            _remove_tree(staging)
-            raise
+                sources = []
+                for spec, written in zip(selected_specs, written_batches, strict=True):
+                    if spec.provider == "antigravity":
+                        sources.append(Source(name=spec.provider, path=written.files[0].parent.parent))
+                    else:
+                        sources.extend(Source(name=spec.provider, path=path) for path in written.files)
+                with _configured_archive_root(staging):
+                    with patch(
+                        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+                        SyntheticAntigravityLanguageServerClient,
+                    ):
+                        asyncio.run(parse_sources_archive(staging, sources))
+                inspect_raw_authority_frontier(
+                    Config(
+                        archive_root=staging,
+                        render_root=staging / "render",
+                        sources=[],
+                        db_path=staging / "index.db",
+                    )
+                )
+                facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
+                _sqlite_integrity(staging)
+                _validate_facts(staging, facts)
+                _validate_frontier_convergence(staging)
+                archive_id = f"archive:seeded:{final_root.name}"
+                profile_id = _profile_id(key)
+                build_id = _build_id()
+                receipt = WorkloadReceipt.from_observations(
+                    spec=_archive_build_spec(key=key, archive_id=archive_id, profile_id=profile_id),
+                    status=WorkloadRunStatus.SUCCEEDED,
+                    build_id=build_id,
+                    runtime_id="synthetic-real-pipeline",
+                    archive_id=archive_id,
+                    generation_id=key.value,
+                    frame_id=None,
+                    phases=(
+                        WorkloadPhaseObservation(name="generate"),
+                        WorkloadPhaseObservation(name="acquire"),
+                        WorkloadPhaseObservation(name="parse"),
+                        WorkloadPhaseObservation(name="materialize"),
+                        WorkloadPhaseObservation(name="index"),
+                        WorkloadPhaseObservation(name="raw_authority_frontier"),
+                        WorkloadPhaseObservation(name="validate"),
+                        WorkloadPhaseObservation(name="publish", cleanup_complete=True, quiescent=True),
+                    ),
+                    cleanup_complete=True,
+                )
+                manifest = SeededArchiveManifest(
+                    protocol_version=_ARTIFACT_PROTOCOL_VERSION,
+                    key=key.value,
+                    archive_id=archive_id,
+                    profile_id=profile_id,
+                    build_id=build_id,
+                    recipe_id=key.recipe_id,
+                    source_semantics_id=key.source_semantics_id,
+                    archive_schema_id=key.archive_schema_id,
+                    facts=facts,
+                    files=_archive_files(staging),
+                    receipt=dict(receipt.to_payload()),
+                )
+                (staging / "manifest.json").write_text(
+                    json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                _make_read_only(staging)
+                os.replace(staging, final_root)
+                break
+            except sqlite3.OperationalError as exc:
+                # Same-process zombie-connection lock (polylogue-lbgc): a
+                # not-yet-finalized cursor from earlier in this worker keeps
+                # SQLite's shared pager-cache entry alive, and SQLITE_LOCKED is
+                # NOT absorbed by the busy-timeout. The module already applies
+                # this exact remedy to the DELETE-journal pragma; the real-ingest
+                # build needs it too, because a cache-invalidating key change
+                # makes many workers rebuild artifacts at once and a setup ERROR
+                # here fails the whole consuming test.
+                _remove_tree(staging)
+                if "locked" not in str(exc).lower() or attempt == _BUILD_LOCK_ATTEMPTS:
+                    raise
+                gc.collect()
+                time.sleep(min(0.25 * attempt, 2.0))
+            except Exception:
+                _remove_tree(staging)
+                raise
         artifact = _validate_artifact(final_root, key)
         if artifact is None:
             raise RuntimeError("published seeded archive failed its own validation")

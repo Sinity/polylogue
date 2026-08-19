@@ -527,3 +527,90 @@ def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
 
     with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
         assert archive.count_sessions() > 0
+
+
+# ---------------------------------------------------------------------------
+# Build-time same-process lock retry (polylogue-lbgc class)
+# ---------------------------------------------------------------------------
+
+
+def test_build_retries_a_transient_same_process_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient SQLITE_LOCKED during real ingest must not fail the consumer.
+
+    Observed as two setup ERRORs in a full bootstrap run: the fixture calls
+    ``build_seeded_archive``, the ingest inside it raises
+    ``sqlite3.OperationalError: database is locked`` from
+    ``introspection.table_exists``, and every test depending on that fixture
+    errors out. The cause is the ``sqlite3_close_v2`` zombie-connection
+    footgun already documented on :func:`_journal_mode_delete_with_retry`
+    (polylogue-lbgc): SQLITE_LOCKED is a same-process conflict that the
+    busy-timeout does not retry.
+
+    Anti-vacuity: removing the ``except sqlite3.OperationalError`` arm makes
+    this fail on the first injected lock, because nothing else absorbs it.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    from polylogue.pipeline.services.archive_ingest import parse_sources_archive as real_parse
+
+    attempts = 0
+
+    async def lock_once(*args: Any, **kwargs: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return await real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(artifacts, "parse_sources_archive", lock_once)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+
+    assert attempts == 2
+    assert artifact.root.joinpath("index.db").is_file()
+    # The abandoned first attempt must leave no staging tree behind.
+    assert not list((tmp_path / "cache" / ".staging").iterdir())
+
+
+def test_build_does_not_retry_a_non_lock_database_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retrying a real failure would hide it; only same-process locks qualify."""
+    import tests.infra.workload_artifacts as artifacts
+
+    attempts = 0
+
+    async def always_broken(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(artifacts, "parse_sources_archive", always_broken)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        build_seeded_archive(cache_root=tmp_path / "cache")
+
+    assert attempts == 1
+
+
+def test_build_gives_up_on_a_persistent_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lock that never clears must surface, not spin forever."""
+    import tests.infra.workload_artifacts as artifacts
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    attempts = 0
+
+    async def always_locked(*args: object, **kwargs: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(artifacts, "parse_sources_archive", always_locked)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        build_seeded_archive(cache_root=tmp_path / "cache")
+
+    assert attempts == artifacts._BUILD_LOCK_ATTEMPTS
+    assert not list((tmp_path / "cache" / ".staging").iterdir())
