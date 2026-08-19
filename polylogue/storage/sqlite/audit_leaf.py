@@ -295,6 +295,31 @@ class VerifiedAuditLeaf:
         connection.set_authorizer(authorize)
 
     def _pin_writable_sidecars(self) -> None:
+        """Pin the WAL sidecars this leaf can prove exist.
+
+        polylogue-x18ml: ``-wal`` is required and ``-shm`` is not, because the
+        two files carry different guarantees.
+
+        ``-wal`` holds committed frames -- it is durable authority, and a
+        writable audit connection that has just forced WAL mode must have one.
+        ``-shm`` is the wal-index: pure derived shared memory, carrying no
+        committed data, which SQLite creates and destroys on its own schedule.
+        It legitimately does not exist while a WAL database is opened in
+        exclusive locking mode (the index lives in heap instead), it is removed
+        on last close, and -- the case that surfaced this -- a restore that
+        rebinds a new audit image leaves the connection without a ``-shm``
+        pathname for the replaced inode even though the connection itself is
+        open, in WAL mode, and has committed.
+
+        Requiring it therefore turned a file SQLite promises nothing about into
+        a hard precondition of the durable restore path, which is why an
+        interrupted continuity commit could not be resumed. Requiring it also
+        bought nothing: the pin exists to detect a pathname swap under a live
+        connection, and ``_assert_pinned_sidecars`` only ever re-checks entries
+        that were actually pinned, so a sidecar absent at pin time is simply
+        outside that guarantee rather than silently weakening it. Every file
+        that IS present is still pinned and still re-validated byte-identically.
+        """
         if self._directory_fd is None:
             raise RuntimeError("audit leaf descriptor is closed")
         for suffix in ("-wal", "-shm"):
@@ -311,6 +336,10 @@ class VerifiedAuditLeaf:
                     dir_fd=self._directory_fd,
                 )
             except FileNotFoundError as exc:
+                if suffix == "-shm":
+                    # Derived wal-index, not authority: absent is a legitimate
+                    # SQLite state, so there is nothing to pin and nothing lost.
+                    continue
                 raise AuditLeafError(
                     f"audit tier did not create required WAL sidecar: {self._archive_root / filename}"
                 ) from exc
