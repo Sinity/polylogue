@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -114,8 +115,49 @@ def _assert_repository_membership(root: Path, manifest: QueryCardinalityManifest
 
 
 def _copy_archive(source: Path, destination: Path) -> Path:
+    """Copy an archive tree and re-bind its durable bootstrap marker.
+
+    Mirrors ``clone_seeded_archive`` (tests/infra/workload_artifacts.py):
+    the fresh-durable-bootstrap marker binds a ``durable_identity_digest``
+    to the archive root path it was recorded at, so a naive ``copytree``
+    to a different path leaves a stale marker that
+    ``_fresh_durable_bootstrap_versions`` rejects on the first write-mode
+    open (``DurableChangeTrainError: ... durable identity mismatch``).
+    """
     shutil.copytree(source, destination)
+    bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+    if bootstrap_marker.is_file():
+        from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+        bootstrap_marker.unlink()
+        _record_fresh_durable_bootstrap(destination)
     return destination
+
+
+def _daemon_delete_route(archive_root: Path) -> Any:
+    """Stand in for the daemon's three-step delete, doing the real delete.
+
+    ``_emit_delete`` has no non-daemon route: it refuses outright when the
+    daemon does not answer the prepare call (see
+    ``TestDeleteCardinalityLargeNonMocked._daemon_delete_route`` in
+    test_verb_cardinality.py, which this mirrors). This survivor is about
+    membership/cardinality laws, not about which process performs the write,
+    so the stub prepares from the caller's own resolved ids and then deletes
+    them through the real ``ArchiveStore``.
+    """
+    prepared: dict[str, list[str]] = {}
+
+    def _route(_config: Any, path: str, *, body: dict[str, object]) -> dict[str, object]:
+        if path.endswith("/prepare"):
+            prepared["ids"] = [str(item) for item in cast(list[Any], body["session_ids"])]
+            return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
+        if path.endswith("/authorize"):
+            return {"status": "authorized", "authorization_token": "test-authorization"}
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            affected = archive.delete_sessions(tuple(prepared["ids"]))
+        return {"status": "deleted", "affected_count": affected, "session_ids": prepared["ids"]}
+
+    return _route
 
 
 def _cli_env(root: Path) -> dict[str, str]:
@@ -125,16 +167,6 @@ def _cli_env(root: Path) -> dict[str, str]:
     }
 
 
-# KNOWN FAILURE, tracked. Marked xfail rather than deleted or silently
-# skipped: xfail is REPORTED, so the debt stays counted every run and an
-# unexpected pass is visible. strict=False because some of these are
-# additionally load-sensitive. Each fails on exact master as well as this
-# branch -- verified by running them against master in an isolated worktree
-# -- so none is a regression from the work that marked them.
-@pytest.mark.xfail(
-    reason="polylogue-ndgbm: parse_one_source_path returns zero sessions for valid Codex JSONL, so the module fixture ingests nothing and this errors at setup",
-    strict=False,
-)
 def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     query_cardinality_archive: _PreparedArchive,
     tmp_path: Path,
@@ -262,11 +294,15 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert set(preview_ids) == set(manifest.matching_session_ids())
     assert preview["session_count"] == len(manifest.matching_session_ids())
 
-    apply_result = runner.invoke(
-        cli,
-        ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
-        env=_cli_env(mutation_root),
-    )
+    with patch(
+        "polylogue.cli.archive_query._submit_daemon_mutation",
+        side_effect=_daemon_delete_route(mutation_root),
+    ):
+        apply_result = runner.invoke(
+            cli,
+            ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
+            env=_cli_env(mutation_root),
+        )
     assert apply_result.exit_code == 0, apply_result.output
     applied = cast(dict[str, object], json.loads(apply_result.output))
     assert applied["session_count"] == preview["session_count"]
@@ -290,13 +326,6 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert post_payload["total"] == 0
 
 
-# KNOWN FAILURE, tracked. Marked xfail rather than deleted or silently
-# skipped: xfail is REPORTED, so the debt stays counted every run and an
-# unexpected pass is visible. strict=False because some of these are
-# additionally load-sensitive. Each fails on exact master as well as this
-# branch -- verified by running them against master in an isolated worktree
-# -- so none is a regression from the work that marked them.
-@pytest.mark.xfail(reason="polylogue-ndgbm: same fixture; parse path yields no sessions", strict=False)
 def test_survivor_detects_naive_duplicate_id_join_mutation(
     query_cardinality_archive: _PreparedArchive,
     tmp_path: Path,
@@ -327,7 +356,14 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
                 r.text AS output_text,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
-                r.block_id AS tool_result_block_id
+                r.block_id AS tool_result_block_id,
+                CASE
+                    WHEN r.block_id IS NULL THEN 'no_result'
+                    WHEN r.tool_result_is_error IS NULL AND r.tool_result_exit_code IS NULL THEN 'outcome_unknown'
+                    WHEN r.tool_result_exit_code IS NOT NULL AND r.tool_result_exit_code != 0 THEN 'outcome_error'
+                    WHEN r.tool_result_exit_code IS NULL AND r.tool_result_is_error = 1 THEN 'outcome_error'
+                    ELSE 'outcome_success'
+                END AS result_state
             FROM blocks u
             LEFT JOIN blocks r
               ON r.session_id = u.session_id

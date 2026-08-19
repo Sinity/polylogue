@@ -2442,7 +2442,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "error": (
                 f"report_version mismatch: before={before_version} after={after_version}; "
-                "regenerate both reports with the same devtools build"
+                "regenerate both reports with the same polylogue build"
             ),
             "before_version": before_version,
             "after_version": after_version,
