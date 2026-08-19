@@ -41,7 +41,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
@@ -119,6 +119,7 @@ from devtools.verify_runs import (
     pytest_tmpfs_budget_exceeded,
     pytest_tmpfs_budget_kb,
     start_checkout_mutation_monitor,
+    sweep_stale_managed_basetemps,
     utc_now,
     worktree_fingerprint,
     xdist_uninterruptible_stall_reason,
@@ -2109,6 +2110,7 @@ def _run_step(
     runtime_policy = None
     pytest_concurrency = 0
     basetemp_cleanup: Path | None = None
+    swept: list[Path] = []
     if is_pytest or has_managed_pytest_child:
         try:
             if has_managed_pytest_child:
@@ -2120,6 +2122,13 @@ def _run_step(
                 env = force_managed_pytest_scratch(env)
             if is_pytest:
                 pytest_concurrency = _pytest_command_concurrency(cmd, env=env)
+            # Reclaim prior runs' leaked tmpfs trees BEFORE admission, not only
+            # at exit. Cleanup used to be purely trailing, so a tree that failed
+            # to unlink stayed resident until someone noticed -- 16 of them and
+            # two blocked merges on 2026-08-19 (polylogue-b9yw7). Sweeping here
+            # also feeds the decision immediately below: the space it returns is
+            # headroom the basetemp admission policy can then admit against.
+            swept = sweep_stale_managed_basetemps()
             env, runtime_policy = apply_managed_pytest_runtime_policy(
                 env,
                 worker_count=pytest_concurrency,
@@ -2241,6 +2250,7 @@ def _run_step(
         metadata["postmortem_path"] = str(CURRENT_POSTMORTEM_PATH)
         metadata["containment_path"] = str(PYTEST_CONTAINMENT_PATH)
         metadata["basetemp_cleanup"] = str(basetemp_cleanup) if basetemp_cleanup is not None else None
+        metadata["basetemp_swept"] = [str(path) for path in swept]
         junit_paths = [
             str(path) for path in _pytest_artifact_paths(cmd) if path.suffix == ".xml" or path.name.endswith(".xml")
         ]
@@ -2597,6 +2607,7 @@ def _native_pytest_steps(
     testmon_mode: str,
     testmon_environment: str,
     parallel_worker_args: Sequence[str],
+    serial_worker_args: Sequence[str],
 ) -> list[tuple[str, list[str]]]:
     pytest_cmd = [
         sys.executable,
@@ -2655,8 +2666,7 @@ def _native_pytest_steps(
             *native_args,
             "-p",
             "no:randomly",
-            "-n",
-            "0",
+            *serial_worker_args,
         ]
     )
     return [
@@ -2674,10 +2684,15 @@ def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bo
     worker_request = pytest_command_worker_request(cmd)
     if len(environment_args) != 1 or worker_request is None or not worker_request.isdigit():
         return False
+    # Only the labelled lane's command is compared below, so reconstructing both
+    # lanes from the observed worker request is exact for the lane under test and
+    # irrelevant for its sibling.
+    observed_worker_args = ("--dist=loadgroup", "-n", worker_request)
     expected_steps = _native_pytest_steps(
         testmon_mode=match.group(2),
         testmon_environment=environment_args[0].removeprefix("--testmon-env="),
-        parallel_worker_args=("--dist=loadgroup", "-n", worker_request),
+        parallel_worker_args=observed_worker_args,
+        serial_worker_args=observed_worker_args,
     )
     expected = dict(expected_steps).get(label)
     return expected is not None and list(cmd) == expected
@@ -2755,6 +2770,7 @@ def build_verify_steps(
                 testmon_mode=testmon_mode,
                 testmon_environment=testmon_environment,
                 parallel_worker_args=_pytest_worker_args(),
+                serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
             )
         )
 
@@ -2863,6 +2879,27 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+#: Worker ceiling for the `load_sensitive` lane.
+#:
+#: The lane exists because these tests drive real daemon subprocesses under
+#: wall-clock deadlines, and the parallel lane's full worker count starves
+#: interpreter startup badly enough to flake them. It does NOT follow that the
+#: lane must be strictly serial: measured on the 7-test corpus (2026-08-19,
+#: tests/integration/test_daemon_resilience.py, same host and containment),
+#:
+#:   -n 0  71.95s  green
+#:   -n 4  35.08s  green
+#:   -n 5 107.76s  1 failed (SIGTERM deadline starved)
+#:   -n 7  95.20s  2 failed (both SIGTERM tests, 90s subprocess timeout blown)
+#:
+#: so 4 is the last concurrency the deadline-sensitive members survive, with a
+#: clear cliff immediately above it. Raising this needs the same measurement,
+#: repeated, not an assumption that a faster host has more headroom -- the
+#: failures are starvation of an idle-scheduled containment slice, not a
+#: shortage of cores.
+SERIAL_LANE_MAX_WORKERS: Final = 4
 
 
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:

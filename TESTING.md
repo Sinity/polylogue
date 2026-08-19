@@ -84,9 +84,21 @@ concurrency when memory pressure is elevated.
 
 Every native run has exactly two semantic lanes over one environment and one
 database: a parallel lane for tests not marked `load_sensitive`, followed by a
-serial lane for the load-sensitive set. Ordinary test failures in the parallel
-lane do not suppress the serial lane. Typed collection, containment, resource,
+bounded lane for the load-sensitive set. Ordinary test failures in the parallel
+lane do not suppress the bounded lane. Typed collection, containment, resource,
 or timeout failures do.
+
+The bounded lane is not strictly serial. `load_sensitive` marks a test whose
+wall-clock deadlines the *parallel* lane's full worker count starves, which
+bounds how much concurrency the lane may use — it does not establish that the
+members contend with each other. Measured on the 7-test daemon-resilience
+corpus (2026-08-19): 71.95s at one process, 35.08s at four workers, and a hard
+cliff above that (5 workers 107.76s with one starved SIGTERM deadline, 7 workers
+95.20s with two). The lane therefore runs at
+`devtools.verify.SERIAL_LANE_MAX_WORKERS` (4) under `--dist=loadgroup`, with
+members assigned to `xdist_group` bins packed longest-first so the makespan is
+bounded by the largest bin rather than by the order xdist happens to dispatch
+in. Raising the cap requires repeating that measurement.
 
 The lane boundary is evidence-based. On 2026-08-13 the complete correctness
 corpus collected 20,447 nodes in 35.06s; only 17 were `load_sensitive`, while

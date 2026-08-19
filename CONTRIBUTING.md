@@ -310,8 +310,8 @@ complete correctness corpus. The pytest step covers unit, property, fuzz, and
 integration tests while excluding the separately operated `tests/benchmarks`
 performance surface. It uses
 `--testmon-forceselect` for incremental selection, with one parallel `not
-load_sensitive` lane and one serial `load_sensitive` lane over the same native
-environment. `tui` is a category marker and remains parallel unless a test is
+load_sensitive` lane and one bounded-concurrency `load_sensitive` lane over the
+same native environment. `tui` is a category marker and remains parallel unless a test is
 also explicitly `load_sensitive`. Use
 There is no manual seed or repair command, and no separate full-corpus flag:
 every plain run is scoped to the complete corpus, executing what changed and

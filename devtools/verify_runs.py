@@ -30,6 +30,7 @@ from typing import Any, Final, ParamSpec, TextIO, TypeVar
 import watchfiles
 
 from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
+from devtools.pytest_supervisor import force_rmtree
 from devtools.testmon_bootstrap import canonical_test_nodeid
 from polylogue.core.metrics import read_cgroup_memory_headroom_bytes
 
@@ -1237,6 +1238,12 @@ def aggregate_pytest_statistics(
             "complete": True
             if isinstance(parent_cleanup, str) and parent_cleanup
             else containment.get("tmpfs_cleanup_complete"),
+            # Carried so an incomplete cleanup explains itself. `complete` gates
+            # release-baseline authority, and until 2026-08-19 a False here left
+            # no evidence of which reclaimer failed or what survived
+            # (polylogue-b9yw7).
+            "reason": containment.get("tmpfs_cleanup_reason"),
+            "residual": containment.get("tmpfs_cleanup_residual"),
             "termination_reason": containment.get("termination_reason"),
             "escalated_to_sigkill": containment.get("escalated_to_sigkill"),
             "exit_code": containment.get("exit_code", (step_result or {}).get("exit")),
@@ -2807,7 +2814,10 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
             return None
         with contextlib.suppress(OSError):
             if basetemp.exists():
-                shutil.rmtree(basetemp)
+                # Permission-repairing: a published seeded-archive cache under
+                # this tree is deliberately read-only, directories included, and
+                # a plain rmtree cannot unlink through it (polylogue-b9yw7).
+                force_rmtree(basetemp)
                 if not basetemp.exists():
                     clear_managed_pytest_basetemp_claim(basetemp)
                     return basetemp
@@ -2815,6 +2825,49 @@ def cleanup_managed_pytest_basetemp(*, root: Path, run_id: str, env: dict[str, s
         with contextlib.suppress(OSError):
             claim_lock.close()
     return None
+
+
+def sweep_stale_managed_basetemps(*, limit: int = 64) -> list[Path]:
+    """Reclaim harness-owned tmpfs basetemps left behind by finished runs.
+
+    Cleanup used to be purely trailing: each run removed its own tree at exit,
+    so anything that failed to unlink stayed until someone noticed. On
+    2026-08-19 that was 16 leaked trees and two blocked merges, because the
+    removal itself could not succeed (see `force_rmtree`). Repairing removal
+    without also reclaiming the existing debt would leave those trees resident
+    on a 16 GiB tmpfs indefinitely, so the harness now sweeps at start as well
+    as at exit -- eager and self-healing rather than trailing only.
+
+    Ownership is the same test the exit path applies, and it is conservative in
+    the same direction: a tree is reclaimed only when its claim lock is free
+    (nothing else is using it) AND its recorded owner is positively dead. An
+    unknown or live owner is left alone. The shared `-seeded-` corpus cache is
+    never a candidate; it is a deliberate cross-run artifact, not run debt.
+    """
+    reclaimed: list[Path] = []
+    shm = Path("/dev/shm")
+    try:
+        candidates = sorted(shm.glob("pytest-polylogue-*"))
+    except OSError:
+        return reclaimed
+    for candidate in candidates[:limit]:
+        if not candidate.is_dir() or "-seeded-" in candidate.name:
+            continue
+        claim_lock = _try_acquire_pytest_basetemp_claim_lock(candidate)
+        if claim_lock is None:
+            continue
+        try:
+            if managed_pytest_basetemp_owner_alive(candidate) is not False:
+                continue
+            with contextlib.suppress(OSError):
+                force_rmtree(candidate)
+                if not candidate.exists():
+                    clear_managed_pytest_basetemp_claim(candidate)
+                    reclaimed.append(candidate)
+        finally:
+            with contextlib.suppress(OSError):
+                claim_lock.close()
+    return reclaimed
 
 
 def _pytest_event_worker_ids(events_dir: Path | None) -> dict[int, str]:

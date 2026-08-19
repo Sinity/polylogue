@@ -2,7 +2,7 @@
   "entries": [
     {
       "code": "ambient_path_call",
-      "detail": "line 136: resolves an ambient location via Path.home()",
+      "detail": "line 165: resolves an ambient location via Path.home()",
       "path": "tests/integration/test_daemon_resilience.py"
     },
     {
@@ -82,7 +82,7 @@
     },
     {
       "code": "ambient_path_literal",
-      "detail": "line 1456: reads ambient path '~/.codex'",
+      "detail": "line 1464: reads ambient path '~/.codex'",
       "path": "tests/unit/daemon/test_web_reader.py"
     },
     {

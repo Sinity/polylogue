@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
     cleanup_managed_tmpfs_path,
+    describe_managed_tmpfs_cleanup,
     read_receipt,
     signal_process_identity,
     termination_request_path,
@@ -81,6 +83,95 @@ def test_cleanup_managed_tmpfs_path_removes_read_only_artifact_trees(tmp_path: P
             for candidate in sorted(run_root.rglob("*"), reverse=True):
                 with contextlib.suppress(OSError):
                     candidate.chmod(candidate.stat().st_mode | 0o200)
+
+
+def test_managed_tmpfs_cleanup_explains_each_outcome(tmp_path: Path) -> None:
+    """An incomplete cleanup must say why: it silently gates release authority."""
+    run_root = Path("/dev/shm") / f"pytest-polylogue-explain-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        run_root.mkdir()
+        (run_root / "payload").write_text("temporary", encoding="utf-8")
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(run_root)
+        assert (complete, residual) == (True, [])
+        assert "reclaimed" in reason
+
+        # Already gone is a completed cleanup, not a failed one.
+        assert describe_managed_tmpfs_cleanup(run_root)[0] is True
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(None)
+        assert complete is False
+        assert reason and residual == []
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(tmp_path / "pytest-polylogue-not-tmpfs")
+        assert complete is False
+        assert "/dev/shm" in reason
+    finally:
+        shutil.rmtree(run_root, ignore_errors=True)
+
+
+def test_managed_tmpfs_cleanup_removes_a_read_only_seeded_cache(tmp_path: Path) -> None:
+    """The b9yw7 red twin: a published read-only artifact tree must still reclaim.
+
+    `tests/infra/workload_artifacts._make_read_only` strips write bits from
+    directories as well as files, and a directory without its write bit cannot
+    have entries unlinked from it. Tests that build such a cache under the run
+    basetemp (`query_cardinality_archive` at `work/"seeded-cache"`) therefore
+    left trees a plain rmtree could not remove, which set `cleanup.complete=false`
+    and withheld release-baseline authority from green runs. Reproduced live
+    2026-08-19: 16 leaked /dev/shm trees, `rm` refusing with Permission denied.
+    """
+    run_root = Path("/dev/shm") / f"pytest-polylogue-readonly-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        wire = run_root / "work" / "seeded-cache" / "artifacts" / "abc123" / "wire"
+        wire.mkdir(parents=True)
+        (wire / "sessions.jsonl").write_text('{"id": 1}\n', encoding="utf-8")
+
+        # Exactly what _make_read_only does: bottom-up, directories included.
+        for path in sorted(run_root.rglob("*"), reverse=True):
+            mode = path.stat().st_mode
+            path.chmod(mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+        # Precondition: this is genuinely unremovable the ordinary way.
+        with pytest.raises(OSError):
+            shutil.rmtree(run_root)
+        assert run_root.exists()
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(run_root)
+        assert (complete, residual) == (True, [])
+        assert "reclaimed" in reason
+        assert not run_root.exists()
+    finally:
+        if run_root.exists():
+            for path in sorted(run_root.rglob("*"), reverse=True):
+                with contextlib.suppress(OSError):
+                    path.chmod(path.stat().st_mode | stat.S_IWUSR | stat.S_IXUSR)
+            shutil.rmtree(run_root, ignore_errors=True)
+
+
+def test_managed_tmpfs_cleanup_reports_survivors_when_the_tree_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A surviving tree names its survivors, so a leak is separable from a race."""
+    run_root = Path("/dev/shm") / f"pytest-polylogue-survive-{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        run_root.mkdir()
+        (run_root / "nested").mkdir()
+        (run_root / "nested" / "held-open").write_text("still here", encoding="utf-8")
+
+        # Stand in for a tree that resists removal for a reason the permission
+        # repair cannot fix, so the residual sample is what explains it.
+        monkeypatch.setattr("devtools.pytest_supervisor.shutil.rmtree", lambda *a, **k: None)
+
+        complete, reason, residual = describe_managed_tmpfs_cleanup(run_root)
+        assert complete is False
+        assert reason == "tree survived rmtree"
+        assert "nested/held-open" in residual
+    finally:
+        # Undo before cleaning up: monkeypatch is still active inside this
+        # finally, so an un-undone patch would no-op the removal below and leak
+        # the fixture into /dev/shm on every run.
+        monkeypatch.undo()
         shutil.rmtree(run_root, ignore_errors=True)
 
 

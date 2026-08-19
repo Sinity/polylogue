@@ -770,6 +770,14 @@ def _request_json(
         return exc.code, json.loads(raw)
 
 
+# A loopback-socket wall-clock probe: it asserts that `_socket_peer_disconnected`
+# observes the peer's FIN within the call itself, with no retry or grace window.
+# That is exactly the case pyproject's `load_sensitive` marker names, and this
+# test was the one place in the file not covered by it. It passed in 11 retained
+# receipts and then failed once (`assert False is True`) in a 1990-test batch run
+# under host load on 2026-08-19, passing standalone at 0.68s immediately after --
+# the signature of xdist contention delaying FIN propagation, not a product bug.
+@pytest.mark.load_sensitive
 def test_socket_peer_disconnected_detects_closed_loopback_peer() -> None:
     from polylogue.daemon.http import _socket_peer_disconnected
 

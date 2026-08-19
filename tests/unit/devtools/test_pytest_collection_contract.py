@@ -31,6 +31,7 @@ def _commands() -> dict[str, list[str]]:
         testmon_mode="affected",
         testmon_environment="env-under-test",
         parallel_worker_args=["-n", "4"],
+        serial_worker_args=["--dist=loadgroup", "-n", "2"],
     )
     return dict(steps)
 
