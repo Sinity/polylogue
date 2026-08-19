@@ -193,6 +193,14 @@ def test_repository_is_clean_against_its_baseline() -> None:
 #: A cold review widened the baseline 34 -> 35 by appending a new ambient-path
 #: read to an already-baselined file; with the count pinned and the key
 #: including the finding detail, that can no longer pass unnoticed.
+#:
+#: The key includes the line number, which is a deliberate trade-off: editing
+#: a file ABOVE a baselined finding shifts its detail and forces a
+#: regeneration. Dropping the line would make the key stable but would
+#: re-open the exact hole above -- a second ``~/.codex`` read in an
+#: already-baselined file would collapse onto the existing key and stay
+#: exempt. For a ratchet, "never silently widens" beats "never churns", and
+#: the churn is visible in ``--write-baseline``'s delta output.
 EXPECTED_BASELINE_ENTRIES = 29
 
 

@@ -87,7 +87,7 @@
     },
     {
       "code": "ambient_path_literal",
-      "detail": "line 913: reads ambient path '/realm/state'",
+      "detail": "line 989: reads ambient path '/realm/state'",
       "path": "tests/unit/scenarios/test_codex_804_live_proof.py"
     },
     {
