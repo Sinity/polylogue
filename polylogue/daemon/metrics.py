@@ -391,29 +391,39 @@ def _convergence_debt_by_stage(conn: sqlite3.Connection, *, ops_db: Path | None 
 
 
 def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, str, int]]:
+    """Return (stage, status, count) triples from the durable ops-tier ledger.
+
+    Delegates to :func:`convergence_debt_status.convergence_debt_summary_info`
+    -- the same projection ``polylogue ops status`` and the ``/health``
+    envelope already use -- instead of re-running the ``GROUP BY stage,
+    status`` query by hand. This is NOT a pure drop-in for the query it
+    replaces: that projection validates every row's ``status`` against the
+    closed ``{failed, deferred}`` vocabulary and requires ``stage`` to be
+    non-NULL, raising internally (caught, logged, and surfaced as
+    ``available=False``) if the table ever contains something else, whereas
+    the raw SQL this replaces passed any stage/status value through
+    verbatim (coercing NULLs to the string ``"unknown"``). In the normal
+    case -- a convergence_debt table containing only failed/deferred rows
+    with a populated stage -- the two are equivalent; only already-anomalous
+    data changes behavior, and it changes toward surfacing the anomaly
+    (a warning + empty metrics) rather than silently minting an "unknown"
+    bucket.
+    """
     if ops_db is None or not ops_db.exists():
         return []
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 
-    try:
-        conn = open_readonly_connection(ops_db)
-        try:
-            if not _table_exists(conn, "convergence_debt"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT stage, status, COUNT(*)
-                FROM convergence_debt
-                GROUP BY stage, status
-                ORDER BY stage, status
-                """
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        logger.warning("metrics: ops convergence-debt-by-stage query failed for %s: %s", ops_db, exc, exc_info=True)
+    summary = convergence_debt_summary_info(ops_db, ops_db=ops_db)
+    if not summary.available:
         return []
-    return [(str(row[0] or "unknown"), str(row[1] or "unknown"), int(row[2] or 0)) for row in rows]
+    rows: list[tuple[str, str, int]] = []
+    for stage_summary in summary.stage_summaries:
+        if stage_summary.failed_count:
+            rows.append((stage_summary.stage, "failed", stage_summary.failed_count))
+        if stage_summary.deferred_count:
+            rows.append((stage_summary.stage, "deferred", stage_summary.deferred_count))
+    rows.sort()
+    return rows
 
 
 def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
