@@ -62,15 +62,18 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def seeded_db_env(
-    named_seeded_archive: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
-    """Seed a deterministic corpus DB through the archive pipeline.
+    """Point the CLI query verbs at a deterministic corpus DB.
 
-    The named artifact is generated through the production pipeline then
-    cloned into the archive root the CLI query verbs read.
+    The named artifact is generated through the production pipeline and read
+    in place: every consumer of this fixture invokes read-only query verbs,
+    so the archive root is the immutable shared artifact rather than a
+    private clone of it. ``postmortem_seeded_env`` below is the mutating
+    counterpart and keeps the clone.
     """
-    db_path = named_seeded_archive("cli-chatgpt")
+    db_path = named_seeded_archive_ro("cli-chatgpt")
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     return db_path
 
