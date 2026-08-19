@@ -911,20 +911,82 @@ def _restore_owner_write(root: Path) -> None:
             candidate.chmod(candidate.stat().st_mode | stat.S_IWUSR)
 
 
+def force_rmtree(path: Path, *, ignore_errors: bool = False) -> None:
+    """Remove a harness-owned tree, repairing the permissions the harness revoked.
+
+    The shared entry point for every reclaimer, so the repair above has exactly
+    one implementation. `verify_runs.cleanup_managed_pytest_basetemp` and the
+    stale-basetemp sweep both need it: the read-only artifact trees that caused
+    polylogue-b9yw7 defeat a plain rmtree wherever it is called from, and the
+    supervisor's exit pass was only one of those places.
+
+    Repair is the recovery path, not the common one -- an ordinary tree is
+    removed by the first call and never walked twice -- and it only ever runs
+    against a tree the caller has already established is harness-owned.
+    """
+    try:
+        shutil.rmtree(path)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    _restore_owner_write(path)
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        if not ignore_errors:
+            raise
+
+
 def cleanup_managed_tmpfs_path(path: Path | None) -> bool:
     """Remove only a harness-owned direct child of the system tmpfs."""
-    if path is None or not path.name.startswith("pytest-polylogue-"):
-        return False
+    return describe_managed_tmpfs_cleanup(path)[0]
+
+
+def describe_managed_tmpfs_cleanup(path: Path | None) -> tuple[bool, str, list[str]]:
+    """Reclaim a harness-owned tmpfs basetemp and say what happened.
+
+    Returns ``(complete, reason, residual)``. The reason and residual sample
+    exist because a bare ``False`` here is load-bearing and opaque: it becomes
+    the run's ``cleanup.complete``, which `_release_baseline_allowed` requires
+    to be True, so an otherwise-green complete-corpus run silently loses release
+    authority over a scratch directory that failed to unlink. Observed
+    2026-08-19 (run 20260819T003921Z, exit 0, no signals, controller group
+    quiescent) with nothing in the receipt to say why (polylogue-b9yw7).
+
+    The cause found for that receipt was a permission bit, not a race:
+    published seeded-archive artifacts chmod their DIRECTORIES non-writable, and
+    entries cannot be unlinked from a directory without its write bit, so the
+    tree was simply unremovable. `_restore_owner_write` above repairs exactly
+    that. The residual sample stays because it is what makes the NEXT such
+    failure legible in one receipt rather than a night of bisecting: it names
+    the surviving paths, which is how this one was ultimately identified.
+    """
+    if path is None:
+        return False, "no managed tmpfs path for this run", []
+    if not path.name.startswith("pytest-polylogue-"):
+        return False, f"not a harness-owned basetemp name: {path.name}", []
     try:
         if path.parent.resolve() != Path("/dev/shm").resolve():
-            return False
-    except OSError:
-        return False
-    shutil.rmtree(path, ignore_errors=True)
-    if path.exists():
-        _restore_owner_write(path)
-        shutil.rmtree(path, ignore_errors=True)
-    return not path.exists()
+            return False, f"not a direct child of /dev/shm: {path.parent}", []
+    except OSError as exc:
+        return False, f"could not resolve parent: {exc}", []
+    if not path.exists():
+        return True, "already reclaimed before this pass", []
+    force_rmtree(path, ignore_errors=True)
+    if not path.exists():
+        return True, "reclaimed by this pass", []
+    residual: list[str] = []
+    with contextlib.suppress(OSError):
+        for index, entry in enumerate(path.rglob("*")):
+            if index >= 20:
+                residual.append("... (truncated)")
+                break
+            residual.append(str(entry.relative_to(path)))
+    return False, "tree survived rmtree", residual
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -945,7 +1007,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         receipt = read_receipt(args.receipt)
         receipt_quiescent = receipt is not None and receipt.get("controller_group_alive") is False
-        cleanup_complete = cleanup_managed_tmpfs_path(args.cleanup_path) if receipt_quiescent else False
+        if receipt_quiescent:
+            cleanup_complete, cleanup_reason, cleanup_residual = describe_managed_tmpfs_cleanup(args.cleanup_path)
+        else:
+            cleanup_complete, cleanup_reason, cleanup_residual = (
+                False,
+                "controller process group still alive at supervisor exit",
+                [],
+            )
         if args.cleanup_path is not None:
             with contextlib.suppress(OSError):
                 update_receipt(
@@ -953,6 +1022,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     {
                         "tmpfs_cleanup_path": str(args.cleanup_path),
                         "tmpfs_cleanup_complete": cleanup_complete,
+                        "tmpfs_cleanup_reason": cleanup_reason,
+                        "tmpfs_cleanup_residual": cleanup_residual,
                     },
                 )
 

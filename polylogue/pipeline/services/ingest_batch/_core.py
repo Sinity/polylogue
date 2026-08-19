@@ -1128,6 +1128,7 @@ def _write_session(
         session_to_write,
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
+        source_conn=source_conn,
         merge_append=merge_append,
         force_replace=(
             force_write or browser_precedence == "replace" or append_force_replace or freshness_force_replace

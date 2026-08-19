@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Literal, TypeVar
+from typing import Literal, TypeVar, get_args
 
 from pydantic import Field, field_validator, model_validator
 
@@ -74,7 +74,19 @@ ContextEvidenceWindowKind = Literal[
     "unavailable_source_material",
 ]
 SuccessorContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
-SubagentChildLinkStatus = Literal["resolved", "unresolved", "repaired", "quarantined"]
+SubagentChildLinkStatus = Literal[
+    "resolved",
+    "unresolved",
+    "repaired",
+    "quarantined",
+    # polylogue-foee: an inferred parent overruled by authoritative hook
+    # evidence. Omitting it mapped every contradicted edge to None, which
+    # reads as "no link status" rather than "excluded, and here is why".
+    "authority-contradicted",
+]
+
+#: Derived from the Literal above so the two cannot drift apart.
+_SUBAGENT_CHILD_LINK_STATUSES: frozenset[str] = frozenset(get_args(SubagentChildLinkStatus))
 
 _GITHUB_REPO_REF = r"[\w.-]+/[\w.-]+#"
 _ISSUE_RE = re.compile(
@@ -1787,9 +1799,7 @@ def _enrich_subagent_reports_with_links(
         enriched.append(
             report.model_copy(
                 update={
-                    "child_link_status": status
-                    if status in {"resolved", "unresolved", "repaired", "quarantined"}
-                    else None,
+                    "child_link_status": status if status in _SUBAGENT_CHILD_LINK_STATUSES else None,
                     "child_link_type": _optional_text(link.get("link_type")),
                     "resolved_child_session_id": _optional_text(link.get("resolved_dst_session_id")),
                 }

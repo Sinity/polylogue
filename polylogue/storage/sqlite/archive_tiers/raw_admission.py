@@ -64,6 +64,15 @@ is not one of the five named arms (all five presuppose a prior head to
 compare against); it is handled as a distinct ``BASELINE`` outcome: the
 first-ever observation is recorded as a ``FULL``/``ASSERTED`` revision.
 
+The ``SHARED_GROUPED`` outcome is likewise outside the five arms. One
+grouped payload (a resume-fork chain inside a single Claude Code/Codex
+JSONL, a Gemini/Drive bundle) parses into many sessions that all share the
+identical captured bytes, so its raw row is keyed by the physical
+acquisition coordinate alone and carries no ``native_id`` and no revision
+envelope -- which sessions it speaks for lives in
+``raw_session_memberships``. The arm exists so that absence is a decision
+this module makes and names, rather than a caller-side bypass.
+
 The ``POST_PARSE_PENDING`` outcome is a separate acquisition-preservation
 contract for live and streaming callers that must record bytes before parsing
 can finish. It writes a deterministic raw row with a typed, quarantined
@@ -75,6 +84,13 @@ This module composes the existing low-level writers in
 ``deterministic_blob_hash``) rather than re-implementing raw-row
 persistence -- it decides *which* revision envelope to write, not how to
 write it.
+
+The one path that creates a ``raw_sessions`` row WITHOUT coming through
+here is ``source_write.insert_reconstructed_raw_row`` -- a copy-forward
+repair rebuilding a row from evidence already adjudicated elsewhere, for a
+source that no longer exists. Its docstring carries the reasoning; it lives
+in ``source_write.py`` because that is this tier's declared writer module
+and issuing the INSERT here would contradict the paragraph above.
 """
 
 from __future__ import annotations
@@ -110,6 +126,7 @@ class RawAdmissionArm(StrEnum):
     ARTIFACT = "artifact"
     REFUSED_AMBIGUOUS = "refused_ambiguous"
     POST_PARSE_PENDING = "post_parse_pending"
+    SHARED_GROUPED = "shared_grouped"
 
 
 _ByteRelation = Literal["duplicate", "append", "supersede", "ambiguous"]
@@ -240,6 +257,7 @@ def admit_raw_observation(
     raw_id: str | None = None,
     post_parse: bool = False,
     artifact: ArtifactClassification | None = None,
+    grouped: bool = False,
     blob_publication_receipt_id: str | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     reacquire: Callable[[], bytes | None] | None = None,
@@ -258,11 +276,29 @@ def admit_raw_observation(
     by the caller alongside the primary payload. It is not accepted by the
     ``ARTIFACT`` arm: a non-conversational artifact payload has no parsed
     attachments of its own.
+
+    ``grouped=True`` selects the ``SHARED_GROUPED`` arm -- one raw row shared
+    by every session parsed out of one grouped payload (a resume-fork chain in
+    a single Claude Code/Codex JSONL, a Gemini/Drive bundle). Its identity is
+    the physical acquisition coordinate alone, so ``native_id`` is forced NULL
+    and no per-session revision envelope is attached: which sessions this raw
+    speaks for is recorded in ``raw_session_memberships`` by the caller, and a
+    revision chain over a payload that N sessions share has no single subject
+    to be about. That absence is now a named arm rather than, as before, a
+    bare ``write_source_raw_session`` call that bypassed this module.
     """
     if post_parse and (logical_source_key is not None or prior_head is not None or artifact is not None):
         raise ValueError("post-parse admission cannot combine a logical key, prior head, or artifact")
     if not post_parse and not logical_source_key:
         raise ValueError("logical_source_key is required for raw admission")
+    if grouped:
+        if post_parse or artifact is not None:
+            raise ValueError("grouped admission cannot combine post-parse or artifact resolution")
+        if prior_head is not None:
+            raise ValueError(
+                "grouped admission has no revision chain to compare against: a shared raw's "
+                "identity is its acquisition coordinate, so no prior head applies"
+            )
 
     if post_parse:
         blob_hash = deterministic_blob_hash(payload)
@@ -331,6 +367,24 @@ def admit_raw_observation(
             manage_transaction=manage_transaction,
         )
 
+    if grouped:
+        admitted_raw_id = write_source_raw_session(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=None,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=additional_blob_refs,
+            revision=None,
+            manage_transaction=manage_transaction,
+        )
+        return RawAdmissionResult(arm=RawAdmissionArm.SHARED_GROUPED, raw_id=admitted_raw_id)
+
     if prior_head is None:
         raw_id = write_source_raw_session(
             conn,
@@ -341,6 +395,7 @@ def admit_raw_observation(
             payload=payload,
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
+            raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=additional_blob_refs,
             revision=RawRevisionEnvelope(

@@ -26,7 +26,20 @@ class ArchiveTier(StrEnum):
 # package's __init__) importing anything from archive.py at module scope
 # deadlocks partial initialization. archive.py re-exports both names for
 # existing call sites.
-DelegationMappingState = Literal["resolved", "unresolved", "edge_only", "quarantined"]
+# polylogue-foee: "authority-contradicted" joins the delegation mapping
+# vocabulary because the quarantined_rows CTE previously hardcoded
+# 'quarantined' AS mapping_state while its WHERE clause was widened to
+# the whole exclusion set -- so an edge excluded for a PROVENANCE
+# contradiction was documented to the operator as a structural
+# cycle-break. ``literal_check`` regenerates the DDL CHECK from this
+# Literal, so widening it here is the whole schema change.
+DelegationMappingState = Literal[
+    "resolved",
+    "unresolved",
+    "edge_only",
+    "quarantined",
+    "authority-contradicted",
+]
 DelegationResultStatus = Literal["ok", "error", "unknown"]
 
 # polylogue-h57ic: raw_session_memberships.revision_authority is a genuinely

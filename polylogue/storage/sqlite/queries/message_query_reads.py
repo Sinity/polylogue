@@ -9,6 +9,7 @@ import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.enums import MaterialOrigin
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import (
@@ -48,14 +49,14 @@ async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> t
     inherits a parent's leading prefix (fork / resume / spawned subagent /
     auto-compaction copy), else ``None``. See the lineage model (#2467)."""
     cursor = await conn.execute(
-        """
+        f"""
         SELECT resolved_dst_session_id, branch_point_message_id
         FROM session_links
         WHERE src_session_id = ?
           AND inheritance = 'prefix-sharing'
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
-          AND COALESCE(TRIM(status), '') != 'quarantined'
+          AND {topology_status_composes_sql()}
         LIMIT 1
         """,
         (session_id,),

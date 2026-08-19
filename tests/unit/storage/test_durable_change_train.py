@@ -80,6 +80,11 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 from tests.infra.durable_schema_reset import reset_source_fixture_to_version
 
+#: Tests in this module monkeypatch ``ARCHIVE_DDL_BY_TIER``, so no test here may
+#: inherit or export a tier prototype minted from a synthetic DDL -- see
+#: ``clear_tier_prototypes`` (tests/conftest.py) and polylogue-s5iyt.
+pytestmark = pytest.mark.usefixtures("clear_tier_prototypes")
+
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
 _EMPTY_LIVENESS_DIGEST = hashlib.sha256(b"[]").hexdigest()
@@ -1848,10 +1853,6 @@ def test_adopted_audit_restore_rebinds_continuity_from_verified_backup(workspace
 # additionally load-sensitive. Each fails on exact master as well as this
 # branch -- verified by running them against master in an isolated worktree
 # -- so none is a regression from the work that marked them.
-@pytest.mark.xfail(
-    reason="polylogue-x18ml: the audit leaf requires an audit.db-shm sidecar that SQLite removes on last close, so an interrupted restore has none",
-    strict=False,
-)
 def test_adopted_audit_restore_resumes_an_interrupted_continuity_commit(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

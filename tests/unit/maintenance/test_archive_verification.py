@@ -16,6 +16,10 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from polylogue.archive.topology.edge import (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+)
 from polylogue.core.enums import ArtifactSupportStatus, Origin
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
@@ -999,6 +1003,102 @@ def test_dangling_resolved_dst_trips_lineage_sanity(tmp_path: Path) -> None:
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["dangling_resolved_dst_count"] == 1
     assert check.evidence["dangling_resolved_dst_sample"] == ["codex-session:ghost-session-that-does-not-exist"]
+
+
+def test_contradiction_without_authoritative_winner_trips_the_check(tmp_path: Path) -> None:
+    """A contradicted edge with nothing overruling it is a defect, not a resolution.
+
+    The presence of contradictions is normal and reported as observability --
+    it is what the write path exists to record. What must never happen is an
+    edge marked "overruled by hook evidence" with no authoritative sibling for
+    the same child, because that means inference was demoted by nothing.
+    """
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                status, method, observed_at_ms
+            ) VALUES ('codex-session:session', 'codex-session', 'inferred-parent', 'subagent',
+                      'authority-contradicted', ?, 100)
+            """,
+            (HOOK_CONTRADICTED_LINK_METHOD,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("hook-authority-topology-conflict",))
+    check = _check(report, "hook-authority-topology-conflict")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unresolved_contradiction_count"] == 1
+    assert check.evidence["unresolved_contradiction_sample"] == ["codex-session:session"]
+
+
+def test_two_authoritative_parents_for_one_child_trips_the_check(tmp_path: Path) -> None:
+    """ "Exactly one authoritative parent", not "some winner exists".
+
+    A revised hook claim lands at a DIFFERENT primary key, so a child can
+    accumulate two authoritative edges; composition would then choose between
+    them by arrival order while a some-winner-exists check reported OK. The
+    write path now supersedes the older edge, and this is the gate that
+    catches any archive where that did not happen.
+    """
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executemany(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                status, method, observed_at_ms
+            ) VALUES ('codex-session:session', 'codex-session', ?, 'subagent', NULL, ?, 100)
+            """,
+            [("parent-a", HOOK_AUTHORITATIVE_LINK_METHOD), ("parent-b", HOOK_AUTHORITATIVE_LINK_METHOD)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("hook-authority-topology-conflict",))
+    check = _check(report, "hook-authority-topology-conflict")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["multi_authoritative_count"] == 1
+    assert check.evidence["multi_authoritative_sample"] == ["codex-session:session:subagent=2"]
+
+
+def test_resolved_contradiction_is_reported_without_erroring(tmp_path: Path) -> None:
+    """The resolved shape -- loser plus authoritative winner -- is OK."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executemany(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                status, method, observed_at_ms
+            ) VALUES ('codex-session:session', 'codex-session', ?, 'subagent', ?, ?, 100)
+            """,
+            [
+                ("inferred-parent", "authority-contradicted", HOOK_CONTRADICTED_LINK_METHOD),
+                ("hook-parent", None, HOOK_AUTHORITATIVE_LINK_METHOD),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("hook-authority-topology-conflict",))
+    check = _check(report, "hook-authority-topology-conflict")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["contradicted_count"] == 1
+    assert check.evidence["authoritative_count"] == 1
+    assert check.evidence["unresolved_contradiction_count"] == 0
 
 
 def test_dangling_branch_point_message_trips_lineage_sanity(tmp_path: Path) -> None:

@@ -40,10 +40,33 @@ from polylogue.schemas.synthetic.models import SyntheticArtifactFacts
 from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
 _ARTIFACT_PROTOCOL_VERSION = 2
-_CACHE_ROOT = Path("/realm/tmp/polylogue-seeded-artifacts")
+#: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
+#: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
+_BUILD_LOCK_ATTEMPTS = 3
+_SCRATCH_CACHE_ROOT = Path("/realm/tmp/polylogue-seeded-artifacts")
+_CLOUD_CACHE_ROOT = Path("/tmp/polylogue-seeded-artifacts")
+
+
+def default_cache_root() -> Path:
+    """Where published artifacts live when a caller names no cache root.
+
+    Mirrors :func:`devtools.verify_runs.resolve_pytest_basetemp_root`'s
+    placement family: NVMe scratch when ``/realm/tmp`` is mounted, and the
+    ``/tmp`` fallback only when ``/realm`` is absent entirely (a genuine cloud
+    sandbox). The previous hard-coded ``/realm/tmp`` path made every consumer
+    of this module raise ``OSError`` on a host without ``/realm``, since the
+    ``mkdir(parents=True)`` below cannot create a directory under a
+    nonexistent mount point.
+    """
+    if _SCRATCH_CACHE_ROOT.parent.is_dir():
+        return _SCRATCH_CACHE_ROOT
+    return _CLOUD_CACHE_ROOT
+
+
 _RECIPE_PATHS = (
     Path("polylogue/schemas/synthetic/build_batch.py"),
     Path("polylogue/schemas/synthetic/core.py"),
@@ -57,10 +80,23 @@ _ARCHIVE_DB_NAMES = ("source.db", "index.db", "user.db", "ops.db", "embeddings.d
 
 @dataclass(frozen=True)
 class SeededArchiveKey:
+    """Content identity of a published artifact: what would change its bytes.
+
+    Deliberately does NOT carry the git commit. An artifact is a function of
+    the corpus specification, the generation/ingest recipe, the parser
+    semantics, and the archive DDL -- not of every unrelated commit that
+    happens to be checked out. Keying on ``git rev-parse HEAD`` (as this did
+    until polylogue-1xc.14.1) made the key change on every commit, so the
+    cache degenerated into a per-commit rebuild that still paid the full
+    publish cost while accumulating one immutable multi-MB artifact per
+    commit per workload. The commit is kept on the manifest as provenance,
+    where it answers "which checkout built this" without gating reuse.
+    """
+
     spec_payload: dict[str, object]
-    build_id: str
     recipe_id: str
     source_semantics_id: str
+    archive_schema_id: str
 
     @property
     def value(self) -> str:
@@ -77,6 +113,7 @@ class SeededArchiveManifest:
     build_id: str
     recipe_id: str
     source_semantics_id: str
+    archive_schema_id: str
     facts: tuple[SyntheticArtifactFacts, ...]
     files: tuple[dict[str, object], ...]
     receipt: dict[str, object]
@@ -178,7 +215,31 @@ def _recipe_id() -> str:
     return f"recipe:sha256:{digest.hexdigest()}"
 
 
+def _archive_schema_id() -> str:
+    """Bind cached archives to the archive DDL that shaped them.
+
+    ``_recipe_id`` hashes a fixed six-file list that names ``bootstrap.py``
+    but none of the ``archive_tiers`` DDL modules, so a schema change arriving
+    through ``index.py``/``source.py``/``user.py`` (the normal route) left the
+    key untouched and a stale-schema artifact reusable. Hash the rendered DDL
+    the tiers are actually created from, plus each tier's declared version,
+    rather than the Python module text: the DDL registry changes exactly when
+    the created schema changes, and is immune to comment/docstring edits in
+    the modules that build it.
+    """
+    digest = hashlib.sha256()
+    for tier in sorted(ARCHIVE_DDL_BY_TIER, key=lambda item: item.value):
+        digest.update(tier.value.encode())
+        digest.update(b"\0")
+        digest.update(str(ARCHIVE_VERSION_BY_TIER[tier]).encode())
+        digest.update(b"\0")
+        digest.update(ARCHIVE_DDL_BY_TIER[tier].encode())
+        digest.update(b"\0")
+    return f"archive-schema:sha256:{digest.hexdigest()}"
+
+
 def _build_id() -> str:
+    """Provenance only: which checkout published an artifact, never part of the key."""
     try:
         result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5, check=True)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
@@ -240,9 +301,9 @@ def _profile_id(key: SeededArchiveKey) -> str:
 def seeded_archive_key(specs: Iterable[CorpusSpec]) -> SeededArchiveKey:
     return SeededArchiveKey(
         spec_payload={"corpus_specs": [spec.to_payload() for spec in specs]},
-        build_id=_build_id(),
         recipe_id=_recipe_id(),
         source_semantics_id=_source_semantics_id(),
+        archive_schema_id=_archive_schema_id(),
     )
 
 
@@ -411,6 +472,43 @@ def _read_manifest(path: Path) -> SeededArchiveManifest:
     return SeededArchiveManifest(facts=facts, **payload)
 
 
+_VALIDATED_ARTIFACTS: dict[tuple[str, str], SeededArchiveArtifact] = {}
+
+
+def _artifact_still_placed(artifact: SeededArchiveArtifact) -> bool:
+    """Cheap presence/size check standing in for a full revalidation.
+
+    ``os.stat`` per manifest entry, versus re-SHA256-ing multi-MB databases,
+    running ``PRAGMA quick_check`` on five tiers, and re-querying the planted
+    facts and the raw-authority frontier. It catches the failure a live
+    process can actually cause -- an artifact deleted or truncated out from
+    under it -- while content corruption of an unchanged-size file is left to
+    the full validation every NEW process performs on its first hit.
+    """
+    manifest_path = artifact.root / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    for item in artifact.manifest.files:
+        path = artifact.root / str(item["path"])
+        try:
+            if path.stat().st_size != item["size"]:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _memoized_artifact(memo_key: tuple[str, str]) -> SeededArchiveArtifact | None:
+    """Return this process's already-validated artifact, if it is still placed."""
+    artifact = _VALIDATED_ARTIFACTS.get(memo_key)
+    if artifact is None:
+        return None
+    if not _artifact_still_placed(artifact):
+        _VALIDATED_ARTIFACTS.pop(memo_key, None)
+        return None
+    return artifact
+
+
 def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifact | None:
     manifest_path = root / "manifest.json"
     if not manifest_path.exists():
@@ -450,7 +548,20 @@ def build_seeded_archive(
     if not selected_specs:
         raise ValueError("seeded archive requires at least one named corpus specification")
     key = seeded_archive_key(selected_specs)
-    cache_root = (cache_root or _CACHE_ROOT).expanduser()
+    cache_root = (cache_root or default_cache_root()).expanduser()
+    memo_key = (str(cache_root), key.value)
+    # Validate-once-per-process: after this process has fully validated an
+    # artifact, later hits skip BOTH the per-key flock and the full
+    # revalidation (re-SHA256 of every file, five ``PRAGMA quick_check``
+    # runs, the planted-facts query, and the frontier-convergence read).
+    # That work is per-CACHE-HIT today, so a module whose every test seeds
+    # the same named workload pays it once per test. Memoizing here and not
+    # inside ``_validate_artifact`` is deliberate: the lock acquisition is
+    # itself contended under xdist, and a memo behind the lock would still
+    # serialize every worker's every test on it.
+    memoized = _memoized_artifact(memo_key)
+    if memoized is not None:
+        return memoized
     artifacts = cache_root / "artifacts"
     locks = cache_root / ".locks"
     staging_root = cache_root / ".staging"
@@ -465,87 +576,107 @@ def build_seeded_archive(
         _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
         cached = _validate_artifact(final_root, key)
         if cached is not None:
+            _VALIDATED_ARTIFACTS[memo_key] = cached
             return cached
         if final_root.exists():
             _remove_tree(final_root)
-        staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
-        staging.mkdir()
-        try:
-            corpus_root = staging / "wire"
-            written_batches = tuple(
-                SyntheticCorpus.write_spec_artifacts(spec, corpus_root / spec.provider, prefix=f"seed-{index:02d}")
-                for index, spec in enumerate(selected_specs)
-            )
-            sources = []
-            for spec, written in zip(selected_specs, written_batches, strict=True):
-                if spec.provider == "antigravity":
-                    sources.append(Source(name=spec.provider, path=written.files[0].parent.parent))
-                else:
-                    sources.extend(Source(name=spec.provider, path=path) for path in written.files)
-            with _configured_archive_root(staging):
-                with patch(
-                    "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-                    SyntheticAntigravityLanguageServerClient,
-                ):
-                    asyncio.run(parse_sources_archive(staging, sources))
-            inspect_raw_authority_frontier(
-                Config(
-                    archive_root=staging,
-                    render_root=staging / "render",
-                    sources=[],
-                    db_path=staging / "index.db",
+        for attempt in range(1, _BUILD_LOCK_ATTEMPTS + 1):
+            staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
+            staging.mkdir()
+            try:
+                corpus_root = staging / "wire"
+                written_batches = tuple(
+                    SyntheticCorpus.write_spec_artifacts(spec, corpus_root / spec.provider, prefix=f"seed-{index:02d}")
+                    for index, spec in enumerate(selected_specs)
                 )
-            )
-            facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
-            _sqlite_integrity(staging)
-            _validate_facts(staging, facts)
-            _validate_frontier_convergence(staging)
-            archive_id = f"archive:seeded:{final_root.name}"
-            profile_id = _profile_id(key)
-            receipt = WorkloadReceipt.from_observations(
-                spec=_archive_build_spec(key=key, archive_id=archive_id, profile_id=profile_id),
-                status=WorkloadRunStatus.SUCCEEDED,
-                build_id=key.build_id,
-                runtime_id="synthetic-real-pipeline",
-                archive_id=archive_id,
-                generation_id=key.value,
-                frame_id=None,
-                phases=(
-                    WorkloadPhaseObservation(name="generate"),
-                    WorkloadPhaseObservation(name="acquire"),
-                    WorkloadPhaseObservation(name="parse"),
-                    WorkloadPhaseObservation(name="materialize"),
-                    WorkloadPhaseObservation(name="index"),
-                    WorkloadPhaseObservation(name="raw_authority_frontier"),
-                    WorkloadPhaseObservation(name="validate"),
-                    WorkloadPhaseObservation(name="publish", cleanup_complete=True, quiescent=True),
-                ),
-                cleanup_complete=True,
-            )
-            manifest = SeededArchiveManifest(
-                protocol_version=_ARTIFACT_PROTOCOL_VERSION,
-                key=key.value,
-                archive_id=archive_id,
-                profile_id=profile_id,
-                build_id=key.build_id,
-                recipe_id=key.recipe_id,
-                source_semantics_id=key.source_semantics_id,
-                facts=facts,
-                files=_archive_files(staging),
-                receipt=dict(receipt.to_payload()),
-            )
-            (staging / "manifest.json").write_text(
-                json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            _make_read_only(staging)
-            os.replace(staging, final_root)
-        except Exception:
-            _remove_tree(staging)
-            raise
+                sources = []
+                for spec, written in zip(selected_specs, written_batches, strict=True):
+                    if spec.provider == "antigravity":
+                        sources.append(Source(name=spec.provider, path=written.files[0].parent.parent))
+                    else:
+                        sources.extend(Source(name=spec.provider, path=path) for path in written.files)
+                with _configured_archive_root(staging):
+                    with patch(
+                        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+                        SyntheticAntigravityLanguageServerClient,
+                    ):
+                        asyncio.run(parse_sources_archive(staging, sources))
+                inspect_raw_authority_frontier(
+                    Config(
+                        archive_root=staging,
+                        render_root=staging / "render",
+                        sources=[],
+                        db_path=staging / "index.db",
+                    )
+                )
+                facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
+                _sqlite_integrity(staging)
+                _validate_facts(staging, facts)
+                _validate_frontier_convergence(staging)
+                archive_id = f"archive:seeded:{final_root.name}"
+                profile_id = _profile_id(key)
+                build_id = _build_id()
+                receipt = WorkloadReceipt.from_observations(
+                    spec=_archive_build_spec(key=key, archive_id=archive_id, profile_id=profile_id),
+                    status=WorkloadRunStatus.SUCCEEDED,
+                    build_id=build_id,
+                    runtime_id="synthetic-real-pipeline",
+                    archive_id=archive_id,
+                    generation_id=key.value,
+                    frame_id=None,
+                    phases=(
+                        WorkloadPhaseObservation(name="generate"),
+                        WorkloadPhaseObservation(name="acquire"),
+                        WorkloadPhaseObservation(name="parse"),
+                        WorkloadPhaseObservation(name="materialize"),
+                        WorkloadPhaseObservation(name="index"),
+                        WorkloadPhaseObservation(name="raw_authority_frontier"),
+                        WorkloadPhaseObservation(name="validate"),
+                        WorkloadPhaseObservation(name="publish", cleanup_complete=True, quiescent=True),
+                    ),
+                    cleanup_complete=True,
+                )
+                manifest = SeededArchiveManifest(
+                    protocol_version=_ARTIFACT_PROTOCOL_VERSION,
+                    key=key.value,
+                    archive_id=archive_id,
+                    profile_id=profile_id,
+                    build_id=build_id,
+                    recipe_id=key.recipe_id,
+                    source_semantics_id=key.source_semantics_id,
+                    archive_schema_id=key.archive_schema_id,
+                    facts=facts,
+                    files=_archive_files(staging),
+                    receipt=dict(receipt.to_payload()),
+                )
+                (staging / "manifest.json").write_text(
+                    json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                _make_read_only(staging)
+                os.replace(staging, final_root)
+                break
+            except sqlite3.OperationalError as exc:
+                # Same-process zombie-connection lock (polylogue-lbgc): a
+                # not-yet-finalized cursor from earlier in this worker keeps
+                # SQLite's shared pager-cache entry alive, and SQLITE_LOCKED is
+                # NOT absorbed by the busy-timeout. The module already applies
+                # this exact remedy to the DELETE-journal pragma; the real-ingest
+                # build needs it too, because a cache-invalidating key change
+                # makes many workers rebuild artifacts at once and a setup ERROR
+                # here fails the whole consuming test.
+                _remove_tree(staging)
+                if "locked" not in str(exc).lower() or attempt == _BUILD_LOCK_ATTEMPTS:
+                    raise
+                gc.collect()
+                time.sleep(min(0.25 * attempt, 2.0))
+            except Exception:
+                _remove_tree(staging)
+                raise
         artifact = _validate_artifact(final_root, key)
         if artifact is None:
             raise RuntimeError("published seeded archive failed its own validation")
+        _VALIDATED_ARTIFACTS[memo_key] = artifact
         return artifact
 
 
@@ -591,6 +722,7 @@ __all__ = [
     "build_seeded_archive",
     "c03_semantic_corpus_spec",
     "clone_seeded_archive",
+    "default_cache_root",
     "named_corpus_specs",
     "schema_coverage_corpus_specs",
     "seeded_archive_key",
