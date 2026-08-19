@@ -928,6 +928,22 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # produce trustworthy title_source values.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=68,
+        # polylogue-2tfug: ApplicationDecision gains REPARSE_REAFFIRMATION, and
+        # raw_revision_applications.decision's CHECK is generated from that
+        # enum, so the constraint widens. Purely permissive: every value the
+        # old CHECK admitted the new one still admits, no stored row changes
+        # meaning, and no parser semantics are involved.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v68-reparse-reaffirmation-decision",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "raw_revision_applications"),),
+            ),
+        ),
+    ),
 )
 
 

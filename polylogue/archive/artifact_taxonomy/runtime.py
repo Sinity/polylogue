@@ -389,14 +389,37 @@ def _classify_list(
     # before the generic hook-sidecar exclusion below.
     from polylogue.sources.parsers.hermes_spans import looks_like_atof_payload
 
-    if provider is Provider.HERMES and dict_items and all(looks_like_atof_payload(item) for item in dict_items):
+    if provider is Provider.HERMES:
+        if dict_items and all(looks_like_atof_payload(item) for item in dict_items):
+            return ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.SESSION_RECORD_STREAM,
+                parse_as_session=True,
+                schema_eligible=True,
+                default_priority=110,
+                reason="Hermes NeMo Relay ATOF observer event stream",
+            )
+        # Hermes's other durable source classes (state.db, verification
+        # evidence, ATIF trajectory documents, session snapshots) are all
+        # single JSON *documents*, never a bare JSON array -- so a
+        # list-shaped payload under a Hermes-tagged source that isn't an
+        # ATOF stream has no legitimate Hermes session shape to match.
+        # Falling through to the generic ``looks_like_record_stream``
+        # heuristic below let a skill prompt-prefill template
+        # (``optional-skills/**/templates/*.json``, a bare array of
+        # ``{"role", "content"}`` pairs) get claimed as a Hermes session
+        # purely because that shape also satisfies the generic
+        # role/content-key check -- the Hermes watch source recursively
+        # scans its entire home directory, not just a sessions subtree, so
+        # any non-session JSON array living there reaches this classifier
+        # (polylogue-omsw class; dyica classification 2026-08-19 bucket B6).
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.SESSION_RECORD_STREAM,
-            parse_as_session=True,
-            schema_eligible=True,
-            default_priority=110,
-            reason="Hermes NeMo Relay ATOF observer event stream",
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="Hermes source has no list-shaped session artifact other than an ATOF event stream",
         )
 
     if dict_items and looks_like_hook_event_stream(dict_items):
