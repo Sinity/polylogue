@@ -295,6 +295,47 @@ def test_retry_preserves_the_first_immutable_receipt(monkeypatch: pytest.MonkeyP
     assert json.loads(receipt_path.read_text()) == first
 
 
+def test_interruption_after_export_keeps_the_original_mutation_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An abrupt post-export interruption cannot erase the guarded batch's evidence."""
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / ".beads" / "issues.jsonl"
+    before = {"polylogue-a": {"id": "polylogue-a", "status": "open"}}
+    after = {"polylogue-a": {"id": "polylogue-a", "status": "closed", "close_reason": "marker"}}
+    output.parent.mkdir()
+    output.write_text(json.dumps(before["polylogue-a"]) + "\n")
+    monkeypatch.setattr(
+        carrier_dispositions,
+        "_scope_from_merged_pr",
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+    )
+    monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
+    monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: after)
+    monkeypatch.setattr(
+        carrier_dispositions, "_validate_live_plan", lambda *_args, **_kwargs: ["close polylogue-a marker"]
+    )
+    monkeypatch.setattr(guard, "run_guarded_batch", lambda **_kwargs: (before, after))
+    write_export = guard.atomic_write_jsonl
+
+    def write_then_interrupt(path: Path, rows: dict[str, dict[str, Any]]) -> None:
+        write_export(path, rows)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(guard, "atomic_write_jsonl", write_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        carrier_dispositions.cmd_apply(42, base_export=output, output=output, dry_run=False)
+
+    receipt_path = next((output.parent / "disposition-receipts").glob("*.json"))
+    first = json.loads(receipt_path.read_text())
+    assert first["changed_beads"] == ["polylogue-a"]
+    monkeypatch.setattr(guard, "atomic_write_jsonl", write_export)
+    monkeypatch.setattr(guard, "run_guarded_batch", lambda **_kwargs: (after, after))
+
+    assert carrier_dispositions.cmd_apply(42, base_export=output, output=output, dry_run=False) == 0
+    assert json.loads(receipt_path.read_text()) == first
+
+
 def test_guarded_batch_proves_rollback_when_the_real_batch_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -437,8 +437,8 @@ def _complete_merge_intent(pr: int, head_sha: str) -> None:
         _write_ledger_unlocked(ledger)
 
 
-def _retire_superseded_merge_intent(intent: Mapping[str, Any], *, observed_head_sha: str) -> None:
-    """Durably retire an old failed-attempt intent without applying its carrier."""
+def _retire_superseded_merge_intent(intent: Mapping[str, Any], *, observed_head_sha: str, observed_title: str) -> None:
+    """Ledger an externally observed replacement merge, then retire its old intent."""
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         matching = [
@@ -448,6 +448,11 @@ def _retire_superseded_merge_intent(intent: Mapping[str, Any], *, observed_head_
         ]
         if not matching:
             return
+        if not any(
+            entry.get("pr") == intent.get("pr") and entry.get("head_sha") == observed_head_sha
+            for entry in ledger["merges"]
+        ):
+            _append_merge_entry_unlocked(ledger, int(intent["pr"]), observed_head_sha, observed_title)
         retired = dict(matching[0])
         retired.update(
             {
@@ -475,7 +480,7 @@ def _reconcile_merge_intents(*, skip: set[tuple[int, str]] | None = None) -> Non
                     "view",
                     str(intent["pr"]),
                     "--json",
-                    "state,mergeCommit,headRefOid,baseRefOid,body,isDraft,author,files",
+                    "state,mergeCommit,headRefOid,baseRefOid,title,body,isDraft,author,files",
                 ]
             )
         except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
@@ -486,7 +491,14 @@ def _reconcile_merge_intents(*, skip: set[tuple[int, str]] | None = None) -> Non
         if not isinstance(observed_head_sha, str) or not observed_head_sha:
             raise LedgerStateError(f"merged PR #{intent['pr']} has no observable merged head")
         if observed_head_sha != intent["head_sha"]:
-            _retire_superseded_merge_intent(intent, observed_head_sha=observed_head_sha)
+            observed_title = info.get("title")
+            _retire_superseded_merge_intent(
+                intent,
+                observed_head_sha=observed_head_sha,
+                observed_title=observed_title
+                if isinstance(observed_title, str) and observed_title
+                else str(intent["title"]),
+            )
             continue
         recorded_attestation = intent.get("scope_attestation_digest")
         if recorded_attestation is not None:

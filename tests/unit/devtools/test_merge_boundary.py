@@ -1506,6 +1506,8 @@ def test_recovery_retires_intent_when_pr_merged_from_a_different_head(
     ledger = merge_boundary._read_ledger()
     assert executed == []
     assert ledger["merge_intents"] == []
+    assert ledger["merges"][0]["pr"] == 42
+    assert ledger["merges"][0]["head_sha"] == "new-head"
     assert ledger["retired_merge_intents"][0]["head_sha"] == "old-head"
     assert ledger["retired_merge_intents"][0]["observed_head_sha"] == "new-head"
 

@@ -179,7 +179,13 @@ def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
     with temporary.open("w", encoding="utf-8") as handle:
         handle.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         handle.flush()
+        os.fsync(handle.fileno())
     temporary.replace(path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _assert_scoped_export(
@@ -278,9 +284,9 @@ def cmd_apply(pr: int, *, base_export: Path, output: Path, dry_run: bool) -> int
         changed_after_batch = _changed_ids(before, after)
         if not changed_after_batch.issubset(selected):
             raise DispositionError("guarded batch changed rows outside its typed carrier scope")
-        bd_guard.atomic_write_jsonl(output, after)
         if existing_receipt is None:
             _write_receipt(receipt_path, {**identity, "changed_beads": sorted(changed)})
+        bd_guard.atomic_write_jsonl(output, after)
     except (DispositionError, bd_guard.BatchExecutionError, bd_guard.InvalidJsonlError, OSError, ValueError) as exc:
         print(f"REFUSING carrier dispositions for PR #{pr}: {exc}", file=sys.stderr)
         return 1
