@@ -136,6 +136,50 @@ def test_changed_content_fingerprint_invalidates_the_cache(tmp_path: Path) -> No
     }
 
 
+def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> None:
+    """The cache must follow the persisted byte-proof links used by append verdicts."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        _bind_full(archive, raw_id="baseline", payload=b"one\n", logical_source_key="codex:s1")
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"two\n",
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=1,
+            raw_id="append",
+        )
+        archive.bind_raw_revision(
+            append_id,
+            RawRevisionEnvelope(
+                "codex:s1",
+                RawRevisionKind.APPEND,
+                "revision-append",
+                1,
+                predecessor_source_revision="revision-baseline",
+                append_start_offset=len(b"one\n"),
+                append_end_offset=len(b"one\ntwo\n"),
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+        initial = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
+        archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
+
+        stale = read_cached_raw_authority_verdicts(archive, "codex:s1")
+        promoted = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=2000)
+
+    assert initial == {
+        "baseline": RawAuthorityVerdict.SOLE_COPY,
+        "append": RawAuthorityVerdict.DIVERGED,
+    }
+    assert stale is None
+    assert promoted == {
+        "baseline": RawAuthorityVerdict.SUPERSEDED,
+        "append": RawAuthorityVerdict.VERIFIED,
+    }
+
+
 def test_write_requires_full_cohort_and_replaces_prior_rows(tmp_path: Path) -> None:
     """A rewrite must clear the cohort's whole prior row set, not accumulate."""
     initialize_active_archive_root(tmp_path)
@@ -177,7 +221,7 @@ def test_missing_cohort_returns_no_verdicts_and_no_cache_write(tmp_path: Path) -
     assert rows[0][0] == 0
 
 
-def test_warmup_is_bounded_and_skips_append_cohorts(tmp_path: Path) -> None:
+def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="full-oldest", payload=b"one\n", logical_source_key="codex:full")
@@ -208,19 +252,20 @@ def test_warmup_is_bounded_and_skips_append_cohorts(tmp_path: Path) -> None:
 
         work = find_raw_authority_verdict_cache_work(archive._ensure_source_conn(), max_cohorts=1)
         assert isinstance(work, RawAuthorityVerdictCacheWork)
-        assert work.pending_logical_source_keys == ("codex:full",)
-        assert work.skipped_append_cohorts == 1
+        assert work.pending_logical_source_keys == ("codex:append",)
 
         first = warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=1000)
         assert isinstance(first, RawAuthorityVerdictCacheWarmup)
         assert first.warmed_cohorts == 1
         assert first.pending_cohorts is True
-        assert first.skipped_append_cohorts == 1
 
         second = warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=2000)
         assert second.warmed_cohorts == 1
-        assert second.pending_cohorts is False
-        assert second.skipped_append_cohorts == 1
+        assert second.pending_cohorts is True
+
+        third = warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=3000)
+        assert third.warmed_cohorts == 1
+        assert third.pending_cohorts is False
 
         cached_keys = {
             str(row[0])
@@ -229,12 +274,13 @@ def test_warmup_is_bounded_and_skips_append_cohorts(tmp_path: Path) -> None:
             .fetchall()
         }
         cached_verdicts = {
-            key: read_cached_raw_authority_verdicts(archive, key) for key in ("codex:full", "codex:full-single")
+            key: read_cached_raw_authority_verdicts(archive, key)
+            for key in ("codex:append", "codex:full", "codex:full-single")
         }
-        assert read_cached_raw_authority_verdicts(archive, "codex:append") is None
 
-    assert cached_keys == {"codex:full", "codex:full-single"}
+    assert cached_keys == {"codex:append", "codex:full", "codex:full-single"}
     assert cached_verdicts == {
+        "codex:append": {"append-only": RawAuthorityVerdict.UNCHECKED},
         "codex:full": {
             "full-oldest": RawAuthorityVerdict.SUPERSEDED,
             "full-newest": RawAuthorityVerdict.VERIFIED,

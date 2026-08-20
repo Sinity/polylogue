@@ -43,7 +43,6 @@ class RawAuthorityVerdictCacheWork:
     """Bounded cache-warming work discovered from one source-tier snapshot."""
 
     pending_logical_source_keys: tuple[str, ...]
-    skipped_append_cohorts: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,22 +50,22 @@ class RawAuthorityVerdictCacheWarmup:
     """Outcome of one bounded proactive cache-warming pass."""
 
     warmed_cohorts: int
-    skipped_append_cohorts: int
     pending_cohorts: bool
 
 
 def _current_cohort_rows_from_connection(
     conn: sqlite3.Connection, logical_source_key: str
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str, str]]:
     rows = conn.execute(
         """
-        SELECT raw_id, revision_kind, lower(hex(blob_hash))
+        SELECT raw_id, revision_kind, lower(hex(blob_hash)), revision_authority,
+               COALESCE(predecessor_raw_id, '')
         FROM raw_sessions
         WHERE logical_source_key = ?
         """,
         (logical_source_key,),
     ).fetchall()
-    return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+    return [(str(row[0]), str(row[1]), str(row[2]), str(row[3]), str(row[4])) for row in rows]
 
 
 def _read_cached_raw_authority_verdicts_from_connection(
@@ -94,18 +93,14 @@ def _read_cached_raw_authority_verdicts_from_connection(
 def find_raw_authority_verdict_cache_work(
     conn: sqlite3.Connection, *, max_cohorts: int | None = None
 ) -> RawAuthorityVerdictCacheWork:
-    """Find stale full/unknown cohorts without reading blob payloads.
+    """Find stale cohorts without reading blob payloads.
 
-    Append cohorts are deliberately excluded because the Phase 2 projection
-    has a different proof shape for contiguous append authority. They are
-    counted so the daemon can report that they were intentionally skipped.
-    ``max_cohorts`` bounds returned work, while the skip count still covers
-    the complete source-tier snapshot.
+    ``max_cohorts`` bounds returned work. Append fragments share the same
+    cache now that the projection reads their persisted byte-authority links.
     """
     rows = conn.execute(
         """
-        SELECT logical_source_key,
-               MAX(CASE WHEN revision_kind = 'append' THEN 1 ELSE 0 END) AS has_append
+        SELECT logical_source_key
         FROM raw_sessions
         WHERE logical_source_key IS NOT NULL
           AND logical_source_key != ''
@@ -114,28 +109,24 @@ def find_raw_authority_verdict_cache_work(
         """
     ).fetchall()
     pending: list[str] = []
-    skipped_append_cohorts = 0
-    for logical_source_key, has_append in rows:
+    for (logical_source_key,) in rows:
         key = str(logical_source_key)
-        if bool(has_append):
-            skipped_append_cohorts += 1
-            continue
         if _read_cached_raw_authority_verdicts_from_connection(conn, key) is not None:
             continue
         if max_cohorts is None or len(pending) < max_cohorts:
             pending.append(key)
-    return RawAuthorityVerdictCacheWork(tuple(pending), skipped_append_cohorts)
+    return RawAuthorityVerdictCacheWork(tuple(pending))
 
 
 def _current_cohort_rows(
     store: RawAuthorityVerdictProjectionHost, logical_source_key: str
-) -> list[tuple[str, str, str]]:
-    """Return every ``(raw_id, revision_kind, blob_hash_hex)`` row for a cohort."""
+) -> list[tuple[str, str, str, str, str]]:
+    """Return every verdict-defining raw row for a cohort."""
     return _current_cohort_rows_from_connection(store._ensure_source_conn(), logical_source_key)
 
 
-def _cohort_fingerprint(rows: list[tuple[str, str, str]]) -> bytes:
-    """SHA-256 over the sorted ``(raw_id, revision_kind, blob_hash)`` rows defining a cohort.
+def _cohort_fingerprint(rows: list[tuple[str, str, str, str, str]]) -> bytes:
+    """SHA-256 over every raw fact the projection uses to derive a verdict.
 
     Sorting first makes the fingerprint independent of SQL row order. Each
     field is length-delimited by a trailing NUL/SOH-style separator byte
@@ -144,12 +135,10 @@ def _cohort_fingerprint(rows: list[tuple[str, str, str]]) -> bytes:
     ``revision_kind="bc"``.
     """
     hasher = hashlib.sha256()
-    for raw_id, revision_kind, blob_hash in sorted(rows):
-        hasher.update(raw_id.encode("utf-8"))
-        hasher.update(b"\x00")
-        hasher.update(revision_kind.encode("utf-8"))
-        hasher.update(b"\x00")
-        hasher.update(blob_hash.encode("utf-8"))
+    for row in sorted(rows):
+        for value in row:
+            hasher.update(value.encode("utf-8"))
+            hasher.update(b"\x00")
         hasher.update(b"\x01")
     return hasher.digest()
 
@@ -247,7 +236,6 @@ def warm_raw_authority_verdict_cache(
     remaining = find_raw_authority_verdict_cache_work(conn, max_cohorts=1)
     return RawAuthorityVerdictCacheWarmup(
         warmed_cohorts=len(work.pending_logical_source_keys),
-        skipped_append_cohorts=work.skipped_append_cohorts,
         pending_cohorts=bool(remaining.pending_logical_source_keys),
     )
 

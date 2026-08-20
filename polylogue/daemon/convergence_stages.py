@@ -1041,13 +1041,6 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
     def work() -> RawAuthorityVerdictCacheWork | None:
         return find_raw_authority_verdict_cache_work(db_path.parent)
 
-    def log_skipped_append_cohorts(discovered: RawAuthorityVerdictCacheWork) -> None:
-        if discovered.skipped_append_cohorts:
-            logger.info(
-                "raw_authority_verdict_cache: skipped append cohorts=%d; append authority uses a separate proof",
-                discovered.skipped_append_cohorts,
-            )
-
     def check(_path: Path) -> bool:
         try:
             discovered = work()
@@ -1056,7 +1049,6 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
             return True
         if discovered is None:
             return False
-        log_skipped_append_cohorts(discovered)
         return bool(discovered.pending_logical_source_keys)
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
@@ -1069,7 +1061,6 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
             return set(paths)
         if discovered is None:
             return set()
-        log_skipped_append_cohorts(discovered)
         return set(paths) if discovered.pending_logical_source_keys else set()
 
     def execute(_path: Path) -> StageExecuteReturn:
@@ -1086,16 +1077,15 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
             logger.warning("raw_authority_verdict_cache: bounded warmup failed", exc_info=True)
             return False
         logger.info(
-            "raw_authority_verdict_cache: warmed cohorts=%d skipped_append=%d pending=%s",
+            "raw_authority_verdict_cache: warmed cohorts=%d pending=%s",
             outcome.warmed_cohorts,
-            outcome.skipped_append_cohorts,
             outcome.pending_cohorts,
         )
         return not outcome.pending_cohorts
 
     return ConvergenceStage(
         name="raw_authority_verdict_cache",
-        description="Warm content-keyed raw-authority verdicts for full/unknown cohorts",
+        description="Warm content-keyed raw-authority verdicts for every revision cohort",
         check=check,
         execute=execute,
         check_many=check_many,
