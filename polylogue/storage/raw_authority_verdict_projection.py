@@ -2,20 +2,12 @@
 
 Phase 2 of the raw-authority redesign (polylogue-w6hql). This is a **read-only
 consumer** of the existing revision-authority evidence -- it issues no writes
-to ``raw_sessions`` or any of the fragmented census/blocker/plan tables, and
-reuses the exact same byte-proof machinery (``classify_historical_full_
-revision_streams``) the real classifier (``classify_raw_revision_cohort`` in
-``storage/sqlite/archive_tiers/revision_governance.py``) already uses, so its
-verdicts cannot silently diverge from what governance actually proved.
-
-Scope of this phase: ``revision_kind = 'full'`` cohorts only, matching
-``classify_raw_revision_cohort``'s own current scope. Append-only cohorts
-(``revision_kind = 'append'``) are out of scope for this projection and raise
-``NotImplementedError`` rather than silently returning a wrong verdict --
-their authority is governed by contiguous-append promotion
-(``_promote_contiguous_append_evidence``), a different proof shape that this
-phase does not attempt to collapse (see polylogue-w6hql notes for the
-follow-up this is filed under).
+to ``raw_sessions`` or any of the fragmented census/blocker/plan tables. Full
+snapshots reuse the exact byte-proof machinery (``classify_historical_full_
+revision_streams``) used by the real classifier. Append fragments reuse the
+same persisted byte-proven predecessor links written by contiguous-append
+promotion in that classifier, so verdicts cannot silently diverge from the
+authority that replay already accepts.
 """
 
 from __future__ import annotations
@@ -26,6 +18,7 @@ from typing import BinaryIO, Protocol
 from polylogue.archive.raw_authority_verdict import derive_raw_authority_verdict
 from polylogue.archive.revision_authority import (
     HistoricalRawRevisionStream,
+    RawRevisionAuthority,
     classify_historical_full_revision_streams,
 )
 from polylogue.core.enums import RawAuthorityVerdict
@@ -44,18 +37,22 @@ def project_raw_authority_verdicts(
     store: RawAuthorityVerdictProjectionHost,
     logical_source_key: str,
 ) -> dict[str, RawAuthorityVerdict]:
-    """Return the closed verdict for every ``revision_kind='full'`` raw in a cohort.
+    """Return the closed verdict for every raw in a cohort without writing it.
 
-    Read-only: opens the source connection and blob store for reading only,
-    issues no writes. Raises ``NotImplementedError`` if the cohort contains
-    any ``revision_kind != 'full'`` row (see module docstring).
+    Full snapshots are reclassified from their bytes. Append fragments cannot
+    be compared as complete snapshots, so their verdict comes from the
+    byte-proven predecessor chain the production classifier already persisted:
+    an accepted fragment is VERIFIED at the chain head and SUPERSEDED once a
+    later accepted fragment names it as predecessor. ASSERTED fragments remain
+    UNCHECKED; QUARANTINED fragments are DIVERGED.
     """
     if store._blob_publisher is None:
         raise RuntimeError("raw authority verdict projection requires a readable blob publisher")
     source_conn = store._ensure_source_conn()
     rows = source_conn.execute(
         """
-        SELECT raw_id, lower(hex(blob_hash)) AS blob_hash, blob_size, revision_kind
+        SELECT raw_id, lower(hex(blob_hash)) AS blob_hash, blob_size, revision_kind,
+               revision_authority, predecessor_raw_id
         FROM raw_sessions
         WHERE logical_source_key = ?
         """,
@@ -67,19 +64,15 @@ def project_raw_authority_verdicts(
     # 'unknown' is the pre-governance default (DDL:
     # revision_kind NOT NULL DEFAULT 'unknown') -- identity/kind resolution
     # has not run over this raw yet, so no verdict can be proven.
-    unresolved = [str(row[0]) for row in rows if str(row[3]) == "unknown"]
-    non_full_resolved = [str(row[0]) for row in rows if str(row[3]) not in ("full", "unknown")]
-    if non_full_resolved:
-        raise NotImplementedError(
-            f"raw authority verdict projection is scoped to revision_kind='full' cohorts "
-            f"this phase; logical_source_key={logical_source_key!r} contains non-full raw_ids "
-            f"{non_full_resolved!r} (see polylogue-w6hql)"
-        )
-
-    verdicts: dict[str, RawAuthorityVerdict] = dict.fromkeys(unresolved, RawAuthorityVerdict.UNCHECKED)
+    verdicts: dict[str, RawAuthorityVerdict] = {
+        str(row[0]): RawAuthorityVerdict.UNCHECKED for row in rows if str(row[3]) == "unknown"
+    }
+    byte_proven_successors = {
+        str(row[5]) for row in rows if str(row[4]) == RawRevisionAuthority.BYTE_PROVEN.value and row[5] is not None
+    }
     provable: list[HistoricalRawRevisionStream] = []
     for row in rows:
-        raw_id, blob_hash, blob_size, revision_kind = row
+        raw_id, blob_hash, blob_size, revision_kind, _authority, _predecessor_raw_id = row
         if str(revision_kind) != "full":
             continue
 
@@ -99,6 +92,27 @@ def project_raw_authority_verdicts(
     if provable:
         decisions = classify_historical_full_revision_streams(provable)
         verdicts.update(derive_raw_authority_verdict(decisions))
+    for raw_id, _blob_hash, _blob_size, revision_kind, authority, _predecessor_raw_id in rows:
+        raw_id_text = str(raw_id)
+        kind = str(revision_kind)
+        if kind == "append":
+            if str(authority) == RawRevisionAuthority.BYTE_PROVEN.value:
+                verdicts[raw_id_text] = (
+                    RawAuthorityVerdict.SUPERSEDED
+                    if raw_id_text in byte_proven_successors
+                    else RawAuthorityVerdict.VERIFIED
+                )
+            elif str(authority) == RawRevisionAuthority.QUARANTINED.value:
+                verdicts[raw_id_text] = RawAuthorityVerdict.DIVERGED
+            else:
+                verdicts[raw_id_text] = RawAuthorityVerdict.UNCHECKED
+        elif (
+            kind == "full"
+            and str(authority) == RawRevisionAuthority.BYTE_PROVEN.value
+            and raw_id_text in byte_proven_successors
+            and verdicts.get(raw_id_text) in (RawAuthorityVerdict.SOLE_COPY, RawAuthorityVerdict.VERIFIED)
+        ):
+            verdicts[raw_id_text] = RawAuthorityVerdict.SUPERSEDED
     return verdicts
 
 

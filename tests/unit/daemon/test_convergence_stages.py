@@ -132,9 +132,9 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
         cached_cohorts = {
             str(row[0]) for row in conn.execute("SELECT DISTINCT logical_source_key FROM raw_authority_verdicts")
         }
-    assert len(cached_cohorts) == stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1
-    assert "codex:append" not in cached_cohorts
-    assert "skipped append cohorts=1" in caplog.text
+    assert len(cached_cohorts) == stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 2
+    assert "codex:append" in cached_cohorts
+    assert "raw_authority_verdict_cache: warmed cohorts=" in caplog.text
 
     import polylogue.storage.raw_authority_verdict_cache as cache_module
 

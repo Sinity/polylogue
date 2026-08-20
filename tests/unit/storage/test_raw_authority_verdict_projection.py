@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -37,6 +35,42 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
     archive.bind_raw_revision(
         written_id,
         RawRevisionEnvelope(logical_source_key, RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+    )
+    return written_id
+
+
+def _bind_append(
+    archive: ArchiveStore,
+    *,
+    raw_id: str,
+    payload: bytes,
+    logical_source_key: str,
+    source_revision: str,
+    predecessor_source_revision: str,
+    append_start_offset: int,
+    append_end_offset: int,
+    acquisition_generation: int,
+) -> str:
+    written_id = archive.write_raw_payload(
+        provider=Provider.CODEX,
+        payload=payload,
+        source_path="session.jsonl",
+        source_index=-1,
+        acquired_at_ms=1,
+        raw_id=raw_id,
+    )
+    archive.bind_raw_revision(
+        written_id,
+        RawRevisionEnvelope(
+            logical_source_key,
+            RawRevisionKind.APPEND,
+            source_revision,
+            acquisition_generation,
+            predecessor_source_revision=predecessor_source_revision,
+            append_start_offset=append_start_offset,
+            append_end_offset=append_end_offset,
+            authority=RawRevisionAuthority.QUARANTINED,
+        ),
     )
     return written_id
 
@@ -103,35 +137,43 @@ def test_unresolved_kind_projects_unchecked_alongside_a_proven_sibling(tmp_path:
     }
 
 
-def test_append_kind_in_the_cohort_is_out_of_scope_this_phase(tmp_path: Path) -> None:
-    """Deferred scope (see module docstring): raising loudly beats a silently
-    wrong verdict for a proof shape this phase does not attempt to collapse."""
+def test_live_append_chain_projects_the_same_closed_verdict_vocabulary(tmp_path: Path) -> None:
+    """The production classifier proves an append chain before projection reads it."""
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="baseline", payload=b"one\n", logical_source_key="codex:s1")
-        append_raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=b"suffix",
-            source_path="session.jsonl",
-            source_index=-1,
-            acquired_at_ms=1,
+        _bind_append(
+            archive,
+            raw_id="append-one",
+            payload=b"two\n",
+            logical_source_key="codex:s1",
+            source_revision="revision-append-one",
+            predecessor_source_revision="revision-baseline",
+            append_start_offset=len(b"one\n"),
+            append_end_offset=len(b"one\ntwo\n"),
+            acquisition_generation=1,
         )
-        archive.bind_raw_revision(
-            append_raw_id,
-            RawRevisionEnvelope(
-                "codex:s1",
-                RawRevisionKind.APPEND,
-                "revision-append",
-                0,
-                predecessor_source_revision="revision-baseline",
-                append_start_offset=4,
-                append_end_offset=10,
-                authority=RawRevisionAuthority.QUARANTINED,
-            ),
+        _bind_append(
+            archive,
+            raw_id="append-two",
+            payload=b"three\n",
+            logical_source_key="codex:s1",
+            source_revision="revision-append-two",
+            predecessor_source_revision="revision-append-one",
+            append_start_offset=len(b"one\ntwo\n"),
+            append_end_offset=len(b"one\ntwo\nthree\n"),
+            acquisition_generation=2,
         )
 
-        with pytest.raises(NotImplementedError, match="revision_kind='full'"):
-            project_raw_authority_verdicts(archive, "codex:s1")
+        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
+        verdicts = project_raw_authority_verdicts(archive, "codex:s1")
+
+    assert set(plan.accepted_raw_ids) == {"baseline", "append-one", "append-two"}
+    assert verdicts == {
+        "baseline": RawAuthorityVerdict.SUPERSEDED,
+        "append-one": RawAuthorityVerdict.SUPERSEDED,
+        "append-two": RawAuthorityVerdict.VERIFIED,
+    }
 
 
 def test_missing_cohort_projects_no_verdicts(tmp_path: Path) -> None:
