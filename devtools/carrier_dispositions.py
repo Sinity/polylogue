@@ -187,10 +187,11 @@ def cmd_apply(pr: int, *, base_export: Path, output: Path, dry_run: bool) -> int
         if dry_run:
             print(json.dumps({"pr": pr, "execution_id": execution_id, "operations": operations}, indent=2))
             return 0
-        if operations:
-            before, after = bd_guard.run_guarded_batch(operations, expected_ids=selected, cwd=root)
-        else:
-            before = after = live
+        before, after = bd_guard.run_guarded_batch(
+            expected_ids=selected,
+            prepare=lambda current: _validate_live_plan(scope, current, marker=marker),
+            cwd=root,
+        )
         changed = _changed_ids(base, after)
         unexpected = sorted(changed - selected)
         if unexpected:

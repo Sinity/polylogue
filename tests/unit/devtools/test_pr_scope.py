@@ -1048,6 +1048,59 @@ def test_check_ci_refuses_when_the_expected_head_has_no_open_pr(
     assert "no open PR for test head" in capsys.readouterr().err
 
 
+def test_check_ci_validates_a_fork_head_named_master_before_default_branch_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unbound SHA named master is not a default-branch build without a tip match."""
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_pr_for_head",
+        lambda **_kwargs: (_ for _ in ()).throw(pr_scope.NoOpenPullRequestError("no open PR for fork master head")),
+    )
+    monkeypatch.setattr(pr_scope, "_origin_master_sha", lambda: "b" * 40)
+
+    assert (
+        pr_scope.main(
+            [
+                "check-ci",
+                "--repo",
+                "Sinity/polylogue",
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--allow-default-branch",
+            ]
+        )
+        == 2
+    )
+
+
+def test_check_ci_skips_only_an_unbound_fetched_default_branch_tip(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_pr_for_head",
+        lambda **_kwargs: (_ for _ in ()).throw(pr_scope.NoOpenPullRequestError("no open PR for master tip")),
+    )
+    monkeypatch.setattr(pr_scope, "_origin_master_sha", lambda: HEAD_SHA)
+
+    assert (
+        pr_scope.main(
+            [
+                "check-ci",
+                "--repo",
+                "Sinity/polylogue",
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--allow-default-branch",
+            ]
+        )
+        == 0
+    )
+    assert "confirmed non-PR default-branch build" in capsys.readouterr().out
+
+
 def test_fetch_base_validator_prefers_local_base_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

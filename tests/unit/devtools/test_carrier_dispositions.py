@@ -102,8 +102,8 @@ def test_apply_uses_one_guarded_batch_and_writes_only_typed_rows(
     )
     calls: list[list[str]] = []
 
-    def batch(operations: list[str], **_kwargs: Any) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-        calls.append(operations)
+    def batch(**kwargs: Any) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        calls.append(kwargs["prepare"](before))
         return before, after
 
     monkeypatch.setattr(guard, "run_guarded_batch", batch)
@@ -185,7 +185,11 @@ def test_guarded_batch_proves_rollback_when_the_real_batch_fails(
     )
 
     with pytest.raises(guard.BatchExecutionError, match="rolled back"):
-        guard.run_guarded_batch(["close polylogue-a reason"], expected_ids={"polylogue-a"}, cwd=tmp_path)
+        guard.run_guarded_batch(
+            expected_ids={"polylogue-a"},
+            prepare=lambda _before: ["close polylogue-a reason"],
+            cwd=tmp_path,
+        )
 
 
 class _NullLock:

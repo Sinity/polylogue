@@ -61,6 +61,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -705,9 +706,9 @@ def _bd_import_rows(
 
 
 def run_guarded_batch(
-    operations: list[str],
     *,
     expected_ids: set[str],
+    prepare: Callable[[dict[str, dict[str, Any]]], list[str]],
     cwd: Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Run one real ``bd batch`` while holding the shared worktree lock.
@@ -721,14 +722,17 @@ def run_guarded_batch(
     """
     if not expected_ids:
         raise ValueError("guarded Beads batch requires at least one expected row")
-    if any("\n" in operation or not operation.strip() for operation in operations):
-        raise ValueError("guarded Beads batch operations must be single non-empty lines")
     root = (cwd or Path.cwd()).resolve()
     real_bd = str(_validated_real_bd_path(os.environ.get("POLYLOGUE_BD_REAL", "bd")))
     safe_env = os.environ.copy()
     safe_env["BD_IMPORT_AUTO"] = "false"
     with _acquire_invocation_lock(root):
         before = _export_live_state(bd_command=real_bd, env=safe_env, cwd=root)
+        operations = prepare(before)
+        if any("\n" in operation or not operation.strip() for operation in operations):
+            raise ValueError("guarded Beads batch operations must be single non-empty lines")
+        if not operations:
+            return before, before
         result = subprocess.run(
             [real_bd, "batch", "--json"],
             input="\n".join(operations) + "\n",

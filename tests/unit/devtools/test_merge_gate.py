@@ -53,80 +53,6 @@ def _scope_body(head_sha: str) -> str:
     return pr_scope.render_carrier(carrier)
 
 
-def test_pr4033_pending_review_blocks_even_when_threads_are_empty(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    pr_view = {
-        "headRefOid": "abc123",
-        "baseRefOid": "b" * 40,
-        "headRefName": "feature/x",
-        "state": "OPEN",
-        "mergeStateStatus": "CLEAN",
-        "_no_adversarial_receipt": True,
-    }
-    merge_gate._write_review_receipt(
-        42,
-        {
-            "schema_version": 1,
-            "pr": 42,
-            "head_sha": "abc123",
-            "state": "pending",
-            "reviewer_run_id": "r",
-            "reviewer_model": "m",
-            "registered_at": 1.0,
-        },
-    )
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
-    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
-
-
-def test_absent_adversarial_review_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.chdir(tmp_path)
-    pr_view = {
-        "headRefOid": "abc123",
-        "baseRefOid": "b" * 40,
-        "headRefName": "feature/x",
-        "state": "OPEN",
-        "mergeStateStatus": "CLEAN",
-        "_no_adversarial_receipt": True,
-    }
-    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
-    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
-
-
-def test_review_complete_status_failure_never_seals_a_passed_receipt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A failed GitHub success-status publication must leave no merge authority."""
-    monkeypatch.chdir(tmp_path)
-    pending = {
-        "schema_version": 1,
-        "pr": 42,
-        "head_sha": "abc123",
-        "state": "pending",
-        "reviewer_run_id": "review-run",
-        "reviewer_model": "review-model",
-        "registered_at": 1.0,
-    }
-    merge_gate._write_review_receipt(42, pending)
-    pr_view = _base_pr_view()
-    pr_view["_no_adversarial_receipt"] = True
-    base = cast(Callable[..., MagicMock], _fake_run(pr_view, []))
-
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["gh", "api", "repos/{owner}/{repo}/statuses/abc123"]:
-            return MagicMock(returncode=1, stdout="", stderr="status API unavailable")
-        return base(cmd, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", _run)
-    assert merge_gate.cmd_review_complete(42, run_id="review-run", passed=True, findings_digest="a" * 64) == 1
-    receipt = merge_gate._read_json_object(merge_gate._review_receipt_path(42))
-    assert receipt is not None
-    assert receipt["state"] == "pending"
-    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
-
-
 def _fake_run(
     pr_view: dict[str, object],
     comments: list[dict[str, object]],
@@ -148,25 +74,6 @@ def _fake_run(
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         if cmd[:3] == ["gh", "pr", "view"]:
-            if not pr_view.get("_no_adversarial_receipt"):
-                merge_gate._write_review_receipt(
-                    42,
-                    {
-                        "schema_version": 1,
-                        "pr": 42,
-                        "head_sha": str(pr_view["headRefOid"]),
-                        "state": "passed",
-                        "reviewer_run_id": "fixture-run",
-                        "reviewer_model": "fixture-model",
-                        "registered_at": 0.0,
-                        "completed_at": 1_700_000_000.0,
-                        "findings_digest": "a" * 64,
-                        "status_context": "merge-gate/adversarial-review",
-                        "status_state": "success",
-                        "status_head_sha": str(pr_view["headRefOid"]),
-                        "status_acknowledged_at": 1_700_000_000.0,
-                    },
-                )
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
         if cmd[:3] == ["gh", "api", "graphql"]:
             round_index = min(call_count["round"], len(comment_rounds) - 1)

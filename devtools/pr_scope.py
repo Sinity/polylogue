@@ -679,6 +679,15 @@ def _git_head_sha() -> str:
     return result.stdout.strip()
 
 
+def _origin_master_sha() -> str | None:
+    """Return the fetched default-branch tip used for a CI skip decision."""
+    result = subprocess.run(["git", "rev-parse", "origin/master"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    candidate = result.stdout.strip()
+    return candidate if _GIT_OBJECT_PATTERN.fullmatch(candidate) else None
+
+
 def _beads_snapshot_matches_head(beads_path: Path) -> bool:
     """Return whether ``beads_path`` is exactly the blob committed at HEAD."""
     root_result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
@@ -1041,6 +1050,11 @@ def main(argv: list[str] | None = None) -> int:
     check_ci.add_argument("--repo", required=True, help="GitHub OWNER/REPO from CI metadata")
     check_ci.add_argument("--expected-head-sha", default=os.environ.get("CIRCLE_SHA1"))
     check_ci.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
+    check_ci.add_argument(
+        "--allow-default-branch",
+        action="store_true",
+        help="skip only when the expected SHA is the fetched origin/master tip and has no open PR",
+    )
 
     sync = sub.add_parser("sync", help="report the current mutable attestation for a stable PR carrier")
     sync.add_argument("--pr", type=int, required=True, help="GitHub PR number to inspect")
@@ -1085,6 +1099,9 @@ def main(argv: list[str] | None = None) -> int:
                 expected_head_sha=args.expected_head_sha,
             )
         except NoOpenPullRequestError as exc:
+            if args.allow_default_branch and args.expected_head_sha == _origin_master_sha():
+                print("pr-scope CI skip: confirmed non-PR default-branch build")
+                return 0
             print(f"REFUSING CI pr-scope check: {exc}", file=sys.stderr)
             return 2
         except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:

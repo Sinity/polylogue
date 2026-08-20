@@ -61,19 +61,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
-import hashlib
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,7 +80,6 @@ from devtools.verify_runs import VERIFICATION_INVOCATION_ID_ENV as VERIFICATION_
 from devtools.verify_runs import VERIFICATION_RECEIPT_PATH_ENV as VERIFICATION_RECEIPT_PATH_ENV
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
-_ADVERSARIAL_REVIEW_DIR = _RECEIPT_DIR / "adversarial-review"
 _DEFAULT_MAX_AGE_S = 3600
 _DEFAULT_POLL_ROUNDS = 3
 _DEFAULT_POLL_INTERVAL_S = 20
@@ -118,7 +113,7 @@ def _status_description(verdict: GateVerdict) -> str:
     return joined
 
 
-def _post_commit_status(head_sha: str, *, state: str, description: str, context: str = "merge-gate") -> dict[str, Any]:
+def _post_commit_status(head_sha: str, *, state: str, description: str) -> dict[str, Any]:
     """Post a GitHub commit status for ``head_sha`` under ``context=merge-gate``.
 
     Returns a small result dict (never raises) so a status-posting failure --
@@ -132,7 +127,7 @@ def _post_commit_status(head_sha: str, *, state: str, description: str, context:
             "-f",
             f"state={state}",
             "-f",
-            f"context={context}",
+            "context=merge-gate",
             "-f",
             f"description={description}",
         ],
@@ -201,108 +196,6 @@ class GateVerdict:
 
 def _receipt_path(pr: int) -> Path:
     return _repository_root() / _RECEIPT_DIR / f"pr-{pr}.json"
-
-
-def _review_receipt_path(pr: int) -> Path:
-    return _repository_root() / _ADVERSARIAL_REVIEW_DIR / f"pr-{pr}.json"
-
-
-def _review_lock_path(pr: int) -> Path:
-    return _repository_root() / _ADVERSARIAL_REVIEW_DIR / f"pr-{pr}.lock"
-
-
-def _review_check_path(pr: int) -> Path:
-    return _repository_root() / _ADVERSARIAL_REVIEW_DIR / f"pr-{pr}.check.json"
-
-
-@contextlib.contextmanager
-def adversarial_review_lock(pr: int) -> Iterator[None]:
-    path = _review_lock_path(pr)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _review_digest(receipt: Mapping[str, Any]) -> str:
-    payload = dict(receipt)
-    payload.pop("receipt_digest", None)
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def _write_review_receipt(pr: int, receipt: dict[str, Any]) -> None:
-    receipt["receipt_digest"] = _review_digest(receipt)
-    path = _review_receipt_path(pr)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        os.fchmod(handle.fileno(), 0o600)
-        json.dump(receipt, handle, sort_keys=True)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-
-
-def _write_review_check(pr: int, *, head_sha: str, receipt_digest: str) -> None:
-    path = _review_check_path(pr)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        os.fchmod(handle.fileno(), 0o600)
-        json.dump({"schema_version": 1, "pr": pr, "head_sha": head_sha, "receipt_digest": receipt_digest}, handle)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-
-
-def admitted_adversarial_review_digest(pr: int, head_sha: str) -> str | None:
-    payload = _read_json_object(_review_check_path(pr))
-    digest = payload.get("receipt_digest") if payload is not None else None
-    return (
-        digest
-        if payload is not None
-        and payload.get("pr") == pr
-        and payload.get("head_sha") == head_sha
-        and isinstance(digest, str)
-        else None
-    )
-
-
-def adversarial_review_verdict(
-    pr: int, head_sha: str, *, max_age_s: int = _DEFAULT_MAX_AGE_S
-) -> tuple[bool, str, str | None]:
-    receipt = _read_json_object(_review_receipt_path(pr))
-    if receipt is None:
-        return False, "no exact-head adversarial review receipt", None
-    if receipt.get("receipt_digest") != _review_digest(receipt):
-        return False, "adversarial review receipt integrity digest is invalid", None
-    if receipt.get("pr") != pr or receipt.get("head_sha") != head_sha:
-        return False, "adversarial review receipt is not bound to the current PR head", None
-    if receipt.get("state") != "passed":
-        return False, f"adversarial review is {receipt.get('state')!r}, not passed", None
-    if (
-        receipt.get("status_context") != "merge-gate/adversarial-review"
-        or receipt.get("status_state") != "success"
-        or receipt.get("status_head_sha") != head_sha
-        or not isinstance(receipt.get("status_acknowledged_at"), (int, float))
-    ):
-        return False, "adversarial review success status was not durably acknowledged", None
-    if not isinstance(receipt.get("reviewer_run_id"), str) or not isinstance(receipt.get("reviewer_model"), str):
-        return False, "adversarial review receipt lacks reviewer run/model identity", None
-    digest = receipt.get("findings_digest")
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        return False, "adversarial review receipt lacks a SHA-256 findings digest", None
-    completed_at = receipt.get("completed_at")
-    if not isinstance(completed_at, (int, float)) or time.time() - completed_at > max_age_s:
-        return False, "adversarial review receipt is stale", None
-    return True, "", str(receipt["receipt_digest"])
-
-
-def _post_adversarial_status(head_sha: str, state: str, description: str) -> dict[str, Any]:
-    return _post_commit_status(head_sha, state=state, description=description, context="merge-gate/adversarial-review")
 
 
 def _invocation_receipt(
@@ -585,96 +478,6 @@ def _poll_stable_review_state(pr: int, *, rounds: int, interval_s: int) -> dict[
     return last
 
 
-def _open_pr_head(pr: int) -> str:
-    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,state"])
-    head_sha = info.get("headRefOid")
-    if info.get("state") != "OPEN" or not isinstance(head_sha, str) or not head_sha:
-        raise RuntimeError(f"PR #{pr} is not open with an observable head")
-    return head_sha
-
-
-def cmd_review_start(pr: int, *, run_id: str, model: str) -> int:
-    if not run_id or not model:
-        return 2
-    try:
-        with adversarial_review_lock(pr):
-            head_sha = _open_pr_head(pr)
-            receipt = {
-                "schema_version": 1,
-                "pr": pr,
-                "head_sha": head_sha,
-                "state": "pending",
-                "reviewer_run_id": run_id,
-                "reviewer_model": model,
-                "registered_at": time.time(),
-            }
-            _write_review_receipt(pr, receipt)
-            status = _post_adversarial_status(head_sha, "pending", "exact-head adversarial review pending")
-            _post_commit_status(head_sha, state="pending", description="adversarial review pending")
-            return 0 if status.get("posted") else 1
-    except (RuntimeError, OSError, json.JSONDecodeError):
-        return 1
-
-
-def cmd_review_complete(pr: int, *, run_id: str, passed: bool, findings_digest: str) -> int:
-    if not re.fullmatch(r"[0-9a-f]{64}", findings_digest):
-        return 2
-    try:
-        with adversarial_review_lock(pr):
-            head_sha = _open_pr_head(pr)
-            receipt = _read_json_object(_review_receipt_path(pr))
-            if (
-                receipt is None
-                or receipt.get("state") != "pending"
-                or receipt.get("reviewer_run_id") != run_id
-                or receipt.get("head_sha") != head_sha
-            ):
-                return 1
-            status = _post_adversarial_status(
-                head_sha,
-                "success" if passed else "failure",
-                "adversarial review passed" if passed else "adversarial review failed",
-            )
-            if not status.get("posted"):
-                # A passed receipt is merge authority. Do not seal it until
-                # GitHub has acknowledged the corresponding exact-head status.
-                return 1
-            receipt.update(
-                {
-                    "state": "passed" if passed else "failed",
-                    "completed_at": time.time(),
-                    "findings_digest": findings_digest,
-                    "status_context": "merge-gate/adversarial-review",
-                    "status_state": "success" if passed else "failure",
-                    "status_head_sha": head_sha,
-                    "status_acknowledged_at": time.time(),
-                }
-            )
-            _write_review_receipt(pr, receipt)
-            return 0
-    except (RuntimeError, OSError, json.JSONDecodeError):
-        return 1
-
-
-def cmd_review_recover(pr: int, *, run_id: str, reason: str) -> int:
-    digest = hashlib.sha256(f"recovery:{pr}:{run_id}:{reason}".encode()).hexdigest()
-    return cmd_review_complete(pr, run_id=run_id, passed=False, findings_digest=digest)
-
-
-def cmd_review_status(pr: int, *, as_json: bool) -> int:
-    try:
-        head_sha = _open_pr_head(pr)
-        ok, reason, digest = adversarial_review_verdict(pr, head_sha)
-    except (RuntimeError, OSError, json.JSONDecodeError) as exc:
-        ok, reason, digest = False, str(exc), None
-        head_sha = ""
-    payload = {"pr": pr, "head_sha": head_sha, "ok": ok, "reason": reason, "receipt_digest": digest}
-    print(
-        json.dumps(payload, sort_keys=True) if as_json else f"PR #{pr} review: {'passed' if ok else 'BLOCK'} {reason}"
-    )
-    return 0 if ok else 1
-
-
 def cmd_check(
     pr: int,
     *,
@@ -734,13 +537,6 @@ def cmd_check(
             )
         _emit(verdict, as_json)
         return 1
-
-    review_ok, review_reason, review_digest = adversarial_review_verdict(pr, head_sha, max_age_s=max_age_s)
-    if not review_ok:
-        verdict.ok = False
-        verdict.reasons.append(review_reason)
-    else:
-        verdict.receipt = {**(verdict.receipt or {}), "adversarial_review_digest": review_digest}
 
     mss = info.get("mergeStateStatus", "")
     if mss not in {"CLEAN", "UNSTABLE", "UNKNOWN"}:
@@ -836,23 +632,6 @@ def cmd_check(
             verdict.ok = False
             verdict.reasons.append("GitHub reviewDecision is CHANGES_REQUESTED")
 
-    if review_digest is not None:
-        final_review_ok, final_review_reason, final_review_digest = adversarial_review_verdict(
-            pr, head_sha, max_age_s=max_age_s
-        )
-        if not final_review_ok or final_review_digest != review_digest:
-            verdict.ok = False
-            verdict.reasons.append(final_review_reason or "adversarial review authority changed while polling")
-
-    if verdict.ok and review_digest is not None:
-        with adversarial_review_lock(pr):
-            review_ok, review_reason, final_digest = adversarial_review_verdict(pr, head_sha, max_age_s=max_age_s)
-            if not review_ok or final_digest != review_digest:
-                verdict.ok = False
-                verdict.reasons.append(review_reason or "adversarial review authority changed before admission")
-            else:
-                _write_review_check(pr, head_sha=head_sha, receipt_digest=review_digest)
-
     if post_status:
         verdict.status_post = _post_commit_status(
             head_sha,
@@ -911,37 +690,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    review_start_p = sub.add_parser("review-start", help="Register a pending exact-head adversarial review")
-    review_start_p.add_argument("pr", type=int)
-    review_start_p.add_argument("--run-id", required=True)
-    review_start_p.add_argument("--model", required=True)
-    review_complete_p = sub.add_parser("review-complete", help="Seal the registered adversarial review result")
-    review_complete_p.add_argument("pr", type=int)
-    review_complete_p.add_argument("--run-id", required=True)
-    review_complete_p.add_argument("--findings-digest", required=True)
-    review_complete_p.add_argument("--passed", action="store_true")
-    review_recover_p = sub.add_parser("review-recover", help="Fail a crashed pending adversarial review")
-    review_recover_p.add_argument("pr", type=int)
-    review_recover_p.add_argument("--run-id", required=True)
-    review_recover_p.add_argument("--reason", required=True)
-    review_status_p = sub.add_parser("review-status", help="Read the exact-head adversarial review lifecycle state")
-    review_status_p.add_argument("pr", type=int)
-    review_status_p.add_argument("--json", action="store_true", dest="as_json")
-
     args = parser.parse_args(argv)
 
     if args.action == "record":
         return cmd_record(args.pr, args.command)
-    if args.action == "review-start":
-        return cmd_review_start(args.pr, run_id=args.run_id, model=args.model)
-    if args.action == "review-complete":
-        return cmd_review_complete(
-            args.pr, run_id=args.run_id, passed=args.passed, findings_digest=args.findings_digest
-        )
-    if args.action == "review-recover":
-        return cmd_review_recover(args.pr, run_id=args.run_id, reason=args.reason)
-    if args.action == "review-status":
-        return cmd_review_status(args.pr, as_json=args.as_json)
     return cmd_check(
         args.pr,
         max_age_s=args.max_age_s,
