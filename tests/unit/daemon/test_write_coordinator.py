@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon.write_coordinator import (
+    _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
+    _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH,
+    _MAX_DETACHED_WRITER_FAILURE_ACTORS,
     DaemonWriteCoordinator,
     DaemonWriteEvent,
     DaemonWriteThreadBridge,
@@ -604,6 +607,73 @@ async def test_sync_writer_failure_propagates_and_releases_gate() -> None:
 
     assert coordinator.snapshot().active_actor is None
     assert await coordinator.run("successor", _return_ready) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_sync_writer_scheduler_failure_reaches_awaited_run_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An open-loop scheduling failure must not strand ``run_sync``."""
+    coordinator = DaemonWriteCoordinator()
+    loop = asyncio.get_running_loop()
+
+    def reject_schedule(*_args: object) -> None:
+        raise RuntimeError("injected scheduler failure")
+
+    monkeypatch.setattr(loop, "call_soon_threadsafe", reject_schedule)
+
+    with pytest.raises(RuntimeError, match="injected scheduler failure"):
+        await asyncio.wait_for(coordinator.run_sync("scheduler-failure", lambda: "done"), timeout=0.2)
+
+    assert coordinator.snapshot().active_actor is None
+    assert await coordinator.run("successor", _return_ready) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_overflow() -> None:
+    coordinator = DaemonWriteCoordinator()
+
+    async def boom() -> None:
+        raise RuntimeError("writer blew up")
+
+    for index in range(_MAX_DETACHED_WRITER_FAILURE_ACTORS + 4):
+        with pytest.raises(RuntimeError, match="writer blew up"):
+            await coordinator.run(f"caller-{index}", boom)
+        await asyncio.sleep(0)
+
+    long_actor = "x" * (_MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH + 1)
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run(long_actor, boom)
+    await asyncio.sleep(0)
+
+    attribution = dict(coordinator.snapshot().detached_writer_failures_by_actor)
+    assert len(attribution) == _MAX_DETACHED_WRITER_FAILURE_ACTORS
+    assert attribution["caller-0"] == 1
+    assert attribution["caller-30"] == 1
+    assert "caller-31" not in attribution
+    assert attribution[_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR] == 6
+
+
+@pytest.mark.asyncio
+async def test_daemon_write_telemetry_payload_isolated_from_nested_map_mutation() -> None:
+    coordinator = DaemonWriteCoordinator()
+
+    async def boom() -> None:
+        raise RuntimeError("writer blew up")
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("stable-actor", boom)
+    await asyncio.sleep(0)
+
+    payload = daemon_write_telemetry_payload()
+    actor_failures = payload["detached_writer_failures_by_actor"]
+    assert isinstance(actor_failures, dict)
+    actor_failures["forged-actor"] = 99
+
+    refreshed = daemon_write_telemetry_payload()
+    refreshed_failures = refreshed["detached_writer_failures_by_actor"]
+    assert isinstance(refreshed_failures, dict)
+    assert refreshed_failures == {"stable-actor": 1}
 
 
 def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed() -> None:

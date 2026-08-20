@@ -17,6 +17,7 @@ import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import CancelledError
+from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal, ParamSpec, TypeVar
@@ -43,6 +44,10 @@ WriteOutcome = Literal["success", "error", "cancelled"]
 # already-queued ingest hold" instead of "current hold + unbounded backlog".
 _BULK_INGEST_PRIORITY = 1
 _DEFAULT_PRIORITY = 0
+_MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
+_MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
+_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
+_THREAD_RESULT_POLL_SECONDS = 0.01
 
 
 def _actor_priority(actor: str) -> int:
@@ -360,7 +365,21 @@ class DaemonWriteCoordinator:
 
         def record_failure() -> None:
             self._detached_writer_failures += 1
-            self._detached_writer_failures_by_actor[actor] = self._detached_writer_failures_by_actor.get(actor, 0) + 1
+            actor_label = actor.strip()
+            if (
+                not actor_label
+                or len(actor_label) > _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH
+                or any(ord(character) < 0x20 for character in actor_label)
+            ):
+                actor_label = _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR
+            if (
+                actor_label not in self._detached_writer_failures_by_actor
+                and len(self._detached_writer_failures_by_actor) >= _MAX_DETACHED_WRITER_FAILURE_ACTORS - 1
+            ):
+                actor_label = _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR
+            self._detached_writer_failures_by_actor[actor_label] = (
+                self._detached_writer_failures_by_actor.get(actor_label, 0) + 1
+            )
             self._publish_telemetry()
 
         def completed(done: asyncio.Task[object]) -> None:
@@ -437,6 +456,7 @@ async def _run_in_daemon_thread(
     """Await one context-preserving worker that cannot pin interpreter exit."""
     loop = asyncio.get_running_loop()
     result: asyncio.Future[T] = loop.create_future()
+    scheduling_failure: ConcurrentFuture[None] = ConcurrentFuture()
     context = contextvars.copy_context()
 
     def publish(value: T | None = None, error: BaseException | None = None) -> None:
@@ -453,7 +473,8 @@ async def _run_in_daemon_thread(
 
             A closed loop cannot receive the worker's result. Only that
             termination state is tolerated; an unexpected RuntimeError from
-            scheduling is re-raised so it cannot masquerade as a stuck write.
+            scheduling is delivered to the awaiting coroutine so it cannot
+            masquerade as a stuck write.
             """
             if loop.is_closed():
                 logger.warning(
@@ -467,7 +488,8 @@ async def _run_in_daemon_thread(
                 loop.call_soon_threadsafe(publish, value, error)
             except RuntimeError as exc:
                 if not loop.is_closed():
-                    raise
+                    scheduling_failure.set_exception(exc)
+                    return
                 logger.warning(
                     "daemon writer thread %s finished while its event loop closed; "
                     "the awaiting result future was abandoned",
@@ -483,7 +505,11 @@ async def _run_in_daemon_thread(
             schedule_publish(value=value)
 
     threading.Thread(target=worker, name=thread_name, daemon=True).start()
-    return await result
+    while not result.done():
+        if scheduling_failure.done():
+            scheduling_failure.result()
+        await asyncio.sleep(_THREAD_RESULT_POLL_SECONDS)
+    return result.result()
 
 
 class DaemonWriteThreadBridge:
@@ -589,6 +615,9 @@ def daemon_write_telemetry_payload() -> dict[str, object]:
         event = payload.get("last_event")
         if isinstance(event, dict):
             payload["last_event"] = dict(event)
+        actor_failures = payload.get("detached_writer_failures_by_actor")
+        if isinstance(actor_failures, dict):
+            payload["detached_writer_failures_by_actor"] = dict(actor_failures)
         return payload
 
 
