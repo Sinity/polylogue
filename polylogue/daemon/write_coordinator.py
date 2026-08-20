@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import contextvars
 import heapq
+import os
 import threading
 import time
 import weakref
@@ -48,7 +49,6 @@ _MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
 _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
 _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
 _DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX = "<other>"
-_THREAD_RESULT_POLL_SECONDS = 0.01
 
 
 def _actor_priority(actor: str) -> int:
@@ -461,6 +461,16 @@ async def _run_in_daemon_thread(
     loop = asyncio.get_running_loop()
     result: asyncio.Future[T] = loop.create_future()
     scheduling_failure: ConcurrentFuture[None] = ConcurrentFuture()
+    scheduler_failure_read_fd, scheduler_failure_write_fd = os.pipe()
+    scheduler_failure_wakeup: asyncio.Future[None] = loop.create_future()
+
+    def wake_scheduler_failure() -> None:
+        with contextlib.suppress(OSError):
+            os.read(scheduler_failure_read_fd, 1)
+        if not scheduler_failure_wakeup.done():
+            scheduler_failure_wakeup.set_result(None)
+
+    loop.add_reader(scheduler_failure_read_fd, wake_scheduler_failure)
     context = contextvars.copy_context()
 
     def publish(value: T | None = None, error: BaseException | None = None) -> None:
@@ -493,6 +503,8 @@ async def _run_in_daemon_thread(
             except RuntimeError as exc:
                 if not loop.is_closed():
                     scheduling_failure.set_exception(exc)
+                    with contextlib.suppress(OSError):
+                        os.write(scheduler_failure_write_fd, b"\0")
                     return
                 logger.warning(
                     "daemon writer thread %s finished while its event loop closed; "
@@ -509,11 +521,24 @@ async def _run_in_daemon_thread(
             schedule_publish(value=value)
 
     threading.Thread(target=worker, name=thread_name, daemon=True).start()
-    while not result.done():
-        if scheduling_failure.done():
+    try:
+        done, _ = await asyncio.wait(
+            (result, scheduler_failure_wakeup),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if scheduler_failure_wakeup in done:
             scheduling_failure.result()
-        await asyncio.sleep(_THREAD_RESULT_POLL_SECONDS)
-    return result.result()
+        return result.result()
+    finally:
+        loop.remove_reader(scheduler_failure_read_fd)
+        with contextlib.suppress(OSError):
+            os.close(scheduler_failure_read_fd)
+        with contextlib.suppress(OSError):
+            os.close(scheduler_failure_write_fd)
+        if not result.done():
+            result.cancel()
+        if not scheduler_failure_wakeup.done():
+            scheduler_failure_wakeup.cancel()
 
 
 class DaemonWriteThreadBridge:

@@ -610,6 +610,36 @@ async def test_sync_writer_failure_propagates_and_releases_gate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sync_writer_immediate_result_does_not_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A completed thread result wakes the loop without a timed poll."""
+    coordinator = DaemonWriteCoordinator()
+    started = threading.Event()
+    release = threading.Event()
+    poll_delays: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def track_sleep(delay: float) -> None:
+        if delay:
+            poll_delays.append(delay)
+        await original_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", track_sleep)
+
+    def writer() -> str:
+        started.set()
+        assert release.wait(1.0)
+        return "ready"
+
+    task = asyncio.create_task(coordinator.run_sync("immediate", writer))
+    while not started.is_set():
+        await original_sleep(0)
+    release.set()
+
+    assert await task == "ready"
+    assert poll_delays == []
+
+
+@pytest.mark.asyncio
 async def test_sync_writer_scheduler_failure_reaches_awaited_run_sync(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
