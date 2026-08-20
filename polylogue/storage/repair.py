@@ -87,6 +87,7 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ReconstructedRawRow,
     insert_reconstructed_raw_row,
+    is_blob_hash_excised,
 )
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
@@ -246,6 +247,7 @@ class BrowserCaptureOriginRepairItem:
     legacy_null_native_id: bool = False
     parser_derived_native_id: str | None = None
     byte_proven_null_native_id_rekey: bool = False
+    terminally_ineligible: bool = False
     evidence_digest: str | None = None
     proof_digest: str | None = None
     repaired: bool = False
@@ -1275,8 +1277,18 @@ def inspect_quarantined_accepted_raws(
         return tuple(results)
 
 
-def _browser_origin_ineligible(raw_id: str, reason: str) -> BrowserCaptureOriginRepairItem:
-    return BrowserCaptureOriginRepairItem(raw_id=raw_id, status="ineligible", reason=reason)
+def _browser_origin_ineligible(
+    raw_id: str,
+    reason: str,
+    *,
+    terminally_ineligible: bool = False,
+) -> BrowserCaptureOriginRepairItem:
+    return BrowserCaptureOriginRepairItem(
+        raw_id=raw_id,
+        status="ineligible",
+        reason=reason,
+        terminally_ineligible=terminally_ineligible,
+    )
 
 
 def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[str, object]:
@@ -1285,7 +1297,14 @@ def _browser_origin_item_payload(item: BrowserCaptureOriginRepairItem) -> dict[s
     # after the source row is staged but before the index CAS completes.  It
     # therefore cannot be part of the immutable strategy identity.  The
     # actual copy/raw footprint and terminal byte witness remain bound.
-    excluded = {"status", "reason", "proof_digest", "repaired", "copy_forward_source_complete"}
+    excluded = {
+        "status",
+        "reason",
+        "proof_digest",
+        "repaired",
+        "copy_forward_source_complete",
+        "terminally_ineligible",
+    }
     payload = {key: value for key, value in dataclasses.asdict(item).items() if key not in excluded}
     return cast(dict[str, object], json.loads(json.dumps(payload, sort_keys=True, separators=(",", ":"))))
 
@@ -2046,6 +2065,12 @@ def _inspect_browser_capture_origin_mismatch(
     ):
         return _browser_origin_ineligible(raw_id, "source raw is not the exact quarantined full mismatch shape")
     blob_hash = _bytes_value(raw["blob_hash"])
+    if is_blob_hash_excised(conn, blob_hash, schema="source"):
+        return _browser_origin_ineligible(
+            raw_id,
+            "retained browser capture blob hash is durably excised; copy-forward is terminally ineligible",
+            terminally_ineligible=True,
+        )
     blob_size = int(raw["blob_size"])
     if len(blob_hash) != 32 or blob_size < 1 or blob_size > _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES:
         return _browser_origin_ineligible(raw_id, "retained browser capture exceeds the bounded proof shape")
