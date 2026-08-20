@@ -825,6 +825,7 @@ def _strategy_overrides(
                         {
                             "schema": "polylogue.raw-authority-strategy-witness.v1",
                             "kind": "browser_origin_terminal_ineligible",
+                            "raw_id": browser_item.raw_id,
                             "reason": browser_item.reason,
                         }
                     ),
@@ -1202,6 +1203,7 @@ def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
     witness = json_document(
         {
             "schema": "polylogue.raw-authority-frontier-plan.v1",
+            "raw_id": item.raw_id,
             "state": item.state.value,
             "actuator": item.actuator.value,
             "reason": item.reason,
@@ -1398,9 +1400,15 @@ def _terminalized_preview_items(
             if (
                 witness.get("state") != RawAuthorityFrontierState.SAFELY_REKEYABLE.value
                 or witness.get("actuator") != RawAuthorityActuator.COPY_FORWARD_ORIGIN.value
+                or not isinstance(witness.get("raw_id"), str)
             ):
                 continue
-            candidates = tuple(item for item in current_terminal if set(item.input_raw_ids).intersection(input_raw_ids))
+            primary_raw_id = str(witness["raw_id"])
+            candidates = tuple(
+                item
+                for item in current_terminal
+                if item.raw_id == primary_raw_id and item.strategy_witness.get("raw_id") == primary_raw_id
+            )
             if len(candidates) != 1:
                 continue
             current = candidates[0]

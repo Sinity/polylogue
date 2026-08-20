@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
+import polylogue.storage.raw_reconciler as raw_reconciler
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import AssertionStatus, Provider
@@ -695,6 +698,30 @@ def test_excised_duplicate_browser_hash_is_not_retryable_when_marked_after_previ
     assert terminal_item.actuator is RawAuthorityActuator.NONE
     assert terminal_item.executable is False
     assert "durably excised" in terminal_item.reason
+
+
+def test_terminal_race_does_not_rebind_when_only_auxiliary_input_is_terminal(tmp_path: Path) -> None:
+    raw_id, _duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == raw_id)
+    auxiliary_raw_id = next(raw_id_value for raw_id_value in selected.input_raw_ids if raw_id_value != raw_id)
+
+    _mark_blob_excised(tmp_path, blob_hash)
+    current_terminal = next(
+        item for item in inspect_raw_authority_frontier(_config(tmp_path)).items if item.raw_id == raw_id
+    )
+    auxiliary_terminal = dataclasses.replace(current_terminal, raw_id=auxiliary_raw_id)
+    with patch.object(
+        raw_reconciler,
+        "_frontier_items",
+        return_value=((auxiliary_terminal,), 1, 0),
+    ):
+        with pytest.raises(RuntimeError, match="selected raw authority plans changed after preview"):
+            apply_raw_authority_frontier(
+                _config(tmp_path),
+                preview_census_id=preview.census_id,
+                selected_plan_ids=(selected.plan_id,),
+            )
 
 
 def test_unified_frontier_strategy_uses_the_selected_active_generation(tmp_path: Path) -> None:
