@@ -1,4 +1,4 @@
-# MCP Surface Report — 2026-08-19
+# MCP Surface Report — 2026-08-20
 
 Closure evidence for `polylogue-t46.8` (verb-algebra epic) and its children
 `polylogue-t46.8.2` (read migration) and `polylogue-t46.8.3` (privileged
@@ -233,6 +233,37 @@ freshly-provisioned worktree off `origin/master`:
 No suite was red; nothing here required classifying pre-existing versus
 revealing failures.
 
+## 6.1 AC#6 and AC#7 residual evidence (2026-08-20)
+
+The residual proof runs the real consolidated read surface, rather than a
+mocked dispatcher or a direct storage helper. `tests/unit/mcp/test_migration_load_evidence.py`
+builds a real server, installs real `RuntimeServices`, writes distinct sessions
+through `ArchiveStore`, and calls all six base read tools (`query`, `read`,
+`get`, `explain`, `context`, `status`).
+
+For AC#6, the canonical `query` route is run with the real
+`QueryTransaction.run` disabled. The route must return the typed internal-error
+envelope, proving that a successful response cannot come from a bypassing MCP
+adapter. The existing migration harnesses remain part of the evidence set:
+`tests/unit/archive/query/test_read_surface_control.py` rejects uncontrolled
+archive opens, while `tests/unit/archive/query/test_transaction.py` protects
+request identity, continuation framing, archive epochs, and cursor rejection.
+
+For AC#7, 32 request identities are driven from 16 OS worker threads, with 192
+registered MCP calls across the six-tool surface. Each response is checked for
+its own identity and for absence of every other request identity. The test also
+observes the production admission controller, requires concurrent admission
+without exceeding its declared capacity, verifies zero in-flight weight, checks
+that no archive file descriptors remain open, rejects unexpected new temporary
+artifacts, and runs SQLite `quick_check` on every archive database after the
+load.
+
+This is application-level concurrency and cleanup evidence. It does not claim
+a host-wide RSS/PSS/swap benchmark across machines; those measurements remain
+environment-dependent and are not fabricated from a unit-test result.
+
+The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **40 passed, 0 failed**. The new evidence module contributed **2 passed** tests.
+
 ## 7. Bottom line
 
 The 103-tool-to-10-verb collapse is complete, single-sourced through
@@ -242,4 +273,6 @@ The two named remaining debts (`maintenance()` executor routing;
 owned by other beads (`kwsb.2`/`t46.9`) rather than blocking this epic's
 closure. AC#4 was asking a question the current repo state cannot literally
 answer and is restated above rather than left as a permanently-open
-impossible criterion.
+impossible criterion. The `maintenance()` debt remains deferred to
+`kwsb.2`/`t46.9` and is not changed or implied to be covered by the AC#6/AC#7
+evidence in this lane.
