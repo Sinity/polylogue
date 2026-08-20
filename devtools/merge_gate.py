@@ -211,6 +211,10 @@ def _review_lock_path(pr: int) -> Path:
     return _repository_root() / _ADVERSARIAL_REVIEW_DIR / f"pr-{pr}.lock"
 
 
+def _review_check_path(pr: int) -> Path:
+    return _repository_root() / _ADVERSARIAL_REVIEW_DIR / f"pr-{pr}.check.json"
+
+
 @contextlib.contextmanager
 def adversarial_review_lock(pr: int) -> Iterator[None]:
     path = _review_lock_path(pr)
@@ -240,6 +244,31 @@ def _write_review_receipt(pr: int, receipt: dict[str, Any]) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def _write_review_check(pr: int, *, head_sha: str, receipt_digest: str) -> None:
+    path = _review_check_path(pr)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        json.dump({"schema_version": 1, "pr": pr, "head_sha": head_sha, "receipt_digest": receipt_digest}, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def admitted_adversarial_review_digest(pr: int, head_sha: str) -> str | None:
+    payload = _read_json_object(_review_check_path(pr))
+    digest = payload.get("receipt_digest") if payload is not None else None
+    return (
+        digest
+        if payload is not None
+        and payload.get("pr") == pr
+        and payload.get("head_sha") == head_sha
+        and isinstance(digest, str)
+        else None
+    )
 
 
 def adversarial_review_verdict(
@@ -617,6 +646,20 @@ def cmd_review_recover(pr: int, *, run_id: str, reason: str) -> int:
     return cmd_review_complete(pr, run_id=run_id, passed=False, findings_digest=digest)
 
 
+def cmd_review_status(pr: int, *, as_json: bool) -> int:
+    try:
+        head_sha = _open_pr_head(pr)
+        ok, reason, digest = adversarial_review_verdict(pr, head_sha)
+    except (RuntimeError, OSError, json.JSONDecodeError) as exc:
+        ok, reason, digest = False, str(exc), None
+        head_sha = ""
+    payload = {"pr": pr, "head_sha": head_sha, "ok": ok, "reason": reason, "receipt_digest": digest}
+    print(
+        json.dumps(payload, sort_keys=True) if as_json else f"PR #{pr} review: {'passed' if ok else 'BLOCK'} {reason}"
+    )
+    return 0 if ok else 1
+
+
 def cmd_check(
     pr: int,
     *,
@@ -786,6 +829,15 @@ def cmd_check(
             verdict.ok = False
             verdict.reasons.append(final_review_reason or "adversarial review authority changed while polling")
 
+    if verdict.ok and review_digest is not None:
+        with adversarial_review_lock(pr):
+            review_ok, review_reason, final_digest = adversarial_review_verdict(pr, head_sha, max_age_s=max_age_s)
+            if not review_ok or final_digest != review_digest:
+                verdict.ok = False
+                verdict.reasons.append(review_reason or "adversarial review authority changed before admission")
+            else:
+                _write_review_check(pr, head_sha=head_sha, receipt_digest=review_digest)
+
     if post_status:
         verdict.status_post = _post_commit_status(
             head_sha,
@@ -857,6 +909,9 @@ def main(argv: list[str] | None = None) -> int:
     review_recover_p.add_argument("pr", type=int)
     review_recover_p.add_argument("--run-id", required=True)
     review_recover_p.add_argument("--reason", required=True)
+    review_status_p = sub.add_parser("review-status", help="Read the exact-head adversarial review lifecycle state")
+    review_status_p.add_argument("pr", type=int)
+    review_status_p.add_argument("--json", action="store_true", dest="as_json")
 
     args = parser.parse_args(argv)
 
@@ -870,6 +925,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.action == "review-recover":
         return cmd_review_recover(args.pr, run_id=args.run_id, reason=args.reason)
+    if args.action == "review-status":
+        return cmd_review_status(args.pr, as_json=args.as_json)
     return cmd_check(
         args.pr,
         max_age_s=args.max_age_s,

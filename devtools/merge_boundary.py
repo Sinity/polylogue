@@ -979,7 +979,8 @@ def cmd_merge(
             review_ok, review_reason, review_digest = merge_gate.adversarial_review_verdict(
                 pr, head_sha, max_age_s=max_age_s
             )
-            if not review_ok:
+            admitted_digest = merge_gate.admitted_adversarial_review_digest(pr, head_sha)
+            if not review_ok or review_digest != admitted_digest:
                 print(f"REFUSING to merge PR #{pr}: {review_reason}", file=sys.stderr)
                 return 1
             _record_merge_intent(pr, head_sha, clean_title, scope=final_scope)

@@ -46,6 +46,7 @@ def _scope_bead_record(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         merge_gate, "adversarial_review_verdict", lambda *_args, **_kwargs: (True, "", "fixture-review")
     )
+    monkeypatch.setattr(merge_gate, "admitted_adversarial_review_digest", lambda *_args: "fixture-review")
 
 
 def test_stale_base_head_refuses_before_recording(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
