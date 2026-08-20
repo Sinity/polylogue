@@ -370,10 +370,11 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         baseline_receipt.decision_id: baseline_receipt.decision.value,
         reparse_receipt.decision_id: reparse_receipt.decision.value,
     }
-    expected_application_decision_ids = sorted(expected_application_decisions_by_id)
-    application_decisions_by_id = {str(row[2]): str(row[0]) for row in applications}
+    expected_application_decision_pairs = sorted(expected_application_decisions_by_id.items())
+    expected_application_decision_ids = [decision_id for decision_id, _decision in expected_application_decision_pairs]
+    application_decision_pairs = sorted((str(row[2]), str(row[0])) for row in applications)
     _require(
-        application_decisions_by_id == expected_application_decisions_by_id
+        application_decision_pairs == expected_application_decision_pairs
         and application_timestamps == [1, 1]
         and application_decision_ids == expected_application_decision_ids,
         "accepted-head reparse receipts are not ordered by timestamp and decision id",
@@ -412,21 +413,21 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             raw_id=raw_id,
             logical_source_key="unknown:reparse-browser",
         )
-        mutant_tie_rows = tie_conn.execute(
+        timestamp_only_tie_rows = tie_conn.execute(
             """
             SELECT decision, decided_at_ms, decision_id
             FROM raw_revision_applications
             WHERE raw_id = ? AND logical_source_key = ?
-            ORDER BY decided_at_ms, rowid
+            ORDER BY decided_at_ms
             """,
             (raw_id, "unknown:reparse-browser"),
         ).fetchall()
         stable_tie_ids = [str(row[2]) for row in stable_tie_rows]
-        mutant_tie_ids = [str(row[2]) for row in mutant_tie_rows]
+        timestamp_only_tie_ids = [str(row[2]) for row in timestamp_only_tie_rows]
     _require(
         stable_tie_ids == expected_application_decision_ids
-        and mutant_tie_ids == list(reversed(expected_application_decision_ids)),
-        "equal-timestamp tie-break control did not distinguish the deterministic rowid mutant",
+        and sorted(timestamp_only_tie_ids) == expected_application_decision_ids,
+        "equal-timestamp composite ordering did not preserve both receipt identities",
     )
     _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
     _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
@@ -518,7 +519,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             (raw_id,),
         ).fetchone()[0]
     _require(
-        [str(row[2]) for row in retained_applications] == expected_application_decision_ids
+        sorted((str(row[2]), str(row[0])) for row in retained_applications) == expected_application_decision_pairs
         and bytes(retained_head_hash) == current_hash == bytes(retained_session_hash)
         and bytes(retained_membership_hash) == current_hash,
         "negative control mutated the retained accepted-head reparse archive",
