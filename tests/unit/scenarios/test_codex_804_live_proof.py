@@ -82,6 +82,7 @@ from tests.infra.whale_fixtures import (
     WHALE_FIXTURE_DIMENSIONS,
     CodexRevisionChainFixture,
     acquire_codex_revision_chain,
+    copy_sqlite_database,
 )
 
 REVISION_COUNT = WHALE_FIXTURE_DIMENSIONS.revision_count
@@ -336,6 +337,8 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     Anti-vacuity: deleting the production ``AcquisitionService`` call from
     ``acquire_codex_revision_chain`` leaves the source row count at zero;
+    deleting the production ``LiveBatchProcessor.plan_append`` call leaves
+    no verified 804..819 append-plan sequence;
     deleting parser/convergence leaves the terminal index session absent;
     deleting the resumable candidate path leaves no paused transaction or
     inactive generation for the recovery assertions below.
@@ -485,21 +488,37 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     # replay cannot hide a source mutation behind its own provenance gate.
     # The replay phase intentionally begins before source remediation and the
     # crash boundary so its receipt covers the complete recovery envelope.
-    replay_before = _resource_sample(root)
+    replay_before = _resource_sample(tmp_path)
     replay_started = time.perf_counter()
     source_ready_root = tmp_path / "codex-804-source-ready"
     initialize_active_archive_root(source_ready_root)
-    shutil.copy2(root / "source.db", source_ready_root / "source.db")
+    copy_sqlite_database(root / "source.db", source_ready_root / "source.db")
     shutil.copytree(root / "blob", source_ready_root / "blob")
+    with sqlite3.connect(source_ready_root / "source.db") as conn:
+        assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
     whale_repair = raw_authority.repair_materialization(
         Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
         dry_run=False,
         raw_artifact_id=whale_candidate,
-        raw_artifact_limit=expected_raw_count,
+        raw_artifact_limit=1,
         max_payload_bytes=whale_component_bytes + 1,
     )
     assert whale_repair.success is True
     assert whale_repair.repaired_count >= 1
+    assert whale_repair.metrics["raw_materialization_limit"] == 1.0
+    assert whale_repair.metrics["raw_materialization_selected_component_count"] == 1.0
+    assert whale_repair.metrics["raw_materialization_selected_count"] == 1.0
+    assert whale_repair.plan_outcomes
+    assert all(whale_candidate in outcome.input_raw_ids for outcome in whale_repair.plan_outcomes)
+    followup_repair = raw_authority.repair_materialization(
+        Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
+        dry_run=False,
+        raw_artifact_limit=1,
+        max_payload_bytes=whale_component_bytes + 1,
+    )
+    assert followup_repair.metrics["raw_materialization_limit"] == 1.0
+    assert followup_repair.success is True
+    copy_sqlite_database(source_ready_root / "source.db", root / "source.db")
     assert (
         raw_authority.whale_pass_candidate(
             Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
@@ -508,8 +527,6 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         )
         is None
     )
-    shutil.copy2(source_ready_root / "source.db", root / "source.db")
-
     schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
@@ -645,7 +662,7 @@ print(result.status)
         _phase(
             "replay",
             replay_before,
-            _resource_sample(root),
+            _resource_sample(tmp_path),
             replay_started,
             completed=0,
             total=expected_raw_count,
