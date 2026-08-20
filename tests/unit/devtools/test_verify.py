@@ -3735,6 +3735,36 @@ def test_pytest_run_heartbeat_reports_latest_test_node(
     assert progress["latest_test_event"]["nodeid"] == nodeid
 
 
+def test_latest_event_reader_survives_worker_directory_created_after_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker may create its events directory between the supervisor probes."""
+    events_dir = tmp_path / "events"
+    events_path = tmp_path / "events.jsonl"
+    event = {
+        "event": "test_started",
+        "nodeid": "worker::test",
+        "updated_at": "2026-08-20T14:00:00Z",
+    }
+    original_is_dir = Path.is_dir
+    created = False
+
+    def create_worker_dir_after_probe(path: Path) -> bool:
+        nonlocal created
+        if path == events_dir and not created:
+            created = True
+            events_dir.mkdir()
+            (events_dir / "gw0.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+            return False
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", create_worker_dir_after_probe)
+
+    assert verify._read_latest_pytest_event(events_path, events_dir=events_dir) is None
+    assert verify._read_latest_pytest_event(events_path, events_dir=events_dir) == event
+
+
 def test_pytest_run_streams_child_output_live(capsys: pytest.CaptureFixture[str]) -> None:
     rc, _elapsed, _metadata = _run("pytest output", [sys.executable, "-c", "print('pytest-progress')"])
 
@@ -4047,7 +4077,7 @@ def test_storage_scale_fixture_path_and_heartbeat_keep_short_node_live(
     )
     monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
     monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.1")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "10")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "3")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
