@@ -1,4 +1,4 @@
-# MCP Surface Report — 2026-08-19
+# MCP Surface Report — 2026-08-20
 
 Closure evidence for `polylogue-t46.8` (verb-algebra epic) and its children
 `polylogue-t46.8.2` (read migration) and `polylogue-t46.8.3` (privileged
@@ -233,6 +233,69 @@ freshly-provisioned worktree off `origin/master`:
 No suite was red; nothing here required classifying pre-existing versus
 revealing failures.
 
+## 6.1 AC#6 and AC#7 residual evidence (2026-08-20)
+
+The residual proof runs the real consolidated read surface, rather than a
+mocked dispatcher or a direct storage helper. `tests/unit/mcp/test_migration_load_evidence.py`
+builds a real server, installs real `RuntimeServices`, writes distinct sessions
+through `ArchiveStore`, and calls all six base read tools (`query`, `read`,
+`get`, `explain`, `context`, `status`).
+
+For AC#6, the canonical `query` route is run with the real
+`QueryTransaction.run` disabled. The route must return the typed internal-error
+envelope, proving that a successful response cannot come from a bypassing MCP
+adapter. The existing migration harnesses remain part of the evidence set:
+`tests/unit/archive/query/test_read_surface_control.py` rejects uncontrolled
+archive opens, while `tests/unit/archive/query/test_transaction.py` protects
+request identity, continuation framing, archive epochs, and cursor rejection.
+
+For AC#7, 32 request identities are driven from 16 OS worker threads, with 192
+registered MCP calls across the six-tool surface. `query`, `read`, `get`, and
+`explain` are checked for their own marker or session identity and for absence
+of every other request marker and session id. The test also records the exact
+transaction owners reached by `query`, `read`, `get`, and `status`, so a
+query-only admission observation cannot certify a bypassing handler. Before
+the load, the test uses the real `write(operation="deliver_context")` route to
+record one marker-bearing context-delivery receipt per request, then reads
+each exact receipt through `context(result_ref=..., recipient_ref=...)`; this
+prevents an empty delivery list from passing the test. `status(scope="archive")`
+is intentionally a shared archive snapshot rather than a request-identified
+response, so it is validated against `MCPArchiveStatsPayload`, its archive
+scope, and the absence of all request identities instead of being required to
+echo its caller's marker.
+
+The admission proof uses the real `QueryAdmissionController` reached by the
+consolidated routes that use `QueryTransaction`. A synchronization barrier
+holds the first `DEFAULT_CAPACITY` admissions (`DEFAULT_CAPACITY == 4`) at
+once, and the test requires an observed maximum of exactly 4, no value above
+4, and final `in_flight_weight == 0`. Context receipt lookup is a distinct
+durable user-tier path and is explicitly checked for marker isolation without
+being claimed as an admission-controller participant. A separate registered
+`query` call executes a real large-result query, requires the
+`response_budget_exceeded` envelope with a non-empty advancing continuation,
+measures the exact UTF-8 byte length of the formatted string returned by the
+registered production handler (the decoded JSON is used only for field
+assertions), measures transient Python bytes and newly-created archive sidecars, and
+rejects temporary spill artifacts above the bounded thresholds. A cancelled
+registered `query` executes real result assembly before the test disconnects;
+the captured transaction must report `disconnected`, complete reader cleanup,
+and release admission. The load still checks that no archive file descriptors
+remain open, rejects unexpected new temporary artifacts, and runs SQLite
+`quick_check` on every archive database after the calls finish.
+
+This is application-level concurrency, cancellation, and temporary-resource
+evidence. The transient-byte measurement is process-local allocation evidence,
+and the response-budget assertion measures the formatted production wire string,
+not a compact re-encoding after parsing. This lane does not provide the full
+AC#7 host-wide RSS/PSS/swap/temp benchmark, return-to-steady-state evidence,
+health/cheap-read responsiveness evidence, or an orphan-task census; those
+measurements remain environment-dependent and are not fabricated from a
+unit-test result. The existing `polylogue-4s3c` successor owns the live-scale
+steady-state RSS/PSS/swap/temp envelope; the health/responsiveness and
+orphan-task residuals remain open until a bounded live-scale proof covers them.
+
+The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/mcp/test_server_surfaces.py::test_query_transaction_certifies_twenty_large_messages_across_api_and_mcp tests/unit/mcp/test_server_surfaces.py::test_query_resource_golden_fails_when_shared_transaction_is_bypassed tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **44 passed, 0 failed**. The new evidence module contributed **4 passed** tests, and the resource-resolver mutation proof ran explicitly.
+
 ## 7. Bottom line
 
 The 103-tool-to-10-verb collapse is complete, single-sourced through
@@ -242,4 +305,9 @@ The two named remaining debts (`maintenance()` executor routing;
 owned by other beads (`kwsb.2`/`t46.9`) rather than blocking this epic's
 closure. AC#4 was asking a question the current repo state cannot literally
 answer and is restated above rather than left as a permanently-open
-impossible criterion.
+impossible criterion. The `maintenance()` debt remains deferred to
+`kwsb.2`/`t46.9` and is not changed or implied to be covered by the AC#6/AC#7
+evidence in this lane. The AC#6 migration-harness proof and the application-level
+AC#7 concurrency/cancellation/cleanup evidence are present here, but the full
+AC#7 host-wide and steady-state/orphan criteria remain a typed partial rather
+than a satisfied claim.
