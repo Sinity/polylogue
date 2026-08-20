@@ -105,6 +105,20 @@ def test_storage_scale_tree_snapshot_tracks_real_file_changes(tmp_path: Path) ->
     assert after[1] == len(b"payload")
 
 
+def test_storage_scale_heartbeat_does_not_publish_after_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    heartbeat = pytest_progress_plugin._StorageScaleProgressHeartbeat(
+        nodeid="tests/example.py::test_storage_scale",
+        root_supplier=lambda: None,
+    )
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(pytest_progress_plugin, "_write_event", published.append)
+
+    heartbeat._stop.set()
+    heartbeat._write_heartbeat()
+
+    assert published == []
+
+
 def test_progress_plugin_preserves_xfail_and_xpass_in_durable_statistics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

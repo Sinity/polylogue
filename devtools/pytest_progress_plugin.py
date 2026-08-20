@@ -267,6 +267,8 @@ class _StorageScaleProgressHeartbeat:
 
     def _write_heartbeat(self) -> None:
         """Record one observed storage-tree change."""
+        if self._stop.is_set():
+            return
         _write_event(
             {
                 "event": "test_progress",
