@@ -1157,7 +1157,20 @@ def _run_case(case_root: Path, boundary: FaultBoundary) -> dict[str, object]:
     return _audit_case(topology, boundary, execution)
 
 
-def _proof_identity(cases: list[dict[str, object]]) -> str:
+def _stable_reparse_case_summary(reparse_case: dict[str, object]) -> dict[str, object]:
+    return {
+        "ordering": reparse_case["ordering"],
+        "application_decisions": reparse_case["application_decisions"],
+        "application_count": reparse_case["application_count"],
+        "head_content_hash": reparse_case["head_content_hash"],
+        "session_content_hash": reparse_case["session_content_hash"],
+        "repair_status": reparse_case["repair_status"],
+        "repair_reason": reparse_case["repair_reason"],
+        "source_raw_count_after_refusal": reparse_case["source_raw_count_after_refusal"],
+    }
+
+
+def _proof_identity(cases: list[dict[str, object]], reparse_case: dict[str, object]) -> str:
     stable = [
         {
             "boundary": case["boundary"],
@@ -1167,7 +1180,11 @@ def _proof_identity(cases: list[dict[str, object]]) -> str:
         }
         for case in cases
     ]
-    digest = hashlib.sha256(json.dumps(stable, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    digest_input = {
+        "fault_matrix": stable,
+        "accepted_head_reparse": _stable_reparse_case_summary(reparse_case),
+    }
+    digest = hashlib.sha256(json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return f"raw-authority-restart-proof:{digest[:24]}"
 
 
@@ -1187,7 +1204,7 @@ def run_raw_authority_restart_proof(
     reparse_case = _exercise_accepted_head_reparse(root / "accepted-head-reparse")
     report: dict[str, object] = {
         "schema": _PROOF_SCHEMA,
-        "proof_id": _proof_identity(cases),
+        "proof_id": _proof_identity(cases, reparse_case),
         "work_root": str(root),
         "case_archives_retained": keep,
         "production_limits": {

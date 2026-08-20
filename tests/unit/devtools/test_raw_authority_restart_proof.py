@@ -71,6 +71,17 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
     )
 
 
+def test_raw_authority_restart_proof_identity_includes_reparse_evidence(tmp_path: Path) -> None:
+    payload = proof.run_raw_authority_restart_proof(tmp_path)
+    cases = cast(list[dict[str, object]], payload["fault_matrix"])
+    reparse_case = cast(dict[str, object], payload["accepted_head_reparse"])
+    changed_reparse_case = dict(reparse_case)
+    changed_reparse_case["repair_status"] = "changed-evidence"
+
+    assert payload["proof_id"] == proof._proof_identity(cases, reparse_case)
+    assert payload["proof_id"] != proof._proof_identity(cases, changed_reparse_case)
+
+
 def test_raw_authority_restart_proof_rejects_broken_ledger_conservation(tmp_path: Path) -> None:
     """Removing one recorded outcome must make the source-ledger conservation audit fail."""
     topology = proof._prepare_case(tmp_path / "broken-conservation")
