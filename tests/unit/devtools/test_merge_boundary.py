@@ -306,6 +306,75 @@ def test_merge_auto_records_when_no_fresh_receipt_then_merges(monkeypatch: pytes
     assert ledger["merges"][0]["title"] == "fix: thing (#42)"
 
 
+def test_merge_executes_validated_satisfied_disposition_only_after_squash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Drive cmd_merge itself, with fake gh/bd processes, to pin the post-merge boundary."""
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    carrier = {
+        "version": 2,
+        "scope_kind": "bead",
+        "assigned_beads": ["polylogue-test-scope"],
+        "mutated_beads": [],
+        "dispositions": [
+            {
+                "bead_id": "polylogue-test-scope",
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_merge_boundary.py"}],
+                "successors": [],
+            }
+        ],
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    pr_view["body"] = pr_scope.render_carrier(carrier)
+    calls: list[list[str]] = []
+    base_run = _fake_run(pr_view)
+    merged = False
+
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        nonlocal merged
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            merged = True
+            return base_run(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "view"] and merged:
+            return MagicMock(
+                returncode=0, stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "m" * 40}}), stderr=""
+            )
+        if cmd[:2] == ["bd", "show"]:
+            return MagicMock(returncode=0, stdout='{"id":"polylogue-test-scope","status":"open"}', stderr="")
+        if cmd[:2] == ["bd", "close"]:
+            return MagicMock(returncode=0, stdout='{"id":"polylogue-test-scope","status":"closed"}', stderr="")
+        if cmd[:2] == ["bd", "export"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify",
+        )
+        == 0
+    )
+    squash_index = next(index for index, command in enumerate(calls) if command[:3] == ["gh", "pr", "merge"])
+    close_index = next(index for index, command in enumerate(calls) if command[:2] == ["bd", "close"])
+    assert squash_index < close_index
+    assert ["bd", "export", "-o", ".beads/issues.jsonl"] in calls
+    close = next(command for command in calls if command[:2] == ["bd", "close"])
+    assert "pr=42" in close[close.index("--reason") + 1]
+    assert "merge=" in close[close.index("--reason") + 1]
+    assert "evidence=" in close[close.index("--reason") + 1]
+
+
 def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

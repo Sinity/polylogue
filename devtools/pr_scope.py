@@ -79,6 +79,23 @@ class ScopeVerdict:
     beads_digest: str | None = None
     assigned_beads: list[str] = field(default_factory=list)
     mutated_beads: list[str] = field(default_factory=list)
+    carrier_version: int | None = None
+    scope_kind: ScopeKind | None = None
+    dispositions: tuple[ValidatedDisposition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRef:
+    kind: EvidenceKind
+    ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedDisposition:
+    bead_id: str
+    disposition: ScopeDisposition
+    evidence: tuple[EvidenceRef, ...]
+    successors: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,11 +332,11 @@ def _validate_dispositions(
     assigned_ids: list[str],
     records: dict[str, dict[str, Any]],
     reasons: list[str],
-) -> None:
+) -> tuple[ValidatedDisposition, ...]:
     by_bead: dict[str, dict[str, Any]] = {}
     if not isinstance(dispositions, list):
         reasons.append("dispositions must be a list with one entry per assigned Bead")
-        return
+        return ()
     for entry in dispositions:
         if not isinstance(entry, dict) or not isinstance(entry.get("bead_id"), str):
             reasons.append("each disposition must be an object with a bead_id")
@@ -341,11 +358,13 @@ def _validate_dispositions(
         reasons.append(f"missing whole-Bead disposition(s): {', '.join(missing)}")
     if extra:
         reasons.append(f"disposition(s) reference unassigned Bead(s): {', '.join(extra)}")
+    validated: list[ValidatedDisposition] = []
     for bead_id, entry in by_bead.items():
         disposition = entry.get("disposition")
         if disposition not in _DISPOSITIONS:
             reasons.append(f"{bead_id}: unknown whole-Bead disposition {disposition!r}")
         evidence = entry.get("evidence")
+        typed_evidence: list[EvidenceRef] = []
         if not isinstance(evidence, list) or not evidence:
             reasons.append(f"{bead_id}: disposition needs at least one typed evidence reference")
         else:
@@ -366,6 +385,7 @@ def _validate_dispositions(
                 ):
                     reasons.append(f"{bead_id}: evidence references need a known kind and non-empty ref")
                     break
+                typed_evidence.append(EvidenceRef(kind=EvidenceKind(ref["kind"]), ref=ref["ref"]))
         successors = entry.get("successors", [])
         if not isinstance(successors, list) or not all(isinstance(item, str) and item for item in successors):
             reasons.append(f"{bead_id}: successors must be a list of Bead IDs")
@@ -386,6 +406,21 @@ def _validate_dispositions(
                 reasons.append(f"{bead_id}: successor {successor} has no durable Beads relationship")
             if successor == bead_id:
                 reasons.append(f"{bead_id}: cannot name itself as a successor")
+        if (
+            isinstance(disposition, str)
+            and disposition in _DISPOSITIONS
+            and isinstance(evidence, list)
+            and len(typed_evidence) == len(evidence)
+        ):
+            validated.append(
+                ValidatedDisposition(
+                    bead_id=bead_id,
+                    disposition=ScopeDisposition(disposition),
+                    evidence=tuple(typed_evidence),
+                    successors=tuple(successors),
+                )
+            )
+    return tuple(validated)
 
 
 def validate_carrier(
@@ -483,7 +518,7 @@ def validate_carrier(
     if is_v1 and expected_beads_digest is not None and carrier.get("beads_digest") != expected_beads_digest:
         reasons.append("carrier beads_digest is stale for the canonical assigned Bead records")
     dispositions = carrier.get("dispositions")
-    _validate_dispositions(
+    validated_dispositions = _validate_dispositions(
         dispositions,
         assigned_ids=assigned_ids,
         records=records,
@@ -496,6 +531,11 @@ def validate_carrier(
         beads_digest=expected_beads_digest,
         assigned_beads=assigned_ids,
         mutated_beads=mutated_ids,
+        carrier_version=version,
+        scope_kind=ScopeKind(carrier["scope_kind"])
+        if not is_v1 and carrier.get("scope_kind") in _SCOPE_KINDS
+        else None,
+        dispositions=validated_dispositions if not reasons else (),
     )
 
 
@@ -610,6 +650,17 @@ def attestation_payload(scope: ScopeVerdict, *, head_sha: str, base_sha: str | N
         "beads_digest": scope.beads_digest,
         "assigned_beads": scope.assigned_beads,
         "mutated_beads": scope.mutated_beads,
+        "carrier_version": scope.carrier_version,
+        "scope_kind": scope.scope_kind.value if scope.scope_kind is not None else None,
+        "dispositions": [
+            {
+                "bead_id": disposition.bead_id,
+                "disposition": disposition.disposition.value,
+                "evidence": [asdict(ref) for ref in disposition.evidence],
+                "successors": list(disposition.successors),
+            }
+            for disposition in scope.dispositions
+        ],
     }
     payload["attestation_digest"] = _digest(payload)
     return payload
@@ -1026,8 +1077,8 @@ def main(argv: list[str] | None = None) -> int:
                 expected_head_sha=args.expected_head_sha,
             )
         except NoOpenPullRequestError as exc:
-            print(f"pr-scope CI skip: {exc}", file=sys.stderr)
-            return 0
+            print(f"REFUSING CI pr-scope check: {exc}", file=sys.stderr)
+            return 2
         except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
             print(f"REFUSING CI pr-scope check: {exc}", file=sys.stderr)
             return 2

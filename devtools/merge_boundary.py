@@ -62,6 +62,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -344,15 +345,123 @@ def _append_merge_entry_unlocked(ledger: dict[str, Any], pr: int, head_sha: str,
     )
 
 
-def _record_merge_intent(pr: int, head_sha: str, title: str) -> None:
+def _scope_intent(scope: pr_scope.ScopeVerdict) -> dict[str, Any] | None:
+    if scope.carrier_version != 2:
+        return None
+    return {
+        "carrier_version": scope.carrier_version,
+        "scope_kind": scope.scope_kind.value if scope.scope_kind is not None else None,
+        "dispositions": [
+            {
+                "bead_id": item.bead_id,
+                "disposition": item.disposition.value,
+                "evidence": [{"kind": ref.kind.value, "ref": ref.ref} for ref in item.evidence],
+                "successors": list(item.successors),
+            }
+            for item in scope.dispositions
+        ],
+    }
+
+
+def _record_merge_intent(pr: int, head_sha: str, title: str, *, scope: pr_scope.ScopeVerdict | None = None) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         if not any(intent.get("pr") == pr and intent.get("head_sha") == head_sha for intent in ledger["merge_intents"]):
-            ledger["merge_intents"].append({"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()})
+            intent: dict[str, Any] = {"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()}
+            if scope is not None and (scope_intent := _scope_intent(scope)) is not None:
+                intent["scope"] = scope_intent
+            ledger["merge_intents"].append(intent)
             _write_ledger_unlocked(ledger)
 
 
-def _complete_merge_intent(pr: int, head_sha: str) -> None:
+def _merged_commit_sha(pr: int) -> str:
+    info = _gh_json(["pr", "view", str(pr), "--json", "state,mergeCommit"])
+    merge_commit = info.get("mergeCommit")
+    merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+    if info.get("state") != "MERGED" or not isinstance(merge_sha, str) or not merge_sha:
+        raise LedgerStateError(f"PR #{pr} merged without an observable squash merge SHA")
+    return merge_sha
+
+
+def _live_bead(bead_id: str) -> dict[str, Any]:
+    result = subprocess.run(["bd", "show", bead_id, "--json"], capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise LedgerStateError(f"could not inspect Bead {bead_id}: {result.stderr.strip()[:300]}")
+    payload = json.loads(result.stdout)
+    if isinstance(payload, list):
+        payload = payload[0] if len(payload) == 1 else None
+    if not isinstance(payload, dict) or payload.get("id") != bead_id:
+        raise LedgerStateError(f"Bead {bead_id} returned malformed live state")
+    return payload
+
+
+def _disposition_marker(pr: int, merge_sha: str, item: Mapping[str, Any]) -> str:
+    evidence = item.get("evidence")
+    evidence_digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return f"carrier-disposition pr={pr} merge={merge_sha} bead={item['bead_id']} evidence={evidence_digest}"
+
+
+def _preflight_live_successors(scope: pr_scope.ScopeVerdict) -> None:
+    """Reject a residual disposition if its live successor changed after scope validation."""
+    for disposition in scope.dispositions:
+        if disposition.disposition is pr_scope.ScopeDisposition.SATISFIED:
+            continue
+        for successor in disposition.successors:
+            if _live_bead(successor).get("status") == "closed":
+                raise LedgerStateError(f"residual successor {successor} is closed before squash merge")
+
+
+def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
+    scope = intent.get("scope")
+    if not isinstance(scope, dict) or scope.get("scope_kind") == pr_scope.ScopeKind.SELF_CONTAINED.value:
+        return
+    dispositions = scope.get("dispositions")
+    if not isinstance(dispositions, list):
+        raise LedgerStateError("merge intent has no typed carrier dispositions")
+    for item in dispositions:
+        if not isinstance(item, dict):
+            raise LedgerStateError("merge intent has malformed typed carrier disposition")
+        bead_id = item.get("bead_id")
+        disposition = item.get("disposition")
+        if not isinstance(bead_id, str) or not isinstance(disposition, str):
+            raise LedgerStateError("merge intent has malformed typed carrier disposition")
+        marker = _disposition_marker(int(intent["pr"]), merge_sha, item)
+        live = _live_bead(bead_id)
+        if disposition == pr_scope.ScopeDisposition.SATISFIED.value:
+            if live.get("status") == "closed":
+                if live.get("close_reason") != marker:
+                    raise LedgerStateError(f"Bead {bead_id} was closed independently; refusing to overwrite it")
+                continue
+            close = subprocess.run(
+                ["bd", "close", bead_id, "--reason", marker, "--json"], capture_output=True, text=True, timeout=60
+            )
+            if close.returncode != 0:
+                raise LedgerStateError(f"could not close Bead {bead_id}: {close.stderr.strip()[:300]}")
+        elif disposition in {
+            item.value for item in pr_scope.ScopeDisposition if item is not pr_scope.ScopeDisposition.SATISFIED
+        }:
+            for successor in item.get("successors", []):
+                successor_record = _live_bead(str(successor))
+                if successor_record.get("status") == "closed":
+                    raise LedgerStateError(f"residual successor {successor} is closed at disposition execution")
+            update = subprocess.run(
+                ["bd", "update", bead_id, "--append-notes", marker, "--json"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if update.returncode != 0:
+                raise LedgerStateError(
+                    f"could not record {disposition} disposition for Bead {bead_id}: {update.stderr.strip()[:300]}"
+                )
+        else:
+            raise LedgerStateError(f"merge intent has unknown disposition {disposition!r}")
+    exported = subprocess.run(["bd", "export", "-o", ".beads/issues.jsonl"], capture_output=True, text=True, timeout=60)
+    if exported.returncode != 0:
+        raise LedgerStateError(f"could not export carrier disposition batch: {exported.stderr.strip()[:300]}")
+
+
+def _complete_merge_intent(pr: int, head_sha: str, *, merge_sha: str | None = None) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         intents = ledger["merge_intents"]
@@ -360,6 +469,14 @@ def _complete_merge_intent(pr: int, head_sha: str) -> None:
         if not matching:
             return
         intent = matching[0]
+        if isinstance(intent.get("scope"), dict):
+            resolved_merge_sha = merge_sha or _merged_commit_sha(pr)
+            try:
+                _execute_dispositions(intent, merge_sha=resolved_merge_sha)
+            except LedgerStateError as exc:
+                intent["disposition_error"] = str(exc)
+                _write_ledger_unlocked(ledger)
+                raise
         if not any(entry.get("pr") == pr and entry.get("head_sha") == head_sha for entry in ledger["merges"]):
             _append_merge_entry_unlocked(ledger, pr, head_sha, str(intent["title"]))
         ledger["merge_intents"] = [item for item in intents if item is not intent]
@@ -377,7 +494,7 @@ def _reconcile_merge_intents() -> None:
         merge_commit = info.get("mergeCommit")
         if info.get("state") != "MERGED" or not isinstance(merge_commit, dict) or not merge_commit.get("oid"):
             raise LedgerStateError(f"unresolved durable merge intent for PR #{intent['pr']}")
-        _complete_merge_intent(int(intent["pr"]), str(intent["head_sha"]))
+        _complete_merge_intent(int(intent["pr"]), str(intent["head_sha"]), merge_sha=str(merge_commit["oid"]))
         if any(
             item.get("pr") == intent["pr"] and item.get("head_sha") == intent["head_sha"]
             for item in _read_ledger()["merge_intents"]
@@ -761,9 +878,14 @@ def cmd_merge(
     if not final_scope.ok or final_attestation != initial_attestation:
         print(f"REFUSING to merge PR #{pr}: structured scope changed after merge-gate validation", file=sys.stderr)
         return 1
+    try:
+        _preflight_live_successors(final_scope)
+    except LedgerStateError as exc:
+        print(f"REFUSING to merge PR #{pr}: {exc}", file=sys.stderr)
+        return 1
 
     try:
-        _record_merge_intent(pr, head_sha, clean_title)
+        _record_merge_intent(pr, head_sha, clean_title, scope=final_scope)
     except LedgerStateError as exc:
         print(f"REFUSING to merge PR #{pr}: could not durably record merge intent: {exc}", file=sys.stderr)
         return 1
@@ -792,7 +914,11 @@ def cmd_merge(
     try:
         _complete_merge_intent(pr, head_sha)
     except LedgerStateError as exc:
-        print(f"REFUSING to continue: merge-train ledger is not durably writable: {exc}", file=sys.stderr)
+        print(
+            f"MERGED PR #{pr}, but carrier dispositions remain incomplete: {exc}. "
+            f"Recovery: devtools workspace merge train-status",
+            file=sys.stderr,
+        )
         return 1
 
     if with_verify:

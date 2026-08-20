@@ -516,7 +516,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace merge",
         "workspace",
-        "Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt.",
+        "Merge boundary wrapper: refuses `gh pr merge` without a fresh receipt, then applies validated v2 dispositions after the squash SHA.",
         "devtools.merge_boundary",
         use_when=(
             "Replace a bare `gh pr merge --squash` with this at the actual merge boundary "
@@ -1226,17 +1226,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "lab policy bead-graph",
         "verification lab",
-        "Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph.",
+        "Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references.",
         "devtools.verify_bead_graph",
         use_when=(
             "Run before shipping a bead-state delta. With no source option it checks live `bd` state; "
             "`--export .beads/issues.jsonl` validates the branch snapshot without importing it into the "
-            "shared database. The gate reads dependency records only and does not make prose, labels, or "
-            "campaign-specific edge lists machine authority."
+            "shared database. `--forcing-root` reports a digest-bound transitive blocks closure; "
+            "`--require-resolved` is for an operation boundary that requires no open blockers. The gate "
+            "checks existing registry Bead references and never makes prose or campaign mirrors authority."
         ),
         examples=(
             "devtools lab policy bead-graph",
             "devtools lab policy bead-graph --export .beads/issues.jsonl --json",
+            "devtools lab policy bead-graph --export .beads/issues.jsonl --forcing-root polylogue-818fy --require-resolved --json",
         ),
     ),
     CommandSpec(

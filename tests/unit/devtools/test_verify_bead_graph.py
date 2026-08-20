@@ -103,6 +103,7 @@ def test_main_loads_live_population_and_reports_clean_graph(
 ) -> None:
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (True, "no cycles"))
     monkeypatch.setattr(verify_bead_graph, "_run_bd_list_all", lambda: [_issue("a")])
+    monkeypatch.setattr(verify_bead_graph, "_registry_findings", lambda _issues: [])
     assert verify_bead_graph.main(["--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["issues_scanned"] == 1
@@ -115,3 +116,25 @@ def test_main_fails_closed_when_live_cycle_probe_fails(
     monkeypatch.setattr(verify_bead_graph, "_run_bd_dep_cycles", lambda: (False, "a -> b -> a"))
     assert verify_bead_graph.main(["--json"]) == 1
     assert "dependency cycle check failed" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_export_report_derives_transitive_forcing_closure_and_rejects_unknown_edge_kind() -> None:
+    issues = [
+        _issue("root", dependencies=[{"type": "blocks", "depends_on_id": "middle"}]),
+        _issue("middle", dependencies=[{"type": "blocks", "depends_on_id": "leaf"}]),
+        _issue("leaf"),
+    ]
+
+    report = verify_bead_graph.build_report(
+        issues,
+        cycles_ok=True,
+        cycles_output="",
+        forcing_roots=["root"],
+    )
+
+    assert report["report_version"] == 3
+    assert report["forcing"][0]["blocker_ids"] == ["leaf", "middle"]
+
+    malformed = [_issue("root", dependencies=[{"type": "blockz", "depends_on_id": "leaf"}]), _issue("leaf")]
+    findings = verify_bead_graph.collect_findings(malformed)
+    assert any(finding.kind == "unknown-dependency-kind" for finding in findings)

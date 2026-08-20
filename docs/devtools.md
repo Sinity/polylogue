@@ -59,7 +59,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab policy oracle-integrity` | Before a deletion sweep, and as a standing gate. Catches the two ways a green test can certify nothing: its entire target set is unreachable from any production entrypoint (dead-engine suites), or it reads a real ~/.codex / ~/.claude / /realm path instead of a fixture. Reachability seeds four root classes import edges miss -- Click lazy commands, `python -m` entrypoints, ancestor packages, and literal-container registries -- resolves facade re-exports per symbol, and flags module-level Path.home()/expanduser constants in polylogue/** that capture an ambient location at import time, because import edges alone under-report and this repo has four recorded wrong deletions derived from grep. |
-| `devtools lab policy bead-graph` | Run before shipping a bead-state delta. With no source option it checks live `bd` state; `--export .beads/issues.jsonl` validates the branch snapshot without importing it into the shared database. The gate reads dependency records only and does not make prose, labels, or campaign-specific edge lists machine authority. |
+| `devtools lab policy bead-graph` | Run before shipping a bead-state delta. With no source option it checks live `bd` state; `--export .beads/issues.jsonl` validates the branch snapshot without importing it into the shared database. `--forcing-root` reports a digest-bound transitive blocks closure; `--require-resolved` is for an operation boundary that requires no open blockers. The gate checks existing registry Bead references and never makes prose or campaign mirrors authority. |
 | `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
 | `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
 | `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
@@ -129,7 +129,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools lab policy bead-graph` | Validate typed dependency endpoints, uniqueness, parent cardinality, and cycles in the Beads graph. |
+| `devtools lab policy bead-graph` | Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools lab policy oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
@@ -202,7 +202,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
+| `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh receipt, then applies validated v2 dispositions after the squash SHA. |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local verification + resolved review threads. |
 | `devtools workspace pr-scope` | Render stable PR scope intent and inspect its mutable merge attestation. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |

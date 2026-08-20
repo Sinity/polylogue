@@ -513,7 +513,7 @@ workflow, not optional conveniences — use them at the point named, every time:
   any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
   exit, a changed head-bound scope attestation, an unresolved GitHub review thread, or a changes-requested review), strips a
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
-  `gh pr merge --squash`. `--dry-run` runs every check without merging;
+  `gh pr merge --squash`, then executes the carrier's validated v2 dispositions after GitHub reports the squash merge SHA: satisfied Beads close with that typed marker, residual dispositions recheck successors and append their marker, and one Beads export records the batch. A disposition failure never rolls back the merge; it leaves the merge intent recoverable and train status nonterminal. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal
   verify after merging. `devtools workspace merge train-status`
   reports (exit 1) any PRs merged since the last recorded terminal verify.

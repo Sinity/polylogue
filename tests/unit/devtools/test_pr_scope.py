@@ -1022,6 +1022,32 @@ def test_ci_check_bootstraps_once_when_base_has_no_validator(
     )
 
 
+def test_check_ci_refuses_when_the_expected_head_has_no_open_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The production CLI must not turn an unbound commit into a green CI skip."""
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_pr_for_head",
+        lambda **_kwargs: (_ for _ in ()).throw(pr_scope.NoOpenPullRequestError("no open PR for test head")),
+    )
+
+    assert (
+        pr_scope.main(
+            [
+                "check-ci",
+                "--repo",
+                "Sinity/polylogue",
+                "--expected-head-sha",
+                HEAD_SHA,
+            ]
+        )
+        == 2
+    )
+    assert "no open PR for test head" in capsys.readouterr().err
+
+
 def test_fetch_base_validator_prefers_local_base_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

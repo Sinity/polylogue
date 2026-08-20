@@ -2434,6 +2434,8 @@ def test_registry_rejects_closed_or_unknown_waiver_beads() -> None:
         validate_archive_verification_registry(waiver_bead_statuses={})
 
     validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "open"})
+    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "in_progress"})
+    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "deferred"})
 
 
 def test_registry_rejects_duplicate_check_and_incident_identity(monkeypatch: pytest.MonkeyPatch) -> None:
