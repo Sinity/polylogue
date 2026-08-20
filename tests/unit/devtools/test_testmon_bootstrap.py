@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from devtools import testmon_bootstrap
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
     NativeTestmonDeadlineError,
@@ -517,6 +518,62 @@ def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprint
     finally:
         db.con.close()
     return data
+
+
+def test_atomic_copy_uses_dev_fd_when_proc_fd_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The macOS descriptor namespace fallback remains descriptor-bound."""
+    probe = tmp_path / "descriptor-probe"
+    probe_fd = os.open(probe, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (Path("/dev/fd") / str(probe_fd)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe_fd)
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "_DESCRIPTOR_FD_ROOTS",
+        (tmp_path / "missing-proc-fd", Path("/dev/fd")),
+    )
+
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert inspect_native_testmon_environment(
+        destination_data,
+        environment_name="owned-environment",
+    ).valid
+
+
+def test_descriptor_bound_path_fails_closed_without_a_descriptor_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fd = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        monkeypatch.setattr(testmon_bootstrap, "_DESCRIPTOR_FD_ROOTS", (tmp_path / "missing",))
+        with pytest.raises(NativeTestmonRepairError, match="descriptor-bound filesystem namespace"):
+            testmon_bootstrap._descriptor_bound_path(fd)
+    finally:
+        os.close(fd)
 
 
 def test_atomic_copy_holds_destination_directory_across_parent_replacement(

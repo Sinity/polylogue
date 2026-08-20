@@ -707,6 +707,48 @@ def test_seed_reports_warm_only_on_a_real_environment_match(
     assert "verifies start warm" in note
 
 
+def test_seed_preserves_a_certified_destination_when_source_is_uncertified(tmp_path: Path) -> None:
+    """Rerunning lane-init cannot replace a certified lane with stale source state."""
+    import sqlite3
+
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, inspect_native_testmon_environment
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    _certified_graph_with(root, "polylogue-current")
+    _certified_graph_with_names(lane, ["polylogue-current", "lane-only"])
+    with sqlite3.connect(root / TESTMON_DATA_RELPATH) as connection:
+        connection.execute("DROP TABLE polylogue_certified_corpus")
+        connection.commit()
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
+
+    assert warm is True
+    assert "preserved certified lane environment" in note
+    assert inspect_native_testmon_environment(lane / TESTMON_DATA_RELPATH, environment_name="lane-only").valid
+
+
+def test_seed_rejects_an_uncertified_source_before_publication(tmp_path: Path) -> None:
+    """A structurally valid coordinator graph needs a certificate before copy."""
+    import sqlite3
+
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    _certified_graph_with(root, "polylogue-current")
+    with sqlite3.connect(root / TESTMON_DATA_RELPATH) as connection:
+        connection.execute("DROP TABLE polylogue_certified_corpus")
+        connection.commit()
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
+
+    assert warm is False
+    assert "not certified" in note
+    assert not (lane / TESTMON_DATA_RELPATH).exists()
+
+
 @pytest.mark.uses_real_clock("coordinates lane publication with verifier preparation")
 def test_seed_serializes_with_verifier_publication_and_preserves_later_write(
     tmp_path: Path,

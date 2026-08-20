@@ -42,6 +42,7 @@ from typing import Literal
 TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
 TESTMON_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
+_DESCRIPTOR_FD_ROOTS = (Path("/proc/self/fd"), Path("/dev/fd"))
 
 NativeStateStatus = Literal["absent", "valid", "invalid", "incomplete"]
 NativeSelectionMode = Literal["bootstrap", "affected"]
@@ -1064,7 +1065,21 @@ def _open_owned_testmon_directory(repo_root: Path, *, create: bool) -> int:
 
 def _owned_testmon_child(directory_fd: int, name: str) -> Path:
     """Address a child through a held directory descriptor, not its parent path."""
-    return Path(f"/proc/self/fd/{directory_fd}/{name}")
+    return _descriptor_bound_path(directory_fd) / name
+
+
+def _descriptor_bound_path(file_descriptor: int) -> Path:
+    """Return a path that reopens the exact held descriptor, or fail closed."""
+    for root in _DESCRIPTOR_FD_ROOTS:
+        candidate = root / str(file_descriptor)
+        try:
+            os.stat(candidate)
+        except OSError:
+            continue
+        return candidate
+    raise NativeTestmonRepairError(
+        f"no descriptor-bound filesystem namespace is available for file descriptor {file_descriptor}"
+    )
 
 
 def _publish_validated_testmon_database(
@@ -1090,7 +1105,7 @@ def _publish_validated_testmon_database(
         with contextlib.suppress(FileNotFoundError):
             os.unlink(publication_name, dir_fd=destination_directory_fd)
         os.link(
-            f"/proc/self/fd/{temporary_fd}",
+            str(_descriptor_bound_path(temporary_fd)),
             publication_name,
             dst_dir_fd=destination_directory_fd,
             follow_symlinks=True,
@@ -1146,7 +1161,7 @@ def _atomic_copy_sqlite_database(
         )
         # O_EXCL binds this descriptor to the new inode.  Opening the child
         # name again would let a replacement of that entry redirect SQLite.
-        temporary_sqlite_path = Path(f"/proc/self/fd/{temporary_fd}")
+        temporary_sqlite_path = _descriptor_bound_path(temporary_fd)
         with (
             contextlib.closing(
                 sqlite3.connect(

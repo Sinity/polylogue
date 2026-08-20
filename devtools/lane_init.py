@@ -474,6 +474,7 @@ def _seed_testmon_graph_unlocked(
     initial_digest = attestation.digests[0]
     destination_initial_state = inspect_native_testmon_environment(destination, environment_name=initial_digest)
     initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
+    source_state_for_copy = initial_state
     copy_digest: str | None = initial_digest if initial_state.valid else None
     if copy_digest is None and len(attestation.digests) > 1:
         if not native_testmon_fallback_allowed(destination_initial_state, initial_state):
@@ -488,6 +489,7 @@ def _seed_testmon_graph_unlocked(
             fallback_state = inspect_native_testmon_environment(source, environment_name=fallback_digest)
             if fallback_state.valid:
                 copy_digest = fallback_digest
+                source_state_for_copy = fallback_state
     if copy_digest is None and initial_state.status == "invalid":
         return (
             "seeded graph's initial verify environment is invalid and not attestable; first lane verify will bootstrap",
@@ -497,6 +499,36 @@ def _seed_testmon_graph_unlocked(
         return (
             "seeded graph is not attestable for verify's environment candidates; "
             "no valid candidate; first lane verify will bootstrap",
+            False,
+        )
+
+    destination_state = inspect_native_testmon_environment(destination, environment_name=copy_digest)
+    if destination_state.valid and destination_state.environment is not None:
+        destination_violation = certified_attestation_violation(
+            worktree,
+            environment_name=copy_digest,
+            current_nodeids=destination_state.environment.nodeids,
+        )
+        if destination_violation is None:
+            return (
+                f"preserved certified lane environment ({copy_digest[:24]}...); verifies start warm",
+                True,
+            )
+
+    if not source_state_for_copy.valid or source_state_for_copy.environment is None:
+        return (
+            "coordinator graph is not attestable for the selected environment; first lane verify will bootstrap",
+            False,
+        )
+    source_violation = certified_attestation_violation(
+        root,
+        environment_name=copy_digest,
+        current_nodeids=source_state_for_copy.environment.nodeids,
+    )
+    if source_violation is not None:
+        return (
+            f"coordinator graph is not certified for the selected environment ({source_violation}); "
+            "first lane verify will bootstrap",
             False,
         )
 
