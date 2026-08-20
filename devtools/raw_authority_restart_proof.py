@@ -254,6 +254,9 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
 
     def record_reissue(*args: object, **kwargs: object) -> None:
         ordering.append("reissue")
+        # Deliberately create a timestamp tie so this proof exercises the
+        # decision_id tie-break rather than only the primary chronology key.
+        kwargs["decided_at_ms"] = 1
         real_reissue(*args, **kwargs)  # type: ignore[arg-type]
 
     def record_write(*args: object, **kwargs: object) -> str:
@@ -311,7 +314,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             ) VALUES (?, 'chatgpt:reparse-browser', ?, ?, ?, ?, 0,
                       'quarantined', NULL, NULL)
             """,
-            (raw_id, native_id, str(blob_hash), current_hash, len(current_session.messages)),
+            (raw_id, native_id, current_hash.hex(), current_hash, len(current_session.messages)),
         )
         source_conn.execute(
             """
@@ -334,11 +337,15 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
 
     _require(ordering == ["reissue", "write"], f"accepted-head reparse ordering changed: {ordering}")
     _require(len(applications) == 2, "accepted-head reparse receipt count is not durable")
+    application_decisions = [str(row[0]) for row in applications]
+    application_timestamps = [int(row[1]) for row in applications]
+    application_decision_ids = [str(row[2]) for row in applications]
     _require(
-        [str(row[0]) for row in applications]
+        application_decisions
         == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value]
-        and int(applications[0][1]) < int(applications[1][1]),
-        "accepted-head reparse receipts are not ordered chronologically",
+        and application_timestamps == [1, 1]
+        and application_decision_ids == sorted(application_decision_ids),
+        "accepted-head reparse receipts are not ordered by timestamp and decision id",
     )
     _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
     _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
@@ -346,12 +353,64 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         repair_item.reason == "current accepted head does not exactly prove the normalized session",
         f"reparse-then-repair refusal changed: {repair_item.reason}",
     )
+    with sqlite3.connect(case_root / "index.db") as index_conn:
+        index_conn.execute(
+            """
+            DELETE FROM raw_revision_applications
+            WHERE raw_id = ? AND logical_source_key = ? AND decision = ?
+            """,
+            (raw_id, "unknown:reparse-browser", ApplicationDecision.REPARSE_REAFFIRMATION.value),
+        )
+        record_revision_application_sync(
+            index_conn,
+            RevisionApplicationReceipt(
+                raw_id=raw_id,
+                session_id="chatgpt-export:reparse-browser",
+                logical_source_key="unknown:reparse-browser",
+                source_revision=str(blob_hash),
+                acquisition_generation=0,
+                decision=ApplicationDecision.SELECTED_BASELINE,
+                accepted_raw_id=raw_id,
+                accepted_source_revision=str(blob_hash),
+                accepted_content_hash=current_hash,
+                accepted_frontier_kind="byte",
+                accepted_frontier=len(payload),
+                baseline_raw_id=raw_id,
+                detail="restart-proof:anti-vacuity-single-receipt",
+            ),
+            decided_at_ms=1,
+        )
+        index_conn.commit()
+
+    with sqlite3.connect(case_root / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            UPDATE raw_session_memberships
+            SET normalized_content_hash = ?
+            WHERE raw_id = ? AND logical_source_key = 'chatgpt:reparse-browser'
+            """,
+            (bytes(32), raw_id),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(case_root / "index.db") as index_conn:
+        index_conn.row_factory = sqlite3.Row
+        index_conn.execute("ATTACH DATABASE ? AS source", (str(case_root / "source.db"),))
+        wrong_hash_repair_item = repair._inspect_browser_capture_origin_strategy(
+            case_root,
+            raw_id,
+            conn=index_conn,
+        )
+    _require(
+        wrong_hash_repair_item.reason == "membership census does not exactly reproduce the accepted session",
+        "wrong normalized hash was not distinguished from the two-receipt refusal",
+    )
     with sqlite3.connect(case_root / "source.db") as source_conn:
         raw_count = int(source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
     _require(raw_count == 1, "reparse-then-repair mutated the source raw set while refusing")
     return {
         "ordering": ordering,
-        "application_decisions": [str(row[0]) for row in applications],
+        "application_decisions": application_decisions,
         "application_count": len(applications),
         "head_content_hash": current_hash.hex(),
         "session_content_hash": bytes(session_hash).hex(),
