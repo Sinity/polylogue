@@ -322,36 +322,6 @@ def _warn_low_memory() -> None:
         sys.stderr.write(f"verify: low memory ({avail_gb:.1f} GB free) — pytest may be slow or OOM\n")
 
 
-# ── completion notification ────────────────────────────────────────
-
-
-def _notify(summary: str) -> None:
-    """Send desktop notification if notify-send is available."""
-    if shutil.which("notify-send"):
-        subprocess.run(
-            ["notify-send", "polylogue verify", summary],
-            capture_output=True,
-            timeout=5,
-        )
-
-
-def _format_completion_notification(
-    *,
-    exit_code: int,
-    total_duration: float,
-    step_results: list[dict[str, Any]],
-) -> str:
-    """Build the desktop notification summary for a completed verify run."""
-    if exit_code == 0:
-        msg = f"PASS ({total_duration:.0f}s)"
-        pytest_step = next((s for s in step_results if str(s["name"]).startswith("pytest")), None)
-        if pytest_step is not None and "count" in pytest_step:
-            msg += f", {pytest_step['count']} tests"
-        return msg
-    failed = [s["name"] for s in step_results if s["exit"] != 0]
-    return f"FAIL ({total_duration:.0f}s) — {', '.join(failed)}"
-
-
 # ── history (JSONL) ────────────────────────────────────────────────
 
 
@@ -3216,13 +3186,6 @@ def _finalize_preflight_failure(
     if use_json:
         _print_json(history_entry)
     sys.stderr.write(f"verify: {message}\n")
-    _notify(
-        _format_completion_notification(
-            exit_code=exit_code,
-            total_duration=duration_s,
-            step_results=history_entry["steps"],
-        )
-    )
     return exit_code
 
 
@@ -3863,14 +3826,6 @@ def _main(argv: list[str] | None = None) -> int:
             from devtools.merge_boundary import record_accepted_terminal_verify
 
             record_accepted_terminal_verify(git_head=head, duration_s=total_duration)
-    else:
-        _notify(
-            _format_completion_notification(
-                exit_code=exit_code,
-                total_duration=total_duration,
-                step_results=step_results,
-            )
-        )
     return exit_code
 
 
