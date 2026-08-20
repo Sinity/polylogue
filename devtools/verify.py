@@ -1315,6 +1315,7 @@ def _run_pytest_with_heartbeat(
     run: VerifyRun | None = None,
     artifacts: PytestStepArtifacts | None = None,
     timeout_override_s: float | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     heartbeat_s = _pytest_heartbeat_interval()
     timeout_s = _pytest_timeout_s() if timeout_override_s is None else max(0.0, timeout_override_s)
@@ -1352,16 +1353,29 @@ def _run_pytest_with_heartbeat(
         run_id=pytest_run_id,
         env=env,
     )
-    launch = build_supervisor_launch(
-        cmd,
-        owner_pid=os.getpid(),
-        timeout_s=timeout_s,
-        term_grace_s=term_grace_s,
-        receipt_path=receipt_path,
-        run_id=pytest_run_id,
-        env=env,
-        cleanup_path=tmpfs_cleanup_path,
-    )
+    if pass_fds:
+        launch = build_supervisor_launch(
+            cmd,
+            owner_pid=os.getpid(),
+            timeout_s=timeout_s,
+            term_grace_s=term_grace_s,
+            receipt_path=receipt_path,
+            run_id=pytest_run_id,
+            env=env,
+            cleanup_path=tmpfs_cleanup_path,
+            pass_fds=pass_fds,
+        )
+    else:
+        launch = build_supervisor_launch(
+            cmd,
+            owner_pid=os.getpid(),
+            timeout_s=timeout_s,
+            term_grace_s=term_grace_s,
+            receipt_path=receipt_path,
+            run_id=pytest_run_id,
+            env=env,
+            cleanup_path=tmpfs_cleanup_path,
+        )
     sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
     sys.stderr.write(
         f"    containment: mode={launch.mode}"
@@ -1421,6 +1435,7 @@ def _run_pytest_with_heartbeat(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            pass_fds=launch.pass_fds,
         )
 
     def _stop_startup_attempt(
@@ -1497,6 +1512,7 @@ def _run_pytest_with_heartbeat(
             "process-group",
             None,
             None,
+            pass_fds=launch.pass_fds,
         )
         process = _spawn_supervisor(launch.argv)
         assert process.stdout is not None
@@ -2047,6 +2063,7 @@ def _run(
             run=run,
             timeout_s=timeout_s,
             native_testmon_data=state.data_path,
+            native_testmon_descriptor=state.descriptor,
         )
     finally:
         if temporary_state:
@@ -2061,6 +2078,7 @@ def _run_step(
     run: VerifyRun | None = None,
     timeout_s: float | None = None,
     native_testmon_data: Path | None = None,
+    native_testmon_descriptor: int | None = None,
 ) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
@@ -2185,6 +2203,7 @@ def _run_step(
                     run=run,
                     artifacts=artifacts,
                     timeout_override_s=timeout_s,
+                    pass_fds=(native_testmon_descriptor,) if native_testmon_descriptor is not None else (),
                 )
             except PytestContainmentError as exc:
                 pytest_containment_quiescent = False

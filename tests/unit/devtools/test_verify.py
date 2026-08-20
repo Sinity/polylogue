@@ -2947,6 +2947,44 @@ def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
     assert captured["native_testmon_data"] == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
 
 
+def test_native_verifier_preserves_bound_testmon_descriptor_for_contained_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The descriptor-bound testmon path remains usable beyond the supervisor."""
+    descriptor_root = Path("/dev/fd")
+    probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (descriptor_root / str(probe)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe)
+
+    monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    state = verify._open_owned_native_testmon_state(tmp_path)
+    state.data_path.write_text("bound testmon state", encoding="utf-8")
+    observed = tmp_path / "contained-child.txt"
+    child = (
+        "import os\n"
+        "from pathlib import Path\n"
+        f"Path({str(observed)!r}).write_text(Path(os.environ['TESTMON_DATAFILE']).read_text())\n"
+    )
+    try:
+        rc, _elapsed, _metadata = verify._run_step(
+            "pytest native descriptor inheritance",
+            [sys.executable, "-c", child],
+            cwd=str(tmp_path),
+            native_testmon_data=state.data_path,
+            native_testmon_descriptor=state.descriptor,
+        )
+    finally:
+        state.close()
+
+    assert rc == 0
+    assert observed.read_text(encoding="utf-8") == "bound testmon state"
+
+
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
     cleaned = tmp_path / "pytest-polylogue-run-1"
