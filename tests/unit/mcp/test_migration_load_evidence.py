@@ -366,6 +366,10 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     request_count = 32
     worker_count = 16
     archive_root = tmp_path / "archive"
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
     session_ids = _seed_archive(archive_root, count=request_count)
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
@@ -463,6 +467,7 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     }
     assert after_files - before_files <= allowed_new_sidecars
     assert _archive_fd_targets(archive_root) == before_fds
+    assert not (state_root / "polylogue" / "mcp-call-log").exists()
 
     for database in archive_root.glob("*.db"):
         with sqlite3.connect(database) as connection:
