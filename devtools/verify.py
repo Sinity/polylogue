@@ -339,6 +339,8 @@ PYTEST_CONTAINMENT_PATH = CURRENT_CONTAINMENT_PATH
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
+_REAL_TEST_PROGRESS_EVENTS = frozenset({"test_started", "test_finished", "test_report"})
+_STORAGE_SCALE_HEARTBEAT_KIND = "storage_scale_heartbeat"
 PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
@@ -1545,32 +1547,48 @@ def _run_pytest_with_heartbeat(
     # the stall detector (polylogue-27rb). last_progress_marker tracks the
     # latest test event's own updated_at timestamp across all workers
     # (devtools/pytest_progress_plugin.py); last_progress_at is the local
-    # monotonic time that marker was last seen to change.
+    # monotonic time that a real test event marker was last seen to change.
+    # A storage-scale heartbeat is activity telemetry only. It may keep the
+    # selector awake while expected storage work is quiet, but it must not
+    # reset the hard no-progress stall clock.
     initial_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
-    last_progress_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
+    last_event_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
+    last_progress_marker: str | None = (
+        initial_event.get("updated_at")
+        if initial_event is not None and initial_event.get("event") in _REAL_TEST_PROGRESS_EVENTS
+        else None
+    )
     last_progress_at = last_sample
-    seen_any_progress_event = initial_event is not None
+    last_activity_at = last_sample
+    seen_any_progress_event = initial_event is not None and initial_event.get("event") in _REAL_TEST_PROGRESS_EVENTS
     xdist_uninterruptible_since: float | None = None
 
     def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
-        nonlocal last_progress_marker, last_progress_at, seen_any_progress_event
+        nonlocal last_event_marker, last_progress_marker, last_progress_at
+        nonlocal last_activity_at, seen_any_progress_event
         if latest is None:
             latest = _read_latest_pytest_event(events_path, events_dir=events_dir)
         if latest is None:
             return
         marker = latest.get("updated_at")
+        if marker == last_event_marker:
+            return
+        last_event_marker = marker
+        last_activity_at = at
+        if latest.get("event") == "test_progress" and latest.get("progress_kind") == _STORAGE_SCALE_HEARTBEAT_KIND:
+            return
+        if latest.get("event") not in _REAL_TEST_PROGRESS_EVENTS:
+            return
         seen_any_progress_event = True
-        if marker != last_progress_marker:
-            last_progress_marker = marker
-            last_progress_at = at
+        last_progress_marker = marker
+        last_progress_at = at
 
     try:
         while True:
             now = time.monotonic()
             elapsed = now - t0
-            idle = now - last_output
             progress_idle = now - last_progress_at
-            activity_idle = min(idle, progress_idle) if seen_any_progress_event else idle
+            activity_idle = now - last_activity_at
             receipt = read_receipt(launch.receipt_path)
             if receipt is not None and receipt.get("status") in {"finished", "terminated"} and selector.get_map():
                 if supervisor_finished_at is None:
@@ -1666,8 +1684,13 @@ def _run_pytest_with_heartbeat(
             if timeout_s > 0 and termination_reason is None:
                 deadlines.append(max(timeout_s - elapsed, 0.0))
             if stall_timeout_s > 0 and termination_reason is None:
-                deadlines.append(max(stall_timeout_s - idle, 0.0))
-            if stall_timeout_s > 0 and seen_any_progress_event and termination_reason is None:
+                deadlines.append(max(stall_timeout_s - activity_idle, 0.0))
+            if (
+                stall_timeout_s > 0
+                and seen_any_progress_event
+                and termination_reason is None
+                and xdist_uninterruptible_since is None
+            ):
                 deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
             if termination_requested_at is not None and not forced_cleanup:
                 deadlines.append(max(term_grace_s + 1.0 - (now - termination_requested_at), 0.0))
@@ -1687,6 +1710,7 @@ def _run_pytest_with_heartbeat(
                         sys.stderr.write(chunk.decode(errors="replace"))
                         sys.stderr.flush()
                         last_output = time.monotonic()
+                        last_activity_at = last_output
                         _refresh_progress_marker(last_output)
                         receipt = read_receipt(launch.receipt_path)
                         _write_pytest_progress(

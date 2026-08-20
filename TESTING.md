@@ -231,11 +231,12 @@ that cadence (default 15 seconds, `0` disables the size walk). Focused
 compose with or extend the verify invocation deadline.
 
 Tests marked `storage_scale` move their private `tmp_path` tree to NVMe scratch
-and emit a periodic `test_progress` heartbeat while the marked node runs. The
+and emit a periodic typed activity heartbeat while the marked node runs. The
 heartbeat uses the same per-worker JSONL event ledger as ordinary pytest
-progress, so a long storage operation remains live without weakening the
-stall threshold. Its cadence defaults to 30 seconds and can be shortened for a
-controlled reproduction with `POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S`.
+progress, so quiet storage work remains observable. It does not reset the
+hard no-test-progress stall clock: only real node and phase events do that.
+Its cadence defaults to 30 seconds and can be shortened for a controlled
+reproduction with `POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S`.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so

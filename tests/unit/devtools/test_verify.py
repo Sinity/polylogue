@@ -3864,8 +3864,8 @@ def test_storage_scale_progress_heartbeat_prevents_false_silent_stall(
     )
     monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.1")
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "4")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "4")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
     run = VerifyRun(tier="storage-scale-heartbeat", argv=[], git_head=None, root=tmp_path)
 
@@ -3877,12 +3877,66 @@ def test_storage_scale_progress_heartbeat_prevents_false_silent_stall(
 
     step = run._payload["steps"][0]
     artifact_dir = tmp_path / str(step["artifact_dir"])
-    event_files = list((artifact_dir / "events").glob("*.jsonl"))
-    assert event_files
-    events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
+    events_path = artifact_dir / "events.jsonl"
+    assert events_path.is_file()
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert rc == 0
     assert metadata.get("termination_reason") is None
     assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+
+
+def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker heartbeat is activity telemetry, not proof that a node advanced."""
+    module = tmp_path / "test_storage_scale_deadlock.py"
+    module.write_text(
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_marked_deadlock():\n"
+        "    while True:\n"
+        "        print('deadlock-output', flush=True)\n"
+        "        time.sleep(0.02)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    # xdist controller/worker startup is itself observable setup work; leave
+    # it room to reach the marked node before testing the no-progress bound.
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-deadlock-xdist", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale deadlock",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            "-n",
+            "1",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = tmp_path / str(step["artifact_dir"])
+    events_path = artifact_dir / "events.jsonl"
+    assert events_path.is_file()
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_terminated"
+    assert metadata["termination_reason"].startswith("pytest reported no test progress for 1.5s")
+    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+    assert any(event.get("worker_id") == "gw0" for event in events)
 
 
 def test_unmarked_silent_node_still_terminates_on_output_stall(
