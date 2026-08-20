@@ -34,10 +34,20 @@ def _write_element(root: Path, provider: str, document: dict[str, object]) -> No
 
 
 def test_committed_schema_bundle_privacy_guard_is_green() -> None:
-    report = audit_schema_bundle_privacy()
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+    expected_scopes: set[str] = set()
+    for provider in registry.list_providers():
+        for version in registry.list_versions(provider):
+            package = registry.get_package(provider, version=version)
+            assert package is not None
+            expected_scopes.update(f"{provider}/{version}/{element.element_kind}" for element in package.elements)
+
+    report = audit_schema_bundle_privacy(registry=registry)
 
     assert report.checks, "the required schema privacy registry must inspect committed elements"
     assert report.all_passed, [check.format_line() for check in report.checks if check.status.value == "error"]
+    assert len(report.checks) == len(expected_scopes)
+    assert {getattr(check, "provider", None) for check in report.checks} == expected_scopes
 
 
 def test_committed_schema_bundle_privacy_guard_red_twin(tmp_path: Path) -> None:
@@ -132,6 +142,33 @@ def test_declared_element_without_schema_file_is_a_privacy_guard_failure(tmp_pat
     assert any(
         getattr(check, "provider", None) == f"{provider}/{version}/{element_kind}"
         and "schema file is missing" in check.summary
+        for check in privacy_failures
+    )
+
+
+def test_declared_schema_artifact_missing_is_a_privacy_guard_failure(tmp_path: Path) -> None:
+    """A declared schema whose copied artifact is absent must fail the registry workflow."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    package = registry.get_package(provider, version=version)
+    assert package is not None
+    element = next(element for element in package.elements if element.schema_file is not None)
+    schema_file = element.schema_file
+    assert schema_file is not None
+    schema_path = bundle_root / provider / "versions" / version / "elements" / schema_file
+    assert schema_path.is_file()
+    schema_path.unlink()
+    assert element.schema_file == schema_file
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    privacy_failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(
+        getattr(check, "provider", None) == f"{provider}/{version}/{element.element_kind}"
+        and check.summary == "Committed element schema is missing"
         for check in privacy_failures
     )
 
