@@ -941,6 +941,58 @@ def _owned_testmon_child(directory_fd: int, name: str) -> Path:
     return Path(f"/proc/self/fd/{directory_fd}/{name}")
 
 
+def _publish_validated_testmon_database(
+    *,
+    destination_directory_fd: int,
+    destination_name: str,
+    temporary_fd: int,
+    publication_name: str,
+    deadline_monotonic: float | None,
+) -> None:
+    """Publish the validated inode and recover from a mutable source race.
+
+    ``rename`` is atomic, but its source is still a directory entry.  Prove
+    the destination inode after the rename as well as the publication entry
+    before it; if a concurrent replacement won that narrow window, retry from
+    the still-open validated inode.  Every attempt is an atomic rename and the
+    caller's cleanup removes both scratch names on success or failure.
+    """
+    validated_identity = os.fstat(temporary_fd)
+    expected_identity = (validated_identity.st_dev, validated_identity.st_ino)
+    for attempt in range(3):
+        _ensure_deadline(deadline_monotonic)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(publication_name, dir_fd=destination_directory_fd)
+        os.link(
+            f"/proc/self/fd/{temporary_fd}",
+            publication_name,
+            dst_dir_fd=destination_directory_fd,
+            follow_symlinks=True,
+        )
+        publication_identity = os.stat(
+            publication_name,
+            dir_fd=destination_directory_fd,
+            follow_symlinks=False,
+        )
+        if (publication_identity.st_dev, publication_identity.st_ino) != expected_identity:
+            raise NativeTestmonRepairError("validated SQLite publication inode changed before rename")
+        os.replace(
+            publication_name,
+            destination_name,
+            src_dir_fd=destination_directory_fd,
+            dst_dir_fd=destination_directory_fd,
+        )
+        published_identity = os.stat(
+            destination_name,
+            dir_fd=destination_directory_fd,
+            follow_symlinks=False,
+        )
+        if (published_identity.st_dev, published_identity.st_ino) == expected_identity:
+            return
+        if attempt == 2:
+            raise NativeTestmonRepairError("published SQLite database inode changed after atomic rename")
+
+
 def _atomic_copy_sqlite_database(
     source: Path,
     destination: Path,
@@ -1003,27 +1055,6 @@ def _atomic_copy_sqlite_database(
         if not copied.valid:
             raise NativeTestmonRepairError(f"copied main-checkout database failed validation: {copied.reason}")
         os.fsync(temporary_fd)
-        # Bind a second directory entry to the validated inode while the
-        # descriptor is still held.  Publication must not rename the mutable
-        # temporary pathname: a valid, differently-marked database could be
-        # substituted there after descriptor-bound validation.
-        os.link(
-            temporary_sqlite_path,
-            publication_name,
-            dst_dir_fd=destination_directory_fd,
-            follow_symlinks=True,
-        )
-        validated_identity = os.fstat(temporary_fd)
-        publication_identity = os.stat(
-            publication_name,
-            dir_fd=destination_directory_fd,
-            follow_symlinks=False,
-        )
-        if (validated_identity.st_dev, validated_identity.st_ino) != (
-            publication_identity.st_dev,
-            publication_identity.st_ino,
-        ):
-            raise NativeTestmonRepairError("validated SQLite publication inode changed")
         # Remove the DESTINATION's sidecars before the replace: a stale -wal
         # from a previous database under the same name is read as this new
         # database's write-ahead log, and quick_check then fails with page
@@ -1032,11 +1063,12 @@ def _atomic_copy_sqlite_database(
         for suffix in TESTMON_SIDECAR_SUFFIXES:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(f"{destination_name}{suffix}", dir_fd=destination_directory_fd)
-        os.replace(
-            publication_name,
-            destination_name,
-            src_dir_fd=destination_directory_fd,
-            dst_dir_fd=destination_directory_fd,
+        _publish_validated_testmon_database(
+            destination_directory_fd=destination_directory_fd,
+            destination_name=destination_name,
+            temporary_fd=temporary_fd,
+            publication_name=publication_name,
+            deadline_monotonic=deadline_monotonic,
         )
         os.fsync(destination_directory_fd)
         _ensure_deadline(deadline_monotonic)

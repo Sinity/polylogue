@@ -597,10 +597,10 @@ def test_atomic_copy_does_not_install_a_valid_replacement_after_validation(
         dst_dir_fd: int | None = None,
     ) -> None:
         nonlocal attacked
-        temporary_entries = tuple(destination_data.parent.glob(f".{destination_data.name}.copy-*.tmp"))
-        if temporary_entries and not attacked:
+        publication_entries = tuple(destination_data.parent.glob(f".{destination_data.name}.publish-*.tmp"))
+        if publication_entries and not attacked:
             attacked = True
-            original_replace(replacement_data, temporary_entries[0])
+            original_replace(replacement_data, publication_entries[0])
         original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
     monkeypatch.setattr(os, "replace", replace_after_validation)
@@ -613,6 +613,7 @@ def test_atomic_copy_does_not_install_a_valid_replacement_after_validation(
     )
 
     assert attacked
+    assert len(tuple(destination_data.parent.glob(f".{destination_data.name}.publish-*.tmp"))) == 0
     copied = inspect_native_testmon_environment(destination_data, environment_name="owned-environment")
     replacement = inspect_native_testmon_environment(destination_data, environment_name="different-environment")
     assert copied.valid

@@ -234,12 +234,18 @@ def test_main_provisions_and_verifies_a_real_lane_from_a_poisoned_coordinator(tm
     assert "give this checkout its own venv" in foreign_guard.stderr
 
 
-def test_main_seed_then_verifier_preparation_reuses_the_primary_graph(
+def test_lane_warm_claim_is_revalidated_after_distribution_drift(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The lane-init command boundary leaves the real verifier warm."""
-    from devtools.testmon_bootstrap import prepare_native_testmon_environment, testmon_environment_digest
+    """The real lane boundary refuses a graph after its distribution set drifts.
+
+    The lane is provisioned and attested through its own interpreter, then
+    ``lane_init.main`` seeds it from a certified coordinator graph.  A second
+    lane-interpreter subprocess adds an installed distribution after that warm
+    claim.  Verifier preparation must recompute the lane digest and go cold;
+    a coordinator-process preparation or mocked attestation would miss this.
+    """
 
     coordinator = tmp_path / "coordinator"
     lane = tmp_path / "lane"
@@ -250,58 +256,106 @@ def test_main_seed_then_verifier_preparation_reuses_the_primary_graph(
         capture_output=True,
         text=True,
     )
-    digest_inputs = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": None}
-    primary = testmon_environment_digest(
-        coordinator,
-        pytest_profile="correctness=complete",
-        pytest_environment=digest_inputs,
+    monkeypatch.setenv("HYPOTHESIS_PROFILE", "default")
+    monkeypatch.delenv("POLYLOGUE_CI", raising=False)
+    branch = "feature/test/seeded-verifier"
+    assert lane_init._ensure_worktree(coordinator, lane, branch, "HEAD") is None
+    coordinator_python = Path(sys.executable)
+    coordinator_interpreter = lane_init.coordinator_base_interpreter(coordinator)
+    assert coordinator_interpreter is not None
+    assert lane_init._provision_venv(lane, coordinator_interpreter) is None
+    attestation = lane_init.lane_environment_attestation(lane)
+    assert attestation is not None
+    _certified_graph_with_names(coordinator, attestation.digests)
+
+    poisoned_env = os.environ | {
+        "VIRTUAL_ENV": str(coordinator / ".venv"),
+        "PYTHONPATH": str(coordinator),
+        "UV_PROJECT": str(coordinator),
+        "UV_WORKING_DIR": str(coordinator),
+    }
+    main_driver = "from devtools.lane_init import main; import sys; raise SystemExit(main(sys.argv[1:]))"
+    main_result = subprocess.run(
+        [
+            str(coordinator_python),
+            "-c",
+            main_driver,
+            str(lane),
+            "--branch",
+            branch,
+            "--base",
+            "HEAD",
+            "--json",
+        ],
+        cwd=coordinator,
+        env=poisoned_env,
+        capture_output=True,
+        text=True,
     )
-    _certified_graph_with(coordinator, primary)
-
-    monkeypatch.setattr(lane_init, "repo_root", lambda: coordinator)
-    monkeypatch.setattr(lane_init, "coordinator_base_interpreter", lambda _root: Path(sys.executable))
-    monkeypatch.setattr(lane_init, "_provision_venv", lambda worktree, _interpreter=None: None)
-    monkeypatch.setattr(lane_init, "_interpreter_guard", lambda _worktree, _expected: None)
-    monkeypatch.setattr(lane_init, "_guard_check", lambda _worktree: None)
-    monkeypatch.setattr(lane_init, "lane_environment_attestation", lambda _worktree: _attestation(primary))
-    original_run = lane_init._run
-
-    def run_lane_verify(
-        cmd: Sequence[str],
-        *,
-        cwd: Path | None = None,
-        env: dict[str, str] | None = None,
-    ) -> CompletedProcess[str]:
-        if cmd[:4] == [str(lane / ".venv" / "bin" / "python"), "-m", "devtools", "workspace"]:
-            return CompletedProcess(cmd, 0, "", "")
-        return original_run(cmd, cwd=cwd, env=env)
-
-    monkeypatch.setattr(lane_init, "_run", run_lane_verify)
-
-    assert (
-        lane_init.main(
-            [
-                str(lane),
-                "--branch",
-                "feature/test/seeded-verifier",
-                "--base",
-                "HEAD",
-                "--json",
-            ]
-        )
-        == 0
-    )
+    assert main_result.returncode == 0, main_result.stdout + main_result.stderr
 
     record = json.loads((coordinator / lane_init.LEDGER_RELPATH).read_text(encoding="utf-8").splitlines()[-1])
     assert record["testmon_warm"] is True
-    preparation = prepare_native_testmon_environment(
-        lane,
-        pytest_profile="correctness=complete",
-        pytest_environment=digest_inputs,
+    lane_python = lane / ".venv" / "bin" / "python"
+    assert lane_python.is_file()
+    drift_driver = (
+        "from pathlib import Path; "
+        "import sysconfig; "
+        "root = Path(sysconfig.get_paths()['purelib']) / 'polylogue_lane_drift-0.0.0.dist-info'; "
+        "root.mkdir(); "
+        "(root / 'METADATA').write_text('Metadata-Version: 2.1\\nName: polylogue-lane-drift\\nVersion: 0.0.0\\n')"
     )
-    assert preparation.environment_name == primary
-    assert preparation.selection_mode == "affected"
-    assert preparation.copied_from is None
+    drift_result = subprocess.run(
+        [str(lane_python), "-P", "-c", drift_driver],
+        cwd=lane,
+        env=lane_init._lane_env(lane),
+        capture_output=True,
+        text=True,
+    )
+    assert drift_result.returncode == 0, drift_result.stdout + drift_result.stderr
+    drift_attestation_driver = (
+        "import json; "
+        "from pathlib import Path; "
+        "from devtools.lane_init import lane_environment_attestation; "
+        "attestation = lane_environment_attestation(Path.cwd()); "
+        "assert attestation is not None; "
+        "print(json.dumps({'digests': list(attestation.digests)}))"
+    )
+    drift_attestation_result = subprocess.run(
+        [str(lane_python), "-P", "-c", drift_attestation_driver],
+        cwd=lane,
+        env=lane_init._lane_env(lane),
+        capture_output=True,
+        text=True,
+    )
+    assert drift_attestation_result.returncode == 0, drift_attestation_result.stdout + drift_attestation_result.stderr
+    drift_attestation = json.loads(drift_attestation_result.stdout)
+    assert drift_attestation["digests"][0] != attestation.digests[0]
+    preparation_driver = (
+        "import json; "
+        "from pathlib import Path; "
+        "from devtools.testmon_bootstrap import prepare_native_testmon_environment; "
+        "preparation = prepare_native_testmon_environment("
+        "Path.cwd(), pytest_profile='correctness=complete', "
+        "pytest_environment={'HYPOTHESIS_PROFILE': 'default', 'POLYLOGUE_CI': None}); "
+        "print(json.dumps({'environment_name': preparation.environment_name, "
+        "'selection_mode': preparation.selection_mode, "
+        "'local_status': preparation.local_state.status, "
+        "'copied_from': preparation.copied_from is not None}))"
+    )
+    preparation_result = subprocess.run(
+        [str(lane_python), "-P", "-c", preparation_driver],
+        cwd=lane,
+        env=lane_init._lane_env(lane),
+        capture_output=True,
+        text=True,
+    )
+    assert preparation_result.returncode == 0, preparation_result.stdout + preparation_result.stderr
+    preparation = json.loads(preparation_result.stdout)
+    assert preparation["environment_name"] == drift_attestation["digests"][0]
+    assert preparation["selection_mode"] == "bootstrap"
+    assert preparation["local_status"] in {"absent", "invalid"}
+    assert preparation["copied_from"] is False
 
 
 # ---------------------------------------------------------------------------
