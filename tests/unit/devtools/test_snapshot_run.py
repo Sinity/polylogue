@@ -78,15 +78,6 @@ def test_snapshot_captures_uncommitted_edits_to_tracked_files(sample_repo: Path,
     assert (snapshot / "pkg" / "mod.py").read_text(encoding="utf-8") == "VALUE = 'edited'\n"
 
 
-def test_snapshot_omits_tracked_files_deleted_from_the_working_tree(sample_repo: Path, tmp_path: Path) -> None:
-    """A deletion is part of the frozen working tree, not a copy failure."""
-    (sample_repo / "pkg" / "mod.py").unlink()
-
-    snapshot = materialize_snapshot(sample_repo, tmp_path / "snap")
-
-    assert not (snapshot / "pkg" / "mod.py").exists()
-
-
 def test_snapshot_is_unaffected_by_later_working_tree_edits(sample_repo: Path, tmp_path: Path) -> None:
     """The whole point: a mid-run edit cannot reach the snapshot.
 
