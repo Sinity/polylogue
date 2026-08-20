@@ -78,8 +78,10 @@ def test_detect_provider_evidence_reports_no_match_reason() -> None:
     assert "no detector matched" in evidence
 
 
-def test_origin_spec_binding_is_the_production_detector_authority(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Removing ChatGPT's declared fragment binding removes that real-route match.
+def test_origin_spec_binding_is_the_production_detector_and_lowering_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing ChatGPT's declared fragment binding invalidates the real route.
 
     This is deliberately not a test-local dispatcher: the public evidence API
     must compile the current OriginSpec declarations every time its declaration
@@ -89,6 +91,7 @@ def test_origin_spec_binding_is_the_production_detector_authority(monkeypatch: p
     import polylogue.sources.origin_specs as origin_specs
 
     chatgpt = next(spec for spec in origin_specs.ORIGIN_SPECS if spec.origin is Origin.CHATGPT_EXPORT)
+    before = origin_specs.lowering_fingerprint()
     without_fragment = replace(
         chatgpt,
         detector_bindings=tuple(
@@ -105,6 +108,7 @@ def test_origin_spec_binding_is_the_production_detector_authority(monkeypatch: p
 
     assert provider is None
     assert "no detector matched" in evidence
+    assert origin_specs.lowering_fingerprint() != before
 
 
 def test_detect_provider_from_raw_bytes_evidence_matches_document_detection() -> None:

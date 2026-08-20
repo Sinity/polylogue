@@ -142,28 +142,6 @@ def test_lowering_fingerprint_changes_when_session_emitter_changes(
     assert before != after
 
 
-def test_lowering_fingerprint_changes_when_detector_registry_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A detector-routing change is a lowering-semantic change, not incidental code."""
-    import polylogue.sources.origin_specs as origin_specs
-
-    source_root = tmp_path / "source-root"
-    source_dir = source_root / "polylogue" / "sources"
-    source_dir.mkdir(parents=True)
-    detector = source_dir / "detection.py"
-    detector.write_text("def detect(payload):\n    return None\n", encoding="utf-8")
-    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
-    monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/detection.py",))
-    origin_specs._fingerprint_sources_cached.cache_clear()
-
-    before = origin_specs.lowering_fingerprint()
-    detector.write_text("def detect(payload):\n    return payload\n", encoding="utf-8")
-    after = origin_specs.lowering_fingerprint()
-
-    assert before != after
-
-
 def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None:
     current_parser = parser_fingerprint_for_origin(Origin.CODEX_SESSION)
     command = (

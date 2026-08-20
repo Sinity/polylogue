@@ -432,9 +432,42 @@ class OriginSpec:
         return _fingerprint_sources(source_paths, namespace=f"parser:{self.origin.value}")
 
 
+def _detector_declaration_fingerprint_payload() -> tuple[dict[str, object], ...]:
+    """Project every runtime detector claim that can change lowering behavior."""
+    return tuple(
+        {
+            "origin": spec.origin.value,
+            "lifecycle": spec.lifecycle,
+            "detector_tightness": spec.detector_tightness,
+            "bindings": tuple(
+                {
+                    "binding_id": binding.binding_id,
+                    "mode": binding.mode.value,
+                    "predicate_path": binding.predicate_path,
+                    "local_rank": binding.local_rank,
+                    "mode_rank": binding.mode_rank,
+                    "evidence_label": binding.evidence_label,
+                    "fixed_provider": binding.fixed_provider.value if binding.fixed_provider is not None else None,
+                    "dynamic_provider_path": binding.dynamic_provider_path,
+                    "dynamic_provider_allowlist": tuple(
+                        provider.value for provider in binding.dynamic_provider_allowlist
+                    ),
+                }
+                for binding in spec.detector_bindings
+            ),
+        }
+        for spec in ORIGIN_SPECS
+        if spec.detector_bindings
+    )
+
+
 def lowering_fingerprint() -> str:
-    """Return the shared lowering, identity, revision, and lineage fingerprint."""
-    return _fingerprint_sources(_LOWERING_FINGERPRINT_PATHS, namespace="lowering")
+    """Return the shared lowering, identity, revision, lineage, and detector fingerprint."""
+    payload = {
+        "source_fingerprint": _fingerprint_sources(_LOWERING_FINGERPRINT_PATHS, namespace="lowering"),
+        "detector_declarations": _detector_declaration_fingerprint_payload(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def replay_routing_fingerprint() -> str:
