@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -14,54 +14,18 @@ from polylogue.archive.semantic.models import (
     MCPDetailSemanticFacts,
     MCPSummarySemanticFacts,
     MessageSemanticFacts,
-    ProjectionSemanticFacts,
     SessionSemanticFacts,
     StreamSemanticFacts,
     SummarySemanticFacts,
 )
 from polylogue.archive.semantic.support import (
     SemanticMessageLike,
-    TextMessageLike,
     message_has_text,
     message_reasoning_traces,
     message_tool_calls,
     normalized_role_label,
     sorted_counts,
 )
-
-# ---------------------------------------------------------------------------
-# Projection / message builders
-# ---------------------------------------------------------------------------
-
-
-class ProjectionAttachmentLike(Protocol):
-    @property
-    def message_id(self) -> str | None: ...
-
-
-class ProjectionMessageLike(TextMessageLike, Protocol):
-    @property
-    def message_id(self) -> str: ...
-
-    @property
-    def role(self) -> object: ...
-
-    @property
-    def sort_key(self) -> float | None: ...
-
-    @property
-    def has_thinking(self) -> int | bool: ...
-
-    @property
-    def has_tool_use(self) -> int | bool: ...
-
-
-class ProjectionLike(Protocol):
-    @property
-    def messages(self) -> Collection[ProjectionMessageLike]: ...
-
-    @property
-    def attachments(self) -> Collection[ProjectionAttachmentLike]: ...
 
 
 class SemanticSessionMessagesLike(Protocol):
@@ -173,44 +137,6 @@ class SemanticSummaryLike(Protocol):
 
     @property
     def summary(self) -> str | None: ...
-
-
-def build_projection_semantic_facts(projection: ProjectionLike) -> ProjectionSemanticFacts:
-    attachment_counts: Counter[str] = Counter(
-        attachment.message_id for attachment in projection.attachments if attachment.message_id
-    )
-    renderable_messages = 0
-    timestamped_renderable_messages = 0
-    empty_messages = 0
-    thinking_messages = 0
-    tool_messages = 0
-    role_counts: Counter[str] = Counter()
-
-    for message in projection.messages:
-        has_attachments = attachment_counts.get(message.message_id, 0) > 0
-        has_text = message_has_text(message)
-        if has_text or has_attachments:
-            renderable_messages += 1
-            role_counts[normalized_role_label(message.role)] += 1
-            if message.sort_key is not None:
-                timestamped_renderable_messages += 1
-        else:
-            empty_messages += 1
-        if int(message.has_thinking or 0) > 0:
-            thinking_messages += 1
-        if int(message.has_tool_use or 0) > 0:
-            tool_messages += 1
-
-    return ProjectionSemanticFacts(
-        total_messages=len(projection.messages),
-        renderable_messages=renderable_messages,
-        timestamped_renderable_messages=timestamped_renderable_messages,
-        attachment_count=len(projection.attachments),
-        empty_messages=empty_messages,
-        thinking_messages=thinking_messages,
-        tool_messages=tool_messages,
-        renderable_role_counts=sorted_counts(dict(role_counts)),
-    )
 
 
 def build_message_semantic_facts(
@@ -471,9 +397,6 @@ def build_stream_semantic_facts(
 
 
 __all__ = [
-    "ProjectionAttachmentLike",
-    "ProjectionLike",
-    "ProjectionMessageLike",
     "SemanticSessionLike",
     "SemanticSessionMessageLike",
     "SemanticSummaryLike",
@@ -481,14 +404,12 @@ __all__ = [
     "MCPDetailSemanticFacts",
     "MCPSummarySemanticFacts",
     "MessageSemanticFacts",
-    "ProjectionSemanticFacts",
     "StreamSemanticFacts",
     "SummarySemanticFacts",
     "build_session_semantic_facts",
     "build_mcp_detail_semantic_facts",
     "build_mcp_summary_semantic_facts",
     "build_message_semantic_facts",
-    "build_projection_semantic_facts",
     "build_stream_semantic_facts",
     "build_summary_semantic_facts",
     "message_has_text",

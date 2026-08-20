@@ -16,7 +16,6 @@ from polylogue.archive.phase.extraction import extract_phases as phase_extract_p
 from polylogue.archive.semantic.facts import (
     SessionSemanticFacts,
     build_mcp_summary_semantic_facts,
-    build_projection_semantic_facts,
     build_session_semantic_facts,
 )
 from polylogue.archive.semantic.pricing import harmonize_session_cost
@@ -30,9 +29,7 @@ from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionEventId, SessionId
-from polylogue.storage.archive_views import SessionRenderProjection
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.storage_records import make_attachment, make_message, make_session
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_REPO_NAME = REPO_ROOT.name
@@ -144,64 +141,6 @@ def _protocol_summary_session() -> SessionModel:
             ]
         ),
     )
-
-
-def test_build_projection_semantic_facts_counts_renderable_and_empty_messages() -> None:
-    projection = SessionRenderProjection(
-        session=make_session(
-            session_id="conv-projection",
-            source_name="chatgpt",
-            provider_session_id="provider-conv-projection",
-            title="Projection Facts",
-            content_hash="hash-projection",
-        ),
-        messages=[
-            make_message(
-                message_id="m1",
-                session_id="conv-projection",
-                role="user",
-                text="hello",
-                sort_key=1.0,
-                content_hash="hash-m1",
-            ),
-            make_message(
-                message_id="m2",
-                session_id="conv-projection",
-                role="assistant",
-                text=None,
-                sort_key=2.0,
-                content_hash="hash-m2",
-                has_thinking=1,
-            ),
-            make_message(
-                message_id="m3",
-                session_id="conv-projection",
-                role="assistant",
-                text=None,
-                content_hash="hash-m3",
-                has_tool_use=1,
-            ),
-        ],
-        attachments=[
-            make_attachment(
-                attachment_id="att-m2",
-                session_id="conv-projection",
-                message_id="m2",
-                path="/tmp/att-m2.txt",
-            )
-        ],
-    )
-
-    facts = build_projection_semantic_facts(projection)
-
-    assert facts.total_messages == 3
-    assert facts.renderable_messages == 2
-    assert facts.timestamped_renderable_messages == 2
-    assert facts.attachment_count == 1
-    assert facts.empty_messages == 1
-    assert facts.thinking_messages == 1
-    assert facts.tool_messages == 1
-    assert facts.renderable_role_counts == {"assistant": 1, "user": 1}
 
 
 def test_build_session_semantic_facts_collects_semantic_counts() -> None:

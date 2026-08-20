@@ -50,18 +50,6 @@ class MessageSemanticFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class ProjectionSemanticFacts:
-    total_messages: int
-    renderable_messages: int
-    timestamped_renderable_messages: int
-    attachment_count: int
-    empty_messages: int
-    thinking_messages: int
-    tool_messages: int
-    renderable_role_counts: dict[str, int]
-
-
-@dataclass(frozen=True, slots=True)
 class SessionSemanticFacts:
     session_id: str
     origin: str
@@ -153,7 +141,6 @@ __all__ = [
     "MCPDetailSemanticFacts",
     "MCPSummarySemanticFacts",
     "MessageSemanticFacts",
-    "ProjectionSemanticFacts",
     "StreamSemanticFacts",
     "SummarySemanticFacts",
 ]
