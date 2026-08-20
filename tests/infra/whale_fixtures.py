@@ -369,6 +369,12 @@ def acquire_codex_revision_chain(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     async def _run() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
+        from polylogue.archive.revision_authority import (
+            RawRevisionAuthority,
+            RawRevisionEnvelope,
+            RawRevisionKind,
+        )
+
         backend = SQLiteBackend(db_path=archive_root / "index.db")
         active_index_path: Path | None = None
         planner_index_backup: Path | None = None
@@ -405,7 +411,7 @@ def acquire_codex_revision_chain(
             copy_sqlite_database(active_index_path, planner_index_backup)
             copy_sqlite_database(archive_root / "source.db", planner_source_backup)
             copy_sqlite_database(archive_root / "ops.db", planner_ops_backup)
-            source_path.write_bytes(full_payloads[0])
+            source_path.write_bytes(terminal_payload)
             cursor = CursorStore(archive_root / "index.db", ops_db_path=archive_root / "ops.db")
             processor = LiveBatchProcessor(
                 cast(
@@ -430,6 +436,15 @@ def acquire_codex_revision_chain(
                 source_revision=full_result.raw_source_revisions.get(source_path),
                 captured_content_hash=full_result.captured_content_hashes.get(source_path),
                 captured_file_observation=full_result.captured_file_observations.get(source_path),
+            )
+            source_path.write_bytes(full_payloads[0])
+            processor._record_full_cursor(
+                source_path,
+                raw_fingerprint=raw_ids[0],
+                raw_byte_size=len(full_payloads[0]),
+                source_name="codex",
+                source_revision=raw_ids[0],
+                captured_content_hash=raw_ids[0],
             )
             owner = SimpleNamespace(
                 _cursor=SimpleNamespace(_db_path=archive_root / "source.db"),
@@ -459,14 +474,24 @@ def acquire_codex_revision_chain(
                 raise AssertionError(f"production append planner calls were incomplete: {planned_indices!r}")
 
             copy_sqlite_database(planner_index_backup, active_index_path)
-            planner_index_backup.unlink()
             copy_sqlite_database(planner_source_backup, archive_root / "source.db")
             planner_source_backup.unlink()
             copy_sqlite_database(planner_ops_backup, archive_root / "ops.db")
             planner_ops_backup.unlink()
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                archive.bind_raw_revision(
+                    raw_ids[0],
+                    RawRevisionEnvelope(
+                        logical_source_key=f"codex:{fixture.session_native_id}",
+                        kind=RawRevisionKind.FULL,
+                        source_revision=raw_ids[0],
+                        acquisition_generation=0,
+                        authority=RawRevisionAuthority.BYTE_PROVEN,
+                    ),
+                )
             for plan in plans:
                 append_result = ingest_append_plans(owner, [plan])
-                if append_result.failed or append_result.succeeded or append_result.deferred != [plan]:
+                if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):
                     raise AssertionError(f"append ingestion changed fixture authority state: {append_result!r}")
                 with sqlite3.connect(archive_root / "source.db") as conn:
                     row = conn.execute(
@@ -476,6 +501,17 @@ def acquire_codex_revision_chain(
                 if row is None:
                     raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
                 raw_ids.append(str(row[0]))
+            append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
+            with sqlite3.connect(active_index_path) as conn:
+                append_application_rows = conn.execute(
+                    "SELECT raw_id, decision FROM raw_revision_applications "
+                    "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
+                    append_raw_ids,
+                ).fetchall()
+            if not any(str(row[1]) == "applied_append" for row in append_application_rows):
+                raise AssertionError(f"append ingestion did not record applied_append: {append_application_rows!r}")
+            copy_sqlite_database(planner_index_backup, active_index_path)
+            planner_index_backup.unlink()
             source_path.write_bytes(terminal_payload)
             return tuple(raw_ids), tuple(sizes), tuple(sha256s)
         finally:

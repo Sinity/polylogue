@@ -225,6 +225,7 @@ def _assert_exact_authority_census(
         "deferred",
         "superseded",
     }
+    assert any(row[0] in full_raw_ids and row[1] == "selected_baseline" for row in application_rows)
     assert all(row[2] == terminal_raw_id for row in application_rows)
     assert head_rows == ((source_key, session_id, terminal_raw_id, "byte", TERMINAL_WIRE_BYTES),)
 
@@ -454,7 +455,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         )
         pre_recovery_census_count = int(conn.execute("SELECT COUNT(*) FROM raw_membership_census").fetchone()[0])
     assert pre_recovery_raw_count == expected_raw_count
-    assert pre_recovery_unresolved_count == expected_raw_count
+    assert pre_recovery_unresolved_count == REVISION_COUNT - 1
     assert pre_recovery_membership_count == 0
     assert pre_recovery_census_count == 0
     whale_candidate = raw_authority.whale_pass_candidate(
@@ -814,8 +815,8 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
             resume_before,
             _resource_sample(root),
             resume_started,
-            completed=REVISION_COUNT,
-            total=REVISION_COUNT,
+            completed=expected_raw_count,
+            total=expected_raw_count,
             rss_available=False,
         )
     )
