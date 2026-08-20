@@ -247,14 +247,21 @@ _INTERPRETER_DESCRIBING_ENV = (
     "_PYTHON_HOST_PLATFORM",
     "PYTHONPYCACHEPREFIX",
 )
+_LANE_ENV_UNSETS = (
+    "VIRTUAL_ENV",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "UV_PROJECT",
+    "UV_WORKING_DIR",
+    *_INTERPRETER_DESCRIBING_ENV,
+)
 
 
 def _lane_env(worktree: Path) -> dict[str, str]:
     """Return an environment that cannot inherit another checkout's Python."""
     env = os.environ.copy()
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("PYTHONHOME", None)
-    env.pop("PYTHONPATH", None)
+    for key in _LANE_ENV_UNSETS:
+        env.pop(key, None)
     # Not merely hygiene: these describe a specific interpreter BUILD, so
     # inheriting them into a venv built from a different one is fatal, and
     # PYTHONPYCACHEPREFIX additionally points bytecode caching at the
@@ -411,31 +418,73 @@ def _seed_testmon_graph(
     ``testmon_warm`` field in the ledger record is what lets a coordinator
     decide to bootstrap once centrally instead of per lane.
     """
-    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+    from devtools.testmon_bootstrap import (
+        TESTMON_DATA_RELPATH,
+        NativeTestmonRepairError,
+        _atomic_copy_sqlite_database,
+        _validate_owned_state_parents,
+        certified_attestation_violation,
+        inspect_native_testmon_environment,
+        validate_native_testmon_state_ownership,
+    )
 
     source = root / TESTMON_DATA_RELPATH
     if not source.is_file():
         return "no coordinator graph to seed (first lane verify will bootstrap)", False
     destination = worktree / TESTMON_DATA_RELPATH
-    import sqlite3
-
     try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        for suffix in ("-wal", "-shm", "-journal"):
-            Path(f"{destination}{suffix}").unlink(missing_ok=True)
-        with (
-            sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30) as source_conn,
-            sqlite3.connect(destination, timeout=30) as destination_conn,
-        ):
-            source_conn.backup(destination_conn)
-    except (OSError, sqlite3.Error) as exc:
-        return f"graph seed failed ({exc}); first lane verify will bootstrap", False
+        _validate_owned_state_parents(root)
+        _validate_owned_state_parents(worktree)
+        validate_native_testmon_state_ownership(root)
+        validate_native_testmon_state_ownership(worktree)
+    except NativeTestmonRepairError as exc:
+        return f"graph seed refused unsafe owned testmon path ({exc}); first lane verify will bootstrap", False
 
     if attestation is None:
         attestation = lane_environment_attestation(worktree)
     if attestation is None:
         return ("seeded graph but could not compute verify's normalized digest inputs; warmth unverified"), False
-    from devtools.testmon_bootstrap import certified_attestation_violation, inspect_native_testmon_environment
+
+    initial_digest = attestation.digests[0]
+    destination_initial_state = inspect_native_testmon_environment(destination, environment_name=initial_digest)
+    if destination_initial_state.status == "invalid":
+        return (
+            "seeded lane graph's initial verify environment is invalid and not attestable; "
+            "refusing the default-profile fallback; first lane verify will bootstrap",
+            False,
+        )
+    initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
+    if initial_state.status == "invalid":
+        return (
+            "seeded graph's initial verify environment is invalid and not attestable; "
+            "refusing the default-profile fallback; "
+            "first lane verify will bootstrap",
+            False,
+        )
+
+    copy_digest: str | None = initial_digest if initial_state.valid else None
+    if copy_digest is None and initial_state.status in {"absent", "incomplete"} and len(attestation.digests) > 1:
+        fallback_digest = attestation.digests[1]
+        fallback_state = inspect_native_testmon_environment(source, environment_name=fallback_digest)
+        if fallback_state.valid:
+            copy_digest = fallback_digest
+    if copy_digest is None:
+        return (
+            "seeded graph is not attestable for verify's environment candidates; "
+            "no valid candidate; first lane verify will bootstrap",
+            False,
+        )
+
+    try:
+        _atomic_copy_sqlite_database(
+            source,
+            destination,
+            environment_name=copy_digest,
+            required_executable_paths=(),
+            deadline_monotonic=None,
+        )
+    except NativeTestmonRepairError as exc:
+        return f"graph seed failed ({exc}); first lane verify will bootstrap", False
 
     failures: list[str] = []
     for digest in attestation.digests:
@@ -475,7 +524,8 @@ def dispatch_env_lines(
     dispatcher reliably reads.
     """
     lines = [f"export VIRTUAL_ENV={worktree / '.venv'}", 'export PATH="$VIRTUAL_ENV/bin:$PATH"']
-    lines.extend(f"unset {key}" for key in _INTERPRETER_DESCRIBING_ENV)
+    lines.extend(f"unset {key}" for key in _LANE_ENV_UNSETS if key != "VIRTUAL_ENV")
+    lines.append(f"export UV_PROJECT_ENVIRONMENT={worktree / '.venv'}")
     if attestation is None:
         attestation = lane_environment_attestation(worktree)
     if attestation is None:

@@ -475,9 +475,13 @@ def _graph_with(path: Path, environments: Sequence[str]) -> Path:
 
 
 def _certified_graph_with(path: Path, environment_name: str) -> Path:
+    return _certified_graph_with_names(path, [environment_name])
+
+
+def _certified_graph_with_names(path: Path, environment_names: Sequence[str]) -> Path:
     import testmon.db
 
-    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, write_certified_corpus
 
     data = path / TESTMON_DATA_RELPATH
     data.parent.mkdir(parents=True, exist_ok=True)
@@ -486,28 +490,29 @@ def _certified_graph_with(path: Path, environment_name: str) -> Path:
     db = testmon.db.DB(str(data))
     try:
         con = db.con
-        environment_id = con.execute(
-            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, ?, ?)",
-            (environment_name, "", "3.14"),
-        ).lastrowid
-        execution_id = con.execute(
-            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
-            (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
-        ).lastrowid
         fingerprint_id = con.execute(
             "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES (?, ?, ?, ?)",
             ("tests/test_recorded.py", b"", 0.0, ""),
         ).lastrowid
-        con.execute(
-            "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id) VALUES (?, ?)",
-            (execution_id, fingerprint_id),
-        )
+        for index, environment_name in enumerate(environment_names):
+            environment_id = con.execute(
+                "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, ?, ?)",
+                (environment_name, f"packages-{index}", "3.14"),
+            ).lastrowid
+            execution_id = con.execute(
+                "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
+                (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
+            ).lastrowid
+            con.execute(
+                "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id) VALUES (?, ?)",
+                (execution_id, fingerprint_id),
+            )
         con.commit()
     finally:
         db.con.close()
-    from devtools.testmon_bootstrap import write_certified_corpus
 
-    assert write_certified_corpus(path, environment_name, ["tests/test_recorded.py::test_recorded"])
+    for environment_name in set(environment_names):
+        assert write_certified_corpus(path, environment_name, ["tests/test_recorded.py::test_recorded"])
     return data
 
 
@@ -533,8 +538,6 @@ def test_seed_reports_cold_when_the_graph_lacks_this_lanes_environment(
     this fail, because ``warm`` comes back True and the note claims warmth for
     a graph that cannot deliver it.
     """
-    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
-
     root = tmp_path / "root"
     lane = tmp_path / "lane"
     _certified_graph_with(root, "polylogue-stale")
@@ -544,7 +547,6 @@ def test_seed_reports_cold_when_the_graph_lacks_this_lanes_environment(
     assert warm is False
     assert "not attestable" in note
     assert "bootstrap" in note
-    assert (lane / TESTMON_DATA_RELPATH).is_file()
 
 
 def test_seed_reports_warm_only_on_a_real_environment_match(
@@ -575,6 +577,24 @@ def test_seed_accepts_verify_default_profile_fallback_when_certified(
     assert "verify default-profile fallback" in note
 
 
+def test_seed_rejects_certified_fallback_after_an_invalid_initial_environment(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    _certified_graph_with_names(root, ["polylogue-initial", "polylogue-initial", "polylogue-default"])
+
+    note, warm = lane_init._seed_testmon_graph(
+        root,
+        lane,
+        attestation=_attestation("polylogue-initial", "polylogue-default", profile="ci"),
+    )
+
+    assert warm is False
+    assert "initial verify environment is invalid" in note
+    assert "refusing the default-profile fallback" in note
+
+
 def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
 
@@ -596,11 +616,9 @@ def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unverifiable lane must never be reported as warm."""
-    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
-
     root = tmp_path / "root"
     lane = tmp_path / "lane"
-    _graph_with(root / TESTMON_DATA_RELPATH, ["polylogue-something"])
+    _certified_graph_with(root, "polylogue-something")
     note, warm = lane_init._seed_testmon_graph(root, lane)
 
     assert warm is False
@@ -620,7 +638,7 @@ def test_seed_rejects_a_minimal_fake_graph_even_with_a_matching_environment(
 
     assert warm is False
     assert "not attestable" in note
-    assert "schema version changed" in note
+    assert "initial verify environment is invalid" in note
 
 
 def test_distribution_mutation_makes_a_seeded_graph_unattestable(
@@ -629,7 +647,7 @@ def test_distribution_mutation_makes_a_seeded_graph_unattestable(
 ) -> None:
     """A changed installed distribution cannot inherit a warm graph claim."""
     from devtools import testmon_bootstrap
-    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, testmon_environment_digest
+    from devtools.testmon_bootstrap import testmon_environment_digest
 
     root = tmp_path / "root"
     lane = tmp_path / "lane"
@@ -639,7 +657,7 @@ def test_distribution_mutation_makes_a_seeded_graph_unattestable(
         pytest_profile="correctness=complete",
         pytest_environment=digest_inputs,
     )
-    _graph_with(root / TESTMON_DATA_RELPATH, [recorded])
+    _certified_graph_with(root, recorded)
 
     monkeypatch.setattr(testmon_bootstrap, "_installed_distributions", lambda: (("pytest", "mutated"),))
     unattestable = testmon_environment_digest(
@@ -653,6 +671,32 @@ def test_distribution_mutation_makes_a_seeded_graph_unattestable(
     assert warm is False
     assert "not attestable" in note
     assert "bootstrap" in note
+
+
+@pytest.mark.parametrize("symlinked_parent", [".cache", ".cache/testmon"])
+def test_seed_refuses_symlinked_cache_before_touching_external_sentinel(
+    tmp_path: Path,
+    symlinked_parent: str,
+) -> None:
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    _certified_graph_with(root, "polylogue-current")
+    external = tmp_path / "external"
+    sentinel = external / "sentinel"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("do not touch", encoding="utf-8")
+    parent = lane / symlinked_parent
+    parent.parent.mkdir(parents=True, exist_ok=True)
+    parent.symlink_to(external, target_is_directory=True)
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
+
+    assert warm is False
+    assert "unsafe owned testmon path" in note
+    assert sentinel.read_text(encoding="utf-8") == "do not touch"
+    assert not (external / TESTMON_DATA_RELPATH.name).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -710,3 +754,28 @@ def test_dispatch_env_lines_bind_normalized_testmon_inputs(tmp_path: Path) -> No
     assert "unset POLYLOGUE_CI" in lines
     assert "# testmon pytest profile: correctness=complete" in lines
     assert "# testmon fallback: HYPOTHESIS_PROFILE=default after a non-default bootstrap" in lines
+
+
+def test_dispatch_env_lines_match_lane_env_sanitization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = tmp_path / "lane"
+    for key in lane_init._LANE_ENV_UNSETS:
+        monkeypatch.setenv(key, f"inherited-{key}")
+    attestation = lane_init.LaneEnvironmentAttestation(
+        "correctness=complete",
+        (("HYPOTHESIS_PROFILE", "ci"), ("POLYLOGUE_CI", "1")),
+        ("polylogue-initial", "polylogue-default"),
+    )
+
+    sanitized = lane_init._lane_env(lane)
+    lines = lane_init.dispatch_env_lines(lane, attestation=attestation)
+
+    for key in ("PYTHONHOME", "PYTHONPATH", "UV_PROJECT", "UV_WORKING_DIR", *lane_init._INTERPRETER_DESCRIBING_ENV):
+        assert key not in sanitized
+        assert f"unset {key}" in lines
+    assert sanitized["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
+    assert f"export UV_PROJECT_ENVIRONMENT={lane / '.venv'}" in lines
+    assert "export HYPOTHESIS_PROFILE=ci" in lines
+    assert "export POLYLOGUE_CI=1" in lines
