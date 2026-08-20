@@ -463,10 +463,11 @@ workflow, not optional conveniences — use them at the point named, every time:
 
 - **When provisioning any lane worktree (spawn time, before dispatch)**:
   `devtools workspace lane-init <path> --branch <branch> [--beads ids]` —
-  creates worktree+branch, provisions the lane's OWN venv (`uv sync
-  --extra dev-common --extra speed`; a shared-venv worktree cannot run
-  devtools/pytest at all), guard-verifies imports resolve inside the lane,
-  runs verify-worktree, registers the lane in `.cache/fanout/lanes.jsonl`,
+  creates worktree+branch, provisions the lane's OWN venv (`uv sync --extra
+  dev`; this expands to the documented `dev-common` + `speed` dependency set;
+  a shared-venv worktree cannot run devtools/pytest at all), guard-verifies
+  imports resolve inside the lane, runs verify-worktree, registers the lane in
+  `.cache/fanout/lanes.jsonl`,
   and prints the per-lane `POLYLOGUE_PYTEST_WORKERS` budget for the planned
   concurrency. At 16 lanes this is the difference between lanes that verify
   and lanes that idle on guard refusals.
