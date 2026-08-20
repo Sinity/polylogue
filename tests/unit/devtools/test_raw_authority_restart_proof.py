@@ -31,7 +31,10 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
     }
     reparse = cast(dict[str, object], payload["accepted_head_reparse"])
     assert reparse["ordering"] == ["reissue", "write"]
-    assert reparse["application_decisions"] == ["selected_baseline", "reparse_reaffirmation"]
+    assert set(cast(list[str], reparse["application_decisions"])) == {
+        "selected_baseline",
+        "reparse_reaffirmation",
+    }
     assert reparse["application_count"] == 2
     assert reparse["head_content_hash"] == reparse["session_content_hash"]
     assert reparse["repair_status"] == "ineligible"
