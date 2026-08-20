@@ -657,8 +657,11 @@ async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_over
 @pytest.mark.asyncio
 async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overflow() -> None:
     coordinator = DaemonWriteCoordinator()
+    operation_calls = 0
 
     async def boom() -> None:
+        nonlocal operation_calls
+        operation_calls += 1
         raise RuntimeError("writer blew up")
 
     for index in range(_MAX_DETACHED_WRITER_FAILURE_ACTORS):
@@ -669,6 +672,7 @@ async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overf
     for reserved_actor in (_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR, "<other> (actor)"):
         with pytest.raises(ValueError, match="reserved telemetry label"):
             await coordinator.run(reserved_actor, boom)
+    assert operation_calls == _MAX_DETACHED_WRITER_FAILURE_ACTORS
 
     with pytest.raises(RuntimeError, match="writer blew up"):
         await coordinator.run("caller-overflow", boom)
