@@ -72,7 +72,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
-from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT, backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -82,6 +82,8 @@ from tests.infra.whale_fixtures import (
     WHALE_FIXTURE_DIMENSIONS,
     CodexRevisionChainFixture,
     acquire_codex_revision_chain,
+    assert_planner_append_authority,
+    copy_sqlite_database,
 )
 
 REVISION_COUNT = WHALE_FIXTURE_DIMENSIONS.revision_count
@@ -185,6 +187,8 @@ def _assert_precheckpoint_state(
 def _assert_exact_authority_census(
     *,
     raw_ids: set[str],
+    full_raw_ids: set[str],
+    append_raw_ids: set[str],
     authority_rows: tuple[tuple[str, str, int], ...],
     authority_counts: tuple[tuple[str, int], ...],
     parser_census_rows: tuple[tuple[str, str, str, str, str], ...],
@@ -194,13 +198,17 @@ def _assert_exact_authority_census(
     session_id: str,
     terminal_raw_id: str,
 ) -> None:
-    """Require one unambiguous authority and application for every raw."""
-    assert len(raw_ids) == REVISION_COUNT
-    assert len(authority_rows) == REVISION_COUNT
+    """Require complete census while preserving the 804-full terminal head."""
+    assert raw_ids == full_raw_ids | append_raw_ids
+    assert len(full_raw_ids) == REVISION_COUNT
+    assert append_raw_ids
+    assert len(authority_rows) == len(raw_ids)
     assert {row[0] for row in authority_rows} == raw_ids
-    assert all(row[1] == "byte_proven" and row[2] == 1 for row in authority_rows)
-    assert authority_counts == (("byte_proven", REVISION_COUNT),)
-    assert len(parser_census_rows) == REVISION_COUNT
+    authority_by_raw_id = {row[0]: row[1:] for row in authority_rows}
+    assert all(authority_by_raw_id[raw_id] == ("byte_proven", 1) for raw_id in full_raw_ids)
+    assert all(authority_by_raw_id[raw_id] == ("byte_proven", 1) for raw_id in append_raw_ids)
+    assert authority_counts == (("byte_proven", len(raw_ids)),)
+    assert len(parser_census_rows) == len(raw_ids)
     assert {row[0] for row in parser_census_rows} == raw_ids
     assert all(
         row[1] == RAW_AUTHORITY_PARSER_FINGERPRINT
@@ -210,9 +218,15 @@ def _assert_exact_authority_census(
         and len(json.loads(row[3])) == 1
         for row in parser_census_rows
     )
-    assert len(application_rows) == REVISION_COUNT
+    assert len(application_rows) == len(raw_ids)
     assert {row[0] for row in application_rows} == raw_ids
-    assert {row[1] for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
+    assert {row[1] for row in application_rows} <= {
+        "selected_baseline",
+        "applied_append",
+        "deferred",
+        "superseded",
+    }
+    assert any(row[0] in full_raw_ids and row[1] == "selected_baseline" for row in application_rows)
     assert all(row[2] == terminal_raw_id for row in application_rows)
     assert head_rows == ((source_key, session_id, terminal_raw_id, "byte", TERMINAL_WIRE_BYTES),)
 
@@ -304,7 +318,7 @@ def _source_facts(
             )
             for row in conn.execute(
                 "SELECT source_index, blob_size, raw_id, logical_source_key, lower(hex(blob_hash)) "
-                "FROM raw_sessions ORDER BY blob_size, raw_id"
+                "FROM raw_sessions WHERE revision_kind = 'full' ORDER BY blob_size, raw_id"
             )
         )
     assert row is not None
@@ -325,6 +339,8 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
 
     Anti-vacuity: deleting the production ``AcquisitionService`` call from
     ``acquire_codex_revision_chain`` leaves the source row count at zero;
+    deleting the production ``LiveBatchProcessor.plan_append`` call leaves
+    no verified 804..819 append-plan sequence;
     deleting parser/convergence leaves the terminal index session absent;
     deleting the resumable candidate path leaves no paused transaction or
     inactive generation for the recovery assertions below.
@@ -334,6 +350,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     initialize_active_archive_root(root)
     fixture = CodexRevisionChainFixture()
+    expected_raw_count = REVISION_COUNT + fixture.dimensions.append_fragment_count
     source_path = root / "fixture-sources" / SOURCE_PATH
 
     setup_before = _resource_sample(root)
@@ -371,7 +388,13 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     )
     with sqlite3.connect(root / "source.db") as conn:
         persisted_sizes = tuple(
-            int(row[0]) for row in conn.execute("SELECT blob_size FROM raw_sessions ORDER BY blob_size")
+            int(row[0])
+            for row in conn.execute(
+                "SELECT blob_size FROM raw_sessions WHERE raw_id IN ("
+                + ",".join("?" for _ in acquired_raw_ids[:REVISION_COUNT])
+                + ") ORDER BY blob_size",
+                acquired_raw_ids[:REVISION_COUNT],
+            )
         )
     manifest_path = fixture.write_manifest(root / "fixture-manifest.json", sizes, fixture_sha256s)
     fixture_manifest = manifest_path.read_text(encoding="utf-8")
@@ -381,16 +404,32 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
             "acquire", acquire_before, acquire_after, acquire_started, completed=REVISION_COUNT, total=REVISION_COUNT
         )
     )
-    assert len(acquired_raw_ids) == REVISION_COUNT
+    assert len(acquired_raw_ids) == expected_raw_count
     assert observed_revisions == list(range(REVISION_COUNT))
     assert prefix_witness.verified_revisions == list(range(1, REVISION_COUNT))
-    assert len(set(acquired_raw_ids)) == REVISION_COUNT
+    assert len(set(acquired_raw_ids)) == expected_raw_count
     assert len(sizes) == REVISION_COUNT
     assert sizes[0] == 4_096
     assert sizes[-2] == WHALE_FIXTURE_DIMENSIONS.near_terminal_predecessor_bytes
     assert sizes[-1] == TERMINAL_WIRE_BYTES
     assert all(current > previous for previous, current in pairwise(sizes))
     assert persisted_sizes == sizes
+    with sqlite3.connect(root / "source.db") as conn:
+        full_raw_ids = set(acquired_raw_ids[:REVISION_COUNT])
+        append_rows = tuple(
+            (str(row[0]), int(row[1]), str(row[2]), int(row[3]))
+            for row in conn.execute(
+                "SELECT raw_id, source_index, revision_kind, blob_size "
+                "FROM raw_sessions WHERE revision_kind = 'append' ORDER BY source_index, raw_id"
+            )
+        )
+    append_raw_ids = {row[0] for row in append_rows}
+    assert full_raw_ids == set(acquired_raw_ids[:REVISION_COUNT])
+    assert len(full_raw_ids) == REVISION_COUNT
+    assert append_raw_ids == set(acquired_raw_ids[REVISION_COUNT:])
+    assert len(append_rows) == fixture.dimensions.append_fragment_count
+    assert all(source_index >= 0 and revision_kind == "append" for _, source_index, revision_kind, _ in append_rows)
+    assert all(raw_id not in full_raw_ids for raw_id in append_raw_ids)
     manifest_payload = json.loads(fixture_manifest)
     assert manifest_payload["fixture_id"] == WHALE_FIXTURE_DIMENSIONS.fixture_id
     assert manifest_payload["session_native_id"] == SESSION_NATIVE_ID
@@ -416,8 +455,8 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
             conn.execute("SELECT COUNT(DISTINCT raw_id) FROM raw_session_memberships").fetchone()[0]
         )
         pre_recovery_census_count = int(conn.execute("SELECT COUNT(*) FROM raw_membership_census").fetchone()[0])
-    assert pre_recovery_raw_count == REVISION_COUNT
-    assert pre_recovery_unresolved_count == REVISION_COUNT
+    assert pre_recovery_raw_count == expected_raw_count
+    assert pre_recovery_unresolved_count == REVISION_COUNT - 1
     assert pre_recovery_membership_count == 0
     assert pre_recovery_census_count == 0
     whale_candidate = raw_authority.whale_pass_candidate(
@@ -427,7 +466,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     )
     assert whale_candidate is not None
     assert whale_candidate == acquired_raw_ids[0]
-    whale_component_bytes = sum(sizes)
+    whale_component_bytes = sum(sizes) + sum(row[3] for row in append_rows)
     assert (
         WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes
         < whale_component_bytes
@@ -440,7 +479,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
             _resource_sample(root),
             census_started,
             completed=pre_recovery_unresolved_count,
-            total=REVISION_COUNT,
+            total=expected_raw_count,
         )
     )
 
@@ -451,15 +490,45 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     # replay cannot hide a source mutation behind its own provenance gate.
     # The replay phase intentionally begins before source remediation and the
     # crash boundary so its receipt covers the complete recovery envelope.
-    replay_before = _resource_sample(root)
+    replay_before = _resource_sample(tmp_path)
     replay_started = time.perf_counter()
     source_ready_root = tmp_path / "codex-804-source-ready"
     initialize_active_archive_root(source_ready_root)
-    shutil.copy2(root / "source.db", source_ready_root / "source.db")
+    copy_sqlite_database(root / "source.db", source_ready_root / "source.db")
     shutil.copytree(root / "blob", source_ready_root / "blob")
-    backfill_historical_revision_evidence(source_ready_root, ingest_workers=1, bulk_fts=True)
-    shutil.copy2(source_ready_root / "source.db", root / "source.db")
-
+    with sqlite3.connect(source_ready_root / "source.db") as conn:
+        assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
+    whale_repair = raw_authority.repair_materialization(
+        Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
+        dry_run=False,
+        raw_artifact_id=whale_candidate,
+        raw_artifact_limit=1,
+        max_payload_bytes=whale_component_bytes + 1,
+    )
+    assert whale_repair.success is True
+    assert whale_repair.repaired_count >= 1
+    assert whale_repair.metrics["raw_materialization_limit"] == 1.0
+    assert whale_repair.metrics["raw_materialization_selected_component_count"] == 1.0
+    assert whale_repair.metrics["raw_materialization_selected_count"] == 1.0
+    assert whale_repair.plan_outcomes
+    assert all(whale_candidate in outcome.input_raw_ids for outcome in whale_repair.plan_outcomes)
+    followup_repair = raw_authority.repair_materialization(
+        Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
+        dry_run=False,
+        raw_artifact_limit=1,
+        max_payload_bytes=whale_component_bytes + 1,
+    )
+    assert followup_repair.metrics["raw_materialization_limit"] == 1.0
+    assert followup_repair.success is True
+    copy_sqlite_database(source_ready_root / "source.db", root / "source.db")
+    assert (
+        raw_authority.whale_pass_candidate(
+            Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
+            ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
+            whale_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes,
+        )
+        is None
+    )
     schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
@@ -595,17 +664,17 @@ print(result.status)
         _phase(
             "replay",
             replay_before,
-            _resource_sample(root),
+            _resource_sample(tmp_path),
             replay_started,
             completed=0,
-            total=REVISION_COUNT,
+            total=expected_raw_count,
             rss_available=False,
         )
     )
 
     resume_before = _resource_sample(root)
     resume_started = time.perf_counter()
-    resume_script = """
+    resume_script = f"""
 import json
 import sys
 from pathlib import Path
@@ -632,11 +701,11 @@ result = rebuild_index_from_source_sync(
         operation_id=operation_id,
         promote=False,
         schema_inference_receipt_path=receipt,
-        raw_batch_size=804,
+        raw_batch_size={expected_raw_count},
     )
 )
 if result.status != "replayed" or not result.materialized:
-    raise SystemExit(f"bounded restart did not reach replayed: {result.status!r}")
+    raise SystemExit(f"bounded restart did not reach replayed: {{result.status!r}}")
 print(result.generation["generation_id"])
 """
     replay_trace_path = tmp_path / "rebuild-replay-trace.jsonl"
@@ -747,14 +816,14 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
             resume_before,
             _resource_sample(root),
             resume_started,
-            completed=REVISION_COUNT,
-            total=REVISION_COUNT,
+            completed=expected_raw_count,
+            total=expected_raw_count,
             rss_available=False,
         )
     )
 
     raw_count, max_blob_size, source_path_count, parse_error_count, authorities, raw_rows = _source_facts(root)
-    assert raw_count == REVISION_COUNT
+    assert raw_count == expected_raw_count
     assert max_blob_size == TERMINAL_WIRE_BYTES
     assert source_path_count == 1
     assert parse_error_count == 0
@@ -811,7 +880,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
         )
     # This fixture is the byte-revision authority route, so semantic
     # membership census remains exactly empty. The application ledger below
-    # is the production coverage relation for all 804 byte revisions.
+    # is the production coverage relation for all full and append revisions.
     assert post_recovery_membership_count == 0
     # Mutation that omits one authority row from the final census fails the
     # exact raw, membership, and complete-census conservation below.
@@ -833,10 +902,10 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
     assert public["search:sanitized"]
     readiness = raw_materialization_readiness_snapshot(root)
     assert readiness["available"] is True
-    assert _readiness_count(readiness, "raw_artifact_count") == REVISION_COUNT
+    assert _readiness_count(readiness, "raw_artifact_count") == expected_raw_count
     materialized_raw_count = _readiness_count(readiness, "materialized_raw_artifact_count")
     assert 0 < materialized_raw_count <= REVISION_COUNT
-    assert _readiness_count(readiness, "join_gap_count") == REVISION_COUNT - materialized_raw_count
+    assert _readiness_count(readiness, "join_gap_count") == expected_raw_count - materialized_raw_count
     with sqlite3.connect(root / "index.db") as conn:
         indexed = conn.execute(
             "SELECT session_id, raw_id, message_count FROM sessions WHERE native_id = ?",
@@ -885,6 +954,8 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
     )
     _assert_exact_authority_census(
         raw_ids=raw_ids,
+        full_raw_ids=full_raw_ids,
+        append_raw_ids=append_raw_ids,
         authority_rows=authority_rows,
         authority_counts=authority_counts,
         parser_census_rows=parser_census_rows,
@@ -896,9 +967,14 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
         session_id=f"codex-session:{SESSION_NATIVE_ID}",
         terminal_raw_id=terminal_raw_id,
     )
-    assert len(application_rows) == REVISION_COUNT
+    assert len(application_rows) == expected_raw_count
     assert {str(row[0]) for row in application_rows} == raw_ids
-    assert {str(row[1]) for row in application_rows} <= {"selected_baseline", "applied_append", "superseded"}
+    assert {str(row[1]) for row in application_rows} <= {
+        "selected_baseline",
+        "applied_append",
+        "deferred",
+        "superseded",
+    }
     accepted_application_ids = {str(row[2]) for row in application_rows if row[2] is not None}
     assert len(accepted_application_ids) == 1
     assert accepted_application_ids <= raw_ids
@@ -908,7 +984,13 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
     assert len(selected_heads) == 1
     selected_raw_id = str(selected_heads[0][0])
     assert selected_raw_id == terminal_raw_id
-    assert indexed == [(f"codex-session:{SESSION_NATIVE_ID}", selected_raw_id, 8)]
+    assert indexed == [
+        (
+            f"codex-session:{SESSION_NATIVE_ID}",
+            selected_raw_id,
+            8 + WHALE_FIXTURE_DIMENSIONS.append_fragment_count,
+        )
+    ]
     with sqlite3.connect(root / "source.db") as conn:
         selected_source_row = conn.execute(
             "SELECT blob_size, lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
@@ -990,7 +1072,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
             "Fixture setup includes 804 on-disk payload revisions, schema hashing, and a canonical fixture manifest.",
             f"Serialized fixture manifest digest is sha256:{fixture_manifest_digest} and is bound into the receipt input identity.",
             "Replay and postflight subprocess RSS is unavailable because statm samples only the pytest parent; storage growth is not reported as write I/O.",
-            "The crash boundary hard-exits after durable transaction creation with all 804 authority rows unresolved; a fresh process resumes and materializes the cohort into an inactive candidate.",
+            "The crash boundary hard-exits after durable transaction creation with the full-and-append authority cohort unresolved; a fresh process resumes and materializes it into an inactive candidate.",
             "Live confidence remains open until the named successor receipts bind the active archive.",
         ),
     )
@@ -1043,6 +1125,8 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
     with pytest.raises(AssertionError):
         _assert_exact_authority_census(
             raw_ids={"raw-000", "raw-001"},
+            full_raw_ids={"raw-000"},
+            append_raw_ids={"raw-001"},
             authority_rows=(("raw-000", "byte_proven", 1),),
             authority_counts=(("byte_proven", 1),),
             parser_census_rows=(
@@ -1053,6 +1137,25 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
             source_key="codex-session:fixture",
             session_id="codex-session:fixture",
             terminal_raw_id="raw-001",
+        )
+
+
+def test_codex_804_deferred_append_red_mutation_is_rejected() -> None:
+    with pytest.raises(AssertionError):
+        assert_planner_append_authority(
+            append_raw_ids={"raw-append"},
+            application_rows=(("raw-append", "deferred", "raw-terminal"),),
+        )
+
+
+def test_codex_804_partial_append_red_mutation_is_rejected() -> None:
+    with pytest.raises(AssertionError):
+        assert_planner_append_authority(
+            append_raw_ids={"raw-append-1", "raw-append-2"},
+            application_rows=(
+                ("raw-append-1", "applied_append", "raw-append-1"),
+                ("raw-append-2", "deferred", "raw-append-1"),
+            ),
         )
 
 

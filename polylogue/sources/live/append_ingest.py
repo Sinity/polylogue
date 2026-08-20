@@ -97,7 +97,7 @@ def _write_append_raw_payload(
             provider=provider,
             payload=plan.payload,
             source_path=str(plan.path),
-            source_index=-1,
+            source_index=plan.source_index,
             acquired_at_ms=acquired_at_ms,
             native_id=plan.acquisition_native_id_hint,
             post_parse=True,
