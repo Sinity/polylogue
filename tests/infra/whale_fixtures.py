@@ -13,7 +13,8 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Callable, Iterator
+import sqlite3
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final
@@ -25,6 +26,7 @@ from polylogue.product.raw_authority import (
 
 _TERMINAL_WIRE_BYTES: Final = 90_822_451
 _REVISION_COUNT: Final = 804
+_APPEND_FRAGMENT_COUNT: Final = 16
 _STREAM_EVENT_COUNT: Final = 2_000_000
 _GIANT_ATTACHMENT_RAW_BYTES: Final = 12 * 1024 * 1024
 _NEAR_TERMINAL_PREDECESSOR_BYTES: Final = 32 * 1024 * 1024
@@ -37,6 +39,7 @@ class WhaleFixtureDimensions:
 
     fixture_id: str = "codex-whale-bounds-v2"
     revision_count: int = _REVISION_COUNT
+    append_fragment_count: int = _APPEND_FRAGMENT_COUNT
     terminal_wire_bytes: int = _TERMINAL_WIRE_BYTES
     near_terminal_predecessor_bytes: int = _NEAR_TERMINAL_PREDECESSOR_BYTES
     stream_event_count: int = _STREAM_EVENT_COUNT
@@ -48,6 +51,7 @@ class WhaleFixtureDimensions:
         return (
             ("fixture_id", self.fixture_id),
             ("revision_count", self.revision_count),
+            ("append_fragment_count", self.append_fragment_count),
             ("terminal_wire_bytes", self.terminal_wire_bytes),
             ("near_terminal_predecessor_bytes", self.near_terminal_predecessor_bytes),
             ("stream_event_count", self.stream_event_count),
@@ -158,6 +162,27 @@ class CodexRevisionChainFixture:
     dimensions: WhaleFixtureDimensions = WHALE_FIXTURE_DIMENSIONS
     session_native_id: str = "codex-sanitized-804-session"
 
+    def iter_append_fragments(self, full_payloads: Sequence[bytes]) -> Iterator[tuple[int, bytes]]:
+        """Yield bounded, parser-visible tails from the real full snapshots.
+
+        Each tail is a literal complete-record slice between two neighboring
+        full snapshots. The first 16 revisions carry a short Codex message
+        witness so the source-indexed census parser can recover the session
+        identity through its real positive-content gate.
+        """
+        required_payloads = self.dimensions.append_fragment_count + 1
+        if len(full_payloads) < required_payloads:
+            raise ValueError(f"append fixture needs {required_payloads} full payloads")
+        for fragment_index in range(self.dimensions.append_fragment_count):
+            predecessor = full_payloads[fragment_index]
+            successor = full_payloads[fragment_index + 1]
+            if not successor.startswith(predecessor):
+                raise AssertionError(f"full revision {fragment_index + 1} rewrote its predecessor bytes")
+            payload = successor[len(predecessor) :]
+            if not payload or not payload.endswith(b"\n"):
+                raise AssertionError(f"full revision {fragment_index + 1} has no complete append tail")
+            yield fragment_index, payload
+
     def write_revision(self, source_path: Path, revision: int) -> int:
         if not 0 <= revision < self.dimensions.revision_count:
             raise ValueError(f"revision must be in [0, {self.dimensions.revision_count})")
@@ -200,6 +225,25 @@ class CodexRevisionChainFixture:
                                 },
                             },
                         )
+                if 1 <= revision <= self.dimensions.append_fragment_count:
+                    _write_record(
+                        handle,
+                        {
+                            "type": "response_item",
+                            "timestamp": f"2026-07-31T04:25:{20 + revision % 40:02d}Z",
+                            "payload": {
+                                "type": "message",
+                                "id": f"{self.session_native_id}-append-witness-{revision:03d}",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": f"sanitized append witness {revision:03d}",
+                                    }
+                                ],
+                            },
+                        },
+                    )
                 if revision in {1, 800, 801, 802}:
                     _write_record(
                         handle,
@@ -297,15 +341,26 @@ def acquire_codex_revision_chain(
     *,
     revision_observer: Callable[[int, Path], None] | None = None,
 ) -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
-    """Acquire all snapshots through ``AcquisitionService`` with one live path.
+    """Acquire the full snapshots and append fragments through production seams.
 
     ``revision_observer`` runs after each wire snapshot is written and before
     acquisition reads it.  It is a proof hook for callers that need to inspect
     every revision without moving acquisition or replay into the fixture.
+    The returned raw ids contain the 804 full snapshots followed by the
+    bounded append-fragment population.  The size and digest tuples remain
+    snapshot-only so callers can retain the 804 transition assertions.
     """
+    from polylogue.archive.revision_authority import (
+        RawRevisionAuthority,
+        RawRevisionEnvelope,
+        RawRevisionKind,
+        append_source_revision,
+    )
     from polylogue.config import Source
+    from polylogue.core.enums import Provider
     from polylogue.pipeline.services.acquisition import AcquisitionService
     from polylogue.storage.sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     async def _run() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
         backend = SQLiteBackend(db_path=archive_root / "index.db")
@@ -325,6 +380,56 @@ def acquire_codex_revision_chain(
                 raw_ids.extend(result.raw_ids)
                 sizes.append(size)
                 sha256s.append(sha256)
+
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                latest_full_acquired_at_ms = int(
+                    conn.execute("SELECT MAX(acquired_at_ms) FROM raw_sessions").fetchone()[0] or 0
+                )
+            if latest_full_acquired_at_ms <= 0:
+                latest_full_acquired_at_ms = source_path.stat().st_mtime_ns // 1_000_000
+            append_raw_ids: list[str] = []
+            logical_source_key = f"codex:{fixture.session_native_id}"
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                predecessor_source_revision = str(
+                    conn.execute("SELECT source_revision FROM raw_sessions WHERE raw_id = ?", (raw_ids[0],)).fetchone()[
+                        0
+                    ]
+                    or raw_ids[0]
+                )
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                full_payloads = tuple(
+                    archive.raw_revision_material(raw_id)[1]
+                    for raw_id in raw_ids[: fixture.dimensions.append_fragment_count + 1]
+                )
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                for fragment_index, payload in fixture.iter_append_fragments(full_payloads):
+                    payload_hash = hashlib.sha256(payload).hexdigest()
+                    source_revision = append_source_revision(predecessor_source_revision, payload_hash)
+                    raw_id = archive.write_raw_payload(
+                        provider=Provider.CODEX,
+                        payload=payload,
+                        source_path=str(source_path),
+                        source_index=fixture.dimensions.revision_count + fragment_index,
+                        native_id=fixture.session_native_id,
+                        acquired_at_ms=latest_full_acquired_at_ms + fragment_index + 1,
+                    )
+                    archive.bind_raw_revision(
+                        raw_id,
+                        RawRevisionEnvelope(
+                            logical_source_key=logical_source_key,
+                            kind=RawRevisionKind.APPEND,
+                            source_revision=source_revision,
+                            acquisition_generation=0,
+                            predecessor_source_revision=predecessor_source_revision,
+                            append_start_offset=len(full_payloads[fragment_index]),
+                            append_end_offset=len(full_payloads[fragment_index + 1]),
+                            authority=RawRevisionAuthority.QUARANTINED,
+                        ),
+                    )
+                    append_raw_ids.append(raw_id)
+                    predecessor_source_revision = source_revision
+                archive.commit()
+            raw_ids.extend(append_raw_ids)
             return tuple(raw_ids), tuple(sizes), tuple(sha256s)
         finally:
             await backend.close()
