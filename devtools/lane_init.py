@@ -488,7 +488,9 @@ def _seed_testmon_graph_unlocked(
     )
     destination_initial_state = destination_states[0][1]
     with native_testmon_source_binding(source) as source_binding:
-        source_fd = source_binding.descriptor if source_binding is not None else None
+        if source_binding is None:
+            return "coordinator graph disappeared before descriptor binding; first lane verify will bootstrap", False
+        source_fd = source_binding.descriptor
         initial_state = inspect_native_testmon_environment(
             source,
             environment_name=initial_digest,
@@ -558,8 +560,6 @@ def _seed_testmon_graph_unlocked(
                 "coordinator graph is not attestable for the selected environment; first lane verify will bootstrap",
                 False,
             )
-        if source_binding is None:
-            return "coordinator graph disappeared before descriptor binding; first lane verify will bootstrap", False
         source_violation = certified_attestation_violation(
             root,
             environment_name=copy_digest,

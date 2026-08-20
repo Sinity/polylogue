@@ -281,6 +281,25 @@ def native_testmon_lifecycle_locks(
         yield
 
 
+@contextlib.contextmanager
+def _optional_native_testmon_source_lock(
+    source_lock: contextlib.AbstractContextManager[bool],
+) -> Iterator[bool]:
+    """Treat an unavailable linked source as absent without leaking its lock."""
+    try:
+        source_available = source_lock.__enter__()
+    except NativeTestmonRepairError:
+        yield False
+        return
+    try:
+        yield source_available
+    except BaseException as exc:
+        source_lock.__exit__(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        source_lock.__exit__(None, None, None)
+
+
 def _ensure_deadline(deadline_monotonic: float | None) -> None:
     if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
         raise NativeTestmonDeadlineError("verify invocation deadline expired during native testmon preparation")
@@ -1511,51 +1530,54 @@ def prepare_native_testmon_environment(
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
         source_lock = source_lock_factory() if source_lock_factory is not None else contextlib.nullcontext(True)
-        with source_lock as source_available:
-            if not source_available:
-                main = NativeTestmonState("absent", "optional main native testmon source lock is busy")
-            else:
-                _validate_owned_state_parents(main_checkout)
-                main_data = main_checkout / TESTMON_DATA_RELPATH
-                main_binding_context = native_testmon_source_binding(main_data)
+        main = NativeTestmonState("absent", "optional main native testmon state unavailable")
+        with _optional_native_testmon_source_lock(source_lock) as source_available:
+            if source_available:
                 try:
-                    main_binding = main_binding_context.__enter__()
+                    _validate_owned_state_parents(main_checkout)
                 except NativeTestmonRepairError as exc:
-                    # The linked checkout is optional. A stale private hard link or
-                    # another source-only ownership violation must not turn an
-                    # otherwise safe local bootstrap into a rejected verify.
-                    main_binding = None
                     main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
                 else:
+                    main_data = main_checkout / TESTMON_DATA_RELPATH
+                    main_binding_context = native_testmon_source_binding(main_data)
                     try:
-                        if main_binding is None:
-                            # The public source path may appear immediately after
-                            # binding checked it. Without a retained descriptor it
-                            # is not safe to inspect or copy that mutable inode.
-                            main = NativeTestmonState(
-                                "absent",
-                                "optional main native testmon state unavailable before descriptor binding",
-                            )
-                        else:
-                            main = inspect_native_testmon_environment(
-                                main_data,
-                                environment_name=environment_name,
-                                required_executable_paths=required_executable_paths,
-                                data_fd=main_binding.descriptor,
-                                deadline_monotonic=deadline_monotonic,
-                            )
-                            if main.valid:
-                                _atomic_copy_sqlite_database(
+                        main_binding = main_binding_context.__enter__()
+                    except NativeTestmonRepairError as exc:
+                        # The linked checkout is optional. A stale private hard link or
+                        # another source-only ownership violation must not turn an
+                        # otherwise safe local bootstrap into a rejected verify.
+                        main_binding = None
+                        main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
+                    else:
+                        try:
+                            if main_binding is None:
+                                # The public source path may appear immediately after
+                                # binding checked it. Without a retained descriptor it
+                                # is not safe to inspect or copy that mutable inode.
+                                main = NativeTestmonState(
+                                    "absent",
+                                    "optional main native testmon state unavailable before descriptor binding",
+                                )
+                            else:
+                                main = inspect_native_testmon_environment(
                                     main_data,
-                                    local_data,
                                     environment_name=environment_name,
                                     required_executable_paths=required_executable_paths,
+                                    data_fd=main_binding.descriptor,
                                     deadline_monotonic=deadline_monotonic,
-                                    source_fd=main_binding.descriptor,
                                 )
-                                copied_from = main_data
-                    finally:
-                        main_binding_context.__exit__(None, None, None)
+                                if main.valid:
+                                    _atomic_copy_sqlite_database(
+                                        main_data,
+                                        local_data,
+                                        environment_name=environment_name,
+                                        required_executable_paths=required_executable_paths,
+                                        deadline_monotonic=deadline_monotonic,
+                                        source_fd=main_binding.descriptor,
+                                    )
+                                    copied_from = main_data
+                        finally:
+                            main_binding_context.__exit__(None, None, None)
         fallback_allowed = native_testmon_fallback_allowed(local, main)
 
         if copied_from is not None:

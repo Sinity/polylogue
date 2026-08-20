@@ -244,6 +244,11 @@ def _native_testmon_source_lifecycle_lock(
         yield False
 
 
+def _native_testmon_source_lock_timeout_s() -> float:
+    """Return the bounded wait used only while consulting a linked source."""
+    return _float_env(TESTMON_SOURCE_LOCK_TIMEOUT_ENV, DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S)
+
+
 def _anchor_verification_paths() -> None:
     """Use the checkout root for relative verification state when invoked inside it."""
     current = Path.cwd().resolve()
@@ -364,11 +369,13 @@ PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
 PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
+TESTMON_SOURCE_LOCK_TIMEOUT_ENV = "POLYLOGUE_VERIFY_TESTMON_SOURCE_LOCK_TIMEOUT_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
+DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
 
 
 def _estimate_duration_from_history(
@@ -3302,7 +3309,10 @@ def _main(argv: list[str] | None = None) -> int:
             runtime_data_paths = change_impact.runtime_data_paths
 
             def source_lock_factory() -> contextlib.AbstractContextManager[bool]:
-                return _native_testmon_source_lifecycle_lock(ROOT)
+                return _native_testmon_source_lifecycle_lock(
+                    ROOT,
+                    timeout_s=_native_testmon_source_lock_timeout_s(),
+                )
 
             preparation = prepare_native_testmon_environment(
                 ROOT,

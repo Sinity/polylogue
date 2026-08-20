@@ -1048,12 +1048,62 @@ def test_optional_main_source_that_appears_after_binding_stays_unavailable(
 
     monkeypatch.setattr(testmon_bootstrap, "native_testmon_source_binding", source_binding)
 
+    original_inspect = testmon_bootstrap.inspect_native_testmon_environment
+
+    def inspect_without_unbound_source_read(
+        data_path: Path,
+        *,
+        data_fd: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if data_path == main / TESTMON_DATA_RELPATH and data_fd is None:
+            raise AssertionError("an optional source that appeared after binding must not be read unbound")
+        return original_inspect(data_path, data_fd=data_fd, **kwargs)
+
+    monkeypatch.setattr(testmon_bootstrap, "inspect_native_testmon_environment", inspect_without_unbound_source_read)
+
     preparation = prepare_native_testmon_environment(lane)
 
     assert preparation.selection_mode == "bootstrap"
     assert preparation.copied_from is None
     assert preparation.local_state.status == "absent"
     assert (main / TESTMON_DATA_RELPATH).is_file()
+
+
+def test_optional_main_invalid_parent_falls_back_to_lane_local_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unsafe optional source parent cannot reject an otherwise safe lane."""
+    lane = tmp_path / "lane"
+    main = tmp_path / "main"
+    lane.mkdir()
+    main.mkdir()
+
+    monkeypatch.setattr(testmon_bootstrap, "testmon_environment_digest", lambda *_args, **_kwargs: "lane-environment")
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, main) if checkout.resolve() == lane.resolve() else None,
+    )
+    original_validate = testmon_bootstrap._validate_owned_state_parents
+
+    def reject_main_parent(checkout: Path) -> None:
+        if checkout.resolve() == main.resolve():
+            raise NativeTestmonRepairError("refusing symlinked owned testmon parent")
+        original_validate(checkout)
+
+    monkeypatch.setattr(testmon_bootstrap, "_validate_owned_state_parents", reject_main_parent)
+
+    preparation = prepare_native_testmon_environment(
+        lane,
+        source_lock_factory=lambda: contextlib.nullcontext(True),
+    )
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+    assert preparation.fallback_allowed is True
 
 
 def test_an_interrupted_bootstrap_does_not_delete_every_environments_graph(tmp_path: Path) -> None:

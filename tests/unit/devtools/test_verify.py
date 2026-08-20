@@ -3253,6 +3253,55 @@ def test_busy_optional_main_source_lock_is_unavailable(
         holder.result(timeout=2)
 
 
+@pytest.mark.uses_real_clock("proves a configured busy-main wait falls back to lane-local bootstrap")
+def test_busy_main_source_wait_has_bounded_liveness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devtools.testmon_bootstrap import prepare_native_testmon_environment
+
+    main = tmp_path / "main"
+    lane = tmp_path / "lane"
+    main.mkdir()
+    lane.mkdir()
+
+    monkeypatch.setattr(
+        verify,
+        "linked_worktree_info",
+        lambda root, **_kwargs: (True, main) if root.resolve() == lane.resolve() else None,
+    )
+    monkeypatch.setenv(verify.TESTMON_SOURCE_LOCK_TIMEOUT_ENV, "1.0")
+    assert verify._native_testmon_source_lock_timeout_s() == 1.0
+
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_main_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(main):
+            holder_entered.set()
+            assert release_holder.wait(timeout=3)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_main_lock)
+        assert holder_entered.wait(timeout=2)
+        started = time.monotonic()
+        preparation = prepare_native_testmon_environment(
+            lane,
+            source_lock_factory=lambda: verify._native_testmon_source_lifecycle_lock(
+                lane,
+                timeout_s=verify._native_testmon_source_lock_timeout_s(),
+            ),
+        )
+        elapsed = time.monotonic() - started
+        release_holder.set()
+        holder.result(timeout=2)
+
+    assert elapsed < 3, f"busy-main source preparation exceeded bounded liveness: {elapsed:.3f}s"
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+
+
 @pytest.mark.uses_real_clock("proves common source lock ends before linked verify lifecycle ends")
 def test_unrelated_linked_lane_proceeds_after_source_preparation(
     tmp_path: Path,
