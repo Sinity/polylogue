@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon.write_coordinator import (
+    _DETACHED_WRITER_FAILURE_ESCAPED_ACTOR,
     _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
     _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH,
     _MAX_DETACHED_WRITER_FAILURE_ACTORS,
@@ -652,6 +653,28 @@ async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_over
     assert attribution["caller-30"] == 1
     assert "caller-31" not in attribution
     assert attribution[_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR] == 6
+
+
+@pytest.mark.asyncio
+async def test_detached_writer_failure_actor_sentinel_does_not_collide_with_overflow() -> None:
+    coordinator = DaemonWriteCoordinator()
+
+    async def boom() -> None:
+        raise RuntimeError("writer blew up")
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run(_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR, boom)
+    await asyncio.sleep(0)
+
+    for index in range(_MAX_DETACHED_WRITER_FAILURE_ACTORS):
+        with pytest.raises(RuntimeError, match="writer blew up"):
+            await coordinator.run(f"caller-{index}", boom)
+        await asyncio.sleep(0)
+
+    attribution = dict(coordinator.snapshot().detached_writer_failures_by_actor)
+    assert len(attribution) == _MAX_DETACHED_WRITER_FAILURE_ACTORS
+    assert attribution[_DETACHED_WRITER_FAILURE_ESCAPED_ACTOR] == 1
+    assert attribution[_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR] == 2
 
 
 @pytest.mark.asyncio

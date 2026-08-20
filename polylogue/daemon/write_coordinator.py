@@ -47,6 +47,7 @@ _DEFAULT_PRIORITY = 0
 _MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
 _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
 _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
+_DETACHED_WRITER_FAILURE_ESCAPED_ACTOR = "<other> (actor)"
 _THREAD_RESULT_POLL_SECONDS = 0.01
 
 
@@ -372,6 +373,8 @@ class DaemonWriteCoordinator:
                 or any(ord(character) < 0x20 for character in actor_label)
             ):
                 actor_label = _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR
+            elif actor_label == _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR:
+                actor_label = _DETACHED_WRITER_FAILURE_ESCAPED_ACTOR
             if (
                 actor_label not in self._detached_writer_failures_by_actor
                 and len(self._detached_writer_failures_by_actor) >= _MAX_DETACHED_WRITER_FAILURE_ACTORS - 1
