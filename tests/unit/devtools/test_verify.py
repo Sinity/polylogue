@@ -24,6 +24,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.checkout_guard import CheckoutImportMismatchError
+from devtools.pytest_supervisor import write_termination_request as _write_termination_request
 from devtools.testmon_bootstrap import NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
@@ -2915,11 +2916,11 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
-def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
+def test_native_verifier_keeps_descriptor_binding_for_parent_inspection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Native verify publishes TESTMON_DATAFILE without requiring /proc."""
+    """Parent-side testmon inspection remains descriptor-bound without /proc."""
     descriptor_root = Path("/dev/fd")
     probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -2930,20 +2931,63 @@ def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
 
     monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
     state = verify._open_owned_native_testmon_state(tmp_path)
-    captured: dict[str, Path | None] = {}
-
-    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
-        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
-        return 0, 0.0, {}
-
-    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
-        with patch("devtools.verify._run_step", side_effect=fake_run_step):
-            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
+        assert state.data_path == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
+        assert state.executable_data_path == tmp_path / verify.TESTMON_DATA
     finally:
         state.close()
 
-    assert captured["native_testmon_data"] == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
+
+def test_native_verifier_gives_xdist_testmon_a_worker_openable_state_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A native xdist worker opens the testmon database through its real path."""
+    descriptor_root = Path("/dev/fd")
+    probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (descriptor_root / str(probe)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe)
+
+    monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    state = verify._open_owned_native_testmon_state(tmp_path)
+    observed = tmp_path / "contained-child.txt"
+    module = tmp_path / "test_xdist_testmon_state.py"
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "def test_worker_receives_testmon_path():\n"
+        f"    Path({str(observed)!r}).write_text(os.environ['TESTMON_DATAFILE'])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
+    try:
+        rc, _elapsed, _metadata = _run(
+            "pytest native xdist testmon path",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "xdist",
+                "-p",
+                "pytest-testmon",
+                "-n",
+                "1",
+                "--testmon",
+                str(module),
+            ],
+            cwd=str(tmp_path),
+        )
+    finally:
+        state.close()
+
+    assert rc == 0
+    assert observed.read_text(encoding="utf-8") == str(state.executable_data_path)
 
 
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
@@ -3734,6 +3778,36 @@ def test_pytest_run_heartbeat_reports_latest_test_node(
     assert progress["latest_test_event"]["nodeid"] == nodeid
 
 
+def test_latest_event_reader_survives_worker_directory_created_after_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker may create its events directory between the supervisor probes."""
+    events_dir = tmp_path / "events"
+    events_path = tmp_path / "events.jsonl"
+    event = {
+        "event": "test_started",
+        "nodeid": "worker::test",
+        "updated_at": "2026-08-20T14:00:00Z",
+    }
+    original_is_dir = Path.is_dir
+    created = False
+
+    def create_worker_dir_after_probe(path: Path) -> bool:
+        nonlocal created
+        if path == events_dir and not created:
+            created = True
+            events_dir.mkdir()
+            (events_dir / "gw0.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+            return False
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", create_worker_dir_after_probe)
+
+    assert verify._read_latest_pytest_event(events_path, events_dir=events_dir) is None
+    assert verify._read_latest_pytest_event(events_path, events_dir=events_dir) == event
+
+
 def test_pytest_run_streams_child_output_live(capsys: pytest.CaptureFixture[str]) -> None:
     rc, _elapsed, _metadata = _run("pytest output", [sys.executable, "-c", "print('pytest-progress')"])
 
@@ -3910,7 +3984,7 @@ def test_pytest_run_terminates_after_runtime_budget(
 def test_pytest_run_terminates_with_heartbeat_disabled(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "30")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0.15")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0")
 
@@ -3945,6 +4019,310 @@ def test_pytest_run_terminates_after_output_stall(
     assert "progress" in captured.err
     assert "pytest produced no output for 0.15s" in captured.err
     assert "terminated owned pytest process group" in captured.err
+
+
+def test_pytest_stall_cannot_launder_zero_supervisor_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A real supervisor termination stays failed if its receipt says zero.
+
+    The request shim injects the observed race shape into the production
+    supervisor path: the runner detects a silent stall, asks the supervisor to
+    terminate, and the supervisor reports a clean controller exit. The test
+    must fail if `_run` trusts that zero instead of the termination reason.
+    """
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
+    original_write_request = _write_termination_request
+
+    def write_zero_exit_request(path: Path, *, reason: str) -> None:
+        original_write_request(path, reason=reason, exit_code=0)
+
+    monkeypatch.setattr("devtools.verify.write_termination_request", write_zero_exit_request)
+    run = VerifyRun(tier="zero-exit-stall", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest stall",
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        run=run,
+    )
+
+    captured = capsys.readouterr()
+    step = run._payload["steps"][0]
+    artifact_dir = tmp_path / str(step["artifact_dir"])
+    containment = json.loads((artifact_dir / "containment.json").read_text(encoding="utf-8"))
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_stall_timeout"
+    assert step["exit"] == 124
+    assert step["termination_reason"] == "pytest produced no output for 0.15s"
+    assert containment["status"] == "terminated"
+    assert containment["exit_code"] == 124
+    assert containment["termination_reason"] == "pytest produced no output for 0.15s"
+    assert isinstance(containment["controller_pid"], int)
+    assert "SIGTERM" in containment["signals_sent"]
+    assert "pytest produced no output for 0.15s" in captured.err
+
+
+def test_pytest_supervisor_natural_success_remains_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    # Allow managed supervisor startup to complete before the control's
+    # naturally successful module is judged silent.
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "2")
+    run = VerifyRun(tier="natural-success", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest success",
+        [sys.executable, "-c", "print('success', flush=True)"],
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = tmp_path / str(step["artifact_dir"])
+    containment = json.loads((artifact_dir / "containment.json").read_text(encoding="utf-8"))
+    assert rc == 0
+    assert metadata["diagnosis"] == "pytest_passed_report_missing"
+    assert step["exit"] == 0
+    assert containment["status"] == "finished"
+    assert containment["exit_code"] == 0
+    assert containment["termination_reason"] is None
+
+
+def test_storage_scale_fixture_path_and_heartbeat_keep_short_node_live(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marked node uses the production storage-scale fixture and finishes."""
+    module = tmp_path / "test_storage_scale_heartbeat.py"
+    fixture_proof = tmp_path / "storage-scale-fixture-path.txt"
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_long_storage_scale_node(tmp_path):\n"
+        "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    deadline = time.monotonic() + 3.5\n"
+        "    payload = b'x' * 4096\n"
+        "    with (tmp_path / 'productive-storage.bin').open('wb') as stream:\n"
+        "        while time.monotonic() < deadline:\n"
+        "            stream.write(payload)\n"
+        "            stream.flush()\n"
+        "            os.fsync(stream.fileno())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "10")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "3")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-heartbeat", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale heartbeat",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        cwd=str(ROOT),
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = run.run_dir / "steps" / str(step["step_id"])
+    events_path = artifact_dir / "events.jsonl"
+    assert events_path.is_file()
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 0
+    assert metadata.get("termination_reason") is None
+    assert metadata["stall_timeout_s"] == 3.0
+    assert fixture_proof.is_file()
+    fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
+    assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
+    heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
+    assert heartbeat_events
+    assert max(float(event["elapsed_s"]) for event in heartbeat_events) >= 3.0
+
+
+def test_storage_scale_heartbeat_is_the_only_synthetic_productive_event() -> None:
+    assert verify._is_productive_test_progress_event(
+        {"event": "test_progress", "progress_kind": "storage_scale_heartbeat"}
+    )
+    assert not verify._is_productive_test_progress_event(
+        {"event": "test_progress", "progress_kind": "untyped-heartbeat"}
+    )
+    assert not verify._is_productive_test_progress_event({"event": "heartbeat"})
+
+
+def test_storage_scale_heartbeat_cannot_hide_non_xdist_progress_stall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A marked infinite loop still reaches the real progress-stall exit."""
+    module = tmp_path / "test_storage_scale_deadlock.py"
+    fixture_proof = tmp_path / "storage-scale-deadlock-fixture-path.txt"
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_marked_infinite_loop(tmp_path):\n"
+        "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    (tmp_path / 'initial-storage-write').write_bytes(b'initial')\n"
+        "    while True:\n"
+        "        print('marked-deadlock-output', flush=True)\n"
+        "        time.sleep(0.02)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-non-xdist-stall", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale non-xdist stall",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        cwd=str(ROOT),
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = run.run_dir / "steps" / str(step["step_id"])
+    event_files = sorted((artifact_dir / "events").glob("*.jsonl"))
+    assert event_files
+    events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_terminated"
+    assert metadata["termination_reason"].startswith("pytest reported no test progress for 1.5s")
+    assert fixture_proof.is_file()
+    fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
+    assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
+    heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
+    assert len(heartbeat_events) <= 2
+
+
+def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real xdist worker heartbeat does not replace node progress."""
+    module = tmp_path / "test_storage_scale_xdist_deadlock.py"
+    fixture_proof = tmp_path / "storage-scale-xdist-fixture-path.txt"
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_marked_deadlock(tmp_path):\n"
+        "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    (tmp_path / 'initial-storage-write').write_bytes(b'initial')\n"
+        "    while True:\n"
+        "        print('deadlock-output', flush=True)\n"
+        "        time.sleep(0.02)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-deadlock-xdist", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale deadlock",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            "-n",
+            "1",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        cwd=str(ROOT),
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = run.run_dir / "steps" / str(step["step_id"])
+    event_files = sorted((artifact_dir / "events").glob("*.jsonl"))
+    assert event_files
+    events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 124
+    assert metadata["diagnosis"] in {"pytest_terminated", "pytest_stall_timeout"}
+    assert metadata["termination_reason"].startswith(
+        ("pytest reported no test progress for 1.5s", "pytest produced no output for 1.5s")
+    )
+    assert fixture_proof.is_file()
+    fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
+    assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
+    heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
+    assert len(heartbeat_events) <= 2
+    assert any(event.get("worker_id") == "gw0" for event in events)
+
+
+def test_unmarked_silent_node_still_terminates_on_output_stall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely silent unmarked node retains the existing stall failure."""
+    module = tmp_path / "test_silent_module.py"
+    module.write_text(
+        "import time\ndef test_silent_node():\n    time.sleep(5)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="silent-node", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest silent node",
+        [sys.executable, "-m", "pytest", "-q", "-p", "devtools.pytest_progress_plugin", str(module)],
+        run=run,
+    )
+
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_stall_timeout"
+    assert metadata["termination_reason"] == "pytest produced no output for 1s"
 
 
 def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(

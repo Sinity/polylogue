@@ -230,6 +230,14 @@ that cadence (default 15 seconds, `0` disables the size walk). Focused
 `devtools test` runs retain their command-specific timeout control; it does not
 compose with or extend the verify invocation deadline.
 
+Tests marked `storage_scale` move their private `tmp_path` tree to NVMe scratch
+and emit a periodic typed activity heartbeat while the marked node runs. The
+heartbeat uses the same per-worker JSONL event ledger as ordinary pytest
+progress, so quiet storage work remains observable. It does not reset the
+hard no-test-progress stall clock: only real node and phase events do that.
+Its cadence defaults to 30 seconds and can be shortened for a controlled
+reproduction with `POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S`.
+
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
 broad collection does not retain or write unbounded node-id lists in controller

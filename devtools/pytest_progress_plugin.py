@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +28,7 @@ _EVENTS_DIR_ENV = "POLYLOGUE_PYTEST_EVENTS_DIR"
 _SELECTION_ENV = "POLYLOGUE_PYTEST_SELECTION_PATH"
 _SUMMARY_ENV = "POLYLOGUE_PYTEST_SUMMARY_PATH"
 _SELECTION_NODEID_LIMIT_ENV = "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"
+_STORAGE_SCALE_HEARTBEAT_ATTR = "_polylogue_storage_scale_heartbeat"
 _DESELECTED_NODEIDS_SAMPLE: list[str] = []
 _DESELECTED_COUNT = 0
 _SELECTED_COUNT = 0
@@ -43,6 +47,9 @@ _DDL_SUFFIX = ".archive-ddl.json"
 _COUNTS_FLUSH_EVERY = 20
 _COMPLETED_COUNT = 0
 _FAILED_COUNT = 0
+_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV = "POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S"
+_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
+_DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S = 30.0
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
 
 
@@ -159,6 +166,126 @@ def _write_event(payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _storage_scale_progress_heartbeat_s() -> float:
+    """Return a cadence that can refresh progress before the stall deadline."""
+    value = _DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S
+    raw = os.environ.get(_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV)
+    if raw is not None:
+        with contextlib.suppress(ValueError):
+            configured = float(raw)
+            if math.isfinite(configured) and configured > 0:
+                value = configured
+    raw_stall = os.environ.get(_STALL_TIMEOUT_ENV)
+    if raw_stall is not None:
+        with contextlib.suppress(ValueError):
+            stall_timeout = float(raw_stall)
+            if math.isfinite(stall_timeout) and stall_timeout > 0:
+                value = min(value, stall_timeout / 2)
+    return value
+
+
+def _storage_scale_tree_snapshot(root: Path) -> tuple[int, int, int] | None:
+    """Return file count, total bytes, and newest mtime below a test's tree."""
+    if not root.is_dir():
+        return None
+    total_bytes = 0
+    file_count = 0
+    newest_mtime_ns = 0
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        with entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    stat_result = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                file_count += 1
+                total_bytes += stat_result.st_size
+                newest_mtime_ns = max(newest_mtime_ns, stat_result.st_mtime_ns)
+    return file_count, total_bytes, newest_mtime_ns
+
+
+def _storage_scale_root_for_item(item: Any) -> Path | None:
+    """Return the exact redirected tree after fixture setup has bound it."""
+    fixture_root = getattr(item, "funcargs", {}).get("tmp_path")
+    if isinstance(fixture_root, Path):
+        return fixture_root
+    return None
+
+
+class _StorageScaleProgressHeartbeat:
+    """Report observed storage-tree changes for one marked scale node."""
+
+    def __init__(self, *, nodeid: str, root_supplier: Callable[[], Path | None]) -> None:
+        self._nodeid = nodeid
+        self._root_supplier = root_supplier
+        self._interval_s = _storage_scale_progress_heartbeat_s()
+        self._stop = threading.Event()
+        self._started_at = time.monotonic()
+        self._root: Path | None = None
+        self._last_snapshot: tuple[int, int, int] | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="pytest-storage-scale-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=min(max(self._interval_s * 2, 0.1), 1.0))
+
+    def prime(self) -> None:
+        """Capture the fixture tree immediately before the test body starts."""
+        root = self._root_supplier()
+        if root is None:
+            return
+        self._root = root
+        self._last_snapshot = _storage_scale_tree_snapshot(root)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_s):
+            root = self._root_supplier()
+            if root is None:
+                continue
+            if self._root is None:
+                self._root = root
+                self._last_snapshot = _storage_scale_tree_snapshot(root)
+                continue
+            snapshot = _storage_scale_tree_snapshot(root)
+            if snapshot is None or snapshot == self._last_snapshot:
+                continue
+            self._last_snapshot = snapshot
+            self._write_heartbeat()
+
+    def _write_heartbeat(self) -> None:
+        """Record one observed storage-tree change."""
+        if self._stop.is_set():
+            return
+        _write_event(
+            {
+                "event": "test_progress",
+                "nodeid": self._nodeid,
+                "progress_kind": "storage_scale_heartbeat",
+                "elapsed_s": round(time.monotonic() - self._started_at, 3),
+            }
+        )
 
 
 def _write_selection(payload: dict[str, Any]) -> None:
@@ -355,6 +482,41 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) 
             "location": [location[0], location[1], location[2]],
         }
     )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
+    """Observe storage progress for a marked node across setup and call."""
+    del nextitem
+    heartbeat: _StorageScaleProgressHeartbeat | None = None
+    numprocesses = getattr(getattr(item.config, "option", None), "numprocesses", 0)
+    xdist_controller = not os.environ.get("PYTEST_XDIST_WORKER") and bool(numprocesses)
+    if (
+        item.get_closest_marker("storage_scale") is not None
+        and (os.environ.get(_EVENTS_DIR_ENV) or os.environ.get(_EVENTS_ENV))
+        and not xdist_controller
+    ):
+        heartbeat = _StorageScaleProgressHeartbeat(
+            nodeid=str(item.nodeid),
+            root_supplier=lambda: _storage_scale_root_for_item(item),
+        )
+        setattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR, heartbeat)
+        heartbeat.start()
+    try:
+        yield
+    finally:
+        if heartbeat is not None:
+            heartbeat.stop()
+            delattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR)
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_call(item: Any) -> Any:
+    """Establish the storage baseline after fixture setup and before test code."""
+    heartbeat = getattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR, None)
+    if isinstance(heartbeat, _StorageScaleProgressHeartbeat):
+        heartbeat.prime()
+    yield
 
 
 @pytest.hookimpl
