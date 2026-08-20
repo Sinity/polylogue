@@ -244,6 +244,16 @@ def _element_kinds(value: object) -> list[str]:
     return sorted(str(item.get("element_kind")) for item in value if isinstance(item, dict))
 
 
+def _element_schema_files(value: object) -> dict[str, object]:
+    if not isinstance(value, list):
+        return {}
+    return {
+        str(item.get("element_kind")): item.get("schema_file")
+        for item in value
+        if isinstance(item, dict) and item.get("element_kind")
+    }
+
+
 def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     """Run the enum-value privacy guard over every committed element schema.
 
@@ -338,6 +348,20 @@ def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
     ``SchemaRegistry.replace_provider_packages`` keeps the two in step.
     """
     findings: list[PromotionAuditFinding] = []
+    package_paths = sorted(root.rglob("versions/*/package.json"))
+    for package_path in package_paths:
+        provider_dir = package_path.parent.parent.parent
+        if (provider_dir / "catalog.json").is_file():
+            continue
+        findings.append(
+            PromotionAuditFinding(
+                severity="blocker",
+                category="catalog_incoherent",
+                artifact=str(package_path.relative_to(root)),
+                json_path="$",
+                value="reason=provider_catalog_missing",
+            )
+        )
     for catalog_path in sorted(root.rglob("catalog.json")):
         provider_dir = catalog_path.parent
         relative = str(catalog_path.relative_to(root))
@@ -393,6 +417,22 @@ def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
                         artifact=relative,
                         json_path=f"$.packages[version={version}].elements",
                         value=f"catalog={catalog_kinds};package={manifest_kinds}",
+                    )
+                )
+            catalog_schema_files = _element_schema_files(entry.get("elements"))
+            manifest_schema_files = _element_schema_files(manifest.get("elements"))
+            for element_kind in sorted(set(catalog_schema_files) | set(manifest_schema_files)):
+                catalog_schema_file = catalog_schema_files.get(element_kind)
+                manifest_schema_file = manifest_schema_files.get(element_kind)
+                if catalog_schema_file == manifest_schema_file:
+                    continue
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="catalog_incoherent",
+                        artifact=relative,
+                        json_path=f"$.packages[version={version}].elements[element_kind={element_kind}].schema_file",
+                        value=f"catalog={catalog_schema_file!r};package={manifest_schema_file!r}",
                     )
                 )
             for field in ("sample_count", "first_seen", "last_seen"):

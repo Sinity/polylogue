@@ -441,6 +441,54 @@ class SchemaRegistry:
             return []
         return sorted((package.version for package in catalog.packages), key=_version_sort_key)
 
+    def list_committed_versions(self, provider: str) -> list[str]:
+        """List package versions present in this registry's own storage root.
+
+        Unlike :meth:`list_versions`, this intentionally does not consult a
+        catalog or fall back to the bundled schema tree.  Audit callers need
+        to see package manifests that were committed without a catalog.
+        """
+        provider_dir = self._provider_dir(_provider_token(provider))
+        versions_dir = provider_dir / "versions"
+        if not versions_dir.is_dir():
+            return []
+        return sorted(
+            (path.name for path in versions_dir.iterdir() if path.is_dir() and (path / "package.json").is_file()),
+            key=_version_sort_key,
+        )
+
+    def list_committed_providers(self) -> list[str]:
+        """List provider directories in this registry's own committed tree."""
+        root = self.storage_root
+        if not root.is_dir():
+            return []
+        return sorted(
+            path.name
+            for path in root.iterdir()
+            if path.is_dir() and (_catalog_path(path).is_file() or bool(self.list_committed_versions(path.name)))
+        )
+
+    def load_committed_catalog(self, provider: str) -> SchemaPackageCatalog | None:
+        """Load only the catalog at this registry's own storage root."""
+        path = self._catalog_path(_provider_token(provider))
+        if not path.is_file():
+            return None
+        return SchemaPackageCatalog.from_dict(_read_json_dict(path))
+
+    def load_committed_package(self, provider: str, version: str) -> SchemaVersionPackage | None:
+        """Load a package manifest without consulting a catalog or fallback root."""
+        path = self._package_manifest_path(_provider_token(provider), version)
+        if not path.is_file():
+            return None
+        return SchemaVersionPackage.from_dict(_read_json_dict(path))
+
+    def load_committed_schema_file(self, provider: str, version: str, schema_file: str) -> PublicSchemaDocument | None:
+        """Load a schema artifact named by a committed package manifest."""
+        path = self._package_dir(_provider_token(provider), version) / "elements" / schema_file
+        if not path.is_file():
+            return None
+        return _read_gzip_json_dict(path)
+
     def list_providers(self) -> list[str]:
         providers: set[str] = set()
         scanned_roots: set[Path] = set()

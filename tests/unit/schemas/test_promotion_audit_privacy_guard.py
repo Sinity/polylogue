@@ -121,7 +121,7 @@ def test_empty_discovered_provider_version_is_a_privacy_guard_failure(tmp_path: 
 
 
 def test_declared_element_without_schema_file_is_a_privacy_guard_failure(tmp_path: Path) -> None:
-    """A declared element without a schema artifact must not be skipped."""
+    """A supported element without a schema artifact must not be skipped."""
     bundle_root = tmp_path / "providers"
     shutil.copytree(SCHEMA_DIR, bundle_root)
     registry = SchemaRegistry(storage_root=bundle_root)
@@ -135,6 +135,15 @@ def test_declared_element_without_schema_file_is_a_privacy_guard_failure(tmp_pat
     element_kind = element.element_kind
     element.schema_file = None
     registry.save_package_catalog(catalog)
+    package_path = bundle_root / provider / "versions" / version / "package.json"
+    package_manifest = json.loads(package_path.read_text(encoding="utf-8"))
+    assert isinstance(package_manifest, dict)
+    package_elements = package_manifest["elements"]
+    assert isinstance(package_elements, list)
+    package_element = next(item for item in package_elements if item["element_kind"] == element_kind)
+    assert isinstance(package_element, dict)
+    package_element["schema_file"] = None
+    package_path.write_text(json.dumps(package_manifest), encoding="utf-8")
 
     report = audit_schema_bundle_privacy(registry=registry)
 
@@ -143,6 +152,138 @@ def test_declared_element_without_schema_file_is_a_privacy_guard_failure(tmp_pat
         getattr(check, "provider", None) == f"{provider}/{version}/{element_kind}"
         and "schema file is missing" in check.summary
         for check in privacy_failures
+    )
+
+
+def test_committed_bundle_without_catalog_is_still_privacy_audited(tmp_path: Path) -> None:
+    """A package and schema artifact remain visible to the gate without catalog.json."""
+    provider = "orphan-provider"
+    version = "v1"
+    version_dir = tmp_path / provider / "versions" / version
+    schema_file = "session_document.schema.json.gz"
+    schema_path = version_dir / "elements" / schema_file
+    schema_path.parent.mkdir(parents=True)
+    with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "type": "object",
+                "x-polylogue-values": ["0f1e2d3c-4b5a-4968-8776-655443332211"],
+            },
+            stream,
+        )
+    (version_dir / "package.json").write_text(
+        json.dumps(
+            {
+                "provider": provider,
+                "version": version,
+                "anchor_kind": "session_document",
+                "default_element_kind": "session_document",
+                "first_seen": "",
+                "last_seen": "",
+                "bundle_scope_count": 0,
+                "sample_count": 1,
+                "elements": [
+                    {
+                        "element_kind": "session_document",
+                        "schema_file": schema_file,
+                        "sample_count": 1,
+                        "artifact_count": 1,
+                        "supported": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(getattr(check, "provider", None) == provider for check in failures)
+    assert any(getattr(check, "provider", None) == f"{provider}/{version}/session_document" for check in failures)
+    assert any("UUID leak" in detail for check in failures for detail in check.details)
+
+
+def test_catalog_and_package_schema_file_disagreement_audits_both_artifacts(tmp_path: Path) -> None:
+    """A package-only schema file cannot hide behind a safe catalog reference."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    package_path = bundle_root / provider / "versions" / version / "package.json"
+    package_manifest = json.loads(package_path.read_text(encoding="utf-8"))
+    assert isinstance(package_manifest, dict)
+    package_elements = package_manifest["elements"]
+    assert isinstance(package_elements, list)
+    package_element = next(item for item in package_elements if item["element_kind"] == "session_document")
+    assert isinstance(package_element, dict)
+    leaked_schema_file = "package-only-leak.schema.json.gz"
+    package_element["schema_file"] = leaked_schema_file
+    package_path.write_text(json.dumps(package_manifest), encoding="utf-8")
+    leaked_schema_path = package_path.parent / "elements" / leaked_schema_file
+    with gzip.open(leaked_schema_path, "wt", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "type": "object",
+                "x-polylogue-values": ["0f1e2d3c-4b5a-4968-8776-655443332211"],
+            },
+            stream,
+        )
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    element_scope = f"{provider}/{version}/session_document"
+    assert any(
+        getattr(check, "provider", None) == element_scope
+        and check.summary == "Catalog/package schema_file disagreement"
+        for check in failures
+    )
+    assert any(
+        getattr(check, "provider", None) == element_scope and any("UUID leak" in detail for detail in check.details)
+        for check in failures
+    )
+
+
+def test_intentionally_unsupported_element_without_schema_is_not_a_gate_failure(tmp_path: Path) -> None:
+    """Unsupported manifest entries may omit an artifact without failing the gate."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    package_path = bundle_root / provider / "versions" / version / "package.json"
+    package_manifest = json.loads(package_path.read_text(encoding="utf-8"))
+    catalog_path = bundle_root / provider / "catalog.json"
+    catalog_manifest = json.loads(catalog_path.read_text(encoding="utf-8"))
+    unsupported = {
+        "element_kind": "future_element",
+        "schema_file": None,
+        "sample_count": 0,
+        "artifact_count": 0,
+        "supported": False,
+    }
+    assert isinstance(package_manifest, dict)
+    package_elements = package_manifest["elements"]
+    assert isinstance(package_elements, list)
+    package_elements.append(unsupported)
+    assert isinstance(catalog_manifest, dict)
+    catalog_packages = catalog_manifest["packages"]
+    assert isinstance(catalog_packages, list)
+    catalog_package = next(item for item in catalog_packages if item["version"] == version)
+    assert isinstance(catalog_package, dict)
+    catalog_elements = catalog_package["elements"]
+    assert isinstance(catalog_elements, list)
+    catalog_elements.append(dict(unsupported))
+    package_path.write_text(json.dumps(package_manifest), encoding="utf-8")
+    catalog_path.write_text(json.dumps(catalog_manifest), encoding="utf-8")
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    assert report.all_passed, [check.format_line() for check in report.checks if check.status.value == "error"]
+    assert not any(
+        getattr(check, "provider", None) == f"{provider}/{version}/future_element" for check in report.checks
     )
 
 
