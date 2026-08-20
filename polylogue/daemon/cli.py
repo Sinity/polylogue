@@ -2842,14 +2842,24 @@ async def _run_daemon_services_under_active_writer_lease(
                     mt.cancel()
             await _drain_tasks(maintenance_tasks, timeout=5.0)
 
-            try:
-                async with asyncio.timeout(5.0):
-                    await write_coordinator.run_sync(
-                        "shutdown.live_ingest_attempts",
-                        _mark_interrupted_live_ingest_attempts_on_shutdown,
-                    )
-            except TimeoutError:
-                logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
+            if signal_termination:
+                # CursorStore initialization re-applies OPS-tier DDL before it
+                # marks running attempts interrupted.  That best-effort
+                # recovery can wait behind an external OPS lock even after a
+                # SIGTERM/SIGINT has made process exit the priority.  The same
+                # CursorStore recovery runs on the next daemon startup, so
+                # defer this nonessential shutdown write rather than stranding
+                # the signal path behind its coordinator-owned worker.
+                logger.info("daemon: deferring interrupted ingest recovery until next startup after signal")
+            else:
+                try:
+                    async with asyncio.timeout(5.0):
+                        await write_coordinator.run_sync(
+                            "shutdown.live_ingest_attempts",
+                            _mark_interrupted_live_ingest_attempts_on_shutdown,
+                        )
+                except TimeoutError:
+                    logger.warning("daemon: timed out recording interrupted ingest attempts during shutdown")
 
             if lifecycle is not None:
                 exit_kind = "clean"

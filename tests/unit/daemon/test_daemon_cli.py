@@ -4676,7 +4676,15 @@ def test_report_drain_exceptions_ignores_expected_cancellations(
     assert "task raised during shutdown" not in caplog.text
 
 
-def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> None:
+@pytest.mark.parametrize(
+    ("received_signal_name", "expected_interrupted_cleanup_calls"),
+    [(None, 1), ("SIGTERM", 0)],
+)
+def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
+    received_signal_name: str | None,
+    expected_interrupted_cleanup_calls: int,
+) -> None:
+    """Signal shutdown defers OPS recovery, while ordinary shutdown performs it."""
     from polylogue.daemon import cli as daemon_cli
 
     class BlockingServer:
@@ -4739,6 +4747,10 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
         )
         while not (browser_server.ready.is_set() and api_server.ready.is_set()):
             await asyncio.sleep(0.01)
+        if received_signal_name is not None:
+            lifecycle = daemon_cli._daemon_lifecycle
+            assert lifecycle is not None
+            lifecycle.received_signal_name = received_signal_name
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=2.0)
@@ -4774,7 +4786,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
     assert browser_server.close_called is True
     assert api_server.shutdown_called is True
     assert api_server.close_called is True
-    assert interrupted_cleanup_calls == 1
+    assert interrupted_cleanup_calls == expected_interrupted_cleanup_calls
 
 
 def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() -> None:
