@@ -46,6 +46,8 @@ class RevisionApplicationReceipt:
         payload = {
             "accepted_raw_id": self.accepted_raw_id,
             "accepted_source_revision": self.accepted_source_revision,
+            "accepted_frontier_kind": self.accepted_frontier_kind,
+            "accepted_frontier": self.accepted_frontier,
             "decision": self.decision.value,
             "logical_source_key": self.logical_source_key,
             "raw_id": self.raw_id,
@@ -145,7 +147,7 @@ def assert_session_fts_exact_sync(
         )
 
 
-def record_revision_application_sync(
+def _record_revision_application_sync(
     conn: sqlite3.Connection,
     receipt: RevisionApplicationReceipt,
     *,
@@ -162,6 +164,8 @@ def record_revision_application_sync(
     frontier = (receipt.accepted_frontier_kind, receipt.accepted_frontier)
     if any(value is None for value in frontier) and not all(value is None for value in frontier):
         raise ValueError("accepted frontier receipt fields must be all present or all absent")
+    if all(value is None for value in accepted) != all(value is None for value in frontier):
+        raise ValueError("accepted identity and frontier receipt fields must be present or absent together")
     cursor = conn.execute(
         """
         INSERT OR IGNORE INTO raw_revision_applications (
@@ -216,29 +220,28 @@ def record_revision_application_sync(
             if tuple(existing) != expected:
                 # `decision_id` hashes every decision-defining field (raw_id,
                 # session_id, decision, logical_source_key, source_revision,
-                # accepted_raw_id, accepted_source_revision) except
-                # accepted_content_hash/frontier. So a row found by
-                # decision_id can only disagree with the incoming receipt on
-                # derived accepted values -- a parser/derivation fix
-                # reparsing the exact same accepted raw evidence. The
-                # raw/session/revision identity already matched to find this
-                # row, so that is re-derivation, not a conflicting decision:
-                # update the derived values in place. Any other field actually differing (defensive;
+                # accepted_raw_id, accepted_source_revision, and the
+                # accepted frontier pair) except accepted_content_hash. A
+                # row found by decision_id can therefore only disagree on a
+                # re-derived content hash. The raw/session/revision/frontier
+                # identity already matched to find this row, so that is
+                # re-derivation, not a conflicting decision: update only the
+                # content hash in place. Any other field actually differing (defensive;
                 # not reachable without a decision_id hash collision) is a
                 # genuine conflict and still rejects.
                 if tuple(existing[:5]) == expected[:5]:
+                    if tuple(existing[6:]) != expected[6:]:
+                        raise RuntimeError(
+                            "conflicting raw revision application receipt: immutable accepted frontier evidence "
+                            f"for decision_id={receipt.decision_id}"
+                        )
                     conn.execute(
                         """
                         UPDATE raw_revision_applications
-                        SET accepted_content_hash = ?, accepted_frontier_kind = ?, accepted_frontier = ?
+                        SET accepted_content_hash = ?
                         WHERE decision_id = ?
                         """,
-                        (
-                            receipt.accepted_content_hash,
-                            receipt.accepted_frontier_kind,
-                            receipt.accepted_frontier,
-                            receipt.decision_id,
-                        ),
+                        (receipt.accepted_content_hash, receipt.decision_id),
                     )
                 else:
                     raise RuntimeError(
@@ -410,6 +413,25 @@ def record_revision_application_sync(
             decided_at_ms,
         ),
     )
+
+
+def record_revision_application_sync(
+    conn: sqlite3.Connection,
+    receipt: RevisionApplicationReceipt,
+    *,
+    decided_at_ms: int,
+) -> None:
+    """Record one receipt and its head CAS as one atomic savepoint operation."""
+    savepoint = "raw_revision_application_receipt"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        _record_revision_application_sync(conn, receipt, decided_at_ms=decided_at_ms)
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
 
 
 __all__ = [

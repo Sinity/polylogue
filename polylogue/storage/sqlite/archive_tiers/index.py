@@ -535,14 +535,21 @@ CREATE TABLE IF NOT EXISTS raw_revision_applications (
     detail                   TEXT NOT NULL,
     decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0),
     CHECK(
-        (accepted_raw_id IS NULL AND accepted_source_revision IS NULL AND accepted_content_hash IS NULL)
+        (
+            accepted_raw_id IS NULL
+            AND accepted_source_revision IS NULL
+            AND accepted_content_hash IS NULL
+            AND accepted_frontier_kind IS NULL
+            AND accepted_frontier IS NULL
+        )
         OR
-        (accepted_raw_id IS NOT NULL AND accepted_source_revision IS NOT NULL AND accepted_content_hash IS NOT NULL)
-    ),
-    CHECK(
-        (accepted_frontier_kind IS NULL AND accepted_frontier IS NULL)
-        OR
-        (accepted_frontier_kind IS NOT NULL AND accepted_frontier IS NOT NULL)
+        (
+            accepted_raw_id IS NOT NULL
+            AND accepted_source_revision IS NOT NULL
+            AND accepted_content_hash IS NOT NULL
+            AND accepted_frontier_kind IS NOT NULL
+            AND accepted_frontier IS NOT NULL
+        )
     )
 ) STRICT;
 

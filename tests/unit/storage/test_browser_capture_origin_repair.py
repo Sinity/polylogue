@@ -571,10 +571,13 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
         )
         source.commit()
     with closing(sqlite3.connect(root / "index.db")) as index, index:
-        accepted_hash = index.execute(
-            "SELECT accepted_content_hash FROM raw_revision_heads WHERE accepted_raw_id = ?",
+        accepted_hash, accepted_frontier_kind, accepted_frontier = index.execute(
+            """
+            SELECT accepted_content_hash, accepted_frontier_kind, accepted_frontier
+            FROM raw_revision_heads WHERE accepted_raw_id = ?
+            """,
             (semantic_raw_id,),
-        ).fetchone()[0]
+        ).fetchone()
         record_revision_application_sync(
             index,
             RevisionApplicationReceipt(
@@ -587,6 +590,8 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
                 accepted_raw_id=semantic_raw_id,
                 accepted_source_revision=bytes(accepted_hash).hex(),
                 accepted_content_hash=bytes(accepted_hash),
+                accepted_frontier_kind=accepted_frontier_kind,
+                accepted_frontier=accepted_frontier,
                 detail="membership:superseded_equivalent",
             ),
             decided_at_ms=3,

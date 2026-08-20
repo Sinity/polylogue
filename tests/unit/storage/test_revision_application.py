@@ -116,9 +116,75 @@ def test_equal_frontier_cas_rejects_conflicting_frontier_state(changes: dict[str
     conn.executescript(INDEX_DDL)
     receipt = _receipt()
     record_revision_application_sync(conn, receipt, decided_at_ms=10)
+    original_application = conn.execute(
+        "SELECT accepted_frontier_kind, accepted_frontier FROM raw_revision_applications"
+    ).fetchone()
+    original_head = conn.execute(
+        "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier FROM raw_revision_heads"
+    ).fetchone()
 
     with pytest.raises(RuntimeError, match="conflicting|rejected"):
         record_revision_application_sync(conn, replace(receipt, **changes), decided_at_ms=20)
+
+    assert (
+        conn.execute("SELECT accepted_frontier_kind, accepted_frontier FROM raw_revision_applications").fetchone()
+        == original_application
+        == ("byte", 100)
+    )
+    assert (
+        conn.execute(
+            "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier FROM raw_revision_heads"
+        ).fetchone()
+        == original_head
+        == (receipt.accepted_raw_id, "byte", 100)
+    )
+
+
+def test_decision_id_binds_accepted_frontier_evidence() -> None:
+    receipt = _receipt()
+
+    assert receipt.decision_id != replace(receipt, accepted_frontier=200).decision_id
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"accepted_frontier": None},
+        {"accepted_raw_id": None},
+    ],
+)
+def test_application_receipt_rejects_uncoupled_accepted_identity_and_frontier(changes: dict[str, Any]) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+
+    with pytest.raises(ValueError, match="present or all absent|present or absent together"):
+        record_revision_application_sync(conn, replace(_receipt(), **changes), decided_at_ms=10)
+
+    assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (0,)
+
+
+def test_persisted_higher_frontier_twin_under_same_id_cannot_rewrite_receipt_or_head() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(INDEX_DDL)
+    receipt = _receipt()
+    record_revision_application_sync(conn, receipt, decided_at_ms=10)
+    higher_frontier = 200
+    conn.execute(
+        "UPDATE raw_revision_applications SET accepted_frontier = ? WHERE decision_id = ?",
+        (higher_frontier, receipt.decision_id),
+    )
+    conn.commit()
+
+    with pytest.raises(RuntimeError, match="immutable accepted frontier evidence"):
+        record_revision_application_sync(conn, receipt, decided_at_ms=20)
+
+    assert conn.execute(
+        "SELECT accepted_frontier_kind, accepted_frontier FROM raw_revision_applications"
+    ).fetchone() == ("byte", higher_frontier)
+    assert conn.execute(
+        "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier FROM raw_revision_heads"
+    ).fetchone() == (receipt.accepted_raw_id, "byte", receipt.accepted_frontier)
 
 
 @pytest.mark.parametrize(

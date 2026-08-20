@@ -787,7 +787,8 @@ def _inspect_quarantined_accepted_raw(
             """
             SELECT decision_id, raw_id, session_id, logical_source_key, source_revision,
                    acquisition_generation, decision, accepted_raw_id,
-                   accepted_source_revision, accepted_content_hash, append_end_offset,
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier, append_end_offset,
                    baseline_raw_id, predecessor_raw_id, detail, decided_at_ms
             FROM index_tier.raw_revision_applications
             WHERE logical_source_key = ? AND raw_id = ?
@@ -1716,6 +1717,8 @@ def _revision_application_decision_id_is_exact(application: sqlite3.Row) -> bool
     payload = {
         "accepted_raw_id": application["accepted_raw_id"],
         "accepted_source_revision": application["accepted_source_revision"],
+        "accepted_frontier_kind": application["accepted_frontier_kind"],
+        "accepted_frontier": application["accepted_frontier"],
         "decision": decision.value,
         "logical_source_key": application["logical_source_key"],
         "raw_id": application["raw_id"],
@@ -1782,6 +1785,7 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         """
         SELECT decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
                decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier,
                baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
         WHERE logical_source_key = ? AND (? IS NULL OR decision_id != ?)
@@ -2179,7 +2183,8 @@ def _inspect_browser_capture_origin_mismatch(
         """
         SELECT decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
                decision, accepted_raw_id, accepted_source_revision,
-               accepted_content_hash, baseline_raw_id, predecessor_raw_id,
+               accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+               baseline_raw_id, predecessor_raw_id,
                append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
         WHERE raw_id = ? AND logical_source_key = ?
@@ -2215,6 +2220,8 @@ def _inspect_browser_capture_origin_mismatch(
         or str(old_applications[0]["accepted_raw_id"]) != raw_id
         or str(old_applications[0]["accepted_source_revision"]) != blob_hash_hex
         or _bytes_value(old_applications[0]["accepted_content_hash"]) != accepted_hash
+        or str(old_applications[0]["accepted_frontier_kind"]) != str(head["accepted_frontier_kind"])
+        or int(old_applications[0]["accepted_frontier"]) != int(head["accepted_frontier"])
         or str(old_applications[0]["baseline_raw_id"]) != raw_id
         or old_applications[0]["predecessor_raw_id"] is not None
         or old_applications[0]["append_end_offset"] is not None
@@ -2318,6 +2325,7 @@ def _inspect_browser_capture_origin_mismatch(
         """
         SELECT decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation,
                decision, accepted_raw_id, accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier,
                baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
         WHERE raw_id = ? AND logical_source_key = ?
@@ -2399,6 +2407,8 @@ def _inspect_browser_capture_origin_mismatch(
         and str(copy_application["accepted_raw_id"]) == copy_raw_id
         and str(copy_application["accepted_source_revision"]) == blob_hash_hex
         and _bytes_value(copy_application["accepted_content_hash"]) == accepted_hash
+        and str(copy_application["accepted_frontier_kind"]) == "byte"
+        and int(copy_application["accepted_frontier"]) == blob_size
         and str(copy_application["baseline_raw_id"]) == copy_raw_id
         and copy_application["predecessor_raw_id"] is None
         and copy_application["append_end_offset"] is None
