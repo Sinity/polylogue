@@ -189,6 +189,24 @@ def _reparse_browser_payload(native_id: str) -> bytes:
     ).encode()
 
 
+def _application_receipt_rows(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    logical_source_key: str,
+) -> list[sqlite3.Row]:
+    conn.row_factory = sqlite3.Row
+    return conn.execute(
+        """
+        SELECT decision, decided_at_ms, decision_id
+        FROM raw_revision_applications
+        WHERE raw_id = ? AND logical_source_key = ?
+        ORDER BY decided_at_ms, decision_id
+        """,
+        (raw_id, logical_source_key),
+    ).fetchall()
+
+
 def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
     """Prove reparse reaffirmation ordering and its repair refusal semantics."""
     if case_root.exists():
@@ -273,15 +291,11 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         )
 
     with sqlite3.connect(case_root / "index.db") as index_conn:
-        applications = index_conn.execute(
-            """
-            SELECT decision, decided_at_ms, decision_id
-            FROM raw_revision_applications
-            WHERE raw_id = ? AND logical_source_key = ?
-            ORDER BY decided_at_ms, decision_id
-            """,
-            (raw_id, "unknown:reparse-browser"),
-        ).fetchall()
+        applications = _application_receipt_rows(
+            index_conn,
+            raw_id=raw_id,
+            logical_source_key="unknown:reparse-browser",
+        )
         head_hash, session_hash = index_conn.execute(
             """
             SELECT h.accepted_content_hash, s.content_hash
@@ -352,29 +366,67 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
     application_decisions = [str(row[0]) for row in applications]
     application_timestamps = [int(row[1]) for row in applications]
     application_decision_ids = [str(row[2]) for row in applications]
-    expected_application_decision_ids = sorted((baseline_receipt.decision_id, reparse_receipt.decision_id))
+    expected_application_decisions_by_id = {
+        baseline_receipt.decision_id: baseline_receipt.decision.value,
+        reparse_receipt.decision_id: reparse_receipt.decision.value,
+    }
+    expected_application_decision_ids = sorted(expected_application_decisions_by_id)
+    application_decisions_by_id = {str(row[2]): str(row[0]) for row in applications}
     _require(
-        application_decisions
-        == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value]
+        application_decisions_by_id == expected_application_decisions_by_id
         and application_timestamps == [1, 1]
         and application_decision_ids == expected_application_decision_ids,
         "accepted-head reparse receipts are not ordered by timestamp and decision id",
     )
-    timestamp_only_permitted_orders = (
-        tuple((decision_id, 1) for decision_id in expected_application_decision_ids),
-        tuple((decision_id, 1) for decision_id in reversed(expected_application_decision_ids)),
-    )
-    timestamp_only_orders = {
-        tuple(decision_id for decision_id, _timestamp in model_input) for model_input in timestamp_only_permitted_orders
-    }
+    with sqlite3.connect(":memory:") as tie_conn:
+        tie_conn.execute(
+            """
+            CREATE TABLE raw_revision_applications (
+                raw_id TEXT NOT NULL,
+                logical_source_key TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                decided_at_ms INTEGER NOT NULL,
+                decision_id TEXT NOT NULL
+            )
+            """
+        )
+        tie_conn.executemany(
+            """
+            INSERT INTO raw_revision_applications(
+                raw_id, logical_source_key, decision, decided_at_ms, decision_id
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    raw_id,
+                    "unknown:reparse-browser",
+                    expected_application_decisions_by_id[decision_id],
+                    1,
+                    decision_id,
+                )
+                for decision_id in reversed(expected_application_decision_ids)
+            ],
+        )
+        stable_tie_rows = _application_receipt_rows(
+            tie_conn,
+            raw_id=raw_id,
+            logical_source_key="unknown:reparse-browser",
+        )
+        mutant_tie_rows = tie_conn.execute(
+            """
+            SELECT decision, decided_at_ms, decision_id
+            FROM raw_revision_applications
+            WHERE raw_id = ? AND logical_source_key = ?
+            ORDER BY decided_at_ms, rowid
+            """,
+            (raw_id, "unknown:reparse-browser"),
+        ).fetchall()
+        stable_tie_ids = [str(row[2]) for row in stable_tie_rows]
+        mutant_tie_ids = [str(row[2]) for row in mutant_tie_rows]
     _require(
-        timestamp_only_orders
-        == {
-            tuple(expected_application_decision_ids),
-            tuple(reversed(expected_application_decision_ids)),
-        }
-        and len(timestamp_only_orders) == 2,
-        "equal-timestamp timestamp-only policy did not admit both explicit permutations",
+        stable_tie_ids == expected_application_decision_ids
+        and mutant_tie_ids == list(reversed(expected_application_decision_ids)),
+        "equal-timestamp tie-break control did not distinguish the deterministic rowid mutant",
     )
     _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
     _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
@@ -443,15 +495,11 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         shutil.rmtree(negative_control_root)
 
     with sqlite3.connect(case_root / "index.db") as index_conn:
-        retained_applications = index_conn.execute(
-            """
-            SELECT decision_id
-            FROM raw_revision_applications
-            WHERE raw_id = ? AND logical_source_key = ?
-            ORDER BY decided_at_ms, decision_id
-            """,
-            (raw_id, "unknown:reparse-browser"),
-        ).fetchall()
+        retained_applications = _application_receipt_rows(
+            index_conn,
+            raw_id=raw_id,
+            logical_source_key="unknown:reparse-browser",
+        )
         retained_head_hash, retained_session_hash = index_conn.execute(
             """
             SELECT h.accepted_content_hash, s.content_hash
@@ -470,7 +518,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             (raw_id,),
         ).fetchone()[0]
     _require(
-        [str(row[0]) for row in retained_applications] == expected_application_decision_ids
+        [str(row[2]) for row in retained_applications] == expected_application_decision_ids
         and bytes(retained_head_hash) == current_hash == bytes(retained_session_hash)
         and bytes(retained_membership_hash) == current_hash,
         "negative control mutated the retained accepted-head reparse archive",
