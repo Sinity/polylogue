@@ -16,7 +16,8 @@ import threading
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, InvalidStateError
+from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal, ParamSpec, TypeVar
@@ -43,6 +44,10 @@ WriteOutcome = Literal["success", "error", "cancelled"]
 # already-queued ingest hold" instead of "current hold + unbounded backlog".
 _BULK_INGEST_PRIORITY = 1
 _DEFAULT_PRIORITY = 0
+_MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
+_MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
+_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
+_DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX = "<other>"
 
 
 def _actor_priority(actor: str) -> int:
@@ -141,6 +146,8 @@ class DaemonWriteSnapshot:
     # tasks that raised -- previously surfaced only via a log line, with no
     # counter across the daemon's lifetime.
     detached_writer_failures: int = 0
+    # Retain actor/session attribution alongside the scalar counter.
+    detached_writer_failures_by_actor: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(slots=True)
@@ -164,6 +171,7 @@ _LATEST_TELEMETRY: dict[str, object] = {
     "accepting": True,
     "last_event": None,
     "detached_writer_failures": 0,
+    "detached_writer_failures_by_actor": {},
 }
 
 
@@ -199,6 +207,7 @@ class DaemonWriteCoordinator:
         self._idle = asyncio.Event()
         self._idle.set()
         self._detached_writer_failures = 0
+        self._detached_writer_failures_by_actor: dict[str, int] = {}
         self._publish_telemetry()
 
     def snapshot(self) -> DaemonWriteSnapshot:
@@ -208,12 +217,16 @@ class DaemonWriteCoordinator:
             last_event=self._last_event,
             accepting=self._accepting,
             detached_writer_failures=self._detached_writer_failures,
+            detached_writer_failures_by_actor=tuple(sorted(self._detached_writer_failures_by_actor.items())),
         )
 
     async def run(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T:
         """Run one async write operation under the process-wide gate."""
-        if not actor:
+        actor_label = actor.strip()
+        if not actor_label:
             raise ValueError("daemon write actor must be non-empty")
+        if actor_label.startswith(_DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX):
+            raise ValueError("daemon write actor uses a reserved telemetry label")
 
         current_task = asyncio.current_task()
         if current_task is None:
@@ -244,7 +257,7 @@ class DaemonWriteCoordinator:
             self._execute(request, operation),
             name=f"polylogue-writer:{actor}:{request.sequence}",
         )
-        self._track_execution(execution)
+        self._track_execution(execution, actor=actor)
         try:
             return await asyncio.shield(execution)
         except asyncio.CancelledError:
@@ -348,10 +361,29 @@ class DaemonWriteCoordinator:
             return False
         return True
 
-    def _track_execution(self, execution: asyncio.Task[T]) -> None:
+    def _track_execution(self, execution: asyncio.Task[T], *, actor: str) -> None:
         task = execution  # preserve the concrete result type for ``run``
         self._executions.add(task)
         self._idle.clear()
+
+        def record_failure() -> None:
+            self._detached_writer_failures += 1
+            actor_label = actor.strip()
+            if (
+                not actor_label
+                or len(actor_label) > _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH
+                or any(ord(character) < 0x20 for character in actor_label)
+            ):
+                actor_label = _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR
+            if (
+                actor_label not in self._detached_writer_failures_by_actor
+                and len(self._detached_writer_failures_by_actor) >= _MAX_DETACHED_WRITER_FAILURE_ACTORS - 1
+            ):
+                actor_label = _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR
+            self._detached_writer_failures_by_actor[actor_label] = (
+                self._detached_writer_failures_by_actor.get(actor_label, 0) + 1
+            )
+            self._publish_telemetry()
 
         def completed(done: asyncio.Task[object]) -> None:
             self._executions.discard(done)
@@ -367,14 +399,12 @@ class DaemonWriteCoordinator:
                 # cleanly) -- still count it as a lost forensic detail so the
                 # daemon-lifetime counter reflects every such event, not only
                 # the ordinary "task.exception() returned non-None" path.
-                self._detached_writer_failures += 1
-                self._publish_telemetry()
-                logger.warning("detached daemon writer failed", exc_info=True)
+                record_failure()
+                logger.warning("detached daemon writer failed actor=%s", actor, exc_info=True)
             else:
                 if exception is not None:
-                    self._detached_writer_failures += 1
-                    self._publish_telemetry()
-                    logger.warning("detached daemon writer failed: %s", exception)
+                    record_failure()
+                    logger.warning("detached daemon writer failed actor=%s: %s", actor, exception)
 
         task.add_done_callback(completed)
 
@@ -402,6 +432,7 @@ class DaemonWriteCoordinator:
             "accepting": snapshot.accepting,
             "last_event": None,
             "detached_writer_failures": snapshot.detached_writer_failures,
+            "detached_writer_failures_by_actor": dict(snapshot.detached_writer_failures_by_actor),
         }
         if event is not None:
             payload["last_event"] = {
@@ -427,55 +458,38 @@ async def _run_in_daemon_thread(
 ) -> T:
     """Await one context-preserving worker that cannot pin interpreter exit."""
     loop = asyncio.get_running_loop()
-    result: asyncio.Future[T] = loop.create_future()
+    result: ConcurrentFuture[T] = ConcurrentFuture()
     context = contextvars.copy_context()
 
-    def publish(value: T | None = None, error: BaseException | None = None) -> None:
-        if result.done():
-            return
-        if error is not None:
-            result.set_exception(error)
-        else:
-            result.set_result(value)  # type: ignore[arg-type]
-
     def worker() -> None:
+        error: BaseException | None = None
         try:
             value = context.run(function, *args, **kwargs)
         except BaseException as exc:
-            try:
-                loop.call_soon_threadsafe(publish, None, exc)
-            except RuntimeError:
-                # polylogue-es7b: the event loop is already closed, so the
-                # ``result`` future left above is never resolved from here.
-                # This does not itself weaken anything -- a closed loop
-                # genuinely cannot be scheduled on -- but it was previously
-                # silent, indistinguishable from the worker simply never
-                # finishing. Callers that need a hard bound against this
-                # already have one: ``DaemonWriteThreadBridge`` awaits a
-                # ``concurrent.futures.Future`` with its own timeout, which
-                # is independent of whether this loop is still running.
-                # Direct ``coordinator.run_sync`` callers on the coordinator's
-                # own loop are not protected by that bridge; if this warning
-                # ever fires for one of those, it is real evidence a hang
-                # occurred and should be traced to its call site.
-                logger.warning(
-                    "daemon writer thread %s finished with an exception after its event "
-                    "loop already closed; the awaiting result future was left unresolved",
-                    thread_name,
-                    exc_info=exc,
-                )
+            error = exc
+            with contextlib.suppress(InvalidStateError):
+                result.set_exception(exc)
         else:
-            try:
-                loop.call_soon_threadsafe(publish, value, None)
-            except RuntimeError:
+            with contextlib.suppress(InvalidStateError):
+                result.set_result(value)
+
+        if loop.is_closed():
+            if error is None:
                 logger.warning(
                     "daemon writer thread %s finished after its event loop already closed; "
-                    "the awaiting result future was left unresolved",
+                    "the awaiting result future was abandoned",
                     thread_name,
+                )
+            else:
+                logger.warning(
+                    "daemon writer thread %s finished after its event loop already closed; "
+                    "the awaiting result future was abandoned",
+                    thread_name,
+                    exc_info=(type(error), error, error.__traceback__),
                 )
 
     threading.Thread(target=worker, name=thread_name, daemon=True).start()
-    return await result
+    return await asyncio.wrap_future(result, loop=loop)
 
 
 class DaemonWriteThreadBridge:
@@ -581,6 +595,9 @@ def daemon_write_telemetry_payload() -> dict[str, object]:
         event = payload.get("last_event")
         if isinstance(event, dict):
             payload["last_event"] = dict(event)
+        actor_failures = payload.get("detached_writer_failures_by_actor")
+        if isinstance(actor_failures, dict):
+            payload["detached_writer_failures_by_actor"] = dict(actor_failures)
         return payload
 
 

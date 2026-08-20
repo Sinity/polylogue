@@ -212,9 +212,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify",
         "verification",
-        "Run the local verification baseline before pushing or creating a PR.",
+        "Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check.",
         "devtools.verify",
-        use_when="Run format, lint, mypy, render all, and test checks locally before pushing.",
+        use_when="Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --lab"),
         featured=True,
     ),

@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon.write_coordinator import (
+    _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
+    _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH,
+    _MAX_DETACHED_WRITER_FAILURE_ACTORS,
     DaemonWriteCoordinator,
     DaemonWriteEvent,
     DaemonWriteThreadBridge,
@@ -566,8 +569,10 @@ async def test_detached_writer_failure_increments_lifetime_counter() -> None:
         await asyncio.sleep(0)
 
     assert coordinator.snapshot().detached_writer_failures == 1
+    assert coordinator.snapshot().detached_writer_failures_by_actor == (("actor", 1),)
     payload = daemon_write_telemetry_payload()
     assert payload["detached_writer_failures"] == 1
+    assert payload["detached_writer_failures_by_actor"] == {"actor": 1}
 
     # A second failure keeps accumulating -- this is a lifetime counter, not
     # a one-shot flag.
@@ -578,6 +583,140 @@ async def test_detached_writer_failure_increments_lifetime_counter() -> None:
             break
         await asyncio.sleep(0)
     assert coordinator.snapshot().detached_writer_failures == 2
+    assert coordinator.snapshot().detached_writer_failures_by_actor == (("actor", 2),)
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("other-actor", boom)
+    for _ in range(10):
+        if coordinator.snapshot().detached_writer_failures == 3:
+            break
+        await asyncio.sleep(0)
+    assert coordinator.snapshot().detached_writer_failures_by_actor == (("actor", 2), ("other-actor", 1))
+
+
+@pytest.mark.asyncio
+async def test_sync_writer_failure_propagates_and_releases_gate() -> None:
+    """A live-loop worker exception must reach the caller, not become a hang."""
+    coordinator = DaemonWriteCoordinator()
+
+    def boom() -> None:
+        raise RuntimeError("sync writer blew up")
+
+    with pytest.raises(RuntimeError, match="sync writer blew up"):
+        await coordinator.run_sync("sync-failure", boom)
+
+    assert coordinator.snapshot().active_actor is None
+    assert await coordinator.run("successor", _return_ready) == "ready"
+
+
+@pytest.mark.asyncio
+async def test_sync_writer_immediate_result_does_not_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A completed thread result wakes the loop without a timed poll."""
+    coordinator = DaemonWriteCoordinator()
+    started = threading.Event()
+    release = threading.Event()
+    poll_delays: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def track_sleep(delay: float) -> None:
+        if delay:
+            poll_delays.append(delay)
+        await original_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", track_sleep)
+
+    def writer() -> str:
+        started.set()
+        assert release.wait(1.0)
+        return "ready"
+
+    task = asyncio.create_task(coordinator.run_sync("immediate", writer))
+    while not started.is_set():
+        await original_sleep(0)
+    release.set()
+
+    assert await task == "ready"
+    assert poll_delays == []
+
+
+@pytest.mark.asyncio
+async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_overflow() -> None:
+    coordinator = DaemonWriteCoordinator()
+
+    async def boom() -> None:
+        raise RuntimeError("writer blew up")
+
+    for index in range(_MAX_DETACHED_WRITER_FAILURE_ACTORS + 4):
+        with pytest.raises(RuntimeError, match="writer blew up"):
+            await coordinator.run(f"caller-{index}", boom)
+        await asyncio.sleep(0)
+
+    long_actor = "x" * (_MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH + 1)
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run(long_actor, boom)
+    await asyncio.sleep(0)
+
+    attribution = dict(coordinator.snapshot().detached_writer_failures_by_actor)
+    assert len(attribution) == _MAX_DETACHED_WRITER_FAILURE_ACTORS
+    assert attribution["caller-0"] == 1
+    assert attribution["caller-30"] == 1
+    assert "caller-31" not in attribution
+    assert attribution[_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR] == 6
+
+
+@pytest.mark.asyncio
+async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overflow() -> None:
+    coordinator = DaemonWriteCoordinator()
+    operation_calls = 0
+
+    async def boom() -> None:
+        nonlocal operation_calls
+        operation_calls += 1
+        raise RuntimeError("writer blew up")
+
+    for index in range(_MAX_DETACHED_WRITER_FAILURE_ACTORS):
+        with pytest.raises(RuntimeError, match="writer blew up"):
+            await coordinator.run(f"caller-{index}", boom)
+        await asyncio.sleep(0)
+
+    for reserved_actor in (_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR, "<other> (actor)"):
+        with pytest.raises(ValueError, match="reserved telemetry label"):
+            await coordinator.run(reserved_actor, boom)
+    assert operation_calls == _MAX_DETACHED_WRITER_FAILURE_ACTORS
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("caller-overflow", boom)
+    await asyncio.sleep(0)
+
+    attribution = dict(coordinator.snapshot().detached_writer_failures_by_actor)
+    assert len(attribution) == _MAX_DETACHED_WRITER_FAILURE_ACTORS
+    assert attribution["caller-0"] == 1
+    assert attribution["caller-30"] == 1
+    assert "caller-31" not in attribution
+    assert attribution[_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR] == 2
+    assert "<other> (actor)" not in attribution
+
+
+@pytest.mark.asyncio
+async def test_daemon_write_telemetry_payload_isolated_from_nested_map_mutation() -> None:
+    coordinator = DaemonWriteCoordinator()
+
+    async def boom() -> None:
+        raise RuntimeError("writer blew up")
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("stable-actor", boom)
+    await asyncio.sleep(0)
+
+    payload = daemon_write_telemetry_payload()
+    actor_failures = payload["detached_writer_failures_by_actor"]
+    assert isinstance(actor_failures, dict)
+    actor_failures["forged-actor"] = 99
+
+    refreshed = daemon_write_telemetry_payload()
+    refreshed_failures = refreshed["detached_writer_failures_by_actor"]
+    assert isinstance(refreshed_failures, dict)
+    assert refreshed_failures == {"stable-actor": 1}
 
 
 def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed() -> None:

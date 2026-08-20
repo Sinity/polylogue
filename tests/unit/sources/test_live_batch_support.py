@@ -7783,7 +7783,15 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
         convergence_calls.append(paths)
         return set(paths), 0.0, {}, []
 
-    monkeypatch.setattr(processor, "_append_plan", lambda _path, *, cursor: None)
+    def fake_append_plan(
+        _path: Path,
+        *,
+        cursor: object | None = None,
+        source_index: int = -1,
+    ) -> None:
+        del cursor, source_index
+
+    monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
     monkeypatch.setattr(processor, "_ingest_full_paths", fake_full_ingest)
     monkeypatch.setattr(processor, "_converge_paths", record_convergence)
     monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
@@ -7816,7 +7824,12 @@ async def test_live_append_plans_flush_in_bounded_groups(
     )
     groups: list[list[Path]] = []
 
-    def fake_append_plan(path: Path, *, cursor: object | None = None) -> _AppendPlan:
+    def fake_append_plan(
+        path: Path,
+        *,
+        cursor: object | None = None,
+        source_index: int = -1,
+    ) -> _AppendPlan:
         del cursor
         return _AppendPlan(
             path=path,
@@ -7831,6 +7844,7 @@ async def test_live_append_plans_flush_in_bounded_groups(
             payload_hash="tail",
             cursor_fingerprint="base",
             bytes_read=10,
+            source_index=source_index,
         )
 
     def fake_ingest_append_plans(plans: list[_AppendPlan]) -> _AppendResult:
