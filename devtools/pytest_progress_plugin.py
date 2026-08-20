@@ -28,6 +28,7 @@ _EVENTS_DIR_ENV = "POLYLOGUE_PYTEST_EVENTS_DIR"
 _SELECTION_ENV = "POLYLOGUE_PYTEST_SELECTION_PATH"
 _SUMMARY_ENV = "POLYLOGUE_PYTEST_SUMMARY_PATH"
 _SELECTION_NODEID_LIMIT_ENV = "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"
+_STORAGE_SCALE_HEARTBEAT_ATTR = "_polylogue_storage_scale_heartbeat"
 _DESELECTED_NODEIDS_SAMPLE: list[str] = []
 _DESELECTED_COUNT = 0
 _SELECTED_COUNT = 0
@@ -249,6 +250,14 @@ class _StorageScaleProgressHeartbeat:
     def stop(self) -> None:
         self._stop.set()
         self._thread.join(timeout=min(max(self._interval_s * 2, 0.1), 1.0))
+
+    def prime(self) -> None:
+        """Capture the fixture tree immediately before the test body starts."""
+        root = self._root_supplier()
+        if root is None:
+            return
+        self._root = root
+        self._last_snapshot = _storage_scale_tree_snapshot(root)
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_s):
@@ -491,12 +500,23 @@ def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
             nodeid=str(item.nodeid),
             root_supplier=lambda: _storage_scale_root_for_item(item),
         )
+        setattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR, heartbeat)
         heartbeat.start()
     try:
         yield
     finally:
         if heartbeat is not None:
             heartbeat.stop()
+            delattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR)
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_call(item: Any) -> Any:
+    """Establish the storage baseline after fixture setup and before test code."""
+    heartbeat = getattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR, None)
+    if isinstance(heartbeat, _StorageScaleProgressHeartbeat):
+        heartbeat.prime()
+    yield
 
 
 @pytest.hookimpl
