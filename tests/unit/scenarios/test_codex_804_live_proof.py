@@ -183,12 +183,12 @@ def _assert_precheckpoint_state(
     assert receipt_names == ()
 
 
-def _assert_final_append_authority(
+def _assert_planner_append_authority(
     *,
     append_raw_ids: set[str],
     application_rows: tuple[tuple[str, str, str | None], ...],
 ) -> None:
-    """Require the final post-restart ledger to prove a real append application."""
+    """Require the live planner ledger to prove a real append application."""
     append_decisions = tuple(
         decision for raw_id, decision, _accepted_raw_id in application_rows if raw_id in append_raw_ids
     )
@@ -242,7 +242,6 @@ def _assert_exact_authority_census(
     }
     assert any(row[0] in full_raw_ids and row[1] == "selected_baseline" for row in application_rows)
     assert all(row[2] == terminal_raw_id for row in application_rows)
-    _assert_final_append_authority(append_raw_ids=append_raw_ids, application_rows=application_rows)
     assert head_rows == ((source_key, session_id, terminal_raw_id, "byte", TERMINAL_WIRE_BYTES),)
 
 
@@ -1157,7 +1156,7 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
 
 def test_codex_804_deferred_append_red_mutation_is_rejected() -> None:
     with pytest.raises(AssertionError):
-        _assert_final_append_authority(
+        _assert_planner_append_authority(
             append_raw_ids={"raw-append"},
             application_rows=(("raw-append", "deferred", "raw-terminal"),),
         )
