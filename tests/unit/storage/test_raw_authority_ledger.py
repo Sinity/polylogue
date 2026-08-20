@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -47,6 +48,7 @@ from polylogue.storage.raw_reconciler import (
 from polylogue.storage.repair import RepairResult, repair_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.revision_application import RevisionApplicationReceipt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -1199,6 +1201,70 @@ def test_application_receipt_recovery_rejects_malformed_authority_evidence(
 
     assert valid is False
     assert problems
+
+
+def test_application_receipt_recovery_rejects_source_revision_from_another_shared_membership(tmp_path: Path) -> None:
+    """A grouped raw cannot lend key B's revision evidence to key A's application."""
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="shared-memberships", source_path="shared.jsonl", acquired_at_ms=1)
+    assert repair_raw_materialization(_config(tmp_path)).success is True
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
+    membership_rows = cast(list[dict[str, object]], receipt["membership_rows"])
+    application_rows = cast(list[dict[str, object]], receipt["application_rows"])
+    assert len(application_rows) == 1
+
+    shared_key = "codex:shared-memberships-other"
+    shared_revision = "shared-membership-other-revision"
+    application = application_rows[0]
+    membership_rows.extend(
+        [
+            {
+                "raw_id": raw_id,
+                "logical_source_key": application["logical_source_key"],
+                "source_revision": application["source_revision"],
+                "decision": "applied",
+            },
+            {
+                "raw_id": raw_id,
+                "logical_source_key": shared_key,
+                "source_revision": shared_revision,
+                "decision": "applied",
+            },
+        ]
+    )
+    application["source_revision"] = shared_revision
+    replay_plan = replace(
+        plan,
+        authority_witness={
+            **plan.authority_witness,
+            "memberships": [
+                {"raw_id": raw_id, "logical_source_key": application["logical_source_key"]},
+                {"raw_id": raw_id, "logical_source_key": shared_key},
+            ],
+        },
+    )
+    application["decision_id"] = RevisionApplicationReceipt(
+        raw_id=str(application["raw_id"]),
+        session_id=str(application["session_id"]),
+        logical_source_key=str(application["logical_source_key"]),
+        source_revision=shared_revision,
+        acquisition_generation=int(application["acquisition_generation"]),
+        decision=raw_authority_mod.ApplicationDecision(str(application["decision"])),
+        accepted_raw_id=cast(str | None, application["accepted_raw_id"]),
+        accepted_source_revision=cast(str | None, application["accepted_source_revision"]),
+        accepted_content_hash=bytes.fromhex(cast(str, application["accepted_content_hash"])),
+        accepted_frontier_kind=cast(str | None, application["accepted_frontier_kind"]),
+        accepted_frontier=cast(int | None, application["accepted_frontier"]),
+        baseline_raw_id=cast(str | None, application["baseline_raw_id"]),
+        predecessor_raw_id=cast(str | None, application["predecessor_raw_id"]),
+        append_end_offset=cast(int | None, application["append_end_offset"]),
+    ).decision_id
+
+    valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(replay_plan, receipt)
+
+    assert valid is False
+    assert any("source revision does not match membership evidence" in problem for problem in problems)
 
 
 def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: Path) -> None:

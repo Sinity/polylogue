@@ -302,6 +302,16 @@ def _reissue_accepted_head_reparse_receipt(
     new_content_hash = bytes.fromhex(content_hash)
     if accepted_content_hash is not None and bytes(accepted_content_hash) == new_content_hash:
         return
+    source_lineage = (
+        store._ensure_source_conn()
+        .execute(
+            "SELECT baseline_raw_id, predecessor_raw_id FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        )
+        .fetchone()
+    )
+    if source_lineage is None:
+        raise RuntimeError(f"accepted-head reparse source evidence is missing for {raw_id}")
     record_revision_application_sync(
         store._conn,
         RevisionApplicationReceipt(
@@ -316,6 +326,8 @@ def _reissue_accepted_head_reparse_receipt(
             accepted_content_hash=new_content_hash,
             accepted_frontier_kind=str(head["accepted_frontier_kind"]),
             accepted_frontier=int(head["accepted_frontier"]),
+            baseline_raw_id=source_lineage[0],
+            predecessor_raw_id=source_lineage[1],
             append_end_offset=head["append_end_offset"],
             detail="reparse:accepted_head_content_correction",
         ),
@@ -358,8 +370,9 @@ def _write_parsed_precedence_result(
 
     def write_with_reparse_receipt(*, force_replace: bool) -> None:
         """Keep a reparse receipt and its session replacement in one index txn."""
-        owns_transaction = manage_transaction and not store._conn.in_transaction
-        if owns_transaction:
+        starts_transaction = not store._conn.in_transaction
+        commits_transaction = manage_transaction and starts_transaction
+        if starts_transaction:
             store._conn.execute("BEGIN")
         try:
             _reissue_accepted_head_reparse_receipt(
@@ -389,11 +402,11 @@ def _write_parsed_precedence_result(
                 prepared=prepared,
             )
         except BaseException:
-            if owns_transaction:
+            if commits_transaction:
                 store._conn.rollback()
             raise
         else:
-            if owns_transaction:
+            if commits_transaction:
                 store._conn.commit()
 
     if revision_authoritative:

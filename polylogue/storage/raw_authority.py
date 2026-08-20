@@ -1426,11 +1426,12 @@ def validate_raw_replay_application_receipt(
     source_by_raw_id = {str(row.get("raw_id")): row for row in source_rows}
     if len(source_by_raw_id) != len(source_rows):
         problems.append("source receipt contains duplicate raw ids")
-    membership_revisions_by_raw_id: dict[str, set[str]] = {}
+    membership_revisions_by_raw_and_key: dict[tuple[str, str], set[str]] = {}
     for membership in membership_rows:
         source_revision = membership.get("source_revision")
         if source_revision is not None:
-            membership_revisions_by_raw_id.setdefault(str(membership.get("raw_id")), set()).add(str(source_revision))
+            membership_key = (str(membership.get("raw_id")), str(membership.get("logical_source_key")))
+            membership_revisions_by_raw_and_key.setdefault(membership_key, set()).add(str(source_revision))
     witness = plan.authority_witness.get("memberships")
     expected_memberships = (
         {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in witness if isinstance(row, dict)}
@@ -1490,10 +1491,11 @@ def validate_raw_replay_application_receipt(
         source = source_by_raw_id.get(raw_id)
         if source is None:
             continue
-        source_revisions = set(membership_revisions_by_raw_id.get(raw_id, set()))
-        source_revision = source.get("source_revision")
-        if source_revision is not None:
-            source_revisions.add(str(source_revision))
+        source_revisions = set(membership_revisions_by_raw_and_key.get((raw_id, key), set()))
+        if not source_revisions:
+            source_revision = source.get("source_revision")
+            if source_revision is not None:
+                source_revisions.add(str(source_revision))
         if not source_revisions:
             problems.append(f"application has no source revision evidence for {raw_id}/{key}")
         elif str(application.get("source_revision")) not in source_revisions:
