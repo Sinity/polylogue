@@ -161,6 +161,10 @@ def _validate_ledger(data: object) -> dict[str, Any]:
                     or re.fullmatch(r"[0-9a-f]{64}", entry["scope_attestation_digest"]) is None
                 )
             )
+            or (
+                entry.get("base_sha") is not None
+                and (not isinstance(entry.get("base_sha"), str) or not entry["base_sha"])
+            )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge entry")
     intents = data.get("merge_intents")
@@ -183,6 +187,10 @@ def _validate_ledger(data: object) -> dict[str, Any]:
                     not isinstance(intent.get("scope_attestation_digest"), str)
                     or re.fullmatch(r"[0-9a-f]{64}", intent["scope_attestation_digest"]) is None
                 )
+            )
+            or (
+                intent.get("base_sha") is not None
+                and (not isinstance(intent.get("base_sha"), str) or not intent["base_sha"])
             )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge intent")
@@ -357,15 +365,25 @@ def _merge_sequence(ledger: Mapping[str, Any]) -> int:
     return sequence
 
 
-def _append_merge_entry(pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None) -> None:
+def _append_merge_entry(
+    pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None, base_sha: str | None = None
+) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
-        _append_merge_entry_unlocked(ledger, pr, head_sha, title, scope_attestation_digest=scope_attestation_digest)
+        _append_merge_entry_unlocked(
+            ledger, pr, head_sha, title, scope_attestation_digest=scope_attestation_digest, base_sha=base_sha
+        )
         _write_ledger_unlocked(ledger)
 
 
 def _append_merge_entry_unlocked(
-    ledger: dict[str, Any], pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None
+    ledger: dict[str, Any],
+    pr: int,
+    head_sha: str,
+    title: str,
+    *,
+    scope_attestation_digest: str | None = None,
+    base_sha: str | None = None,
 ) -> None:
     merge_sequence = _merge_sequence(ledger) + 1
     entry: dict[str, Any] = {
@@ -377,16 +395,22 @@ def _append_merge_entry_unlocked(
     }
     if scope_attestation_digest is not None:
         entry["scope_attestation_digest"] = scope_attestation_digest
+    if base_sha is not None:
+        entry["base_sha"] = base_sha
     ledger["merges"].append(entry)
 
 
-def _record_merge_intent(pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None) -> None:
+def _record_merge_intent(
+    pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None, base_sha: str | None = None
+) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         if not any(intent.get("pr") == pr and intent.get("head_sha") == head_sha for intent in ledger["merge_intents"]):
             intent: dict[str, Any] = {"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()}
             if scope_attestation_digest is not None:
                 intent["scope_attestation_digest"] = scope_attestation_digest
+            if base_sha is not None:
+                intent["base_sha"] = base_sha
             ledger["merge_intents"].append(intent)
             _write_ledger_unlocked(ledger)
 
@@ -407,6 +431,7 @@ def _complete_merge_intent(pr: int, head_sha: str) -> None:
                 head_sha,
                 str(intent["title"]),
                 scope_attestation_digest=digest if isinstance(digest, str) else None,
+                base_sha=intent.get("base_sha") if isinstance(intent.get("base_sha"), str) else None,
             )
         ledger["merge_intents"] = [item for item in intents if item is not intent]
         _write_ledger_unlocked(ledger)
@@ -465,16 +490,20 @@ def _reconcile_merge_intents(*, skip: set[tuple[int, str]] | None = None) -> Non
             continue
         recorded_attestation = intent.get("scope_attestation_digest")
         if recorded_attestation is not None:
+            recorded_base_sha = intent.get("base_sha")
+            if not isinstance(recorded_base_sha, str) or not recorded_base_sha:
+                raise LedgerStateError(f"merge intent for PR #{intent['pr']} lacks its merge-time base SHA")
+            scope_info = {**info, "baseRefOid": recorded_base_sha}
             scope = merge_gate._scope_verdict(
                 int(intent["pr"]),
-                info,
+                scope_info,
                 head_sha=observed_head_sha,
                 checkout_root=merge_gate._repository_root(),
             )
             observed_attestation = pr_scope.attestation_payload(
                 scope,
                 head_sha=observed_head_sha,
-                base_sha=merge_gate._base_sha(info),
+                base_sha=recorded_base_sha,
             )["attestation_digest"]
             if not scope.ok or observed_attestation != recorded_attestation:
                 raise LedgerStateError(
@@ -798,6 +827,9 @@ def cmd_merge(
         for reason in scope.reasons:
             print(f"  - {reason}", file=sys.stderr)
         return 2
+    if scope.carrier_version != 2 or scope.scope_kind is None:
+        print(f"REFUSING to merge PR #{pr}: workspace merge requires a v2 structured pr-scope carrier", file=sys.stderr)
+        return 2
 
     if not _receipt_is_fresh_for_scope(
         pr,
@@ -870,6 +902,7 @@ def cmd_merge(
             head_sha,
             clean_title,
             scope_attestation_digest=str(final_attestation),
+            base_sha=merge_gate._base_sha(final_info),
         )
         merge_result = subprocess.run(
             [
@@ -904,6 +937,7 @@ def cmd_merge(
                 head_sha,
                 clean_title,
                 scope_attestation_digest=str(final_attestation),
+                base_sha=merge_gate._base_sha(final_info),
             )
             _reconcile_merge_intents(skip={(pr, head_sha)})
             ledger_snapshot = _terminal_verify_snapshot()

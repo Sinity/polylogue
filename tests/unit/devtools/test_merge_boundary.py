@@ -78,10 +78,10 @@ def test_stale_base_head_refuses_before_recording(monkeypatch: pytest.MonkeyPatc
 
 def _scope_body(head_sha: str) -> str:
     carrier = {
-        "version": 1,
-        "head_sha": head_sha,
+        "version": 2,
+        "scope_kind": "bead",
         "assigned_beads": ["polylogue-test-scope"],
-        "beads_digest": pr_scope.canonical_beads_digest({_SCOPE_BEAD["id"]: _SCOPE_BEAD}, ["polylogue-test-scope"]),
+        "mutated_beads": [],
         "dispositions": [
             {
                 "bead_id": "polylogue-test-scope",
@@ -391,6 +391,7 @@ def test_merge_records_scope_without_mutating_beads_or_directly_pushing_master(
     scope = merge_gate._scope_verdict(42, pr_view, head_sha="abc123", checkout_root=tmp_path)
     expected = pr_scope.attestation_payload(scope, head_sha="abc123", base_sha=merge_gate._base_sha(pr_view))
     assert ledger["merges"][0]["scope_attestation_digest"] == expected["attestation_digest"]
+    assert ledger["merges"][0]["base_sha"] == "b" * 40
 
 
 def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
@@ -579,6 +580,42 @@ def test_merge_refuses_when_pr_scope_carrier_is_missing(
     stderr = capsys.readouterr().err
     assert "invalid structured pr-scope carrier" in stderr
     assert "no fresh merge-gate receipt" not in stderr
+
+
+def test_merge_refuses_a_legacy_v1_bead_carrier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    legacy = {
+        "version": 1,
+        "head_sha": "abc123",
+        "assigned_beads": ["polylogue-test-scope"],
+        "beads_digest": pr_scope.canonical_beads_digest({_SCOPE_BEAD["id"]: _SCOPE_BEAD}, ["polylogue-test-scope"]),
+        "dispositions": [
+            {
+                "bead_id": "polylogue-test-scope",
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_merge_boundary.py"}],
+                "successors": [],
+            }
+        ],
+    }
+    legacy["scope_digest"] = pr_scope.carrier_digest(legacy)
+    pr_view["body"] = pr_scope.render_carrier(legacy)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=True,
+            with_verify=False,
+            verify_command="devtools verify",
+        )
+        == 2
+    )
 
 
 def test_merge_refuses_when_unresolved_review_thread_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

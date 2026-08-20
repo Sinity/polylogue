@@ -76,10 +76,53 @@ def test_merged_scope_refuses_a_pr_without_its_exact_head_ledger_attestation(
         pr_scope, "_bead_records_at", lambda _revision: {"polylogue-a": {"id": "polylogue-a", "status": "open"}}
     )
     monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [])
-    monkeypatch.setattr(merge_boundary, "_read_ledger", lambda: {"merges": []})
+    monkeypatch.setattr(
+        merge_boundary,
+        "_read_ledger",
+        lambda: {
+            "merges": [{"pr": 42, "head_sha": "h" * 40, "base_sha": "b" * 40, "scope_attestation_digest": "a" * 64}]
+        },
+    )
 
     with pytest.raises(carrier_dispositions.DispositionError, match="exact-head carrier attestation"):
         carrier_dispositions._scope_from_merged_pr(42, cwd=tmp_path)
+
+
+def test_merged_scope_uses_the_recorded_merge_time_base_for_its_attestation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    merge_base = "c" * 40
+    info = {
+        "state": "MERGED",
+        "headRefOid": "h" * 40,
+        "baseRefOid": "n" * 40,
+        "mergeCommit": {"oid": "m" * 40},
+        "body": _carrier(),
+        "isDraft": False,
+    }
+    expected = pr_scope.attestation_payload(_scope(), head_sha="h" * 40, base_sha=merge_base)["attestation_digest"]
+    monkeypatch.setattr(carrier_dispositions, "_gh_json", lambda _args: info)
+    monkeypatch.setattr(pr_scope, "_ensure_local_commit", lambda _revision: None)
+    monkeypatch.setattr(
+        carrier_dispositions, "_git_show", lambda *_args, **_kwargs: '{"id":"polylogue-a","status":"open"}\n'
+    )
+    observed_bases: list[str] = []
+
+    def validate(*_args: object, **kwargs: object) -> pr_scope.ScopeVerdict:
+        observed_bases.append(str(kwargs["base_sha"]))
+        return _scope()
+
+    monkeypatch.setattr(pr_scope, "validate_pr_body", validate)
+    monkeypatch.setattr(
+        merge_boundary,
+        "_read_ledger",
+        lambda: {
+            "merges": [{"pr": 42, "head_sha": "h" * 40, "base_sha": merge_base, "scope_attestation_digest": expected}]
+        },
+    )
+
+    assert carrier_dispositions._scope_from_merged_pr(42, cwd=tmp_path)[-1] == expected
+    assert observed_bases == [merge_base]
 
 
 def test_apply_uses_one_guarded_batch_and_writes_only_typed_rows(
@@ -154,7 +197,7 @@ def test_live_plan_rejects_closed_successor_and_closed_registry_waiver(monkeypat
             pr_scope.ValidatedDisposition("polylogue-a", pr_scope.ScopeDisposition.PARTIAL, (), ("polylogue-next",)),
         ),
     )
-    live = {
+    live: dict[str, dict[str, Any]] = {
         "polylogue-a": {"id": "polylogue-a", "status": "open"},
         "polylogue-next": {"id": "polylogue-next", "status": "closed"},
     }
@@ -164,6 +207,92 @@ def test_live_plan_rejects_closed_successor_and_closed_registry_waiver(monkeypat
 
     with pytest.raises(carrier_dispositions.DispositionError, match="missing or closed"):
         carrier_dispositions._validate_live_plan(residual, live, marker="marker")
+
+
+def test_live_plan_rejects_a_successor_closed_by_the_same_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    scope = pr_scope.ScopeVerdict(
+        ok=True,
+        assigned_beads=["polylogue-a", "polylogue-next"],
+        scope_kind=pr_scope.ScopeKind.BEAD,
+        dispositions=(
+            pr_scope.ValidatedDisposition("polylogue-a", pr_scope.ScopeDisposition.PARTIAL, (), ("polylogue-next",)),
+            pr_scope.ValidatedDisposition("polylogue-next", pr_scope.ScopeDisposition.SATISFIED, (), ()),
+        ),
+    )
+    live: dict[str, dict[str, Any]] = {
+        "polylogue-a": {
+            "id": "polylogue-a",
+            "status": "open",
+            "dependencies": [{"type": "relates-to", "depends_on_id": "polylogue-next"}],
+        },
+        "polylogue-next": {"id": "polylogue-next", "status": "open"},
+    }
+    monkeypatch.setattr(
+        "polylogue.maintenance.archive_verification.validate_archive_verification_registry", lambda **_kwargs: None
+    )
+
+    with pytest.raises(carrier_dispositions.DispositionError, match="projected Beads"):
+        carrier_dispositions._validate_live_plan(scope, live, marker="marker")
+
+
+def test_dry_run_uses_the_real_bd_binary_and_rejects_unrelated_export_drift(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    base = tmp_path / "base.jsonl"
+    output = tmp_path / ".beads" / "issues.jsonl"
+    base.write_text('{"id":"polylogue-a","status":"open"}\n{"id":"polylogue-other","status":"open"}\n')
+    live = {
+        "polylogue-a": {"id": "polylogue-a", "status": "open"},
+        "polylogue-other": {"id": "polylogue-other", "status": "deferred"},
+    }
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        carrier_dispositions,
+        "_scope_from_merged_pr",
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+    )
+    monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
+
+    def export(**kwargs: object) -> dict[str, dict[str, Any]]:
+        captured.update(kwargs)
+        return live
+
+    monkeypatch.setattr(guard, "_export_live_state", export)
+
+    assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=True) == 1
+    assert captured["bd_command"] == "/real/bd"
+    assert isinstance(captured["env"], dict) and captured["env"]["BD_IMPORT_AUTO"] == "false"
+
+
+def test_retry_preserves_the_first_immutable_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    base = tmp_path / "base.jsonl"
+    output = tmp_path / ".beads" / "issues.jsonl"
+    before = {"polylogue-a": {"id": "polylogue-a", "status": "open"}}
+    after = {"polylogue-a": {"id": "polylogue-a", "status": "closed", "close_reason": "marker"}}
+    base.write_text(json.dumps(before["polylogue-a"]) + "\n")
+    monkeypatch.setattr(
+        carrier_dispositions,
+        "_scope_from_merged_pr",
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+    )
+    monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
+    monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: before)
+    monkeypatch.setattr(
+        carrier_dispositions, "_validate_live_plan", lambda *_args, **_kwargs: ["close polylogue-a marker"]
+    )
+    monkeypatch.setattr(guard, "run_guarded_batch", lambda **_kwargs: (before, after))
+
+    assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 0
+    receipt_path = next((output.parent / "disposition-receipts").glob("*.json"))
+    first = json.loads(receipt_path.read_text())
+    base.write_text(json.dumps(after["polylogue-a"]) + "\n")
+    monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: after)
+    monkeypatch.setattr(guard, "run_guarded_batch", lambda **_kwargs: (after, after))
+
+    assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 0
+    assert json.loads(receipt_path.read_text()) == first
 
 
 def test_guarded_batch_proves_rollback_when_the_real_batch_fails(
