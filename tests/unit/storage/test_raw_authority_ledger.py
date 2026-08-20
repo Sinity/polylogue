@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
@@ -1217,11 +1218,12 @@ def test_application_receipt_recovery_rejects_source_revision_from_another_share
     shared_key = "codex:shared-memberships-other"
     shared_revision = "shared-membership-other-revision"
     application = application_rows[0]
+    application_key = str(application["logical_source_key"])
     membership_rows.extend(
         [
             {
                 "raw_id": raw_id,
-                "logical_source_key": application["logical_source_key"],
+                "logical_source_key": application_key,
                 "source_revision": application["source_revision"],
                 "decision": "applied",
             },
@@ -1239,7 +1241,7 @@ def test_application_receipt_recovery_rejects_source_revision_from_another_share
         authority_witness={
             **plan.authority_witness,
             "memberships": [
-                {"raw_id": raw_id, "logical_source_key": application["logical_source_key"]},
+                {"raw_id": raw_id, "logical_source_key": application_key},
                 {"raw_id": raw_id, "logical_source_key": shared_key},
             ],
         },
@@ -1249,8 +1251,8 @@ def test_application_receipt_recovery_rejects_source_revision_from_another_share
         session_id=str(application["session_id"]),
         logical_source_key=str(application["logical_source_key"]),
         source_revision=shared_revision,
-        acquisition_generation=int(application["acquisition_generation"]),
-        decision=raw_authority_mod.ApplicationDecision(str(application["decision"])),
+        acquisition_generation=cast(int, application["acquisition_generation"]),
+        decision=ApplicationDecision(str(application["decision"])),
         accepted_raw_id=cast(str | None, application["accepted_raw_id"]),
         accepted_source_revision=cast(str | None, application["accepted_source_revision"]),
         accepted_content_hash=bytes.fromhex(cast(str, application["accepted_content_hash"])),
