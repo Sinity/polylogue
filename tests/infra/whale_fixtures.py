@@ -17,6 +17,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import BinaryIO, Final
 
 from polylogue.product.raw_authority import (
@@ -350,15 +351,10 @@ def acquire_codex_revision_chain(
     bounded append-fragment population.  The size and digest tuples remain
     snapshot-only so callers can retain the 804 transition assertions.
     """
-    from polylogue.archive.revision_authority import (
-        RawRevisionAuthority,
-        RawRevisionEnvelope,
-        RawRevisionKind,
-        append_source_revision,
-    )
     from polylogue.config import Source
-    from polylogue.core.enums import Provider
     from polylogue.pipeline.services.acquisition import AcquisitionService
+    from polylogue.sources.live.append_ingest import ingest_append_plans
+    from polylogue.sources.live.batch_support import _AppendPlan
     from polylogue.storage.sqlite import SQLiteBackend
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -381,14 +377,7 @@ def acquire_codex_revision_chain(
                 sizes.append(size)
                 sha256s.append(sha256)
 
-            with sqlite3.connect(archive_root / "source.db") as conn:
-                latest_full_acquired_at_ms = int(
-                    conn.execute("SELECT MAX(acquired_at_ms) FROM raw_sessions").fetchone()[0] or 0
-                )
-            if latest_full_acquired_at_ms <= 0:
-                latest_full_acquired_at_ms = source_path.stat().st_mtime_ns // 1_000_000
-            append_raw_ids: list[str] = []
-            logical_source_key = f"codex:{fixture.session_native_id}"
+            source_stat = source_path.stat()
             with sqlite3.connect(archive_root / "source.db") as conn:
                 predecessor_source_revision = str(
                     conn.execute("SELECT source_revision FROM raw_sessions WHERE raw_id = ?", (raw_ids[0],)).fetchone()[
@@ -401,35 +390,42 @@ def acquire_codex_revision_chain(
                     archive.raw_revision_material(raw_id)[1]
                     for raw_id in raw_ids[: fixture.dimensions.append_fragment_count + 1]
                 )
-            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                for fragment_index, payload in fixture.iter_append_fragments(full_payloads):
-                    payload_hash = hashlib.sha256(payload).hexdigest()
-                    source_revision = append_source_revision(predecessor_source_revision, payload_hash)
-                    raw_id = archive.write_raw_payload(
-                        provider=Provider.CODEX,
-                        payload=payload,
-                        source_path=str(source_path),
-                        source_index=fixture.dimensions.revision_count + fragment_index,
-                        native_id=fixture.session_native_id,
-                        acquired_at_ms=latest_full_acquired_at_ms + fragment_index + 1,
-                    )
-                    archive.bind_raw_revision(
-                        raw_id,
-                        RawRevisionEnvelope(
-                            logical_source_key=logical_source_key,
-                            kind=RawRevisionKind.APPEND,
-                            source_revision=source_revision,
-                            acquisition_generation=0,
-                            predecessor_source_revision=predecessor_source_revision,
-                            append_start_offset=len(full_payloads[fragment_index]),
-                            append_end_offset=len(full_payloads[fragment_index + 1]),
-                            authority=RawRevisionAuthority.QUARANTINED,
-                        ),
-                    )
-                    append_raw_ids.append(raw_id)
-                    predecessor_source_revision = source_revision
-                archive.commit()
-            raw_ids.extend(append_raw_ids)
+            owner = SimpleNamespace(
+                _cursor=SimpleNamespace(_db_path=archive_root / "source.db"),
+                _polylogue=SimpleNamespace(archive_root=archive_root),
+            )
+            for fragment_index, payload in fixture.iter_append_fragments(full_payloads):
+                plan = _AppendPlan(
+                    path=source_path,
+                    source_name="codex",
+                    start_offset=len(full_payloads[fragment_index]),
+                    source_index=fixture.dimensions.revision_count + fragment_index,
+                    last_complete_newline=len(full_payloads[fragment_index + 1]),
+                    stat_size=source_stat.st_size,
+                    st_dev=source_stat.st_dev,
+                    st_ino=source_stat.st_ino,
+                    mtime_ns=source_stat.st_mtime_ns,
+                    payload=payload,
+                    payload_hash=hashlib.sha256(payload).hexdigest(),
+                    cursor_fingerprint=predecessor_source_revision,
+                    bytes_read=len(payload),
+                    ctime_ns=source_stat.st_ctime_ns,
+                    authority_bytes_read=len(full_payloads[fragment_index + 1]),
+                    native_id_hint=fixture.session_native_id,
+                    acquisition_native_id_hint=fixture.session_native_id,
+                )
+                append_result = ingest_append_plans(owner, [plan])
+                if append_result.failed or append_result.succeeded or append_result.deferred != [plan]:
+                    raise AssertionError(f"append ingestion changed fixture authority state: {append_result!r}")
+                with sqlite3.connect(archive_root / "source.db") as conn:
+                    row = conn.execute(
+                        "SELECT raw_id, source_revision FROM raw_sessions WHERE source_index = ?",
+                        (plan.source_index,),
+                    ).fetchone()
+                if row is None:
+                    raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
+                raw_ids.append(str(row[0]))
+                predecessor_source_revision = str(row[1])
             return tuple(raw_ids), tuple(sizes), tuple(sha256s)
         finally:
             await backend.close()

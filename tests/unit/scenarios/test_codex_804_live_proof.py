@@ -72,7 +72,7 @@ from polylogue.scenarios import (
 from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
-from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT, backfill_historical_revision_evidence
+from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -491,7 +491,23 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     initialize_active_archive_root(source_ready_root)
     shutil.copy2(root / "source.db", source_ready_root / "source.db")
     shutil.copytree(root / "blob", source_ready_root / "blob")
-    backfill_historical_revision_evidence(source_ready_root, ingest_workers=1, bulk_fts=True)
+    whale_repair = raw_authority.repair_materialization(
+        Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
+        dry_run=False,
+        raw_artifact_id=whale_candidate,
+        raw_artifact_limit=expected_raw_count,
+        max_payload_bytes=whale_component_bytes + 1,
+    )
+    assert whale_repair.success is True
+    assert whale_repair.repaired_count >= 1
+    assert (
+        raw_authority.whale_pass_candidate(
+            Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
+            ordinary_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.ordinary_blob_limit_bytes,
+            whale_max_payload_bytes=WHALE_FIXTURE_DIMENSIONS.whale_blob_limit_bytes,
+        )
+        is None
+    )
     shutil.copy2(source_ready_root / "source.db", root / "source.db")
 
     schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
