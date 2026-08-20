@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon.write_coordinator import (
-    _DETACHED_WRITER_FAILURE_ESCAPED_ACTOR,
     _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
     _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH,
     _MAX_DETACHED_WRITER_FAILURE_ACTORS,
@@ -656,25 +655,32 @@ async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_over
 
 
 @pytest.mark.asyncio
-async def test_detached_writer_failure_actor_sentinel_does_not_collide_with_overflow() -> None:
+async def test_detached_writer_failure_reserved_labels_cannot_collide_with_overflow() -> None:
     coordinator = DaemonWriteCoordinator()
 
     async def boom() -> None:
         raise RuntimeError("writer blew up")
-
-    with pytest.raises(RuntimeError, match="writer blew up"):
-        await coordinator.run(_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR, boom)
-    await asyncio.sleep(0)
 
     for index in range(_MAX_DETACHED_WRITER_FAILURE_ACTORS):
         with pytest.raises(RuntimeError, match="writer blew up"):
             await coordinator.run(f"caller-{index}", boom)
         await asyncio.sleep(0)
 
+    for reserved_actor in (_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR, "<other> (actor)"):
+        with pytest.raises(ValueError, match="reserved telemetry label"):
+            await coordinator.run(reserved_actor, boom)
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("caller-overflow", boom)
+    await asyncio.sleep(0)
+
     attribution = dict(coordinator.snapshot().detached_writer_failures_by_actor)
     assert len(attribution) == _MAX_DETACHED_WRITER_FAILURE_ACTORS
-    assert attribution[_DETACHED_WRITER_FAILURE_ESCAPED_ACTOR] == 1
+    assert attribution["caller-0"] == 1
+    assert attribution["caller-30"] == 1
+    assert "caller-31" not in attribution
     assert attribution[_DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR] == 2
+    assert "<other> (actor)" not in attribution
 
 
 @pytest.mark.asyncio

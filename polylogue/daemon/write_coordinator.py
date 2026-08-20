@@ -47,7 +47,7 @@ _DEFAULT_PRIORITY = 0
 _MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
 _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
 _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
-_DETACHED_WRITER_FAILURE_ESCAPED_ACTOR = "<other> (actor)"
+_DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX = "<other>"
 _THREAD_RESULT_POLL_SECONDS = 0.01
 
 
@@ -223,8 +223,11 @@ class DaemonWriteCoordinator:
 
     async def run(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T:
         """Run one async write operation under the process-wide gate."""
-        if not actor:
+        actor_label = actor.strip()
+        if not actor_label:
             raise ValueError("daemon write actor must be non-empty")
+        if actor_label.startswith(_DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX):
+            raise ValueError("daemon write actor uses a reserved telemetry label")
 
         current_task = asyncio.current_task()
         if current_task is None:
@@ -373,8 +376,6 @@ class DaemonWriteCoordinator:
                 or any(ord(character) < 0x20 for character in actor_label)
             ):
                 actor_label = _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR
-            elif actor_label == _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR:
-                actor_label = _DETACHED_WRITER_FAILURE_ESCAPED_ACTOR
             if (
                 actor_label not in self._detached_writer_failures_by_actor
                 and len(self._detached_writer_failures_by_actor) >= _MAX_DETACHED_WRITER_FAILURE_ACTORS - 1
