@@ -67,6 +67,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -402,8 +403,8 @@ def _merged_commit_sha(pr: int) -> str:
     return merge_sha
 
 
-def _live_bead(bead_id: str) -> dict[str, Any]:
-    result = subprocess.run(["bd", "show", bead_id, "--json"], capture_output=True, text=True, timeout=60)
+def _live_bead(bead_id: str, *, cwd: Path | None = None) -> dict[str, Any]:
+    result = subprocess.run(["bd", "show", bead_id, "--json"], capture_output=True, text=True, timeout=60, cwd=cwd)
     if result.returncode != 0:
         raise LedgerStateError(f"could not inspect Bead {bead_id}: {result.stderr.strip()[:300]}")
     payload = json.loads(result.stdout)
@@ -468,7 +469,7 @@ def _preflight_live_dispositions(scope: pr_scope.ScopeVerdict) -> None:
     _validate_projected_archive_registry(projected_statuses)
 
 
-def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
+def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str, cwd: Path) -> None:
     scope = intent.get("scope")
     if not isinstance(scope, dict) or scope.get("scope_kind") == pr_scope.ScopeKind.SELF_CONTAINED.value:
         return
@@ -483,14 +484,18 @@ def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
         if not isinstance(bead_id, str) or not isinstance(disposition, str):
             raise LedgerStateError("merge intent has malformed typed carrier disposition")
         marker = _disposition_marker(int(intent["pr"]), merge_sha, item)
-        live = _live_bead(bead_id)
+        live = _live_bead(bead_id, cwd=cwd)
         if disposition == pr_scope.ScopeDisposition.SATISFIED.value:
             if live.get("status") == "closed":
                 if live.get("close_reason") != marker:
                     raise LedgerStateError(f"Bead {bead_id} was closed independently; refusing to overwrite it")
                 continue
             close = subprocess.run(
-                ["bd", "close", bead_id, "--reason", marker, "--json"], capture_output=True, text=True, timeout=60
+                ["bd", "close", bead_id, "--reason", marker, "--json"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=cwd,
             )
             if close.returncode != 0:
                 raise LedgerStateError(f"could not close Bead {bead_id}: {close.stderr.strip()[:300]}")
@@ -498,7 +503,7 @@ def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
             item.value for item in pr_scope.ScopeDisposition if item is not pr_scope.ScopeDisposition.SATISFIED
         }:
             for successor in item.get("successors", []):
-                successor_record = _live_bead(str(successor))
+                successor_record = _live_bead(str(successor), cwd=cwd)
                 if successor_record.get("status") == "closed":
                     raise LedgerStateError(f"residual successor {successor} is closed at disposition execution")
             update = subprocess.run(
@@ -506,6 +511,7 @@ def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                cwd=cwd,
             )
             if update.returncode != 0:
                 raise LedgerStateError(
@@ -513,9 +519,133 @@ def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
                 )
         else:
             raise LedgerStateError(f"merge intent has unknown disposition {disposition!r}")
-    exported = subprocess.run(["bd", "export", "-o", ".beads/issues.jsonl"], capture_output=True, text=True, timeout=60)
+    exported = subprocess.run(
+        ["bd", "export", "-o", ".beads/issues.jsonl"], capture_output=True, text=True, timeout=60, cwd=cwd
+    )
     if exported.returncode != 0:
         raise LedgerStateError(f"could not export carrier disposition batch: {exported.stderr.strip()[:300]}")
+
+
+@contextlib.contextmanager
+def _merged_master_worktree(merge_sha: str) -> Iterator[Path]:
+    """Yield a disposable worktree bound to the fetched master containing a merge.
+
+    The invoking PR checkout is deliberately never the Beads export authority.
+    This keeps a dirty operator main checkout untouched while making the
+    resulting JSONL commit originate from the branch that future hook imports
+    actually read.
+    """
+    checkout_root = merge_gate._repository_root()
+    temporary = Path(tempfile.mkdtemp(prefix="polylogue-carrier-master-"))
+    added = False
+    try:
+        fetched = subprocess.run(
+            ["git", "fetch", "origin", "master"], capture_output=True, text=True, cwd=checkout_root, timeout=120
+        )
+        if fetched.returncode != 0:
+            raise LedgerStateError(f"could not fetch master for carrier disposition: {fetched.stderr.strip()[:300]}")
+        master = subprocess.run(
+            ["git", "rev-parse", "origin/master"], capture_output=True, text=True, cwd=checkout_root, timeout=30
+        )
+        if master.returncode != 0:
+            raise LedgerStateError("could not resolve fetched origin/master for carrier disposition")
+        master_sha = master.stdout.strip()
+        contains = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", merge_sha, master_sha],
+            capture_output=True,
+            text=True,
+            cwd=checkout_root,
+            timeout=30,
+        )
+        if contains.returncode != 0:
+            raise LedgerStateError("fetched master does not contain the observed squash merge")
+        created = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(temporary), master_sha],
+            capture_output=True,
+            text=True,
+            cwd=checkout_root,
+            timeout=120,
+        )
+        if created.returncode != 0:
+            raise LedgerStateError(
+                f"could not create master-bound disposition worktree: {created.stderr.strip()[:300]}"
+            )
+        added = True
+        yield temporary
+    finally:
+        if added:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(temporary)],
+                capture_output=True,
+                text=True,
+                cwd=checkout_root,
+                timeout=120,
+            )
+        else:
+            shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _commit_master_disposition_snapshot(intent: Mapping[str, Any], *, merge_sha: str, cwd: Path) -> None:
+    staged = subprocess.run(["git", "add", ".beads/issues.jsonl"], capture_output=True, text=True, cwd=cwd, timeout=60)
+    if staged.returncode != 0:
+        raise LedgerStateError(f"could not stage master carrier disposition snapshot: {staged.stderr.strip()[:300]}")
+    changed = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"], capture_output=True, text=True, cwd=cwd, timeout=30
+    )
+    if changed.returncode not in {0, 1}:
+        raise LedgerStateError("could not inspect staged master carrier disposition snapshot")
+    if changed.returncode == 1:
+        committed = subprocess.run(
+            ["git", "commit", "-m", f"chore(beads): record carrier dispositions for PR #{intent['pr']}"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=120,
+        )
+        if committed.returncode != 0:
+            raise LedgerStateError(
+                f"could not commit master carrier disposition snapshot: {committed.stderr.strip()[:300]}"
+            )
+        pushed = subprocess.run(
+            ["git", "push", "origin", "HEAD:master"], capture_output=True, text=True, cwd=cwd, timeout=120
+        )
+        if pushed.returncode != 0:
+            raise LedgerStateError(
+                f"could not publish master carrier disposition snapshot: {pushed.stderr.strip()[:300]}"
+            )
+
+    # Re-fetch and re-import the committed master snapshot. This is the
+    # persistence proof that a later master-side Beads import cannot rewind the
+    # just-applied disposition to the feature branch's older JSONL.
+    fetched = subprocess.run(["git", "fetch", "origin", "master"], capture_output=True, text=True, cwd=cwd, timeout=120)
+    if fetched.returncode != 0:
+        raise LedgerStateError(f"could not re-fetch committed master carrier snapshot: {fetched.stderr.strip()[:300]}")
+    reset = subprocess.run(
+        ["git", "reset", "--hard", "origin/master"], capture_output=True, text=True, cwd=cwd, timeout=60
+    )
+    if reset.returncode != 0:
+        raise LedgerStateError("could not restore the disposable master disposition worktree")
+    imported = subprocess.run(
+        ["bd", "import", "--input", ".beads/issues.jsonl"], capture_output=True, text=True, cwd=cwd, timeout=60
+    )
+    if imported.returncode != 0:
+        raise LedgerStateError(f"master carrier snapshot could not be reimported: {imported.stderr.strip()[:300]}")
+    scope = intent.get("scope")
+    if isinstance(scope, dict):
+        for item in scope.get("dispositions", []):
+            if not isinstance(item, dict) or not isinstance(item.get("bead_id"), str):
+                raise LedgerStateError("master carrier snapshot has malformed typed disposition")
+            marker = _disposition_marker(int(intent["pr"]), merge_sha, item)
+            if marker not in json.dumps(_live_bead(item["bead_id"], cwd=cwd), sort_keys=True):
+                raise LedgerStateError(
+                    f"master carrier reimport did not preserve disposition for Bead {item['bead_id']}"
+                )
+
+
+def _execute_master_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
+    with _merged_master_worktree(merge_sha) as master_worktree:
+        _execute_dispositions(intent, merge_sha=merge_sha, cwd=master_worktree)
+        _commit_master_disposition_snapshot(intent, merge_sha=merge_sha, cwd=master_worktree)
 
 
 def _complete_merge_intent(pr: int, head_sha: str, *, merge_sha: str | None = None) -> None:
@@ -529,7 +659,7 @@ def _complete_merge_intent(pr: int, head_sha: str, *, merge_sha: str | None = No
         if isinstance(intent.get("scope"), dict):
             resolved_merge_sha = merge_sha or _merged_commit_sha(pr)
             try:
-                _execute_dispositions(intent, merge_sha=resolved_merge_sha)
+                _execute_master_dispositions(intent, merge_sha=resolved_merge_sha)
             except LedgerStateError as exc:
                 intent["disposition_error"] = str(exc)
                 _write_ledger_unlocked(ledger)

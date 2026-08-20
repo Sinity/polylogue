@@ -349,6 +349,7 @@ def test_merge_executes_validated_satisfied_disposition_only_after_squash(
     carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
     pr_view["body"] = pr_scope.render_carrier(carrier)
     calls: list[list[str]] = []
+    bead = {"id": "polylogue-test-scope", "status": "open"}
     base_run = _fake_run(pr_view)
     merged = False
 
@@ -363,9 +364,10 @@ def test_merge_executes_validated_satisfied_disposition_only_after_squash(
                 returncode=0, stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "m" * 40}}), stderr=""
             )
         if cmd[:2] == ["bd", "show"]:
-            return MagicMock(returncode=0, stdout='{"id":"polylogue-test-scope","status":"open"}', stderr="")
+            return MagicMock(returncode=0, stdout=json.dumps(bead), stderr="")
         if cmd[:2] == ["bd", "close"]:
-            return MagicMock(returncode=0, stdout='{"id":"polylogue-test-scope","status":"closed"}', stderr="")
+            bead.update({"status": "closed", "close_reason": cmd[cmd.index("--reason") + 1]})
+            return MagicMock(returncode=0, stdout=json.dumps(bead), stderr="")
         if cmd[:2] == ["bd", "export"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         return base_run(cmd, **kwargs)

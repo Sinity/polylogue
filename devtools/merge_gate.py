@@ -283,6 +283,13 @@ def adversarial_review_verdict(
         return False, "adversarial review receipt is not bound to the current PR head", None
     if receipt.get("state") != "passed":
         return False, f"adversarial review is {receipt.get('state')!r}, not passed", None
+    if (
+        receipt.get("status_context") != "merge-gate/adversarial-review"
+        or receipt.get("status_state") != "success"
+        or receipt.get("status_head_sha") != head_sha
+        or not isinstance(receipt.get("status_acknowledged_at"), (int, float))
+    ):
+        return False, "adversarial review success status was not durably acknowledged", None
     if not isinstance(receipt.get("reviewer_run_id"), str) or not isinstance(receipt.get("reviewer_model"), str):
         return False, "adversarial review receipt lacks reviewer run/model identity", None
     digest = receipt.get("findings_digest")
@@ -623,20 +630,28 @@ def cmd_review_complete(pr: int, *, run_id: str, passed: bool, findings_digest: 
                 or receipt.get("head_sha") != head_sha
             ):
                 return 1
-            receipt.update(
-                {
-                    "state": "passed" if passed else "failed",
-                    "completed_at": time.time(),
-                    "findings_digest": findings_digest,
-                }
-            )
-            _write_review_receipt(pr, receipt)
             status = _post_adversarial_status(
                 head_sha,
                 "success" if passed else "failure",
                 "adversarial review passed" if passed else "adversarial review failed",
             )
-            return 0 if status.get("posted") else 1
+            if not status.get("posted"):
+                # A passed receipt is merge authority. Do not seal it until
+                # GitHub has acknowledged the corresponding exact-head status.
+                return 1
+            receipt.update(
+                {
+                    "state": "passed" if passed else "failed",
+                    "completed_at": time.time(),
+                    "findings_digest": findings_digest,
+                    "status_context": "merge-gate/adversarial-review",
+                    "status_state": "success" if passed else "failure",
+                    "status_head_sha": head_sha,
+                    "status_acknowledged_at": time.time(),
+                }
+            )
+            _write_review_receipt(pr, receipt)
+            return 0
     except (RuntimeError, OSError, json.JSONDecodeError):
         return 1
 
