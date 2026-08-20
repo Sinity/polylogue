@@ -739,3 +739,38 @@ def test_insert_reconstructed_raw_row_refuses_durably_excised_hash(tmp_path: Pat
         )
 
     assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == 0
+
+
+def test_insert_reconstructed_raw_row_checks_excision_in_selected_attached_schema(tmp_path: Path) -> None:
+    """An attached source schema cannot bypass the durable excision ledger."""
+    payload = b'{"reconstructed": "attached-excised"}\n'
+    blob_hash = deterministic_blob_hash(payload)
+    source_path = tmp_path / "source.db"
+    source_conn = _connect(source_path)
+    record_excised_blob_hash(
+        source_conn, blob_hash=blob_hash, reason="attached-red-twin", actor="test", excised_at_ms=1
+    )
+    source_conn.commit()
+    source_conn.close()
+
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.execute("ATTACH DATABASE ? AS source", (str(source_path),))
+    row = ReconstructedRawRow(
+        raw_id="attached-excised-copy-forward",
+        origin=Origin.CLAUDE_AI_EXPORT.value,
+        capture_mode=Provider.CLAUDE_AI.value,
+        native_id="attached-excised-native",
+        source_path="/copy-forward/attached-excised.json",
+        source_index=0,
+        blob_hash=blob_hash,
+        blob_size=len(payload),
+        acquired_at_ms=1,
+        logical_source_key="claude-ai-export:attached-excised-native",
+        source_revision=blob_hash.hex(),
+        baseline_raw_id="attached-excised-copy-forward",
+    )
+
+    with pytest.raises(ContentExcisedError, match="durably excised"):
+        insert_reconstructed_raw_row(conn, row, schema="source")
+
+    assert int(conn.execute("SELECT COUNT(*) FROM source.raw_sessions").fetchone()[0]) == 0
