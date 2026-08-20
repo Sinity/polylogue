@@ -446,20 +446,25 @@ def _seed_testmon_graph(
     initial_digest = attestation.digests[0]
     destination_initial_state = inspect_native_testmon_environment(destination, environment_name=initial_digest)
     initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
-    if not native_testmon_fallback_allowed(destination_initial_state, initial_state):
+    copy_digest: str | None = initial_digest if initial_state.valid else None
+    if copy_digest is None and len(attestation.digests) > 1:
+        if not native_testmon_fallback_allowed(destination_initial_state, initial_state):
+            return (
+                "seeded graph's initial verify environment is invalid and not attestable; "
+                "refusing the default-profile fallback; "
+                "first lane verify will bootstrap",
+                False,
+            )
+        if initial_state.status in {"absent", "incomplete"}:
+            fallback_digest = attestation.digests[1]
+            fallback_state = inspect_native_testmon_environment(source, environment_name=fallback_digest)
+            if fallback_state.valid:
+                copy_digest = fallback_digest
+    if copy_digest is None and initial_state.status == "invalid":
         return (
-            "seeded graph's initial verify environment is invalid and not attestable; "
-            "refusing the default-profile fallback; "
-            "first lane verify will bootstrap",
+            "seeded graph's initial verify environment is invalid and not attestable; first lane verify will bootstrap",
             False,
         )
-
-    copy_digest: str | None = initial_digest if initial_state.valid else None
-    if copy_digest is None and initial_state.status in {"absent", "incomplete"} and len(attestation.digests) > 1:
-        fallback_digest = attestation.digests[1]
-        fallback_state = inspect_native_testmon_environment(source, environment_name=fallback_digest)
-        if fallback_state.valid:
-            copy_digest = fallback_digest
     if copy_digest is None:
         return (
             "seeded graph is not attestable for verify's environment candidates; "

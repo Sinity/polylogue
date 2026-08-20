@@ -581,6 +581,36 @@ def test_seed_reports_warm_only_on_a_real_environment_match(
     assert "verifies start warm" in note
 
 
+def test_seeded_primary_copy_stays_warm_when_lane_primary_state_is_invalid(tmp_path: Path) -> None:
+    """Lane seeding and verifier preparation agree on a safe primary reuse."""
+    from devtools.testmon_bootstrap import prepare_native_testmon_environment, testmon_environment_digest
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    digest_inputs = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": None}
+    primary = testmon_environment_digest(
+        root,
+        pytest_profile="correctness=complete",
+        pytest_environment=digest_inputs,
+    )
+    _certified_graph_with(root, primary)
+    _certified_graph_with_names(lane, [primary, primary])
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation(primary))
+
+    assert warm is True
+    assert "verifies start warm" in note
+    preparation = prepare_native_testmon_environment(
+        lane,
+        pytest_profile="correctness=complete",
+        pytest_environment=digest_inputs,
+    )
+    assert preparation.environment_name == primary
+    assert preparation.selection_mode == "affected"
+    assert preparation.copied_from is None
+
+
 def test_seed_accepts_verify_default_profile_fallback_when_certified(
     tmp_path: Path,
 ) -> None:
@@ -616,6 +646,45 @@ def test_seed_rejects_certified_fallback_after_an_invalid_initial_environment(
     assert "initial verify environment is invalid" in note
     assert "refusing the default-profile fallback" in note
     assert (lane / TESTMON_DATA_RELPATH).is_file()
+
+
+def test_seed_then_verifier_stays_cold_after_invalid_initial_with_valid_default(tmp_path: Path) -> None:
+    """An invalid primary must not authorize a different profile's graph."""
+    from devtools.testmon_bootstrap import prepare_native_testmon_environment, testmon_environment_digest
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    initial_inputs = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
+    initial = testmon_environment_digest(
+        root,
+        pytest_profile="correctness=complete",
+        pytest_environment=initial_inputs,
+    )
+    default = testmon_environment_digest(
+        root,
+        pytest_profile="correctness=complete",
+        pytest_environment={"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": "1"},
+    )
+    _certified_graph_with(root, default)
+    _certified_graph_with_names(lane, [initial, initial])
+
+    note, warm = lane_init._seed_testmon_graph(
+        root,
+        lane,
+        attestation=_attestation(initial, default),
+    )
+
+    assert warm is False
+    assert "refusing the default-profile fallback" in note
+    preparation = prepare_native_testmon_environment(
+        lane,
+        pytest_profile="correctness=complete",
+        pytest_environment=initial_inputs,
+    )
+    assert preparation.environment_name == initial
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
 
 
 def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
