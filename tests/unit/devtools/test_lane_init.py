@@ -26,6 +26,7 @@ requires-python = ">=3.14"
 [project.optional-dependencies]
 dev-common = []
 speed = []
+dev = ["polylogue[dev-common,speed]"]
 
 [build-system]
 requires = ["setuptools"]
@@ -298,6 +299,61 @@ def test_provision_venv_without_an_interpreter_omits_the_pin(tmp_path: Path, mon
     assert "--python" not in cmd
 
 
+def test_provision_venv_uses_the_canonical_devshell_extra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lane sync must select the same dependency surface as the coordinator."""
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        cmd: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
+        captured["cmd"] = list(cmd)
+        return CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(lane_init, "_run", fake_run)
+    assert lane_init._provision_venv(lane) is None
+
+    command = captured["cmd"]
+    assert isinstance(command, list)
+    assert command[:4] == ["uv", "sync", "--extra", "dev"]
+    assert command[4:] == []
+
+
+def test_lane_environment_digest_uses_the_verify_digest_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = tmp_path / "lane"
+    python = lane / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        cmd: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
+        captured["cmd"] = list(cmd)
+        return CompletedProcess(cmd, 0, "polylogue-current\n", "")
+
+    monkeypatch.setattr(lane_init, "_run", fake_run)
+
+    assert lane_init.lane_environment_digest(lane) == "polylogue-current"
+    command = captured["cmd"]
+    assert isinstance(command, list)
+    probe = command[-1]
+    assert isinstance(probe, str)
+    assert "pytest_profile=_pytest_profile()" in probe
+    assert "pytest_environment=_native_pytest_environment()" in probe
+
+
 def test_interpreter_guard_refuses_a_mismatched_lane_interpreter(tmp_path: Path) -> None:
     """RED TWIN: a lane built from another Python must be refused, loudly.
 
@@ -465,6 +521,40 @@ def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
 
     assert warm is False
     assert "warmth unverified" in note
+
+
+def test_distribution_mutation_makes_a_seeded_graph_unattestable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed installed distribution cannot inherit a warm graph claim."""
+    from devtools import testmon_bootstrap
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, testmon_environment_digest
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    digest_inputs = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": None}
+    recorded = testmon_environment_digest(
+        root,
+        pytest_profile="correctness=complete",
+        pytest_environment=digest_inputs,
+    )
+    _graph_with(root / TESTMON_DATA_RELPATH, [recorded])
+
+    monkeypatch.setattr(testmon_bootstrap, "_installed_distributions", lambda: (("pytest", "mutated"),))
+    unattestable = testmon_environment_digest(
+        root,
+        pytest_profile="correctness=complete",
+        pytest_environment=digest_inputs,
+    )
+    assert unattestable != recorded
+    monkeypatch.setattr(lane_init, "lane_environment_digest", lambda _worktree: unattestable)
+
+    note, warm = lane_init._seed_testmon_graph(root, lane)
+
+    assert warm is False
+    assert "NONE matching this lane" in note
+    assert "bootstrap" in note
 
 
 # ---------------------------------------------------------------------------

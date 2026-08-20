@@ -257,9 +257,10 @@ def _lane_env(worktree: Path) -> dict[str, str]:
 
 
 def _provision_venv(worktree: Path, interpreter: Path | None = None) -> str | None:
-    # dev-common+speed = the devshell's effective test/verify surface without
-    # platform-fragile extras (atheris has no cp314t wheel).
-    cmd = ["uv", "sync", "--extra", "dev-common", "--extra", "speed"]
+    # ``dev`` is the canonical devshell selector in flake.nix; it expands to
+    # the same dev-common+speed surface while keeping lane provisioning on the
+    # exact extras contract used by the coordinator.
+    cmd = ["uv", "sync", "--extra", "dev"]
     if interpreter is not None:
         # Without this uv picks an interpreter by its own resolution order and
         # will happily download one that does not match the coordinator.
@@ -309,7 +310,10 @@ def lane_environment_digest(worktree: Path) -> str | None:
             (
                 "from pathlib import Path; "
                 "from devtools.testmon_bootstrap import testmon_environment_digest; "
-                "print(testmon_environment_digest(Path.cwd()))"
+                "from devtools.verify import _native_pytest_environment, _pytest_profile; "
+                "print(testmon_environment_digest("
+                "Path.cwd(), pytest_profile=_pytest_profile(), "
+                "pytest_environment=_native_pytest_environment()))"
             ),
         ],
         cwd=worktree,
