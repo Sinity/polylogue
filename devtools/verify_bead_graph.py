@@ -184,8 +184,13 @@ def _graph_digest(issues: list[dict[str, Any]]) -> str:
         {
             "id": issue["id"],
             "status": issue.get("status"),
+            # Preserve malformed records in the digest without asking Python
+            # to order values of unrelated JSON types (for example None and
+            # str). Structural findings below remain the authority on their
+            # validity.
             "dependencies": sorted(
-                (dependency.get("type"), dependency.get("depends_on_id")) for dependency in _dependency_records(issue)
+                json.dumps(dependency, sort_keys=True, separators=(",", ":"))
+                for dependency in _dependency_records(issue)
             ),
         }
         for issue in sorted(issues, key=lambda item: str(item["id"]))
@@ -205,7 +210,7 @@ def _forcing_report(issues: list[dict[str, Any]], root: str, *, graph_sha256: st
             if dependency.get("type") != "blocks":
                 continue
             target = dependency.get("depends_on_id")
-            if isinstance(target, str) and target and target not in blockers:
+            if isinstance(target, str) and target and target in by_id and target not in blockers:
                 blockers.add(target)
                 pending.append(target)
     blocker_ids = sorted(blockers)

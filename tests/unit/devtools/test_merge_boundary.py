@@ -125,6 +125,17 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return MagicMock(returncode=merge_exit, stdout="merged\n", stderr="" if merge_exit == 0 else "merge failed")
+        if cmd[:2] == ["bd", "list"]:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"id": "polylogue-test-scope", "status": "open"},
+                        {"id": "polylogue-feu0", "status": "open"},
+                    ]
+                ),
+                stderr="",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             threads = [
                 {
@@ -214,6 +225,11 @@ def _write_terminal_receipt(
             }
         )
     )
+
+
+def _record_event(events: list[str], event: str) -> int:
+    events.append(event)
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +388,47 @@ def test_merge_executes_validated_satisfied_disposition_only_after_squash(
     close = next(command for command in calls if command[:2] == ["bd", "close"])
     assert "pr=42" in close[close.index("--reason") + 1]
     assert "merge=" in close[close.index("--reason") + 1]
-    assert "evidence=" in close[close.index("--reason") + 1]
+    assert "disposition=" in close[close.index("--reason") + 1]
+
+
+def test_disposition_marker_binds_the_complete_typed_disposition() -> None:
+    first = {
+        "bead_id": "polylogue-test-scope",
+        "disposition": "partial",
+        "evidence": [{"kind": "test", "ref": "test.py"}],
+        "successors": ["polylogue-next"],
+    }
+    changed_successor = {**first, "successors": ["polylogue-other"]}
+    changed_disposition = {**first, "disposition": "deferred"}
+
+    marker = merge_boundary._disposition_marker(42, "m" * 40, first)
+    assert marker != merge_boundary._disposition_marker(42, "m" * 40, changed_successor)
+    assert marker != merge_boundary._disposition_marker(42, "m" * 40, changed_disposition)
+
+
+def test_preflight_rejects_already_closed_disposition_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    scope = pr_scope.ScopeVerdict(
+        ok=True,
+        carrier_version=2,
+        scope_kind=pr_scope.ScopeKind.BEAD,
+        dispositions=(
+            pr_scope.ValidatedDisposition(
+                bead_id="polylogue-test-scope",
+                disposition=pr_scope.ScopeDisposition.SATISFIED,
+                evidence=(pr_scope.EvidenceRef(pr_scope.EvidenceKind.TEST, "test.py"),),
+                successors=(),
+            ),
+        ),
+    )
+    monkeypatch.setattr(merge_boundary, "_live_bead_statuses", lambda: {"polylogue-test-scope": "closed"})
+
+    with pytest.raises(merge_boundary.LedgerStateError, match="closed before squash"):
+        merge_boundary._preflight_live_dispositions(scope)
+
+
+def test_projected_status_rejects_closing_an_active_archive_waiver() -> None:
+    with pytest.raises(merge_boundary.LedgerStateError, match="waiver bead polylogue-feu0 is closed"):
+        merge_boundary._validate_projected_archive_registry({"polylogue-feu0": "closed"})
 
 
 def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
@@ -770,7 +826,9 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         merge_boundary,
         "_run_post_merge_terminal_verify",
-        lambda command, target, **_kwargs: merge_boundary.cmd_record_full_verify(command, target_sha=target),
+        lambda command, target, **kwargs: merge_boundary.cmd_record_full_verify(
+            command, target_sha=target, ledger_snapshot=kwargs["ledger_snapshot"]
+        ),
     )
 
     exit_code = merge_boundary.cmd_merge(
@@ -815,6 +873,41 @@ def test_merge_with_verify_returns_nonzero_when_terminal_authority_is_rejected(
         == 1
     )
     assert merge_boundary._read_ledger()["merges"]
+
+
+def test_merge_with_verify_defers_disposition_completion_until_after_terminal_verify(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    events: list[str] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+    monkeypatch.setattr(merge_boundary, "_fetched_merged_default_branch_sha", lambda _pr: "merged-master")
+    monkeypatch.setattr(
+        merge_boundary,
+        "_run_post_merge_terminal_verify",
+        lambda _command, _target, **_kwargs: _record_event(events, "verify"),
+    )
+    monkeypatch.setattr(
+        merge_boundary,
+        "_complete_merge_intent",
+        lambda _pr, _head_sha: events.append("dispositions"),
+    )
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=True,
+            verify_command="devtools verify",
+        )
+        == 0
+    )
+    assert events == ["verify", "dispositions"]
 
 
 def test_post_merge_terminal_verify_rejects_stale_feature_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1010,11 +1103,18 @@ def test_merge_write_failure_recovers_valid_pending_ledger(monkeypatch: pytest.M
 
 def test_read_ledger_clears_byte_identical_pending_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    merge_boundary._write_ledger({"merges": [], "merge_intents": [], "last_full_verify": None})
+    merge_boundary._write_ledger(
+        {"merges": [], "merge_intents": [], "retired_merge_intents": [], "last_full_verify": None}
+    )
     serialized = merge_boundary._LEDGER_PATH.read_text()
     merge_boundary._LEDGER_PENDING_PATH.write_text(serialized)
 
-    assert merge_boundary._read_ledger() == {"merges": [], "merge_intents": [], "last_full_verify": None}
+    assert merge_boundary._read_ledger() == {
+        "merges": [],
+        "merge_intents": [],
+        "retired_merge_intents": [],
+        "last_full_verify": None,
+    }
     assert not merge_boundary._LEDGER_PENDING_PATH.exists()
 
 
@@ -1331,7 +1431,7 @@ def test_external_merge_before_completion_is_reconciled_from_durable_intent(
         if cmd[:3] == ["gh", "pr", "view"] and merged:
             return MagicMock(
                 returncode=0,
-                stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}}),
+                stdout=json.dumps({"state": "MERGED", "headRefOid": "abc123", "mergeCommit": {"oid": "merge-commit"}}),
                 stderr="",
             )
         return base_run(cmd, **kwargs)
@@ -1369,12 +1469,38 @@ def test_record_full_verify_reconciles_durable_intents_before_snapshot(
     monkeypatch.setattr(
         merge_boundary,
         "_gh_json",
-        lambda _args: {"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}},
+        lambda _args: {"state": "MERGED", "headRefOid": "pr-head", "mergeCommit": {"oid": "merge-commit"}},
     )
     snapshot = merge_boundary._reconciled_terminal_verify_snapshot()
 
     assert snapshot[2] == 1
     assert not merge_boundary._read_ledger()["merge_intents"]
+
+
+def test_recovery_retires_intent_when_pr_merged_from_a_different_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._record_merge_intent(42, "old-head", "old carrier")
+    executed: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        merge_boundary,
+        "_gh_json",
+        lambda _args: {"state": "MERGED", "headRefOid": "new-head", "mergeCommit": {"oid": "merge-commit"}},
+    )
+    monkeypatch.setattr(
+        merge_boundary,
+        "_complete_merge_intent",
+        lambda pr, head_sha, **_kwargs: executed.append((pr, head_sha)),
+    )
+
+    merge_boundary._reconcile_merge_intents()
+
+    ledger = merge_boundary._read_ledger()
+    assert executed == []
+    assert ledger["merge_intents"] == []
+    assert ledger["retired_merge_intents"][0]["head_sha"] == "old-head"
+    assert ledger["retired_merge_intents"][0]["observed_head_sha"] == "new-head"
 
 
 def test_external_merge_completion_write_failure_keeps_recovery_latch(

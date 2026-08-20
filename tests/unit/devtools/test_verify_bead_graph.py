@@ -138,3 +138,18 @@ def test_export_report_derives_transitive_forcing_closure_and_rejects_unknown_ed
     malformed = [_issue("root", dependencies=[{"type": "blockz", "depends_on_id": "leaf"}]), _issue("leaf")]
     findings = verify_bead_graph.collect_findings(malformed)
     assert any(finding.kind == "unknown-dependency-kind" for finding in findings)
+
+
+def test_malformed_graph_still_emits_structured_report_with_forcing_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Derived forcing analysis must not hide already-collected graph violations."""
+    issues = [_issue("root", dependencies=[{"type": "blocks", "depends_on_id": "missing"}])]
+    export = tmp_path / "issues.jsonl"
+    export.write_text("\n".join(json.dumps(issue) for issue in issues) + "\n", encoding="utf-8")
+
+    assert verify_bead_graph.main(["--export", str(export), "--forcing-root", "root", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["forcing"][0]["blocker_ids"] == []
+    assert any(item["kind"] == "missing-dependency-target" for item in report["findings"])
