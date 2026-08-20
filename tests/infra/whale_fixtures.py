@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +38,24 @@ def copy_sqlite_database(source: Path, destination: Path) -> None:
     """Copy live SQLite contents in place so archive identity inodes remain stable."""
     with sqlite3.connect(source) as source_conn, sqlite3.connect(destination) as destination_conn:
         source_conn.backup(destination_conn)
+
+
+def assert_planner_append_authority(
+    *,
+    append_raw_ids: Collection[str],
+    application_rows: Sequence[tuple[str, str, str | None]],
+) -> None:
+    """Require every live-planner append raw to have an applied decision."""
+    expected_raw_ids = set(append_raw_ids)
+    observed_raw_ids = {raw_id for raw_id, _decision, _accepted_raw_id in application_rows}
+    assert observed_raw_ids == expected_raw_ids
+    assert len(application_rows) == len(expected_raw_ids)
+    append_decisions = tuple(
+        decision for raw_id, decision, _accepted_raw_id in application_rows if raw_id in expected_raw_ids
+    )
+    assert append_decisions and all(decision == "applied_append" for decision in append_decisions), (
+        f"live planner ledger did not apply every append raw; observed append decisions={append_decisions!r}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -519,13 +537,18 @@ def acquire_codex_revision_chain(
                 raw_ids.append(str(row[0]))
             append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
             with sqlite3.connect(active_index_path) as conn:
-                append_application_rows = conn.execute(
-                    "SELECT raw_id, decision FROM raw_revision_applications "
-                    "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
-                    append_raw_ids,
-                ).fetchall()
-            if not any(str(row[1]) == "applied_append" for row in append_application_rows):
-                raise AssertionError(f"append ingestion did not record applied_append: {append_application_rows!r}")
+                append_application_rows = tuple(
+                    (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+                    for row in conn.execute(
+                        "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications "
+                        "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
+                        append_raw_ids,
+                    )
+                )
+            assert_planner_append_authority(
+                append_raw_ids=append_raw_ids,
+                application_rows=append_application_rows,
+            )
             # The planner index and cursor snapshots above are temporary proof
             # inputs. The final authority assertion runs after restart and
             # candidate promotion against the resulting postflight ledger.

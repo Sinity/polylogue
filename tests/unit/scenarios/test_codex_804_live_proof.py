@@ -82,6 +82,7 @@ from tests.infra.whale_fixtures import (
     WHALE_FIXTURE_DIMENSIONS,
     CodexRevisionChainFixture,
     acquire_codex_revision_chain,
+    assert_planner_append_authority,
     copy_sqlite_database,
 )
 
@@ -181,21 +182,6 @@ def _assert_precheckpoint_state(
     assert last_raw_id is None
     assert last_blob_hash_hex is None
     assert receipt_names == ()
-
-
-def _assert_planner_append_authority(
-    *,
-    append_raw_ids: set[str],
-    application_rows: tuple[tuple[str, str, str | None], ...],
-) -> None:
-    """Require the live planner ledger to prove a real append application."""
-    append_decisions = tuple(
-        decision for raw_id, decision, _accepted_raw_id in application_rows if raw_id in append_raw_ids
-    )
-    assert "applied_append" in append_decisions, (
-        "final restart/postflight ledger has no applied_append for an append raw; "
-        f"observed append decisions={append_decisions!r}"
-    )
 
 
 def _assert_exact_authority_census(
@@ -1156,9 +1142,20 @@ def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:
 
 def test_codex_804_deferred_append_red_mutation_is_rejected() -> None:
     with pytest.raises(AssertionError):
-        _assert_planner_append_authority(
+        assert_planner_append_authority(
             append_raw_ids={"raw-append"},
             application_rows=(("raw-append", "deferred", "raw-terminal"),),
+        )
+
+
+def test_codex_804_partial_append_red_mutation_is_rejected() -> None:
+    with pytest.raises(AssertionError):
+        assert_planner_append_authority(
+            append_raw_ids={"raw-append-1", "raw-append-2"},
+            application_rows=(
+                ("raw-append-1", "applied_append", "raw-append-1"),
+                ("raw-append-2", "deferred", "raw-append-1"),
+            ),
         )
 
 
