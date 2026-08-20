@@ -458,6 +458,7 @@ def _seed_testmon_graph_unlocked(
         inspect_native_testmon_environment,
         native_testmon_fallback_allowed,
         native_testmon_source_binding,
+        read_certified_corpus,
         validate_native_testmon_state_ownership,
     )
 
@@ -544,6 +545,17 @@ def _seed_testmon_graph_unlocked(
                     copy_digest = fallback_digest
                     source_state_for_copy = fallback_state
         if copy_digest is None and initial_state.status == "invalid":
+            # Structural inspection cannot expose node ids when the source
+            # certificate table has gone missing.  It is still important to
+            # preserve that more specific fail-closed reason: no graph may be
+            # published from a source with no completed-corpus certificate.
+            if read_certified_corpus(source_binding.data_path, initial_digest) is None:
+                return (
+                    "coordinator graph is not certified for the selected environment "
+                    "(no completed covered run has certified this environment's corpus); "
+                    "first lane verify will bootstrap",
+                    False,
+                )
             return (
                 "seeded graph's initial verify environment is invalid and not attestable; first lane verify will bootstrap",
                 False,

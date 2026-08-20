@@ -751,6 +751,7 @@ def test_seed_rejects_an_uncertified_source_before_publication(tmp_path: Path) -
 
     assert warm is False
     assert "not certified" in note
+    assert "no completed covered run has certified this environment's corpus" in note
     assert not (lane / TESTMON_DATA_RELPATH).exists()
 
 

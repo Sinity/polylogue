@@ -4352,6 +4352,10 @@ def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    # This is the actual full-suite topology: a unit-test worker launches a
+    # managed xdist supervisor of its own.  The nested controller must not
+    # inherit the outer worker identity in the liveness event ledger.
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "outer-gw7")
     run = VerifyRun(tier="storage-scale-deadlock-xdist", argv=[], git_head=None, root=tmp_path)
 
     rc, _elapsed, metadata = _run(
@@ -4389,6 +4393,7 @@ def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
     assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
     heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
     assert len(heartbeat_events) <= 2
+    assert any(event.get("worker_id") == "controller" for event in events)
     assert any(event.get("worker_id") == "gw0" for event in events)
 
 
