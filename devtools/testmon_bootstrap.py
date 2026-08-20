@@ -1064,8 +1064,9 @@ def _open_owned_testmon_directory(repo_root: Path, *, create: bool) -> int:
 
 
 def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, str]:
-    """Open and retain an owned child before exposing its descriptor-bound path."""
+    """Open and retain the private bound child before exposing its descriptor path."""
     child_fd: int | None = None
+    bound_fd: int | None = None
     private_name: str | None = None
     try:
         child_fd = os.open(
@@ -1086,17 +1087,29 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
         private_name = f".{name}.bound-{os.getpid()}-{uuid.uuid4().hex}.tmp"
         bound_child = _descriptor_bound_path(child_fd)
         os.link(bound_child, private_name, dst_dir_fd=directory_fd, follow_symlinks=True)
-        private_identity = os.stat(private_name, dir_fd=directory_fd, follow_symlinks=False)
+        # Open the link before validating it, then use the retained descriptor
+        # below. Reopening ``private_name`` after validation would let a
+        # replacement of the .bound-* entry redirect SQLite to another inode.
+        bound_fd = os.open(
+            private_name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        private_identity = os.fstat(bound_fd)
         if not stat.S_ISREG(private_identity.st_mode) or (opened.st_dev, opened.st_ino) != (
             private_identity.st_dev,
             private_identity.st_ino,
         ):
             raise NativeTestmonRepairError(f"owned testmon child link changed while binding: {name}")
-        return child_fd, _descriptor_bound_path(directory_fd) / private_name, private_name
+        os.close(child_fd)
+        child_fd = None
+        return bound_fd, _descriptor_bound_path(bound_fd), private_name
     except NativeTestmonRepairError:
         if private_name is not None:
             with contextlib.suppress(OSError):
                 os.unlink(private_name, dir_fd=directory_fd)
+        if bound_fd is not None:
+            os.close(bound_fd)
         if child_fd is not None:
             os.close(child_fd)
         raise
@@ -1104,6 +1117,8 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
         if private_name is not None:
             with contextlib.suppress(OSError):
                 os.unlink(private_name, dir_fd=directory_fd)
+        if bound_fd is not None:
+            os.close(bound_fd)
         if child_fd is not None:
             os.close(child_fd)
         raise NativeTestmonRepairError(f"cannot bind owned testmon child {name}: {exc}") from exc
@@ -1194,9 +1209,10 @@ def _atomic_copy_sqlite_database(
     try:
         source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
-        # Retain the source inode before SQLite opens it.  Reusing the held
-        # directory descriptor plus a mutable child name would let a source
-        # replacement redirect the copy after the source was inspected.
+        # Retain the source inode before SQLite opens it.  The returned path is
+        # bound to the private hard-link descriptor, so replacing the public
+        # source name cannot redirect the copy; replacing the .bound-* entry
+        # makes the descriptor namespace fail closed instead.
         source_child_fd, source_path, source_private_name = _open_owned_testmon_child(source_directory_fd, source.name)
         destination_name = destination.name
         temporary_fd = os.open(

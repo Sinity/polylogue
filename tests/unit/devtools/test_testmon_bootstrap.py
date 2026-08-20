@@ -733,6 +733,55 @@ def test_atomic_copy_retains_source_child_across_source_replacement(
     )
 
 
+def test_atomic_copy_does_not_consume_replaced_private_bound_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the actual .bound-* entry cannot redirect SQLite source open."""
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="replacement-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    original_connect = sqlite3.connect
+    replaced = False
+
+    def replace_private_bound_source(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal replaced
+        if not replaced:
+            private_entries = tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
+            assert len(private_entries) == 1
+            replaced = True
+            os.replace(replacement_data, private_entries[0])
+        return cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", replace_private_bound_source)
+    with pytest.raises(NativeTestmonRepairError, match="SQLite online backup failed"):
+        _atomic_copy_sqlite_database(
+            source_data,
+            destination_data,
+            environment_name="owned-environment",
+            required_executable_paths=(),
+            deadline_monotonic=None,
+        )
+
+    assert replaced
+    assert not destination_data.exists(), "a replaced .bound-* source must not publish any destination database"
+
+
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:
     """An interrupted bootstrap is resumable state, not corruption."""
     covered, uncovered = "polylogue/covered.py", "polylogue/uncovered.py"
