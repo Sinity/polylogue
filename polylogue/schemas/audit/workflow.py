@@ -107,7 +107,18 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
     bundle_registry = registry or SchemaRegistry(storage_root=SCHEMA_DIR)
     report = AuditReport()
     for provider in bundle_registry.list_providers():
-        for version in bundle_registry.list_versions(provider):
+        versions = bundle_registry.list_versions(provider)
+        if not versions:
+            report.checks.append(
+                AuditCheck(
+                    name="privacy_guards",
+                    status=OutcomeStatus.ERROR,
+                    summary="No committed schema versions discovered",
+                    provider=provider,
+                )
+            )
+            continue
+        for version in versions:
             package = bundle_registry.get_package(provider, version=version)
             if package is None:
                 report.checks.append(
@@ -119,10 +130,29 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                     )
                 )
                 continue
+            schema_bearing_elements = [element for element in package.elements if element.schema_file is not None]
+            scope = f"{provider}/{version}"
+            if not schema_bearing_elements:
+                report.checks.append(
+                    AuditCheck(
+                        name="privacy_guards",
+                        status=OutcomeStatus.ERROR,
+                        summary="Committed schema package has no auditable elements",
+                        provider=scope,
+                    )
+                )
             for element in package.elements:
                 if element.schema_file is None:
+                    report.checks.append(
+                        AuditCheck(
+                            name="privacy_guards",
+                            status=OutcomeStatus.ERROR,
+                            summary="Committed element schema file is missing",
+                            provider=f"{scope}/{element.element_kind}",
+                        )
+                    )
                     continue
-                scope = f"{provider}/{version}/{element.element_kind}"
+                element_scope = f"{scope}/{element.element_kind}"
                 schema = bundle_registry.get_element_schema(
                     provider,
                     version=version,
@@ -134,11 +164,11 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                             name="privacy_guards",
                             status=OutcomeStatus.ERROR,
                             summary="Committed element schema is missing",
-                            provider=scope,
+                            provider=element_scope,
                         )
                     )
                     continue
-                report.checks.append(_scoped(scope, check_privacy_guards(schema)))
+                report.checks.append(_scoped(element_scope, check_privacy_guards(schema)))
     if not report.checks:
         report.checks.append(
             AuditCheck(

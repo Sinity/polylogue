@@ -21,6 +21,7 @@ import shutil
 from pathlib import Path
 
 from polylogue.schemas.audit.workflow import audit_schema_bundle_privacy
+from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.promotion_audit import audit_schema_artifacts
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 
@@ -66,6 +67,73 @@ def test_committed_schema_bundle_privacy_guard_red_twin(tmp_path: Path) -> None:
     assert privacy_failures, "the registered privacy predicate must reject the planted committed-schema leak"
     assert any(check.name == "privacy_guards" for check in privacy_failures)
     assert any("UUID leak" in detail for check in privacy_failures for detail in check.details)
+
+
+def test_empty_discovered_provider_version_is_a_privacy_guard_failure(tmp_path: Path) -> None:
+    """A clean package cannot hide a discovered provider version with no elements."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    assert registry.list_providers()
+    assert registry.list_versions(registry.list_providers()[0])
+
+    empty_provider = "empty-provider"
+    registry.save_package_catalog(
+        SchemaPackageCatalog(
+            provider=empty_provider,
+            latest_version="v1",
+            default_version="v1",
+            recommended_version="v1",
+            packages=[
+                SchemaVersionPackage(
+                    provider=empty_provider,
+                    version="v1",
+                    anchor_kind="session_document",
+                    default_element_kind="session_document",
+                    first_seen="",
+                    last_seen="",
+                    bundle_scope_count=0,
+                    sample_count=0,
+                )
+            ],
+        )
+    )
+
+    report = audit_schema_bundle_privacy(registry=registry)
+
+    privacy_failures = [check for check in report.checks if check.status.value == "error"]
+    assert privacy_failures, "a registered empty provider/version must make the bundle audit fail"
+    assert any(
+        getattr(check, "provider", None) == "empty-provider/v1" and "no auditable elements" in check.summary
+        for check in privacy_failures
+    )
+    assert any(check.status.value == "ok" for check in report.checks), "the copied clean package must be audited too"
+
+
+def test_declared_element_without_schema_file_is_a_privacy_guard_failure(tmp_path: Path) -> None:
+    """A declared element without a schema artifact must not be skipped."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    catalog = registry.load_package_catalog(provider)
+    assert catalog is not None
+    package = catalog.package(version)
+    assert package is not None
+    element = package.elements[0]
+    element_kind = element.element_kind
+    element.schema_file = None
+    registry.save_package_catalog(catalog)
+
+    report = audit_schema_bundle_privacy(registry=registry)
+
+    privacy_failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(
+        getattr(check, "provider", None) == f"{provider}/{version}/{element_kind}"
+        and "schema file is missing" in check.summary
+        for check in privacy_failures
+    )
 
 
 def test_uuid_recorded_as_an_observed_value_blocks_promotion(tmp_path: Path) -> None:
