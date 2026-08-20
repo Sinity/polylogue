@@ -43,6 +43,9 @@ def _scope_bead_record(monkeypatch: pytest.MonkeyPatch) -> None:
     # Placeholder PR SHAs cannot answer real ancestry; the stale-base guard
     # has its own dedicated tests below.
     monkeypatch.setattr(merge_boundary, "_head_missing_master_tip", lambda _head: None)
+    monkeypatch.setattr(
+        merge_gate, "adversarial_review_verdict", lambda *_args, **_kwargs: (True, "", "fixture-review")
+    )
 
 
 def test_stale_base_head_refuses_before_recording(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

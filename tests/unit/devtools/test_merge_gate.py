@@ -29,6 +29,11 @@ def _scope_bead_record(tmp_path: Path) -> None:
     (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
 
 
+@pytest.fixture(autouse=True)
+def _frozen_merge_gate_clock(frozen_clock: FrozenClock) -> None:
+    del frozen_clock
+
+
 def _scope_body(head_sha: str) -> str:
     carrier = {
         "version": 1,
@@ -46,6 +51,48 @@ def _scope_body(head_sha: str) -> str:
     }
     carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
     return pr_scope.render_carrier(carrier)
+
+
+def test_pr4033_pending_review_blocks_even_when_threads_are_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = {
+        "headRefOid": "abc123",
+        "baseRefOid": "b" * 40,
+        "headRefName": "feature/x",
+        "state": "OPEN",
+        "mergeStateStatus": "CLEAN",
+        "_no_adversarial_receipt": True,
+    }
+    merge_gate._write_review_receipt(
+        42,
+        {
+            "schema_version": 1,
+            "pr": 42,
+            "head_sha": "abc123",
+            "state": "pending",
+            "reviewer_run_id": "r",
+            "reviewer_model": "m",
+            "registered_at": 1.0,
+        },
+    )
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
+
+
+def test_absent_adversarial_review_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = {
+        "headRefOid": "abc123",
+        "baseRefOid": "b" * 40,
+        "headRefName": "feature/x",
+        "state": "OPEN",
+        "mergeStateStatus": "CLEAN",
+        "_no_adversarial_receipt": True,
+    }
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    assert merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False) == 1
 
 
 def _fake_run(
@@ -69,6 +116,21 @@ def _fake_run(
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         if cmd[:3] == ["gh", "pr", "view"]:
+            if not pr_view.get("_no_adversarial_receipt"):
+                merge_gate._write_review_receipt(
+                    42,
+                    {
+                        "schema_version": 1,
+                        "pr": 42,
+                        "head_sha": str(pr_view["headRefOid"]),
+                        "state": "passed",
+                        "reviewer_run_id": "fixture-run",
+                        "reviewer_model": "fixture-model",
+                        "registered_at": 0.0,
+                        "completed_at": 1_700_000_000.0,
+                        "findings_digest": "a" * 64,
+                    },
+                )
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
         if cmd[:3] == ["gh", "api", "graphql"]:
             round_index = min(call_count["round"], len(comment_rounds) - 1)

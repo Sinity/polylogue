@@ -975,27 +975,33 @@ def cmd_merge(
         return 1
 
     try:
-        _record_merge_intent(pr, head_sha, clean_title, scope=final_scope)
+        with merge_gate.adversarial_review_lock(pr):
+            review_ok, review_reason, review_digest = merge_gate.adversarial_review_verdict(
+                pr, head_sha, max_age_s=max_age_s
+            )
+            if not review_ok:
+                print(f"REFUSING to merge PR #{pr}: {review_reason}", file=sys.stderr)
+                return 1
+            _record_merge_intent(pr, head_sha, clean_title, scope=final_scope)
+            merge_result = subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "merge",
+                    str(pr),
+                    "--squash",
+                    "--match-head-commit",
+                    head_sha,
+                    "--subject",
+                    clean_title,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
     except LedgerStateError as exc:
         print(f"REFUSING to merge PR #{pr}: could not durably record merge intent: {exc}", file=sys.stderr)
         return 1
-
-    merge_result = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "merge",
-            str(pr),
-            "--squash",
-            "--match-head-commit",
-            head_sha,
-            "--subject",
-            clean_title,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
     if merge_result.returncode != 0:
         print(f"gh pr merge failed: {merge_result.stderr.strip()[:500]}", file=sys.stderr)
         return merge_result.returncode

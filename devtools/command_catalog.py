@@ -511,6 +511,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace merge-gate check 3517",
             "devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1",
             "devtools workspace merge-gate check 3517 --post-status",
+            "devtools workspace merge-gate review-start 3517 --run-id terra-42 --model gpt-5.6-terra",
+            "devtools workspace merge-gate review-complete 3517 --run-id terra-42 --passed --findings-digest <sha256>",
         ),
     ),
     CommandSpec(
