@@ -2586,6 +2586,11 @@ def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str
     env.pop("PYTHONDONTWRITEBYTECODE", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONUSERBASE", None)
+    # A managed pytest nested inside an xdist worker is a new controller, not
+    # another report stream for its parent worker.  Forwarding this identity
+    # makes the nested controller write worker-labelled liveness events and
+    # can leave the outer supervisor without a controller progress marker.
+    env.pop("PYTEST_XDIST_WORKER", None)
     env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONPYCACHEPREFIX"] = str(ROOT / ".cache" / "pycache")
     env["TESTMON_DATAFILE"] = str(native_testmon_data or TESTMON_DATA)
