@@ -527,13 +527,17 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
             SELECT raw_id, decision, accepted_raw_id
             FROM raw_revision_applications
             WHERE logical_source_key = 'codex:session'
-            ORDER BY raw_id, decision
+            ORDER BY raw_id, decision, accepted_raw_id
             """
         ).fetchall()
+        # Revision receipts are append-only evidence. When ``accepted-a``
+        # becomes the new head, each equivalent member receives a current
+        # supersession receipt while its historical supersession remains.
         assert [tuple(row) for row in application_rows] == [
             ("accepted-a", "selected_baseline", "accepted-a"),
             ("equivalent-z", "selected_baseline", "equivalent-z"),
             ("equivalent-z", "superseded", "accepted-a"),
+            ("representative-b", "superseded", "accepted-a"),
             ("representative-b", "superseded", "equivalent-z"),
         ]
         matching_receipts = archive._conn.execute(

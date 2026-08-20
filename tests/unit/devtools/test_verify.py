@@ -4075,7 +4075,7 @@ def test_pytest_run_terminates_after_runtime_budget(
     assert "terminated owned pytest process group" in captured.err
 
 
-def test_pytest_run_terminates_with_heartbeat_disabled(
+def test_pytest_run_terminates_before_heartbeat_interval(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "30")
@@ -4086,7 +4086,7 @@ def test_pytest_run_terminates_with_heartbeat_disabled(
 
     captured = capsys.readouterr()
     assert rc == 124
-    assert metadata["heartbeat_s"] == 0.0
+    assert metadata["heartbeat_s"] == 30.0
     assert "pytest runtime exceeded 0.15s" in captured.err
 
 
