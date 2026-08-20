@@ -2106,6 +2106,7 @@ components:
           - unresolved
           - edge_only
           - quarantined
+          - authority-contradicted
           title: Mapping State
           type: string
         evidence_basis:

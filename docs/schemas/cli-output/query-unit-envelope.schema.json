@@ -764,7 +764,8 @@
             "resolved",
             "unresolved",
             "edge_only",
-            "quarantined"
+            "quarantined",
+            "authority-contradicted"
           ],
           "title": "Mapping State",
           "type": "string"

@@ -18,7 +18,14 @@ from polylogue.archive.models import Message, Session, SessionSummary
 from polylogue.archive.query.search_hits import bound_display_title
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
-from polylogue.core.enums import ActionResultState, AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.core.enums import (
+    ActionResultState,
+    AssertionKind,
+    AssertionStatus,
+    AssertionVisibility,
+    DelegationMappingState,
+    DelegationResultStatus,
+)
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
 from polylogue.surfaces.action_affordances import (
@@ -2665,10 +2672,6 @@ def _bounded_delegation_text(value: str | None) -> str | None:
     return value[:_DELEGATION_TEXT_BOUND] + "…[truncated]"
 
 
-DelegationMappingState: TypeAlias = Literal["resolved", "unresolved", "edge_only", "quarantined"]
-DelegationResultStatus: TypeAlias = Literal["ok", "error", "unknown"]
-
-
 class DelegationAttemptPayload(SurfacePayloadModel):
     """Bounded read payload for one delegation attempt (polylogue-y964
     `delegations` view, polylogue-lph4 ObjectRef normalization).
@@ -2817,6 +2820,9 @@ DELEGATION_STATE_CAVEATS: dict[str, str] = {
         "(mapping_state=edge_only) -- instruction is never fabricated"
     ),
     "quarantined": "session link quarantined as a lineage cycle-break (mapping_state=quarantined)",
+    "authority-contradicted": (
+        "inferred parent link was overruled by authoritative hook evidence (mapping_state=authority-contradicted)"
+    ),
 }
 
 

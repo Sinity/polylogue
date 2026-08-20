@@ -101,6 +101,16 @@ def test_quarantined_mapping_state_becomes_contradicted_not_silently_dropped() -
     assert len(unresolved_edges) == 1
 
 
+def test_authority_contradicted_mapping_state_remains_a_contradicted_graph_fact() -> None:
+    row = _row(child_session_id="codex-session:overruled-child", mapping_state="authority-contradicted")
+    graph = materialize_delegation_work_evidence_graph(
+        graph_id="delegation-graph", corpus_snapshot_ref=SNAPSHOT, rows=(row,)
+    )
+
+    assert {node.association_state for node in graph.nodes} == {"contradicted"}
+    assert [edge.kind for edge in graph.edges] == ["unresolved"]
+
+
 def test_many_dispatches_from_one_parent_session_retain_distinct_call_identity() -> None:
     """A parent session dispatching two children must not collapse into one call node."""
 
