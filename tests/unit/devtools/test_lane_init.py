@@ -749,20 +749,13 @@ def test_seed_rejects_an_uncertified_source_before_publication(tmp_path: Path) -
     assert not (lane / TESTMON_DATA_RELPATH).exists()
 
 
-@pytest.mark.parametrize("source_shape", ["absent", "invalid"])
-def test_seed_preserves_a_certified_destination_before_rejecting_source_candidates(
-    tmp_path: Path,
-    source_shape: str,
-) -> None:
-    """A certified fallback lane survives absent or invalid coordinator candidates."""
+def test_seed_preserves_a_certified_destination_when_source_primary_is_absent(tmp_path: Path) -> None:
+    """A certified fallback lane survives an absent coordinator primary candidate."""
     from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, inspect_native_testmon_environment
 
     root = tmp_path / "root"
     lane = tmp_path / "lane"
-    if source_shape == "absent":
-        _certified_graph_with(root, "unrelated-environment")
-    else:
-        _certified_graph_with_names(root, ["primary-environment", "primary-environment"])
+    _certified_graph_with(root, "unrelated-environment")
     _certified_graph_with(lane, "fallback-environment")
 
     note, warm = lane_init._seed_testmon_graph(
@@ -773,6 +766,29 @@ def test_seed_preserves_a_certified_destination_before_rejecting_source_candidat
 
     assert warm is True
     assert "preserved certified lane environment" in note
+    assert inspect_native_testmon_environment(
+        lane / TESTMON_DATA_RELPATH,
+        environment_name="fallback-environment",
+    ).valid
+
+
+def test_seed_does_not_preserve_a_fallback_when_destination_primary_is_invalid(tmp_path: Path) -> None:
+    """An invalid primary blocks the fallback the verifier would reject."""
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, inspect_native_testmon_environment
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    _certified_graph_with(root, "unrelated-environment")
+    _certified_graph_with_names(lane, ["primary-environment", "primary-environment", "fallback-environment"])
+
+    note, warm = lane_init._seed_testmon_graph(
+        root,
+        lane,
+        attestation=_attestation("primary-environment", "fallback-environment"),
+    )
+
+    assert warm is False
+    assert "initial verify environment is invalid" in note
     assert inspect_native_testmon_environment(
         lane / TESTMON_DATA_RELPATH,
         environment_name="fallback-environment",

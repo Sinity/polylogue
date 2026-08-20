@@ -480,24 +480,38 @@ def _seed_testmon_graph_unlocked(
         for digest in attestation.digests
     )
     destination_initial_state = destination_states[0][1]
-    for candidate_digest, destination_state in destination_states:
-        if destination_state.valid and destination_state.environment is not None:
-            destination_violation = certified_attestation_violation(
-                worktree,
-                environment_name=candidate_digest,
-                current_nodeids=destination_state.environment.nodeids,
-            )
-            if destination_violation is None:
-                return (
-                    f"preserved certified lane environment ({candidate_digest[:24]}...); verifies start warm",
-                    True,
-                )
-
     initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
     source_state_for_copy = initial_state
     copy_digest: str | None = initial_digest if initial_state.valid else None
+    if destination_initial_state.valid and destination_initial_state.environment is not None:
+        destination_violation = certified_attestation_violation(
+            worktree,
+            environment_name=initial_digest,
+            current_nodeids=destination_initial_state.environment.nodeids,
+        )
+        if destination_violation is None:
+            return (
+                f"preserved certified lane environment ({initial_digest[:24]}...); verifies start warm",
+                True,
+            )
+
+    fallback_allowed = native_testmon_fallback_allowed(destination_initial_state, initial_state)
+    if fallback_allowed:
+        for candidate_digest, destination_state in destination_states[1:]:
+            if destination_state.valid and destination_state.environment is not None:
+                destination_violation = certified_attestation_violation(
+                    worktree,
+                    environment_name=candidate_digest,
+                    current_nodeids=destination_state.environment.nodeids,
+                )
+                if destination_violation is None:
+                    return (
+                        f"preserved certified lane environment ({candidate_digest[:24]}...); verifies start warm",
+                        True,
+                    )
+
     if copy_digest is None and len(attestation.digests) > 1:
-        if not native_testmon_fallback_allowed(destination_initial_state, initial_state):
+        if not fallback_allowed:
             return (
                 "seeded graph's initial verify environment is invalid and not attestable; "
                 "refusing the default-profile fallback; "

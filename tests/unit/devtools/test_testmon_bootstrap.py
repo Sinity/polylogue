@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -675,6 +676,61 @@ def test_atomic_copy_does_not_install_a_valid_replacement_after_validation(
     replacement = inspect_native_testmon_environment(destination_data, environment_name="different-environment")
     assert copied.valid
     assert replacement.status == "absent"
+
+
+def test_atomic_copy_retains_source_child_across_source_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source replacement after inspection cannot redirect the SQLite copy."""
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="replacement-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    inspected = inspect_native_testmon_environment(source_data, environment_name="owned-environment")
+    assert inspected.valid
+    original_connect = sqlite3.connect
+    replaced = False
+
+    def replace_before_source_open(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            os.replace(replacement_data, source_data)
+        return cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", replace_before_source_open)
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert replaced
+    assert inspect_native_testmon_environment(destination_data, environment_name="owned-environment").valid
+    assert (
+        inspect_native_testmon_environment(
+            destination_data,
+            environment_name="replacement-environment",
+        ).status
+        == "absent"
+    )
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:

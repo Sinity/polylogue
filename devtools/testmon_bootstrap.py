@@ -1063,9 +1063,50 @@ def _open_owned_testmon_directory(repo_root: Path, *, create: bool) -> int:
         raise
 
 
-def _owned_testmon_child(directory_fd: int, name: str) -> Path:
-    """Address a child through a held directory descriptor, not its parent path."""
-    return _descriptor_bound_path(directory_fd) / name
+def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, str]:
+    """Open and retain an owned child before exposing its descriptor-bound path."""
+    child_fd: int | None = None
+    private_name: str | None = None
+    try:
+        child_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        opened = os.fstat(child_fd)
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or opened.st_nlink != 1
+            or current.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise NativeTestmonRepairError(f"owned testmon child changed while binding: {name}")
+        private_name = f".{name}.bound-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+        bound_child = _descriptor_bound_path(child_fd)
+        os.link(bound_child, private_name, dst_dir_fd=directory_fd, follow_symlinks=True)
+        private_identity = os.stat(private_name, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(private_identity.st_mode) or (opened.st_dev, opened.st_ino) != (
+            private_identity.st_dev,
+            private_identity.st_ino,
+        ):
+            raise NativeTestmonRepairError(f"owned testmon child link changed while binding: {name}")
+        return child_fd, _descriptor_bound_path(directory_fd) / private_name, private_name
+    except NativeTestmonRepairError:
+        if private_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(private_name, dir_fd=directory_fd)
+        if child_fd is not None:
+            os.close(child_fd)
+        raise
+    except OSError as exc:
+        if private_name is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(private_name, dir_fd=directory_fd)
+        if child_fd is not None:
+            os.close(child_fd)
+        raise NativeTestmonRepairError(f"cannot bind owned testmon child {name}: {exc}") from exc
 
 
 def _descriptor_bound_path(file_descriptor: int) -> Path:
@@ -1144,6 +1185,8 @@ def _atomic_copy_sqlite_database(
 ) -> None:
     _ensure_deadline(deadline_monotonic)
     source_directory_fd: int | None = None
+    source_child_fd: int | None = None
+    source_private_name: str | None = None
     destination_directory_fd: int | None = None
     temporary_fd: int | None = None
     temporary_name = f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp"
@@ -1151,7 +1194,10 @@ def _atomic_copy_sqlite_database(
     try:
         source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
-        source_path = _owned_testmon_child(source_directory_fd, source.name)
+        # Retain the source inode before SQLite opens it.  Reusing the held
+        # directory descriptor plus a mutable child name would let a source
+        # replacement redirect the copy after the source was inspected.
+        source_child_fd, source_path, source_private_name = _open_owned_testmon_child(source_directory_fd, source.name)
         destination_name = destination.name
         temporary_fd = os.open(
             temporary_name,
@@ -1231,7 +1277,12 @@ def _atomic_copy_sqlite_database(
         if destination_directory_fd is not None:
             os.close(destination_directory_fd)
         if source_directory_fd is not None:
+            if source_private_name is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(source_private_name, dir_fd=source_directory_fd)
             os.close(source_directory_fd)
+        if source_child_fd is not None:
+            os.close(source_child_fd)
 
 
 def linked_worktree_info(
