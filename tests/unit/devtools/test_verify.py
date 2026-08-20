@@ -3824,7 +3824,9 @@ def test_pytest_supervisor_natural_success_remains_success(
 ) -> None:
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
+    # Allow managed supervisor startup to complete before the control's
+    # naturally successful module is judged silent.
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "2")
     run = VerifyRun(tier="natural-success", argv=[], git_head=None, root=tmp_path)
 
     rc, _elapsed, metadata = _run(
