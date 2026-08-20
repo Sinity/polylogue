@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -1015,6 +1017,43 @@ def test_probing_an_absent_environment_preserves_another_environments_graph(tmp_
     survivor = inspect_native_testmon_environment(data, environment_name=resident)
     assert survivor.environment is not None
     assert survivor.environment.nodeids == ("tests/test_recorded.py::test_recorded",)
+
+
+def test_optional_main_source_that_appears_after_binding_stays_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public source appearing after a missed bind cannot become a source."""
+    lane = tmp_path / "lane"
+    main = tmp_path / "main"
+    lane.mkdir()
+    main.mkdir()
+
+    monkeypatch.setattr(testmon_bootstrap, "testmon_environment_digest", lambda *_args, **_kwargs: "lane-environment")
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, main) if checkout.resolve() == lane.resolve() else None,
+    )
+
+    @contextlib.contextmanager
+    def source_binding(data_path: Path) -> Iterator[None]:
+        assert not data_path.exists()
+        _seed_partial_native_graph(
+            main,
+            environment_name="lane-environment",
+            fingerprinted="tests/test_recorded.py",
+        )
+        yield None
+
+    monkeypatch.setattr(testmon_bootstrap, "native_testmon_source_binding", source_binding)
+
+    preparation = prepare_native_testmon_environment(lane)
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+    assert (main / TESTMON_DATA_RELPATH).is_file()
 
 
 def test_an_interrupted_bootstrap_does_not_delete_every_environments_graph(tmp_path: Path) -> None:

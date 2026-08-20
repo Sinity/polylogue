@@ -3221,6 +3221,38 @@ def test_linked_source_preparation_lifecycle_lock_includes_main_checkout(
     assert contender_entered.is_set()
 
 
+@pytest.mark.uses_real_clock("proves a busy optional main source degrades to local preparation")
+def test_busy_optional_main_source_lock_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = tmp_path / "main"
+    lane = tmp_path / "lane"
+    main.mkdir()
+    lane.mkdir()
+
+    monkeypatch.setattr(
+        verify,
+        "linked_worktree_info",
+        lambda root, **_kwargs: (True, main) if root.resolve() == lane.resolve() else None,
+    )
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_main_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(main):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_main_lock)
+        assert holder_entered.wait(timeout=2)
+        with verify._native_testmon_source_lifecycle_lock(lane, timeout_s=0.01) as source_available:
+            assert source_available is False
+        release_holder.set()
+        holder.result(timeout=2)
+
+
 @pytest.mark.uses_real_clock("proves common source lock ends before linked verify lifecycle ends")
 def test_unrelated_linked_lane_proceeds_after_source_preparation(
     tmp_path: Path,
