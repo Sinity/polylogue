@@ -18,6 +18,7 @@ from devtools.testmon_bootstrap import (
     classify_source_ast,
     executable_python_paths,
     inspect_native_testmon_environment,
+    native_testmon_source_binding,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
@@ -485,7 +486,13 @@ def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Pa
     assert outside.read_text(encoding="utf-8") == "external state"
 
 
-def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprinted: str) -> Path:
+def _seed_partial_native_graph(
+    root: Path,
+    *,
+    environment_name: str,
+    fingerprinted: str,
+    recorded_test_name: str = "tests/test_recorded.py::test_recorded",
+) -> Path:
     """Write a sound testmon database that covers only one executable path.
 
     This is the shape an interrupted bootstrap leaves behind: real recorded
@@ -505,7 +512,7 @@ def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprint
         ).lastrowid
         execution_id = con.execute(
             "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
-            (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
+            (environment_id, recorded_test_name, 0.01, 0, 0),
         ).lastrowid
         fingerprint_id = con.execute(
             "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES (?, ?, ?, ?)",
@@ -780,6 +787,53 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
 
     assert replaced
     assert not destination_data.exists(), "a replaced .bound-* source must not publish any destination database"
+
+
+def test_atomic_copy_carries_validated_source_descriptor_across_public_replacement(
+    tmp_path: Path,
+) -> None:
+    """A public replacement after validation cannot redirect the retained source."""
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_original.py",
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_twin.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
+    )
+
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        inspected = inspect_native_testmon_environment(
+            source_data,
+            environment_name="owned-environment",
+            data_fd=binding.descriptor,
+        )
+        assert inspected.valid
+        os.replace(replacement_data, source_data)
+        _atomic_copy_sqlite_database(
+            source_data,
+            destination_data,
+            environment_name="owned-environment",
+            required_executable_paths=(),
+            deadline_monotonic=None,
+            source_fd=binding.descriptor,
+        )
+
+    copied = inspect_native_testmon_environment(destination_data, environment_name="owned-environment")
+    assert copied.valid
+    assert copied.environment is not None
+    assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:
