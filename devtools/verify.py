@@ -350,6 +350,13 @@ DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 
 
+def _is_productive_test_progress_event(event: Mapping[str, Any]) -> bool:
+    """Return whether a live pytest event proves productive test progress."""
+    return event.get("event") in _REAL_TEST_PROGRESS_EVENTS or (
+        event.get("event") == "test_progress" and event.get("progress_kind") == _STORAGE_SCALE_HEARTBEAT_KIND
+    )
+
+
 def _estimate_duration_from_history(
     *,
     tier: str,
@@ -1548,19 +1555,19 @@ def _run_pytest_with_heartbeat(
     # latest test event's own updated_at timestamp across all workers
     # (devtools/pytest_progress_plugin.py); last_progress_at is the local
     # monotonic time that a real test event marker was last seen to change.
-    # A storage-scale heartbeat is activity telemetry only. It may keep the
-    # selector awake while expected storage work is quiet, but it must not
-    # reset the hard no-progress stall clock.
+    # A storage-scale heartbeat is productive progress for the marked storage
+    # workload. The all-workers-D-state classifier remains authoritative and
+    # suppresses this ordinary progress deadline while it proves the stall.
     initial_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
     last_event_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
     last_progress_marker: str | None = (
         initial_event.get("updated_at")
-        if initial_event is not None and initial_event.get("event") in _REAL_TEST_PROGRESS_EVENTS
+        if initial_event is not None and _is_productive_test_progress_event(initial_event)
         else None
     )
     last_progress_at = last_sample
     last_activity_at = last_sample
-    seen_any_progress_event = initial_event is not None and initial_event.get("event") in _REAL_TEST_PROGRESS_EVENTS
+    seen_any_progress_event = initial_event is not None and _is_productive_test_progress_event(initial_event)
     xdist_uninterruptible_since: float | None = None
 
     def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
@@ -1575,9 +1582,7 @@ def _run_pytest_with_heartbeat(
             return
         last_event_marker = marker
         last_activity_at = at
-        if latest.get("event") == "test_progress" and latest.get("progress_kind") == _STORAGE_SCALE_HEARTBEAT_KIND:
-            return
-        if latest.get("event") not in _REAL_TEST_PROGRESS_EVENTS:
+        if not _is_productive_test_progress_event(latest):
             return
         seen_any_progress_event = True
         last_progress_marker = marker
