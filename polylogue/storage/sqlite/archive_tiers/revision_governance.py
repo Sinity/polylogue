@@ -356,30 +356,48 @@ def _write_parsed_precedence_result(
     current_stored_message_count = 0
     browser_precedence: BrowserCapturePrecedence = "default"
 
+    def write_with_reparse_receipt(*, force_replace: bool) -> None:
+        """Keep a reparse receipt and its session replacement in one index txn."""
+        owns_transaction = manage_transaction and not store._conn.in_transaction
+        if owns_transaction:
+            store._conn.execute("BEGIN")
+        try:
+            _reissue_accepted_head_reparse_receipt(
+                store,
+                raw_id=raw_id,
+                session_id=session_id,
+                content_hash=content_hash,
+                decided_at_ms=int(time.time() * 1000),
+            )
+            write_parsed_session_to_archive(
+                store._conn,
+                session,
+                content_hash=content_hash,
+                raw_id=raw_id,
+                merge_append=source_index < 0,
+                force_replace=force_replace,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                preacquired_attachment_blobs=preacquired_attachment_blobs,
+                # The helper owns the transaction boundary when requested;
+                # otherwise the caller owns it. Do not let the session
+                # writer's own ``with conn`` commit an outer transaction.
+                manage_transaction=False,
+                bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
+                defer_fts_rebuild=defer_fts_rebuild,
+                prepared=prepared,
+            )
+        except BaseException:
+            if owns_transaction:
+                store._conn.rollback()
+            raise
+        else:
+            if owns_transaction:
+                store._conn.commit()
+
     if revision_authoritative:
-        _reissue_accepted_head_reparse_receipt(
-            store,
-            raw_id=raw_id,
-            session_id=session_id,
-            content_hash=content_hash,
-            decided_at_ms=int(time.time() * 1000),
-        )
-        write_parsed_session_to_archive(
-            store._conn,
-            session,
-            content_hash=content_hash,
-            raw_id=raw_id,
-            merge_append=source_index < 0,
-            force_replace=source_index >= 0,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            manage_transaction=manage_transaction,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-            prepared=prepared,
-        )
+        write_with_reparse_receipt(force_replace=source_index >= 0)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
@@ -492,26 +510,7 @@ def _write_parsed_precedence_result(
             counts=counts,
         )
 
-    _reissue_accepted_head_reparse_receipt(
-        store,
-        raw_id=raw_id,
-        session_id=session_id,
-        content_hash=content_hash,
-        decided_at_ms=int(time.time() * 1000),
-    )
-    write_parsed_session_to_archive(
-        store._conn,
-        session,
-        content_hash=content_hash,
-        raw_id=raw_id,
-        merge_append=source_index < 0,
-        force_replace=browser_precedence == "replace",
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        preacquired_attachment_blobs=preacquired_attachment_blobs,
-        manage_transaction=manage_transaction,
-        prepared=prepared,
-    )
+    write_with_reparse_receipt(force_replace=browser_precedence == "replace")
     counts = store._write_counts(session)
     if (
         existing_raw_id
