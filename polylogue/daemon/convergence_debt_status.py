@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -125,7 +127,9 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 subject_id=_required_str(row[2]),
                 status=_required_str(row[3]),
                 failure_count=_row_int(row[4]),
-                last_failed_at=_iso_from_epoch_ms(row[5]),
+                # row[5] is pre-coerced to a plain int, so the shared helper's
+                # int branch always returns a string, never None.
+                last_failed_at=cast(str, _iso_from_epoch_ms(_row_int(row[5]))),
                 next_retry_at=_optional_str(row[7]),
                 retry_due=False,
                 last_error=_optional_str(row[6]),
@@ -211,11 +215,6 @@ def _summary_from_parts(
         family_summaries=family_summaries,
         recent=recent,
     )
-
-
-def _iso_from_epoch_ms(value: object) -> str:
-    epoch_ms = _row_int(value)
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=UTC).isoformat()
 
 
 def _retry_due(next_retry_at: str | None, *, now: datetime) -> bool:

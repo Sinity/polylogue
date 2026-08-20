@@ -2719,6 +2719,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _handle_health(self) -> None:
         from polylogue.config import load_polylogue_config
+        from polylogue.daemon.health import disk_free_bytes, wal_size_bytes
         from polylogue.paths import archive_root
         from polylogue.storage.archive_identity import resolve_active_index_path
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -2726,16 +2727,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         dbp = resolve_active_index_path(archive_root())
         db_size = dbp.stat().st_size if dbp.exists() else 0
-        wal_size = 0
-        wal = dbp.with_suffix(".db-wal")
-        if wal.exists():
-            wal_size = wal.stat().st_size
+        wal_size = wal_size_bytes(dbp)
         disk_free = 0
-        try:
-            st = os.statvfs(str(dbp.parent))
-            disk_free = st.f_frsize * st.f_bavail
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            disk_free = disk_free_bytes(dbp.parent)
 
         quick_check_ok = True
         try:

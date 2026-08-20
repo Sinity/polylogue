@@ -209,13 +209,26 @@ def _check_heartbeat_staleness_fast() -> HealthAlert:
         )
 
 
+def disk_free_bytes(path: Path) -> int:
+    """Return free bytes on the volume containing ``path``."""
+    st = os.statvfs(str(path))
+    return st.f_frsize * st.f_bavail
+
+
+def wal_size_bytes(db_path: Path) -> int:
+    """Return the byte size of ``db_path``'s ``-wal`` sidecar, or 0 if absent."""
+    wal = db_path.with_suffix(".db-wal")
+    if not wal.exists():
+        return 0
+    return wal.stat().st_size
+
+
 def _check_disk_space_fast() -> HealthAlert:
     """Check free disk space on the archive volume."""
     now = datetime.now(UTC).isoformat()
     try:
         root = archive_root()
-        st = os.statvfs(str(root))
-        free = st.f_frsize * st.f_bavail
+        free = disk_free_bytes(root)
         if free >= _DISK_FREE_WARN_BYTES:
             severity = HealthSeverity.OK
             message = f"disk free: {free / (1024**3):.1f} GB"
@@ -259,7 +272,7 @@ def _check_wal_size_fast() -> HealthAlert:
                 checked_at=now,
                 consecutive_failures=_record_failure("wal_size", True),
             )
-        size = wal.stat().st_size
+        size = wal_size_bytes(dbf)
         if size < _WAL_WARN_BYTES:
             severity = HealthSeverity.OK
             message = f"WAL size: {size / (1024**2):.1f} MB"
@@ -1796,6 +1809,8 @@ __all__ = [
     "_check_hook_flow_fast",
     "_check_schema_version_fast",
     "check_health",
+    "disk_free_bytes",
     "format_health_lines",
     "resolve_health_tiers",
+    "wal_size_bytes",
 ]

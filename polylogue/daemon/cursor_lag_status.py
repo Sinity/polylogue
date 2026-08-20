@@ -31,12 +31,13 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -188,7 +189,9 @@ def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLa
             row[2],
             row[3],
             row[4],
-            _iso_from_epoch_ms(row[5]),
+            # row[5] is pre-coerced to a plain int, so the shared helper's
+            # int branch always returns a string, never None.
+            cast(str, _iso_from_epoch_ms(_row_int(row[5]))),
         )
         for row in rows
     ]
@@ -405,10 +408,6 @@ def _age_seconds(iso_value: str, *, now: datetime) -> float:
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
     return max(0.0, (now - observed.astimezone(UTC)).total_seconds())
-
-
-def _iso_from_epoch_ms(value: object) -> str:
-    return datetime.fromtimestamp(_row_int(value) / 1000.0, UTC).isoformat()
 
 
 __all__ = [

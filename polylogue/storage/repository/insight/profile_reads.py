@@ -74,6 +74,45 @@ class RepositoryInsightProfileReadMixin:
     ) -> list[SessionProfileRecord]:
         return await self.queries._list_session_profiles_query(query)
 
+    def _build_session_profile_list_query(
+        self,
+        *,
+        origin: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
+        min_wallclock_seconds: int | None = None,
+        max_wallclock_seconds: int | None = None,
+        workflow_shape: str | None = None,
+        terminal_state: str | None = None,
+        sort: str = "source",
+        tier: str = "merged",
+        limit: int | None = 50,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> SessionProfileListQuery:
+        return SessionProfileListQuery(
+            origin=origin,
+            since=since,
+            until=until,
+            first_message_since=first_message_since,
+            first_message_until=first_message_until,
+            session_date_since=session_date_since,
+            session_date_until=session_date_until,
+            min_wallclock_seconds=min_wallclock_seconds,
+            max_wallclock_seconds=max_wallclock_seconds,
+            workflow_shape=workflow_shape,
+            terminal_state=terminal_state,
+            sort=sort,
+            tier=tier,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
+
     async def list_session_profiles(
         self,
         *,
@@ -95,7 +134,7 @@ class RepositoryInsightProfileReadMixin:
         query: str | None = None,
     ) -> list[SessionProfile]:
         records = await self._list_session_profile_records_query(
-            SessionProfileListQuery(
+            self._build_session_profile_list_query(
                 origin=origin,
                 since=since,
                 until=until,
@@ -137,7 +176,7 @@ class RepositoryInsightProfileReadMixin:
         query: str | None = None,
     ) -> list[SessionProfileRecord]:
         return await self._list_session_profile_records_query(
-            SessionProfileListQuery(
+            self._build_session_profile_list_query(
                 origin=origin,
                 since=since,
                 until=until,
@@ -178,7 +217,7 @@ class RepositoryInsightProfileReadMixin:
         query: str | None = None,
     ) -> list[SessionProfileRecord]:
         return await self._list_session_profile_records_query(
-            SessionProfileListQuery(
+            self._build_session_profile_list_query(
                 origin=origin,
                 since=since,
                 until=until,

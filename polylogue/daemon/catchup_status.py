@@ -6,6 +6,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -221,7 +223,10 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
     return CatchupStageEvent(
         attempt_id=_required_str(row[1]),
         sequence=_row_int(row[0]),
-        observed_at=_epoch_ms_to_iso(_row_int(row[2])),
+        # Negative epoch_ms values clamp to the epoch floor, matching the
+        # previous _epoch_ms_to_iso behavior; the shared helper's int branch
+        # then always returns a string, never None.
+        observed_at=cast(str, _iso_from_epoch_ms(max(_row_int(row[2]), 0))),
         phase=_payload_str(payload, "phase", default=_required_str(row[3])),
         status=_payload_str(payload, "status", default=_required_str(row[4])),
         queued_file_count=_payload_int(payload, "queued_file_count"),
@@ -296,10 +301,6 @@ def _payload_str(payload: dict[str, object], key: str, *, default: str) -> str:
 
 def _payload_optional_str(payload: dict[str, object], key: str) -> str | None:
     return _optional_str(payload.get(key))
-
-
-def _epoch_ms_to_iso(value: int) -> str:
-    return datetime.fromtimestamp(max(value, 0) / 1000.0, tz=UTC).isoformat()
 
 
 def _catchup_mode(latest: CatchupStageEvent | None, latest_attempt: object | None, convergence: object) -> str:
