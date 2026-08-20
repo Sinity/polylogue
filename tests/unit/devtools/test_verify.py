@@ -24,6 +24,7 @@ import watchfiles
 
 from devtools import run_tests, verify, verify_runs
 from devtools.checkout_guard import CheckoutImportMismatchError
+from devtools.pytest_supervisor import write_termination_request as _write_termination_request
 from devtools.testmon_bootstrap import NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
@@ -3772,6 +3773,75 @@ def test_pytest_run_terminates_after_output_stall(
     assert "progress" in captured.err
     assert "pytest produced no output for 0.15s" in captured.err
     assert "terminated owned pytest process group" in captured.err
+
+
+def test_pytest_stall_cannot_launder_zero_supervisor_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A real supervisor termination stays failed if its receipt says zero.
+
+    The request shim injects the observed race shape into the production
+    supervisor path: the runner detects a silent stall, asks the supervisor to
+    terminate, and the supervisor reports a clean controller exit. The test
+    must fail if `_run` trusts that zero instead of the termination reason.
+    """
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
+    original_write_request = _write_termination_request
+
+    def write_zero_exit_request(path: Path, *, reason: str) -> None:
+        original_write_request(path, reason=reason, exit_code=0)
+
+    monkeypatch.setattr("devtools.verify.write_termination_request", write_zero_exit_request)
+    run = VerifyRun(tier="zero-exit-stall", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest stall",
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        run=run,
+    )
+
+    captured = capsys.readouterr()
+    step = run._payload["steps"][0]
+    artifact_dir = tmp_path / str(step["artifact_dir"])
+    containment = json.loads((artifact_dir / "containment.json").read_text(encoding="utf-8"))
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_stall_timeout"
+    assert step["exit"] == 124
+    assert step["termination_reason"] == "pytest produced no output for 0.15s"
+    assert containment["status"] == "terminated"
+    assert containment["exit_code"] == 124
+    assert containment["termination_reason"] == "pytest produced no output for 0.15s"
+    assert "pytest produced no output for 0.15s" in captured.err
+
+
+def test_pytest_supervisor_natural_success_remains_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.15")
+    run = VerifyRun(tier="natural-success", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest success",
+        [sys.executable, "-c", "print('success', flush=True)"],
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = tmp_path / str(step["artifact_dir"])
+    containment = json.loads((artifact_dir / "containment.json").read_text(encoding="utf-8"))
+    assert rc == 0
+    assert metadata["diagnosis"] == "pytest_passed_report_missing"
+    assert step["exit"] == 0
+    assert containment["status"] == "finished"
+    assert containment["exit_code"] == 0
+    assert containment["termination_reason"] is None
 
 
 def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
