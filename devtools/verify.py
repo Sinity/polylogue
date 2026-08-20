@@ -174,6 +174,7 @@ def _python_optimization_level() -> int:
 class _OwnedNativeTestmonState:
     descriptor: int
     data_path: Path
+    executable_data_path: Path
 
     def close(self) -> None:
         os.close(self.descriptor)
@@ -206,7 +207,11 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     except NativeTestmonRepairError:
         os.close(descriptor)
         raise
-    return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
+    return _OwnedNativeTestmonState(
+        descriptor=descriptor,
+        data_path=bound,
+        executable_data_path=raw_data,
+    )
 
 
 @contextlib.contextmanager
@@ -367,6 +372,8 @@ PYTEST_CONTAINMENT_PATH = CURRENT_CONTAINMENT_PATH
 PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
+_REAL_TEST_PROGRESS_EVENTS = frozenset({"test_started", "test_finished", "test_report"})
+_STORAGE_SCALE_HEARTBEAT_KIND = "storage_scale_heartbeat"
 PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 TESTMON_SOURCE_LOCK_TIMEOUT_ENV = "POLYLOGUE_VERIFY_TESTMON_SOURCE_LOCK_TIMEOUT_S"
@@ -376,6 +383,13 @@ DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
+
+
+def _is_productive_test_progress_event(event: Mapping[str, Any]) -> bool:
+    """Return whether a live pytest event proves productive test progress."""
+    return event.get("event") in _REAL_TEST_PROGRESS_EVENTS or (
+        event.get("event") == "test_progress" and event.get("progress_kind") == _STORAGE_SCALE_HEARTBEAT_KIND
+    )
 
 
 def _estimate_duration_from_history(
@@ -1575,31 +1589,47 @@ def _run_pytest_with_heartbeat(
     # the stall detector (polylogue-27rb). last_progress_marker tracks the
     # latest test event's own updated_at timestamp across all workers
     # (devtools/pytest_progress_plugin.py); last_progress_at is the local
-    # monotonic time that marker was last seen to change.
+    # monotonic time that a real test event marker was last seen to change.
+    # A storage-scale heartbeat is productive only because the worker emits it
+    # after observing a change in its marked tmp_path tree. The producer is
+    # marker-specific, and the all-workers-D-state classifier remains
+    # authoritative while it proves an xdist stall.
     initial_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
-    last_progress_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
+    last_event_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
+    last_progress_marker: str | None = (
+        initial_event.get("updated_at")
+        if initial_event is not None and _is_productive_test_progress_event(initial_event)
+        else None
+    )
     last_progress_at = last_sample
-    seen_any_progress_event = initial_event is not None
+    last_activity_at = last_sample
+    seen_any_progress_event = initial_event is not None and _is_productive_test_progress_event(initial_event)
     xdist_uninterruptible_since: float | None = None
 
     def _refresh_progress_marker(at: float, latest: dict[str, Any] | None = None) -> None:
-        nonlocal last_progress_marker, last_progress_at, seen_any_progress_event
+        nonlocal last_event_marker, last_progress_marker, last_progress_at
+        nonlocal last_activity_at, seen_any_progress_event
         if latest is None:
             latest = _read_latest_pytest_event(events_path, events_dir=events_dir)
         if latest is None:
             return
         marker = latest.get("updated_at")
+        if marker == last_event_marker:
+            return
+        last_event_marker = marker
+        last_activity_at = at
+        if not _is_productive_test_progress_event(latest):
+            return
         seen_any_progress_event = True
-        if marker != last_progress_marker:
-            last_progress_marker = marker
-            last_progress_at = at
+        last_progress_marker = marker
+        last_progress_at = at
 
     try:
         while True:
             now = time.monotonic()
             elapsed = now - t0
-            idle = now - last_output
             progress_idle = now - last_progress_at
+            activity_idle = now - last_activity_at
             receipt = read_receipt(launch.receipt_path)
             if receipt is not None and receipt.get("status") in {"finished", "terminated"} and selector.get_map():
                 if supervisor_finished_at is None:
@@ -1647,7 +1677,7 @@ def _run_pytest_with_heartbeat(
                         process.kill()
             if termination_reason is None and timeout_s > 0 and elapsed >= timeout_s:
                 termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
-            elif termination_reason is None and stall_timeout_s > 0 and idle >= stall_timeout_s:
+            elif termination_reason is None and stall_timeout_s > 0 and activity_idle >= stall_timeout_s:
                 termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
             elif (
                 termination_reason is None
@@ -1692,11 +1722,18 @@ def _run_pytest_with_heartbeat(
             deadlines: list[float] = []
             if heartbeat_s > 0:
                 deadlines.append(heartbeat_s)
+            if stall_timeout_s > 0:
+                deadlines.append(stall_timeout_s / 2)
             if timeout_s > 0 and termination_reason is None:
                 deadlines.append(max(timeout_s - elapsed, 0.0))
             if stall_timeout_s > 0 and termination_reason is None:
-                deadlines.append(max(stall_timeout_s - idle, 0.0))
-            if stall_timeout_s > 0 and seen_any_progress_event and termination_reason is None:
+                deadlines.append(max(stall_timeout_s - activity_idle, 0.0))
+            if (
+                stall_timeout_s > 0
+                and seen_any_progress_event
+                and termination_reason is None
+                and xdist_uninterruptible_since is None
+            ):
                 deadlines.append(max(stall_timeout_s - progress_idle, 0.0))
             if termination_requested_at is not None and not forced_cleanup:
                 deadlines.append(max(term_grace_s + 1.0 - (now - termination_requested_at), 0.0))
@@ -1716,6 +1753,7 @@ def _run_pytest_with_heartbeat(
                         sys.stderr.write(chunk.decode(errors="replace"))
                         sys.stderr.flush()
                         last_output = time.monotonic()
+                        last_activity_at = last_output
                         _refresh_progress_marker(last_output)
                         receipt = read_receipt(launch.receipt_path)
                         _write_pytest_progress(
@@ -1913,6 +1951,21 @@ def _run_pytest_with_heartbeat(
         if forced_returncode is not None
         else (int(receipt_exit) if isinstance(receipt_exit, int) else (process.returncode or 0))
     )
+    if termination_reason is not None and returncode == 0:
+        # A controller can exit cleanly in the race between the runner's
+        # termination request and the supervisor observing it. The reason is
+        # still authoritative: a run the runner terminated cannot report
+        # success merely because the supervisor observed a zero controller
+        # exit. Keep the containment receipt consistent with that decision.
+        returncode = 124
+        receipt = update_receipt(
+            launch.receipt_path,
+            {
+                "status": "terminated",
+                "exit_code": returncode,
+                "termination_reason": termination_reason,
+            },
+        )
     containment = _containment_summary(launch, receipt)
     resource_summary: dict[str, Any] = {}
     if sampler is not None:
@@ -1998,7 +2051,7 @@ def _run(
             cwd=cwd,
             run=run,
             timeout_s=timeout_s,
-            native_testmon_data=state.data_path,
+            native_testmon_data=state.executable_data_path,
         )
     finally:
         if temporary_state:
