@@ -211,6 +211,8 @@ def _looks_like_gemini_cli_record(payload: object) -> bool:
 
 
 def _looks_like_gemini_cli_sequence_stub(payload: object) -> bool:
+    if not isinstance(payload, list):
+        return False
     record = _first_sequence_record(payload)
     return (
         record is not None

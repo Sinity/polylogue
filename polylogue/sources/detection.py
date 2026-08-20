@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
-from typing import Protocol
+from typing import Protocol, cast
 
 from polylogue.core.enums import Origin, Provider
 
@@ -43,11 +43,20 @@ class DetectorBinding:
 
 
 class _OriginSpecLike(Protocol):
-    origin: Origin
-    lifecycle: str
-    provider_wires: tuple[Provider, ...]
-    detector_tightness: int | None
-    detector_bindings: tuple[DetectorBinding, ...]
+    @property
+    def origin(self) -> Origin: ...
+
+    @property
+    def lifecycle(self) -> str: ...
+
+    @property
+    def provider_wires(self) -> tuple[Provider, ...]: ...
+
+    @property
+    def detector_tightness(self) -> int | None: ...
+
+    @property
+    def detector_bindings(self) -> tuple[DetectorBinding, ...]: ...
 
 
 Predicate = Callable[[object], bool]
@@ -83,6 +92,10 @@ class CompiledDetectorRegistry:
             )
             if provider is None:
                 return None, compiled.binding.evidence_label
+            if compiled.provider_resolver is not None and not isinstance(provider, Provider):
+                raise DetectorBindingError(
+                    f"{compiled.binding.binding_id}: dynamic provider resolver returned {provider!r}, not a Provider"
+                )
             if provider not in compiled.binding.dynamic_provider_allowlist and compiled.provider_resolver is not None:
                 raise DetectorBindingError(
                     f"{compiled.binding.binding_id}: dynamic provider {provider.value!r} is outside its declared "
@@ -121,6 +134,30 @@ def _validate_unary_callable(value: object, *, binding_id: str, role: str) -> Ca
     return value
 
 
+def _resolve_predicate(path: str, *, binding_id: str) -> Predicate:
+    """Resolve a declaration's unary predicate after its signature is checked."""
+    return cast(
+        Predicate,
+        _validate_unary_callable(
+            _resolve_symbol(path, binding_id=binding_id, role="predicate"),
+            binding_id=binding_id,
+            role="predicate",
+        ),
+    )
+
+
+def _resolve_provider_resolver(path: str, *, binding_id: str) -> ProviderResolver:
+    """Resolve a declaration's unary provider resolver after its signature is checked."""
+    return cast(
+        ProviderResolver,
+        _validate_unary_callable(
+            _resolve_symbol(path, binding_id=binding_id, role="dynamic provider resolver"),
+            binding_id=binding_id,
+            role="dynamic provider resolver",
+        ),
+    )
+
+
 def _compile_binding(spec: _OriginSpecLike, binding: DetectorBinding) -> _CompiledBinding:
     prefix = f"{spec.origin.value}/{binding.binding_id}"
     if not binding.binding_id:
@@ -145,22 +182,14 @@ def _compile_binding(spec: _OriginSpecLike, binding: DetectorBinding) -> _Compil
         if not binding.dynamic_provider_allowlist:
             raise DetectorBindingError(f"{prefix}: dynamic provider resolver requires a non-empty allowlist")
 
-    predicate = _validate_unary_callable(
-        _resolve_symbol(binding.predicate_path, binding_id=prefix, role="predicate"),
-        binding_id=prefix,
-        role="predicate",
-    )
+    predicate = _resolve_predicate(binding.predicate_path, binding_id=prefix)
     resolver: ProviderResolver | None = None
     if binding.dynamic_provider_path is not None:
-        resolver = _validate_unary_callable(
-            _resolve_symbol(binding.dynamic_provider_path, binding_id=prefix, role="dynamic provider resolver"),
-            binding_id=prefix,
-            role="dynamic provider resolver",
-        )
+        resolver = _resolve_provider_resolver(binding.dynamic_provider_path, binding_id=prefix)
     return _CompiledBinding(
         binding=binding,
-        predicate=predicate,  # type: ignore[arg-type]
-        provider_resolver=resolver,  # type: ignore[assignment]
+        predicate=predicate,
+        provider_resolver=resolver,
     )
 
 
