@@ -26,6 +26,14 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
         "max_payload_bytes": repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
         "parser_census_component_limit": repair.RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT,
     }
+    reparse = cast(dict[str, object], payload["accepted_head_reparse"])
+    assert reparse["ordering"] == ["reissue", "write"]
+    assert reparse["application_decisions"] == ["selected_baseline", "reparse_reaffirmation"]
+    assert reparse["application_count"] == 2
+    assert reparse["head_content_hash"] == reparse["session_content_hash"]
+    assert reparse["repair_status"] == "ineligible"
+    assert reparse["repair_reason"] == "current accepted head does not exactly prove the normalized session"
+    assert reparse["source_raw_count_after_refusal"] == 1
 
     cases = cast(list[dict[str, object]], payload["fault_matrix"])
     assert [case["boundary"] for case in cases] == [boundary.value for boundary in proof.FaultBoundary]

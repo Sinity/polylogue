@@ -15,19 +15,29 @@ import json
 import shutil
 import sqlite3
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TextIO, TypeVar, cast
 from unittest.mock import patch
 
+from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, Role
 from polylogue.core.json import require_json_document
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage import raw_authority, repair
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
+from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    RevisionApplicationReceipt,
+    record_revision_application_sync,
+)
 
 _PROOF_SCHEMA = "polylogue.raw-authority-restart-proof.v1"
 _CASE_SCHEMA = "polylogue.raw-authority-restart-proof-case.v1"
@@ -165,6 +175,180 @@ def _write_bundle(
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
         )
+
+
+def _reparse_browser_payload(native_id: str) -> bytes:
+    return json.dumps(
+        [_conversation(native_id, text="current parser result", update_time=1)],
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
+def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
+    """Prove reparse reaffirmation ordering and its repair refusal semantics."""
+    if case_root.exists():
+        shutil.rmtree(case_root)
+    initialize_active_archive_root(case_root)
+    source_path = "browser-capture/chatgpt/reparse.json"
+    native_id = "reparse-browser"
+    payload = _reparse_browser_payload(native_id)
+    current_session = _parse_one(Provider.CHATGPT, payload, source_path)[0]
+    historical_session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id=native_id,
+        messages=[ParsedMessage(provider_message_id="message-1", role=Role.USER, text="historical parser result")],
+    )
+    current_hash = bytes.fromhex(session_content_hash(current_session))
+    historical_hash = bytes.fromhex(session_content_hash(historical_session))
+
+    with ArchiveStore.open_existing(case_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            capture_mode=Provider.UNKNOWN,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=1,
+            native_id=native_id,
+        )
+        archive.write_parsed_for_retained_raw(
+            historical_session,
+            raw_id=raw_id,
+            source_path=source_path,
+            acquired_at_ms=1,
+            revision_authoritative=True,
+        )
+        blob_hash = (
+            archive._ensure_source_conn()
+            .execute("SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()[0]
+        )
+        record_revision_application_sync(
+            archive._conn,
+            RevisionApplicationReceipt(
+                raw_id=raw_id,
+                session_id="chatgpt-export:reparse-browser",
+                logical_source_key="unknown:reparse-browser",
+                source_revision=str(blob_hash),
+                acquisition_generation=0,
+                decision=ApplicationDecision.SELECTED_BASELINE,
+                accepted_raw_id=raw_id,
+                accepted_source_revision=str(blob_hash),
+                accepted_content_hash=historical_hash,
+                accepted_frontier_kind="byte",
+                accepted_frontier=len(payload),
+                baseline_raw_id=raw_id,
+                detail="restart-proof:historical-browser-head",
+            ),
+            decided_at_ms=1,
+        )
+        archive.commit()
+
+    ordering: list[str] = []
+    real_reissue = revision_governance._reissue_accepted_head_reparse_receipt
+    real_write = cast(Callable[..., str], revision_governance.__dict__["write_parsed_session_to_archive"])
+
+    def record_reissue(*args: object, **kwargs: object) -> None:
+        ordering.append("reissue")
+        real_reissue(*args, **kwargs)  # type: ignore[arg-type]
+
+    def record_write(*args: object, **kwargs: object) -> str:
+        ordering.append("write")
+        return real_write(*args, **kwargs)
+
+    with (
+        patch.object(revision_governance, "_reissue_accepted_head_reparse_receipt", record_reissue),
+        patch.object(revision_governance, "write_parsed_session_to_archive", record_write),
+        ArchiveStore.open_existing(case_root, read_only=False) as archive,
+    ):
+        archive.write_parsed_for_retained_raw(
+            current_session,
+            raw_id=raw_id,
+            source_path=source_path,
+            acquired_at_ms=2,
+        )
+
+    with sqlite3.connect(case_root / "index.db") as index_conn:
+        applications = index_conn.execute(
+            "SELECT decision FROM raw_revision_applications WHERE raw_id = ? AND logical_source_key = ? ORDER BY decision_id",
+            (raw_id, "unknown:reparse-browser"),
+        ).fetchall()
+        head_hash, session_hash = index_conn.execute(
+            """
+            SELECT h.accepted_content_hash, s.content_hash
+            FROM raw_revision_heads AS h
+            JOIN sessions AS s ON s.session_id = h.session_id
+            WHERE h.logical_source_key = 'unknown:reparse-browser'
+            """
+        ).fetchone()
+
+    with sqlite3.connect(case_root / "source.db") as source_conn:
+        source_conn.execute(
+            """
+            UPDATE raw_sessions
+            SET origin = 'unknown-export', capture_mode = 'unknown', logical_source_key = ?,
+                revision_kind = 'full', source_revision = lower(hex(blob_hash)),
+                revision_authority = 'quarantined', acquisition_generation = 0
+            WHERE raw_id = ?
+            """,
+            ("unknown:reparse-browser", raw_id),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, acquisition_generation,
+                revision_authority, decision, decided_at_ms
+            ) VALUES (?, 'chatgpt:reparse-browser', ?, ?, ?, ?, 0,
+                      'quarantined', NULL, NULL)
+            """,
+            (raw_id, native_id, str(blob_hash), current_hash, len(current_session.messages)),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_membership_census (
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+            ) VALUES (?, 'restart-proof-parser', 'complete', 1, 2, 'reparse reaffirmation proof')
+            """,
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    with sqlite3.connect(case_root / "index.db") as index_conn:
+        index_conn.row_factory = sqlite3.Row
+        index_conn.execute("ATTACH DATABASE ? AS source", (str(case_root / "source.db"),))
+        repair_item = repair._inspect_browser_capture_origin_strategy(
+            case_root,
+            raw_id,
+            conn=index_conn,
+        )
+
+    _require(ordering == ["reissue", "write"], f"accepted-head reparse ordering changed: {ordering}")
+    _require(
+        [str(row[0]) for row in applications]
+        == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value],
+        "accepted-head reparse did not append the typed reaffirmation receipt",
+    )
+    _require(len(applications) == 2, "accepted-head reparse receipt count is not durable")
+    _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
+    _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
+    _require(
+        repair_item.reason == "current accepted head does not exactly prove the normalized session",
+        f"reparse-then-repair refusal changed: {repair_item.reason}",
+    )
+    with sqlite3.connect(case_root / "source.db") as source_conn:
+        raw_count = int(source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
+    _require(raw_count == 1, "reparse-then-repair mutated the source raw set while refusing")
+    return {
+        "ordering": ordering,
+        "application_decisions": [str(row[0]) for row in applications],
+        "application_count": len(applications),
+        "head_content_hash": current_hash.hex(),
+        "session_content_hash": bytes(session_hash).hex(),
+        "repair_status": repair_item.status,
+        "repair_reason": repair_item.reason,
+        "source_raw_count_after_refusal": raw_count,
+    }
 
 
 def _census_plan_rows(root: Path, census_id: str) -> list[sqlite3.Row]:
@@ -1000,6 +1184,7 @@ def run_raw_authority_restart_proof(
     cases_root.mkdir(parents=True)
 
     cases = [_run_case(cases_root / boundary.value, boundary) for boundary in FaultBoundary]
+    reparse_case = _exercise_accepted_head_reparse(root / "accepted-head-reparse")
     report: dict[str, object] = {
         "schema": _PROOF_SCHEMA,
         "proof_id": _proof_identity(cases),
@@ -1011,6 +1196,7 @@ def run_raw_authority_restart_proof(
             "parser_census_component_limit": repair.RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT,
         },
         "fault_matrix": cases,
+        "accepted_head_reparse": reparse_case,
     }
     report_path = root / "raw-authority-restart-proof.json"
     report["report_path"] = str(report_path)
