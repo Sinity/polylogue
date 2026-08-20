@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from polylogue.storage.sqlite.archive_tiers.common import literal_check
+
 USER_SCHEMA_VERSION = 10
 
-USER_DDL = """
+USER_DDL = f"""
 CREATE TABLE IF NOT EXISTS query_unit_frame_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     epoch INTEGER NOT NULL DEFAULT 0 CHECK (epoch >= 0)
@@ -31,7 +33,7 @@ CREATE TABLE IF NOT EXISTS assertions (
     visibility          TEXT DEFAULT 'private',
     confidence          REAL,
     staleness_json      TEXT,
-    context_policy_json TEXT DEFAULT '{"inject":false}',
+    context_policy_json TEXT DEFAULT '{{"inject":false}}',
     supersedes_json     TEXT DEFAULT '[]',
     created_at_ms       INTEGER NOT NULL,
     updated_at_ms       INTEGER NOT NULL
@@ -97,8 +99,8 @@ CREATE TABLE IF NOT EXISTS result_sets (
     member_count           INTEGER NOT NULL CHECK(member_count >= 0),
     membership_merkle_root TEXT NOT NULL CHECK(length(membership_merkle_root) = 64 AND membership_merkle_root NOT GLOB '*[^0-9a-f]*'),
     ordered_rank_hash      TEXT NOT NULL CHECK(length(ordered_rank_hash) = 64 AND ordered_rank_hash NOT GLOB '*[^0-9a-f]*'),
-    exactness              TEXT NOT NULL CHECK(exactness IN ('exact', 'capped', 'sampled', 'estimate')),
-    persistence_class      TEXT NOT NULL CHECK(persistence_class IN ('routine', 'watch', 'pinned', 'finding', 'cohort')),
+    exactness              TEXT NOT NULL CHECK ({literal_check("exactness", "exact", "capped", "sampled", "estimate")}),
+    persistence_class      TEXT NOT NULL CHECK ({literal_check("persistence_class", "routine", "watch", "pinned", "finding", "cohort")}),
     created_at_ms          INTEGER NOT NULL CHECK(created_at_ms >= 0)
 ) STRICT;
 
@@ -116,7 +118,7 @@ CREATE TABLE IF NOT EXISTS result_set_members (
 CREATE TABLE IF NOT EXISTS query_edges (
     src_query_hash TEXT NOT NULL REFERENCES queries(query_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
     dst_query_hash TEXT NOT NULL REFERENCES queries(query_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    edge_kind      TEXT NOT NULL CHECK(edge_kind IN ('operand-of', 'refines', 'supersedes', 'derived-from', 'same-as')),
+    edge_kind      TEXT NOT NULL CHECK ({literal_check("edge_kind", "operand-of", "refines", "supersedes", "derived-from", "same-as")}),
     created_at_ms  INTEGER NOT NULL CHECK(created_at_ms >= 0),
     PRIMARY KEY (src_query_hash, dst_query_hash, edge_kind)
 ) STRICT;
@@ -142,8 +144,8 @@ CREATE TABLE IF NOT EXISTS query_evaluation_receipts (
     index_generation        TEXT NOT NULL CHECK(length(trim(index_generation)) > 0),
     runtime_build_ref       TEXT NOT NULL CHECK(length(trim(runtime_build_ref)) > 0),
     model_refs_json         TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(model_refs_json) AND json_type(model_refs_json) = 'array'),
-    resolved_bounds_json    TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(resolved_bounds_json) AND json_type(resolved_bounds_json) = 'object'),
-    degradation_json        TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(degradation_json) AND json_type(degradation_json) = 'object'),
+    resolved_bounds_json    TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(resolved_bounds_json) AND json_type(resolved_bounds_json) = 'object'),
+    degradation_json        TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(degradation_json) AND json_type(degradation_json) = 'object'),
     created_at_ms           INTEGER NOT NULL CHECK(created_at_ms >= 0)
 ) STRICT;
 
@@ -255,7 +257,7 @@ INSERT OR IGNORE INTO annotation_schemas (
 ) VALUES (
     'delegation.discourse',
     1,
-    '{"abstain_field":"abstain","description":"Evidence-backed discourse role and applicability for one delegation attempt.","evidence_policy":"required","fields":[{"description":"How the work order frames the requested action.","enum_values":["imperative","collaborative","goal_delegation","question","mixed","not_observed"],"maximum":null,"minimum":null,"name":"directive_mode","required":true,"value_type":"enum"},{"description":"How explicitly the work order constrains forbidden actions.","enum_values":["none","implicit","explicit","multiple"],"maximum":null,"minimum":null,"name":"prohibitions","required":true,"value_type":"enum"},{"description":"How much execution discretion the delegate receives.","enum_values":["low","bounded","high","unspecified"],"maximum":null,"minimum":null,"name":"autonomy","required":true,"value_type":"enum"},{"description":"How specifically the expected result shape is declared.","enum_values":["unspecified","informal","structured","machine_readable"],"maximum":null,"minimum":null,"name":"output_contract","required":true,"value_type":"enum"},{"description":"How the work order bounds the implementation surface.","enum_values":["open","bounded","owned_paths","owned_and_avoid_paths"],"maximum":null,"minimum":null,"name":"scope_control","required":true,"value_type":"enum"},{"description":"The strongest explicit verification obligation.","enum_values":["none","self_check","focused_tests","broad_gate"],"maximum":null,"minimum":null,"name":"verification_demand","required":true,"value_type":"enum"},{"description":"Whether checkpoints or escalation conditions are specified.","enum_values":["none","checkpoint","escalation","both"],"maximum":null,"minimum":null,"name":"checkpoint_escalation","required":true,"value_type":"enum"},{"description":"The interpersonal frame expressed by the work order.","enum_values":["directive","collaborative","advisory","evaluative","mixed"],"maximum":null,"minimum":null,"name":"relational_frame","required":true,"value_type":"enum"},{"description":"How much rationale for constraints and choices is exposed.","enum_values":["none","partial","explicit"],"maximum":null,"minimum":null,"name":"rationale_visibility","required":true,"value_type":"enum"},{"description":"Whether the discourse construct applies to this delegation.","enum_values":[],"maximum":null,"minimum":null,"name":"applicable","required":true,"value_type":"boolean"},{"description":"Label confidence on the closed interval from zero to one.","enum_values":[],"maximum":1.0,"minimum":0.0,"name":"confidence","required":true,"value_type":"number"},{"description":"True when available evidence is insufficient to label this delegation.","enum_values":[],"maximum":null,"minimum":null,"name":"abstain","required":false,"value_type":"boolean"},{"description":"Concise evidence-grounded rationale for the label or abstention.","enum_values":[],"maximum":null,"minimum":null,"name":"rationale","required":false,"value_type":"string"}],"format":"polylogue.annotation-schema/v1","schema_id":"delegation.discourse","status":"active","target_ref_kinds":["delegation"],"title":"Delegation discourse","version":1}',
+    '{{"abstain_field":"abstain","description":"Evidence-backed discourse role and applicability for one delegation attempt.","evidence_policy":"required","fields":[{{"description":"How the work order frames the requested action.","enum_values":["imperative","collaborative","goal_delegation","question","mixed","not_observed"],"maximum":null,"minimum":null,"name":"directive_mode","required":true,"value_type":"enum"}},{{"description":"How explicitly the work order constrains forbidden actions.","enum_values":["none","implicit","explicit","multiple"],"maximum":null,"minimum":null,"name":"prohibitions","required":true,"value_type":"enum"}},{{"description":"How much execution discretion the delegate receives.","enum_values":["low","bounded","high","unspecified"],"maximum":null,"minimum":null,"name":"autonomy","required":true,"value_type":"enum"}},{{"description":"How specifically the expected result shape is declared.","enum_values":["unspecified","informal","structured","machine_readable"],"maximum":null,"minimum":null,"name":"output_contract","required":true,"value_type":"enum"}},{{"description":"How the work order bounds the implementation surface.","enum_values":["open","bounded","owned_paths","owned_and_avoid_paths"],"maximum":null,"minimum":null,"name":"scope_control","required":true,"value_type":"enum"}},{{"description":"The strongest explicit verification obligation.","enum_values":["none","self_check","focused_tests","broad_gate"],"maximum":null,"minimum":null,"name":"verification_demand","required":true,"value_type":"enum"}},{{"description":"Whether checkpoints or escalation conditions are specified.","enum_values":["none","checkpoint","escalation","both"],"maximum":null,"minimum":null,"name":"checkpoint_escalation","required":true,"value_type":"enum"}},{{"description":"The interpersonal frame expressed by the work order.","enum_values":["directive","collaborative","advisory","evaluative","mixed"],"maximum":null,"minimum":null,"name":"relational_frame","required":true,"value_type":"enum"}},{{"description":"How much rationale for constraints and choices is exposed.","enum_values":["none","partial","explicit"],"maximum":null,"minimum":null,"name":"rationale_visibility","required":true,"value_type":"enum"}},{{"description":"Whether the discourse construct applies to this delegation.","enum_values":[],"maximum":null,"minimum":null,"name":"applicable","required":true,"value_type":"boolean"}},{{"description":"Label confidence on the closed interval from zero to one.","enum_values":[],"maximum":1.0,"minimum":0.0,"name":"confidence","required":true,"value_type":"number"}},{{"description":"True when available evidence is insufficient to label this delegation.","enum_values":[],"maximum":null,"minimum":null,"name":"abstain","required":false,"value_type":"boolean"}},{{"description":"Concise evidence-grounded rationale for the label or abstention.","enum_values":[],"maximum":null,"minimum":null,"name":"rationale","required":false,"value_type":"string"}}],"format":"polylogue.annotation-schema/v1","schema_id":"delegation.discourse","status":"active","target_ref_kinds":["delegation"],"title":"Delegation discourse","version":1}}',
     '7cb761fc365caaf40ca98a96c4d6d809284fa3aa651656f26e7b01e2476f06e9',
     0
 );
@@ -285,7 +287,7 @@ CREATE TABLE IF NOT EXISTS annotation_batches (
         AND json_type(validation_failures_json) = 'array'
         AND json_array_length(validation_failures_json) = invalid_count
     ),
-    metadata_json             TEXT NOT NULL DEFAULT '{}' CHECK(
+    metadata_json             TEXT NOT NULL DEFAULT '{{}}' CHECK(
         json_valid(metadata_json)
         AND json_type(metadata_json) = 'object'
     ),
@@ -328,7 +330,7 @@ CREATE TABLE IF NOT EXISTS context_deliveries (
     assertion_refs_json    TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(assertion_refs_json)),
     omissions_json         TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(omissions_json)),
     caveats_json           TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(caveats_json)),
-    metadata_json          TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(metadata_json)),
+    metadata_json          TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(metadata_json)),
     delivered_by_ref       TEXT NOT NULL,
     delivered_at_ms        INTEGER NOT NULL CHECK(delivered_at_ms >= 0)
 ) STRICT;

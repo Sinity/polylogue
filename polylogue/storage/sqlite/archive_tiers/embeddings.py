@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.storage.sqlite.archive_tiers.common import literal_check
+
 EMBEDDINGS_SCHEMA_VERSION = 4
 EMBEDDING_DIMENSION = 1024
 
@@ -74,9 +76,7 @@ CREATE TABLE IF NOT EXISTS embedding_derivation_state (
     source_hash            BLOB NOT NULL CHECK(length(source_hash) = 32),
     recipe_hash            BLOB NOT NULL CHECK(length(recipe_hash) = 32),
     output_contract_hash   BLOB NOT NULL CHECK(length(output_contract_hash) = 32),
-    attempt_state          TEXT NOT NULL CHECK(attempt_state IN (
-        'pending', 'succeeded', 'failed_retryable', 'failed_terminal'
-    )),
+    attempt_state          TEXT NOT NULL CHECK ({literal_check("attempt_state", "pending", "succeeded", "failed_retryable", "failed_terminal")}),
     message_count          INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
     updated_at_ms          INTEGER NOT NULL CHECK(updated_at_ms >= 0)
 ) STRICT;
@@ -94,9 +94,7 @@ CREATE TABLE IF NOT EXISTS embedding_failures (
     error_class         TEXT NOT NULL,
     error_message       TEXT NOT NULL,
     retryable           INTEGER NOT NULL CHECK(retryable IN (0, 1)),
-    lifecycle_state     TEXT NOT NULL CHECK(lifecycle_state IN (
-        'retryable', 'terminal', 'acknowledged', 'superseded', 'resolved'
-    )),
+    lifecycle_state     TEXT NOT NULL CHECK ({literal_check("lifecycle_state", "retryable", "terminal", "acknowledged", "superseded", "resolved")}),
     created_at_ms       INTEGER NOT NULL,
     updated_at_ms       INTEGER NOT NULL,
     resolved_at_ms      INTEGER,

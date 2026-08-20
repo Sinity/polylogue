@@ -80,6 +80,7 @@ class TableColumnSpec:
     all_columns: tuple[ColumnSpec, ...]
     writable_columns: tuple[ColumnSpec, ...]
     record_only_columns: tuple[ColumnSpec, ...] = ()
+    table_constraints: tuple[str, ...] = ()
 
     @property
     def record_columns(self) -> tuple[ColumnSpec, ...]:
@@ -90,6 +91,12 @@ class TableColumnSpec:
     def ddl_column_definitions(self) -> str:
         """Render the table's column definitions from the storage declaration."""
         return ",\n    ".join(col.ddl_definition for col in self.all_columns)
+
+    @property
+    def ddl_body(self) -> str:
+        """Render columns and table-level constraints for a CREATE TABLE body."""
+        definitions = tuple(col.ddl_definition for col in self.all_columns)
+        return ",\n    ".join((*definitions, *self.table_constraints))
 
     @property
     def insert_column_names(self) -> str:

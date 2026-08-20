@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
+from dataclasses import replace
+
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import (
+    BLOCKS_SPEC,
+    MESSAGES_SPEC,
+    TABLE_SPECS,
+)
 
 
 class TestColumnSpecReordering:
@@ -87,3 +93,17 @@ class TestColumnSpecReordering:
         # parent_message_id should use "NULL" placeholder
         parent_col = next(c for c in MESSAGES_SPEC.writable_columns if c.name == "parent_message_id")
         assert parent_col.extract_placeholder == "NULL"
+
+    def test_session_events_spec_reordering_changes_rendered_sql(self) -> None:
+        """A new table's column order must be load-bearing in rendered DDL."""
+        spec = TABLE_SPECS["session_events"]
+        reordered = replace(
+            spec,
+            all_columns=tuple(reversed(spec.all_columns)),
+            writable_columns=tuple(reversed(spec.writable_columns)),
+        )
+
+        assert spec.ddl_body != reordered.ddl_body
+        assert "PRIMARY KEY(session_id, position)" in spec.ddl_body
+        assert spec.writable_columns[0].name == "session_id"
+        assert reordered.writable_columns[0].name == "occurred_at_ms"
