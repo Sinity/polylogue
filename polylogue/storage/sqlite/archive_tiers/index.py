@@ -451,7 +451,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # Grok, Antigravity, browser-capture, and Hermes titles. Existing parsed rows
 # require raw replay because an in-place schema operation cannot recover title
 # authorship from the stored untyped title text.
-INDEX_SCHEMA_VERSION = 69
+# polylogue-terra-p1: v70 persists the accepted frontier proven by each raw
+# revision application. These values are derived at application time and old
+# rows cannot be reconstructed safely from the mutable head, so v70 routes
+# existing index generations through semantic raw replay.
+INDEX_SCHEMA_VERSION = 70
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -518,6 +522,13 @@ CREATE TABLE IF NOT EXISTS raw_revision_applications (
     accepted_content_hash    BLOB CHECK(
                                  accepted_content_hash IS NULL OR length(accepted_content_hash) = 32
                              ),
+    accepted_frontier_kind   TEXT CHECK(
+                                 accepted_frontier_kind IS NULL
+                                 OR accepted_frontier_kind IN ('byte', 'semantic')
+                             ),
+    accepted_frontier        INTEGER CHECK(
+                                 accepted_frontier IS NULL OR accepted_frontier >= 0
+                             ),
     baseline_raw_id          TEXT,
     predecessor_raw_id       TEXT,
     append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
@@ -527,6 +538,11 @@ CREATE TABLE IF NOT EXISTS raw_revision_applications (
         (accepted_raw_id IS NULL AND accepted_source_revision IS NULL AND accepted_content_hash IS NULL)
         OR
         (accepted_raw_id IS NOT NULL AND accepted_source_revision IS NOT NULL AND accepted_content_hash IS NOT NULL)
+    ),
+    CHECK(
+        (accepted_frontier_kind IS NULL AND accepted_frontier IS NULL)
+        OR
+        (accepted_frontier_kind IS NOT NULL AND accepted_frontier IS NOT NULL)
     )
 ) STRICT;
 

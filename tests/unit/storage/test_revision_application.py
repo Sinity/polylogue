@@ -44,6 +44,9 @@ def test_application_receipt_is_idempotent_and_rejects_older_head() -> None:
     assert conn.execute(
         "SELECT accepted_source_revision FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
     ).fetchone() == ("revision-1",)
+    assert conn.execute(
+        "SELECT accepted_frontier_kind, accepted_frontier FROM raw_revision_applications"
+    ).fetchone() == (receipt.accepted_frontier_kind, receipt.accepted_frontier)
 
     record_revision_application_sync(conn, _receipt(generation=2, revision="revision-2"), decided_at_ms=30)
     with pytest.raises(RuntimeError, match="older accepted frontier"):

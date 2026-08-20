@@ -198,16 +198,8 @@ def _application_receipt_rows(
     conn.row_factory = sqlite3.Row
     return conn.execute(
         """
-        SELECT a.raw_id, a.session_id, a.logical_source_key,
-               a.decision, a.decided_at_ms, a.decision_id,
-               a.source_revision, a.acquisition_generation,
-               a.accepted_raw_id, a.accepted_source_revision,
-               a.accepted_content_hash, a.append_end_offset,
-               h.accepted_frontier_kind AS accepted_frontier_kind,
-               h.accepted_frontier AS accepted_frontier
+        SELECT a.*
         FROM raw_revision_applications AS a
-        LEFT JOIN raw_revision_heads AS h
-          ON h.logical_source_key = a.logical_source_key
         WHERE a.raw_id = ? AND a.logical_source_key = ?
         ORDER BY a.decided_at_ms, a.decision_id
         """,
@@ -318,8 +310,7 @@ def _validate_application_receipt_contents(
             f"{context} receipt {decision_id} has a stale accepted content hash",
         )
         _require(
-            row["accepted_frontier_kind"] == expected_frontier_kind
-            and int(row["accepted_frontier"]) == expected_frontier,
+            row["accepted_frontier_kind"] == expected_frontier_kind and row["accepted_frontier"] == expected_frontier,
             f"{context} receipt {decision_id} has a stale accepted frontier",
         )
         _require(
@@ -501,9 +492,9 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
 
     _require(ordering == ["reissue", "write"], f"accepted-head reparse ordering changed: {ordering}")
     _require(len(applications) == 2, "accepted-head reparse receipt count is not durable")
-    application_decisions = [str(row[3]) for row in applications]
-    application_timestamps = [int(row[4]) for row in applications]
-    application_decision_ids = [str(row[5]) for row in applications]
+    application_decisions = [str(row["decision"]) for row in applications]
+    application_timestamps = [int(row["decided_at_ms"]) for row in applications]
+    application_decision_ids = [str(row["decision_id"]) for row in applications]
     expected_application_receipts_by_id = {
         baseline_receipt.decision_id: baseline_receipt,
         reparse_receipt.decision_id: reparse_receipt,
@@ -513,7 +504,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
     }
     expected_application_decision_pairs = sorted(expected_application_decisions_by_id.items())
     expected_application_decision_ids = [decision_id for decision_id, _decision in expected_application_decision_pairs]
-    application_decision_pairs = sorted((str(row[5]), str(row[3])) for row in applications)
+    application_decision_pairs = sorted((str(row["decision_id"]), str(row["decision"])) for row in applications)
     _require(
         application_decision_pairs == expected_application_decision_pairs
         and application_timestamps == [1, 1]
@@ -531,60 +522,51 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         tie_conn.execute(
             """
             CREATE TABLE raw_revision_applications (
+                decision_id TEXT NOT NULL,
                 raw_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 logical_source_key TEXT NOT NULL,
-                decision TEXT NOT NULL,
-                decided_at_ms INTEGER NOT NULL,
-                decision_id TEXT NOT NULL,
                 source_revision TEXT NOT NULL,
                 acquisition_generation INTEGER NOT NULL,
+                decision TEXT NOT NULL,
                 accepted_raw_id TEXT NOT NULL,
                 accepted_source_revision TEXT NOT NULL,
                 accepted_content_hash BLOB NOT NULL,
-                append_end_offset INTEGER
-            )
-            """
-        )
-        tie_conn.execute(
-            """
-            CREATE TABLE raw_revision_heads (
-                logical_source_key TEXT PRIMARY KEY,
                 accepted_frontier_kind TEXT NOT NULL,
-                accepted_frontier INTEGER NOT NULL
+                accepted_frontier INTEGER NOT NULL,
+                baseline_raw_id TEXT,
+                predecessor_raw_id TEXT,
+                append_end_offset INTEGER,
+                detail TEXT NOT NULL DEFAULT '',
+                decided_at_ms INTEGER NOT NULL
             )
             """
-        )
-        tie_conn.execute(
-            """
-            INSERT INTO raw_revision_heads(
-                logical_source_key, accepted_frontier_kind, accepted_frontier
-            ) VALUES (?, 'byte', ?)
-            """,
-            ("unknown:reparse-browser", reparse_receipt.accepted_frontier),
         )
         tie_conn.executemany(
             """
             INSERT INTO raw_revision_applications(
-                raw_id, session_id, logical_source_key, decision, decided_at_ms, decision_id,
-                source_revision, acquisition_generation, accepted_raw_id, accepted_source_revision,
-                accepted_content_hash, append_end_offset
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                decision_id, raw_id, session_id, logical_source_key, source_revision,
+                acquisition_generation, decision, accepted_raw_id, accepted_source_revision,
+                accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                append_end_offset, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
+                    decision_id,
                     raw_id,
                     "chatgpt-export:reparse-browser",
                     "unknown:reparse-browser",
-                    expected_application_decisions_by_id[decision_id],
-                    1,
-                    decision_id,
                     str(blob_hash),
                     0,
+                    expected_application_decisions_by_id[decision_id],
                     raw_id,
                     str(blob_hash),
                     current_hash,
+                    "byte",
+                    expected_application_receipts_by_id[decision_id].accepted_frontier,
                     None,
+                    1,
                 )
                 for decision_id in reversed(expected_application_decision_ids)
             ],
@@ -603,7 +585,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             """,
             (raw_id, "unknown:reparse-browser"),
         ).fetchall()
-        stable_tie_ids = [str(row[5]) for row in stable_tie_rows]
+        stable_tie_ids = [str(row["decision_id"]) for row in stable_tie_rows]
         timestamp_only_tie_ids = [str(row[2]) for row in timestamp_only_tie_rows]
     _require(
         stable_tie_ids == expected_application_decision_ids
@@ -692,6 +674,51 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         else:
             raise RawAuthorityRestartProofError(
                 "stale generation anti-vacuity control unexpectedly accepted a mutated acquisition generation"
+            )
+
+        with sqlite3.connect(negative_control_root / "index.db") as index_conn:
+            index_conn.execute(
+                """
+                UPDATE raw_revision_applications
+                SET accepted_frontier = ?, acquisition_generation = ?
+                WHERE decision_id = ?
+                """,
+                (
+                    _require_not_none(
+                        reparse_receipt.accepted_frontier,
+                        "stale frontier anti-vacuity receipt lacks an accepted frontier",
+                    )
+                    + 1,
+                    reparse_receipt.acquisition_generation,
+                    reparse_receipt.decision_id,
+                ),
+            )
+            stale_frontier_applications = _application_receipt_rows(
+                index_conn,
+                raw_id=raw_id,
+                logical_source_key="unknown:reparse-browser",
+            )
+            stale_frontier_head = _require_not_none(
+                _accepted_head_receipt_row(index_conn, logical_source_key="unknown:reparse-browser"),
+                "stale frontier anti-vacuity head is not durable",
+            )
+            index_conn.commit()
+        try:
+            _validate_application_receipt_contents(
+                stale_frontier_applications,
+                expected_application_receipts_by_id,
+                context="stale frontier anti-vacuity control",
+                accepted_head=stale_frontier_head,
+                expected_head=reparse_receipt,
+            )
+        except RawAuthorityRestartProofError as exc:
+            _require(
+                "accepted frontier" in str(exc),
+                f"stale frontier anti-vacuity failed for the wrong field: {exc}",
+            )
+        else:
+            raise RawAuthorityRestartProofError(
+                "stale frontier anti-vacuity control unexpectedly accepted a mutated application frontier"
             )
 
         with sqlite3.connect(negative_control_root / "index.db") as index_conn:
@@ -786,7 +813,8 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         expected_head=reparse_receipt,
     )
     _require(
-        sorted((str(row[5]), str(row[3])) for row in retained_applications) == expected_application_decision_pairs
+        sorted((str(row["decision_id"]), str(row["decision"])) for row in retained_applications)
+        == expected_application_decision_pairs
         and bytes(retained_head_hash) == current_hash == bytes(retained_session_hash)
         and bytes(retained_membership_hash) == current_hash,
         "negative control mutated the retained accepted-head reparse archive",

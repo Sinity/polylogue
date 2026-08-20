@@ -159,14 +159,18 @@ def record_revision_application_sync(
     )
     if any(value is None for value in accepted) and not all(value is None for value in accepted):
         raise ValueError("accepted revision receipt fields must be all present or all absent")
+    frontier = (receipt.accepted_frontier_kind, receipt.accepted_frontier)
+    if any(value is None for value in frontier) and not all(value is None for value in frontier):
+        raise ValueError("accepted frontier receipt fields must be all present or all absent")
     cursor = conn.execute(
         """
         INSERT OR IGNORE INTO raw_revision_applications (
             decision_id, raw_id, session_id, logical_source_key, source_revision,
             acquisition_generation, decision, accepted_raw_id,
-            accepted_source_revision, accepted_content_hash, baseline_raw_id,
+            accepted_source_revision, accepted_content_hash, accepted_frontier_kind,
+            accepted_frontier, baseline_raw_id,
             predecessor_raw_id, append_end_offset, detail, decided_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             receipt.decision_id,
@@ -179,6 +183,8 @@ def record_revision_application_sync(
             receipt.accepted_raw_id,
             receipt.accepted_source_revision,
             receipt.accepted_content_hash,
+            receipt.accepted_frontier_kind,
+            receipt.accepted_frontier,
             receipt.baseline_raw_id,
             receipt.predecessor_raw_id,
             receipt.append_end_offset,
@@ -190,7 +196,8 @@ def record_revision_application_sync(
         existing = conn.execute(
             """
             SELECT raw_id, session_id, decision, accepted_raw_id,
-                   accepted_source_revision, accepted_content_hash
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier
             FROM raw_revision_applications WHERE decision_id = ?
             """,
             (receipt.decision_id,),
@@ -203,25 +210,35 @@ def record_revision_application_sync(
                 receipt.accepted_raw_id,
                 receipt.accepted_source_revision,
                 receipt.accepted_content_hash,
+                receipt.accepted_frontier_kind,
+                receipt.accepted_frontier,
             )
             if tuple(existing) != expected:
                 # `decision_id` hashes every decision-defining field (raw_id,
                 # session_id, decision, logical_source_key, source_revision,
                 # accepted_raw_id, accepted_source_revision) except
-                # accepted_content_hash. So a row found by decision_id can
-                # only disagree with the incoming receipt on
-                # accepted_content_hash -- a parser/derivation fix reparsing
-                # the exact same accepted raw evidence into a different
-                # content hash. The raw/session/revision identity already
-                # matched to find this row, so that is re-derivation, not a
-                # conflicting decision: update the ledger row's content hash
-                # in place. Any other field actually differing (defensive;
+                # accepted_content_hash/frontier. So a row found by
+                # decision_id can only disagree with the incoming receipt on
+                # derived accepted values -- a parser/derivation fix
+                # reparsing the exact same accepted raw evidence. The
+                # raw/session/revision identity already matched to find this
+                # row, so that is re-derivation, not a conflicting decision:
+                # update the derived values in place. Any other field actually differing (defensive;
                 # not reachable without a decision_id hash collision) is a
                 # genuine conflict and still rejects.
                 if tuple(existing[:5]) == expected[:5]:
                     conn.execute(
-                        "UPDATE raw_revision_applications SET accepted_content_hash = ? WHERE decision_id = ?",
-                        (receipt.accepted_content_hash, receipt.decision_id),
+                        """
+                        UPDATE raw_revision_applications
+                        SET accepted_content_hash = ?, accepted_frontier_kind = ?, accepted_frontier = ?
+                        WHERE decision_id = ?
+                        """,
+                        (
+                            receipt.accepted_content_hash,
+                            receipt.accepted_frontier_kind,
+                            receipt.accepted_frontier,
+                            receipt.decision_id,
+                        ),
                     )
                 else:
                     raise RuntimeError(

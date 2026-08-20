@@ -96,6 +96,13 @@ def test_v64_fingerprint_stamp_delta_requires_semantic_reparse() -> None:
     assert lifecycle.index_fast_forward_plan(63, 64) is None
 
 
+def test_v70_application_frontier_receipts_require_semantic_reparse() -> None:
+    declaration = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 70)
+
+    assert declaration.classes == (DerivedDeltaClass.SEMANTIC_REPARSE,)
+    assert lifecycle.index_fast_forward_plan(69, 70) is None
+
+
 def test_v65_action_result_state_is_view_only_fast_forward() -> None:
     declaration = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 65)
 
