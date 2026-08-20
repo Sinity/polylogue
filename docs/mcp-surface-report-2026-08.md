@@ -294,7 +294,7 @@ unit-test result. The existing `polylogue-4s3c` successor owns the live-scale
 steady-state RSS/PSS/swap/temp envelope; the health/responsiveness and
 orphan-task residuals remain open until a bounded live-scale proof covers them.
 
-The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/mcp/test_server_surfaces.py::test_query_transaction_certifies_twenty_large_messages_across_api_and_mcp tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **43 passed, 0 failed**. The new evidence module contributed **4 passed** tests.
+The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/mcp/test_server_surfaces.py::test_query_transaction_certifies_twenty_large_messages_across_api_and_mcp tests/unit/mcp/test_server_surfaces.py::test_query_resource_golden_fails_when_shared_transaction_is_bypassed tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **44 passed, 0 failed**. The new evidence module contributed **4 passed** tests, and the resource-resolver mutation proof ran explicitly.
 
 ## 7. Bottom line
 

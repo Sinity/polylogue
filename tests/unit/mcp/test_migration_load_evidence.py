@@ -109,6 +109,7 @@ async def test_read_migration_fails_closed_without_shared_query_transaction(
     """The canonical MCP query cannot succeed through a bypassing adapter."""
     from polylogue.mcp.server import build_server
 
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
     archive_root = tmp_path / "archive"
     _seed_archive(archive_root, count=1)
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities()))
@@ -260,7 +261,9 @@ async def test_registered_query_disconnect_drains_real_transaction(
         result = original_envelope(*args, **kwargs)
         observed_contexts.append(execution_context)
         entered.set()
-        execution_context.cancel_event.wait(timeout=5)
+        assert execution_context.cancel_event.wait(timeout=5), (
+            "registered query did not observe disconnect cancellation"
+        )
         return result
 
     monkeypatch.setattr(unit_results, "query_unit_envelope", hold_after_real_query)
@@ -327,6 +330,8 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         tracemalloc.reset_peak()
         response_text = await invoke_large_query()
         response = json.loads(response_text)
+        continuation = cast(dict[str, Any], response["continuation"])
+        resumed = json.loads(await invoke_surface_async(query_fn, **cast(dict[str, Any], continuation["arguments"])))
         _, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
         after_files = _archive_file_sizes(archive_root)
@@ -342,6 +347,14 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
     assert response_bytes <= MCP_RESPONSE_BUDGET_BYTES
     assert response_bytes > compact_response_bytes
     assert response_text == json.dumps(response, indent=2, ensure_ascii=False, default=str)
+
+    resumed_page = cast(
+        dict[str, Any], resumed["page"] if resumed.get("status") == "response_budget_exceeded" else resumed
+    )
+    first_item_ids = {item["message_id"] for item in cast(list[dict[str, str]], response["page"]["items"])}
+    resumed_item_ids = {item["message_id"] for item in cast(list[dict[str, str]], resumed_page["items"])}
+    assert resumed_item_ids
+    assert first_item_ids.isdisjoint(resumed_item_ids)
 
     transient_bytes = max(0, peak_bytes - baseline_bytes)
     assert transient_bytes <= 8 * 1024 * 1024
