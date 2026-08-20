@@ -108,7 +108,10 @@ def test_quick_verify_omits_pytest() -> None:
         "lab policy schema-versioning",
         "lab policy oracle-integrity",
         "schema promotion audit",
+        "schema privacy registry",
     ]
+
+    assert dict(steps)["schema privacy registry"] == [sys.executable, "-m", "devtools.verify_schema_privacy"]
 
 
 @pytest.mark.parametrize(

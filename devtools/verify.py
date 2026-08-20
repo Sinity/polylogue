@@ -2670,6 +2670,10 @@ def build_verify_steps(
                         str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                     ],
                 ),
+                (
+                    "schema privacy registry",
+                    [sys.executable, "-m", "devtools.verify_schema_privacy"],
+                ),
             ]
         )
 
