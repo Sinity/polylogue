@@ -47,15 +47,13 @@ def assert_planner_append_authority(
 ) -> None:
     """Require every live-planner append raw to have an applied decision."""
     expected_raw_ids = set(append_raw_ids)
-    observed_raw_ids = {raw_id for raw_id, _decision, _accepted_raw_id in application_rows}
+    decisions_by_raw_id: dict[str, list[str]] = {}
+    for raw_id, decision, _accepted_raw_id in application_rows:
+        decisions_by_raw_id.setdefault(raw_id, []).append(decision)
+    observed_raw_ids = set(decisions_by_raw_id)
     assert observed_raw_ids == expected_raw_ids
-    assert len(application_rows) == len(expected_raw_ids)
-    append_decisions = tuple(
-        decision for raw_id, decision, _accepted_raw_id in application_rows if raw_id in expected_raw_ids
-    )
-    assert append_decisions and all(decision == "applied_append" for decision in append_decisions), (
-        f"live planner ledger did not apply every append raw; observed append decisions={append_decisions!r}"
-    )
+    missing_applied = {raw_id for raw_id, decisions in decisions_by_raw_id.items() if "applied_append" not in decisions}
+    assert not missing_applied, f"live planner ledger deferred append raws: {sorted(missing_applied)!r}"
 
 
 @dataclass(frozen=True, slots=True)
