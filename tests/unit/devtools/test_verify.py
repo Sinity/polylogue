@@ -2931,11 +2931,24 @@ def test_native_verifier_keeps_descriptor_binding_for_parent_inspection(
 
     monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
     state = verify._open_owned_native_testmon_state(tmp_path)
+    captured: dict[str, Path | int | None] = {}
+
+    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
+        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
+        captured["native_testmon_descriptor"] = cast(int | None, kwargs["native_testmon_descriptor"])
+        return 0, 0.0, {}
+
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
         assert state.data_path == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
         assert state.executable_data_path == tmp_path / verify.TESTMON_DATA
+        with patch("devtools.verify._run_step", side_effect=fake_run_step):
+            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
     finally:
         state.close()
+
+    assert captured["native_testmon_data"] == state.executable_data_path
+    assert captured["native_testmon_descriptor"] == state.descriptor
 
 
 def test_native_verifier_gives_xdist_testmon_a_worker_openable_state_path(
