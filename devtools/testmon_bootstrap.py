@@ -972,6 +972,7 @@ def certified_attestation_violation(
     *,
     environment_name: str,
     current_nodeids: Sequence[str],
+    certificate_data_path: Path | None = None,
 ) -> str | None:
     """Why this graph may NOT attest unexecuted tests, or None when it may.
 
@@ -982,7 +983,10 @@ def certified_attestation_violation(
     and do not violate the certificate.
     """
     root = repo_root.resolve()
-    certified = read_certified_corpus(root / TESTMON_DATA_RELPATH, environment_name)
+    certified = read_certified_corpus(
+        certificate_data_path if certificate_data_path is not None else root / TESTMON_DATA_RELPATH,
+        environment_name,
+    )
     if certified is None:
         return "no completed covered run has certified this environment's corpus"
     current = {canonical_test_nodeid(nodeid) for nodeid in current_nodeids}
@@ -1177,13 +1181,17 @@ def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSour
         child_fd, bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
         yield NativeTestmonSourceBinding(child_fd, bound_path)
     finally:
-        if directory_fd is not None:
-            if private_name is not None:
+        try:
+            if directory_fd is not None and private_name is not None:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(private_name, dir_fd=directory_fd)
-            os.close(directory_fd)
-        if child_fd is not None:
-            os.close(child_fd)
+        finally:
+            try:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+            finally:
+                if child_fd is not None:
+                    os.close(child_fd)
 
 
 def _publish_validated_testmon_database(

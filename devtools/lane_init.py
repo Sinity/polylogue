@@ -552,10 +552,13 @@ def _seed_testmon_graph_unlocked(
                 "coordinator graph is not attestable for the selected environment; first lane verify will bootstrap",
                 False,
             )
+        if source_binding is None:
+            return "coordinator graph disappeared before descriptor binding; first lane verify will bootstrap", False
         source_violation = certified_attestation_violation(
             root,
             environment_name=copy_digest,
             current_nodeids=source_state_for_copy.environment.nodeids,
+            certificate_data_path=source_binding.data_path,
         )
         if source_violation is not None:
             return (
@@ -564,8 +567,6 @@ def _seed_testmon_graph_unlocked(
                 False,
             )
 
-        if source_binding is None:
-            return "coordinator graph disappeared before descriptor binding; first lane verify will bootstrap", False
         try:
             _atomic_copy_sqlite_database(
                 source,
