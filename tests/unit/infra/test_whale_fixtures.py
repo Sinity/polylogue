@@ -21,6 +21,7 @@ def test_whale_fixture_manifest_pins_all_outlier_axes() -> None:
     assert dimensions == {
         "fixture_id": "codex-whale-bounds-v2",
         "revision_count": 804,
+        "append_fragment_count": 16,
         "terminal_wire_bytes": 90_822_451,
         "near_terminal_predecessor_bytes": 32 * 1024 * 1024,
         "stream_event_count": 2_000_000,

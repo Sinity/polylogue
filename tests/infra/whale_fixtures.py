@@ -13,10 +13,12 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Callable, Iterator
+import sqlite3
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Final
+from types import SimpleNamespace
+from typing import Any, BinaryIO, Final, cast
 
 from polylogue.product.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
@@ -25,10 +27,33 @@ from polylogue.product.raw_authority import (
 
 _TERMINAL_WIRE_BYTES: Final = 90_822_451
 _REVISION_COUNT: Final = 804
+_APPEND_FRAGMENT_COUNT: Final = 16
 _STREAM_EVENT_COUNT: Final = 2_000_000
 _GIANT_ATTACHMENT_RAW_BYTES: Final = 12 * 1024 * 1024
 _NEAR_TERMINAL_PREDECESSOR_BYTES: Final = 32 * 1024 * 1024
 _GENERATOR_CHUNK_BYTES: Final = 1024 * 1024
+
+
+def copy_sqlite_database(source: Path, destination: Path) -> None:
+    """Copy live SQLite contents in place so archive identity inodes remain stable."""
+    with sqlite3.connect(source) as source_conn, sqlite3.connect(destination) as destination_conn:
+        source_conn.backup(destination_conn)
+
+
+def assert_planner_append_authority(
+    *,
+    append_raw_ids: Collection[str],
+    application_rows: Sequence[tuple[str, str, str | None]],
+) -> None:
+    """Require every live-planner append raw to have an applied decision."""
+    expected_raw_ids = set(append_raw_ids)
+    decisions_by_raw_id: dict[str, list[str]] = {}
+    for raw_id, decision, _accepted_raw_id in application_rows:
+        decisions_by_raw_id.setdefault(raw_id, []).append(decision)
+    observed_raw_ids = set(decisions_by_raw_id)
+    assert observed_raw_ids == expected_raw_ids
+    missing_applied = {raw_id for raw_id, decisions in decisions_by_raw_id.items() if "applied_append" not in decisions}
+    assert not missing_applied, f"live planner ledger deferred append raws: {sorted(missing_applied)!r}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +62,7 @@ class WhaleFixtureDimensions:
 
     fixture_id: str = "codex-whale-bounds-v2"
     revision_count: int = _REVISION_COUNT
+    append_fragment_count: int = _APPEND_FRAGMENT_COUNT
     terminal_wire_bytes: int = _TERMINAL_WIRE_BYTES
     near_terminal_predecessor_bytes: int = _NEAR_TERMINAL_PREDECESSOR_BYTES
     stream_event_count: int = _STREAM_EVENT_COUNT
@@ -48,6 +74,7 @@ class WhaleFixtureDimensions:
         return (
             ("fixture_id", self.fixture_id),
             ("revision_count", self.revision_count),
+            ("append_fragment_count", self.append_fragment_count),
             ("terminal_wire_bytes", self.terminal_wire_bytes),
             ("near_terminal_predecessor_bytes", self.near_terminal_predecessor_bytes),
             ("stream_event_count", self.stream_event_count),
@@ -158,6 +185,27 @@ class CodexRevisionChainFixture:
     dimensions: WhaleFixtureDimensions = WHALE_FIXTURE_DIMENSIONS
     session_native_id: str = "codex-sanitized-804-session"
 
+    def iter_append_fragments(self, full_payloads: Sequence[bytes]) -> Iterator[tuple[int, bytes]]:
+        """Yield bounded, parser-visible tails from the real full snapshots.
+
+        Each tail is a literal complete-record slice between two neighboring
+        full snapshots. The first 16 revisions carry a short Codex message
+        witness so the source-indexed census parser can recover the session
+        identity through its real positive-content gate.
+        """
+        required_payloads = self.dimensions.append_fragment_count + 1
+        if len(full_payloads) < required_payloads:
+            raise ValueError(f"append fixture needs {required_payloads} full payloads")
+        for fragment_index in range(self.dimensions.append_fragment_count):
+            predecessor = full_payloads[fragment_index]
+            successor = full_payloads[fragment_index + 1]
+            if not successor.startswith(predecessor):
+                raise AssertionError(f"full revision {fragment_index + 1} rewrote its predecessor bytes")
+            payload = successor[len(predecessor) :]
+            if not payload or not payload.endswith(b"\n"):
+                raise AssertionError(f"full revision {fragment_index + 1} has no complete append tail")
+            yield fragment_index, payload
+
     def write_revision(self, source_path: Path, revision: int) -> int:
         if not 0 <= revision < self.dimensions.revision_count:
             raise ValueError(f"revision must be in [0, {self.dimensions.revision_count})")
@@ -200,6 +248,25 @@ class CodexRevisionChainFixture:
                                 },
                             },
                         )
+                if 1 <= revision <= self.dimensions.append_fragment_count:
+                    _write_record(
+                        handle,
+                        {
+                            "type": "response_item",
+                            "timestamp": f"2026-07-31T04:25:{20 + revision % 40:02d}Z",
+                            "payload": {
+                                "type": "message",
+                                "id": f"{self.session_native_id}-append-witness-{revision:03d}",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": f"sanitized append witness {revision:03d}",
+                                    }
+                                ],
+                            },
+                        },
+                    )
                 if revision in {1, 800, 801, 802}:
                     _write_record(
                         handle,
@@ -297,18 +364,38 @@ def acquire_codex_revision_chain(
     *,
     revision_observer: Callable[[int, Path], None] | None = None,
 ) -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
-    """Acquire all snapshots through ``AcquisitionService`` with one live path.
+    """Acquire the full snapshots and append fragments through production seams.
 
     ``revision_observer`` runs after each wire snapshot is written and before
     acquisition reads it.  It is a proof hook for callers that need to inspect
     every revision without moving acquisition or replay into the fixture.
+    The returned raw ids contain the 804 full snapshots followed by the
+    bounded append-fragment population.  The size and digest tuples remain
+    snapshot-only so callers can retain the 804 transition assertions.
     """
     from polylogue.config import Source
     from polylogue.pipeline.services.acquisition import AcquisitionService
+    from polylogue.sources.live.append_ingest import ingest_append_plans
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.batch_support import _AppendPlan
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+    from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.sqlite import SQLiteBackend
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     async def _run() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
+        from polylogue.archive.revision_authority import (
+            RawRevisionAuthority,
+            RawRevisionEnvelope,
+            RawRevisionKind,
+        )
+
         backend = SQLiteBackend(db_path=archive_root / "index.db")
+        active_index_path: Path | None = None
+        planner_index_backup: Path | None = None
+        planner_source_backup: Path | None = None
+        planner_ops_backup: Path | None = None
         try:
             service = AcquisitionService(backend)
             raw_ids: list[str] = []
@@ -325,8 +412,158 @@ def acquire_codex_revision_chain(
                 raw_ids.extend(result.raw_ids)
                 sizes.append(size)
                 sha256s.append(sha256)
+
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                full_payloads = tuple(
+                    archive.raw_revision_material(raw_id)[1]
+                    for raw_id in raw_ids[: fixture.dimensions.append_fragment_count + 1]
+                )
+                terminal_payload = archive.raw_revision_material(raw_ids[-1])[1]
+
+            active_index_path = ArchiveLocation.resolve(archive_root).active_index_path
+            planner_index_backup = archive_root / ".codex-804-planner-index.db"
+            planner_source_backup = archive_root / ".codex-804-planner-source.db"
+            planner_ops_backup = archive_root / ".codex-804-planner-ops.db"
+            copy_sqlite_database(active_index_path, planner_index_backup)
+            copy_sqlite_database(archive_root / "source.db", planner_source_backup)
+            copy_sqlite_database(archive_root / "ops.db", planner_ops_backup)
+            source_path.write_bytes(terminal_payload)
+            cursor = CursorStore(archive_root / "index.db", ops_db_path=archive_root / "ops.db")
+            processor = LiveBatchProcessor(
+                cast(
+                    Any,
+                    SimpleNamespace(
+                        archive_root=archive_root,
+                        backend=SimpleNamespace(db_path=archive_root / "index.db"),
+                    ),
+                ),
+                (WatchSource(name="codex", root=source_path.parent),),
+                cursor=cursor,
+                parser_fingerprint=_PARSER_FINGERPRINT,
+            )
+            full_result = processor._ingest_full_paths_sync([source_path], source_name="codex")
+            if full_result.failed or full_result.succeeded != [source_path]:
+                raise AssertionError(f"production planner baseline ingest failed: {full_result!r}")
+            processor._record_full_cursor(
+                source_path,
+                raw_fingerprint=full_result.raw_fingerprints.get(source_path),
+                raw_byte_size=full_result.raw_byte_sizes.get(source_path),
+                source_name=full_result.raw_source_names.get(source_path),
+                source_revision=full_result.raw_source_revisions.get(source_path),
+                captured_content_hash=full_result.captured_content_hashes.get(source_path),
+                captured_file_observation=full_result.captured_file_observations.get(source_path),
+            )
+            source_path.write_bytes(full_payloads[0])
+            processor._record_full_cursor(
+                source_path,
+                raw_fingerprint=raw_ids[0],
+                raw_byte_size=len(full_payloads[0]),
+                source_name="codex",
+                source_revision=raw_ids[0],
+                captured_content_hash=raw_ids[0],
+            )
+            owner = SimpleNamespace(
+                _cursor=SimpleNamespace(_db_path=archive_root / "source.db"),
+                _polylogue=SimpleNamespace(archive_root=archive_root),
+            )
+            plans: list[_AppendPlan] = []
+            planned_indices: list[int] = []
+            for fragment_index, payload in fixture.iter_append_fragments(full_payloads):
+                with source_path.open("ab") as handle:
+                    handle.write(payload)
+                source_index = fixture.dimensions.revision_count + fragment_index
+                plan = processor.plan_append(source_path, source_index=source_index)
+                if not isinstance(plan, _AppendPlan):
+                    raise AssertionError(f"production append planner did not return a plan: {plan!r}")
+                if plan.source_index != source_index:
+                    raise AssertionError(f"production append planner lost source index {source_index}")
+                plans.append(plan)
+                planned_indices.append(plan.source_index)
+                if not processor._record_append_cursor(plan):
+                    raise AssertionError(f"production append cursor update failed for source index {source_index}")
+            if planned_indices != list(
+                range(
+                    fixture.dimensions.revision_count,
+                    fixture.dimensions.revision_count + fixture.dimensions.append_fragment_count,
+                )
+            ):
+                raise AssertionError(f"production append planner calls were incomplete: {planned_indices!r}")
+            append_ranges = tuple((plan.start_offset, plan.last_complete_newline) for plan in plans)
+            if len(append_ranges) != fixture.dimensions.append_fragment_count:
+                raise AssertionError(f"production append cursor ranges were incomplete: {append_ranges!r}")
+            if any(
+                start_offset < 0 or last_complete_newline <= start_offset
+                for start_offset, last_complete_newline in append_ranges
+            ):
+                raise AssertionError(f"production append cursor ranges were invalid: {append_ranges!r}")
+            if any(
+                next_start_offset != previous_last_complete_newline
+                for (_previous_start_offset, previous_last_complete_newline), (
+                    next_start_offset,
+                    _next_last_complete_newline,
+                ) in zip(append_ranges, append_ranges[1:], strict=False)
+            ):
+                raise AssertionError(f"production append cursor ranges were not contiguous: {append_ranges!r}")
+
+            copy_sqlite_database(planner_index_backup, active_index_path)
+            copy_sqlite_database(planner_source_backup, archive_root / "source.db")
+            planner_source_backup.unlink()
+            copy_sqlite_database(planner_ops_backup, archive_root / "ops.db")
+            planner_ops_backup.unlink()
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                archive.bind_raw_revision(
+                    raw_ids[0],
+                    RawRevisionEnvelope(
+                        logical_source_key=f"codex:{fixture.session_native_id}",
+                        kind=RawRevisionKind.FULL,
+                        source_revision=raw_ids[0],
+                        acquisition_generation=0,
+                        authority=RawRevisionAuthority.BYTE_PROVEN,
+                    ),
+                )
+            for plan in plans:
+                append_result = ingest_append_plans(owner, [plan])
+                if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):
+                    raise AssertionError(f"append ingestion changed fixture authority state: {append_result!r}")
+                with sqlite3.connect(archive_root / "source.db") as conn:
+                    row = conn.execute(
+                        "SELECT raw_id, source_revision FROM raw_sessions WHERE source_index = ?",
+                        (plan.source_index,),
+                    ).fetchone()
+                if row is None:
+                    raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
+                raw_ids.append(str(row[0]))
+            append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
+            with sqlite3.connect(active_index_path) as conn:
+                append_application_rows = tuple(
+                    (str(row[0]), str(row[1]), None if row[2] is None else str(row[2]))
+                    for row in conn.execute(
+                        "SELECT raw_id, decision, accepted_raw_id FROM raw_revision_applications "
+                        "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
+                        append_raw_ids,
+                    )
+                )
+            assert_planner_append_authority(
+                append_raw_ids=append_raw_ids,
+                application_rows=append_application_rows,
+            )
+            # The planner index and cursor snapshots above are temporary proof
+            # inputs. The final authority assertion runs after restart and
+            # candidate promotion against the resulting postflight ledger.
+            copy_sqlite_database(planner_index_backup, active_index_path)
+            planner_index_backup.unlink()
+            source_path.write_bytes(terminal_payload)
             return tuple(raw_ids), tuple(sizes), tuple(sha256s)
         finally:
+            if planner_index_backup is not None and planner_index_backup.exists() and active_index_path is not None:
+                copy_sqlite_database(planner_index_backup, active_index_path)
+                planner_index_backup.unlink()
+            if planner_source_backup is not None and planner_source_backup.exists():
+                copy_sqlite_database(planner_source_backup, archive_root / "source.db")
+                planner_source_backup.unlink()
+            if planner_ops_backup is not None and planner_ops_backup.exists():
+                copy_sqlite_database(planner_ops_backup, archive_root / "ops.db")
+                planner_ops_backup.unlink()
             await backend.close()
 
     return asyncio.run(_run())

@@ -133,6 +133,9 @@ class _AppendPlan:
     payload_hash: str
     cursor_fingerprint: str | None
     bytes_read: int
+    # Historical fixture/replay callers can preserve a source ordering index;
+    # live watcher plans retain the legacy sentinel when no index is known.
+    source_index: int = -1
     accepted_tail_hash: str | None = None
     ctime_ns: int | None = None
     accepted_prefix_hash: str | None = None

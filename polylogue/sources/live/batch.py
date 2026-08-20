@@ -870,7 +870,7 @@ class LiveBatchProcessor:
                 full_paths.append(path)
                 continue
             cursor = cursor_records.get(path)
-            append_plan = self._append_plan(path, cursor=cursor) if self._can_ingest_appends_directly() else None
+            append_plan = self.plan_append(path, cursor=cursor) if self._can_ingest_appends_directly() else None
             if isinstance(append_plan, _DeferredAppend):
                 # No new authority-relevant append happened this pass (no
                 # complete trailing newline yet, or -- polylogue-hat0 --
@@ -3718,7 +3718,29 @@ class LiveBatchProcessor:
         except sqlite3.Error:
             return False
 
-    def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
+    def plan_append(
+        self,
+        path: Path,
+        *,
+        cursor: CursorRecord | None = None,
+        source_index: int = -1,
+    ) -> _AppendPlan | _DeferredAppend | None:
+        """Plan one append through the live route's cursor and byte proofs.
+
+        The watcher leaves ``source_index`` at its legacy sentinel because it
+        does not own historical ordering. Callers that have independently
+        proven an ordering coordinate may provide it here; all validation and
+        identity resolution remain in the same production planner.
+        """
+        return self._append_plan(path, cursor=cursor, source_index=source_index)
+
+    def _append_plan(
+        self,
+        path: Path,
+        *,
+        cursor: CursorRecord | None = None,
+        source_index: int = -1,
+    ) -> _AppendPlan | _DeferredAppend | None:
         # Append planning is safe only for newline-delimited record streams.
         # Watch-source names describe acquisition routes, not file semantics:
         # mutable browser snapshots can arrive through the generic inbox.
@@ -3845,6 +3867,7 @@ class LiveBatchProcessor:
             payload_hash=tail_hash,
             cursor_fingerprint=cursor.content_fingerprint,
             bytes_read=len(payload),
+            source_index=source_index,
             accepted_tail_hash=sha256(accepted_tail).hexdigest(),
             ctime_ns=stat.st_ctime_ns,
             accepted_prefix_hash=accepted_prefix_hash,
