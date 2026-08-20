@@ -1722,7 +1722,7 @@ def _run_pytest_with_heartbeat(
             deadlines: list[float] = []
             if heartbeat_s > 0:
                 deadlines.append(heartbeat_s)
-            elif stall_timeout_s > 0:
+            if stall_timeout_s > 0:
                 deadlines.append(stall_timeout_s / 2)
             if timeout_s > 0 and termination_reason is None:
                 deadlines.append(max(timeout_s - elapsed, 0.0))

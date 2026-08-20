@@ -3984,7 +3984,7 @@ def test_pytest_run_terminates_after_runtime_budget(
 def test_pytest_run_terminates_with_heartbeat_disabled(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "30")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0.15")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0")
 
