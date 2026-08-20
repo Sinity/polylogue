@@ -141,6 +141,8 @@ class DaemonWriteSnapshot:
     # tasks that raised -- previously surfaced only via a log line, with no
     # counter across the daemon's lifetime.
     detached_writer_failures: int = 0
+    # Retain actor/session attribution alongside the scalar counter.
+    detached_writer_failures_by_actor: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(slots=True)
@@ -164,6 +166,7 @@ _LATEST_TELEMETRY: dict[str, object] = {
     "accepting": True,
     "last_event": None,
     "detached_writer_failures": 0,
+    "detached_writer_failures_by_actor": {},
 }
 
 
@@ -199,6 +202,7 @@ class DaemonWriteCoordinator:
         self._idle = asyncio.Event()
         self._idle.set()
         self._detached_writer_failures = 0
+        self._detached_writer_failures_by_actor: dict[str, int] = {}
         self._publish_telemetry()
 
     def snapshot(self) -> DaemonWriteSnapshot:
@@ -208,6 +212,7 @@ class DaemonWriteCoordinator:
             last_event=self._last_event,
             accepting=self._accepting,
             detached_writer_failures=self._detached_writer_failures,
+            detached_writer_failures_by_actor=tuple(sorted(self._detached_writer_failures_by_actor.items())),
         )
 
     async def run(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T:
@@ -244,7 +249,7 @@ class DaemonWriteCoordinator:
             self._execute(request, operation),
             name=f"polylogue-writer:{actor}:{request.sequence}",
         )
-        self._track_execution(execution)
+        self._track_execution(execution, actor=actor)
         try:
             return await asyncio.shield(execution)
         except asyncio.CancelledError:
@@ -348,10 +353,15 @@ class DaemonWriteCoordinator:
             return False
         return True
 
-    def _track_execution(self, execution: asyncio.Task[T]) -> None:
+    def _track_execution(self, execution: asyncio.Task[T], *, actor: str) -> None:
         task = execution  # preserve the concrete result type for ``run``
         self._executions.add(task)
         self._idle.clear()
+
+        def record_failure() -> None:
+            self._detached_writer_failures += 1
+            self._detached_writer_failures_by_actor[actor] = self._detached_writer_failures_by_actor.get(actor, 0) + 1
+            self._publish_telemetry()
 
         def completed(done: asyncio.Task[object]) -> None:
             self._executions.discard(done)
@@ -367,14 +377,12 @@ class DaemonWriteCoordinator:
                 # cleanly) -- still count it as a lost forensic detail so the
                 # daemon-lifetime counter reflects every such event, not only
                 # the ordinary "task.exception() returned non-None" path.
-                self._detached_writer_failures += 1
-                self._publish_telemetry()
-                logger.warning("detached daemon writer failed", exc_info=True)
+                record_failure()
+                logger.warning("detached daemon writer failed actor=%s", actor, exc_info=True)
             else:
                 if exception is not None:
-                    self._detached_writer_failures += 1
-                    self._publish_telemetry()
-                    logger.warning("detached daemon writer failed: %s", exception)
+                    record_failure()
+                    logger.warning("detached daemon writer failed actor=%s: %s", actor, exception)
 
         task.add_done_callback(completed)
 
@@ -402,6 +410,7 @@ class DaemonWriteCoordinator:
             "accepting": snapshot.accepting,
             "last_event": None,
             "detached_writer_failures": snapshot.detached_writer_failures,
+            "detached_writer_failures_by_actor": dict(snapshot.detached_writer_failures_by_actor),
         }
         if event is not None:
             payload["last_event"] = {
@@ -439,40 +448,39 @@ async def _run_in_daemon_thread(
             result.set_result(value)  # type: ignore[arg-type]
 
     def worker() -> None:
-        try:
-            value = context.run(function, *args, **kwargs)
-        except BaseException as exc:
-            try:
-                loop.call_soon_threadsafe(publish, None, exc)
-            except RuntimeError:
-                # polylogue-es7b: the event loop is already closed, so the
-                # ``result`` future left above is never resolved from here.
-                # This does not itself weaken anything -- a closed loop
-                # genuinely cannot be scheduled on -- but it was previously
-                # silent, indistinguishable from the worker simply never
-                # finishing. Callers that need a hard bound against this
-                # already have one: ``DaemonWriteThreadBridge`` awaits a
-                # ``concurrent.futures.Future`` with its own timeout, which
-                # is independent of whether this loop is still running.
-                # Direct ``coordinator.run_sync`` callers on the coordinator's
-                # own loop are not protected by that bridge; if this warning
-                # ever fires for one of those, it is real evidence a hang
-                # occurred and should be traced to its call site.
+        def schedule_publish(value: T | None = None, error: BaseException | None = None) -> None:
+            """Publish unless loop shutdown is the known terminal outcome.
+
+            A closed loop cannot receive the worker's result. Only that
+            termination state is tolerated; an unexpected RuntimeError from
+            scheduling is re-raised so it cannot masquerade as a stuck write.
+            """
+            if loop.is_closed():
                 logger.warning(
-                    "daemon writer thread %s finished with an exception after its event "
-                    "loop already closed; the awaiting result future was left unresolved",
+                    "daemon writer thread %s finished after its event loop already closed; "
+                    "the awaiting result future was abandoned",
+                    thread_name,
+                    exc_info=error,
+                )
+                return
+            try:
+                loop.call_soon_threadsafe(publish, value, error)
+            except RuntimeError as exc:
+                if not loop.is_closed():
+                    raise
+                logger.warning(
+                    "daemon writer thread %s finished while its event loop closed; "
+                    "the awaiting result future was abandoned",
                     thread_name,
                     exc_info=exc,
                 )
+
+        try:
+            value = context.run(function, *args, **kwargs)
+        except BaseException as exc:
+            schedule_publish(error=exc)
         else:
-            try:
-                loop.call_soon_threadsafe(publish, value, None)
-            except RuntimeError:
-                logger.warning(
-                    "daemon writer thread %s finished after its event loop already closed; "
-                    "the awaiting result future was left unresolved",
-                    thread_name,
-                )
+            schedule_publish(value=value)
 
     threading.Thread(target=worker, name=thread_name, daemon=True).start()
     return await result

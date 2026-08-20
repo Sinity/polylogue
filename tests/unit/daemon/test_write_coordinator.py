@@ -566,8 +566,10 @@ async def test_detached_writer_failure_increments_lifetime_counter() -> None:
         await asyncio.sleep(0)
 
     assert coordinator.snapshot().detached_writer_failures == 1
+    assert coordinator.snapshot().detached_writer_failures_by_actor == (("actor", 1),)
     payload = daemon_write_telemetry_payload()
     assert payload["detached_writer_failures"] == 1
+    assert payload["detached_writer_failures_by_actor"] == {"actor": 1}
 
     # A second failure keeps accumulating -- this is a lifetime counter, not
     # a one-shot flag.
@@ -578,6 +580,30 @@ async def test_detached_writer_failure_increments_lifetime_counter() -> None:
             break
         await asyncio.sleep(0)
     assert coordinator.snapshot().detached_writer_failures == 2
+    assert coordinator.snapshot().detached_writer_failures_by_actor == (("actor", 2),)
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("other-actor", boom)
+    for _ in range(10):
+        if coordinator.snapshot().detached_writer_failures == 3:
+            break
+        await asyncio.sleep(0)
+    assert coordinator.snapshot().detached_writer_failures_by_actor == (("actor", 2), ("other-actor", 1))
+
+
+@pytest.mark.asyncio
+async def test_sync_writer_failure_propagates_and_releases_gate() -> None:
+    """A live-loop worker exception must reach the caller, not become a hang."""
+    coordinator = DaemonWriteCoordinator()
+
+    def boom() -> None:
+        raise RuntimeError("sync writer blew up")
+
+    with pytest.raises(RuntimeError, match="sync writer blew up"):
+        await coordinator.run_sync("sync-failure", boom)
+
+    assert coordinator.snapshot().active_actor is None
+    assert await coordinator.run("successor", _return_ready) == "ready"
 
 
 def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed() -> None:
