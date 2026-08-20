@@ -81,7 +81,8 @@ from devtools.testmon_bootstrap import (
     _descriptor_bound_path,
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
-    native_testmon_lifecycle_lock,
+    linked_worktree_info,
+    native_testmon_lifecycle_locks,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
@@ -214,8 +215,16 @@ def _native_testmon_lifecycle_lock(
     *,
     timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
 ) -> Iterator[None]:
+    roots: tuple[Path, ...] = (repo_root,)
+    linked_info = linked_worktree_info(repo_root)
+    if linked_info is not None and linked_info[0]:
+        roots = (repo_root, linked_info[1])
     try:
-        with native_testmon_lifecycle_lock(repo_root, timeout_s=timeout_s, waiter_label="verify"):
+        # Linked-worktree verify binds, inspects, and copies the main graph
+        # while holding the lane lock. Acquire both checkout locks together in
+        # the same path order as lane-init so a main verify cannot observe the
+        # retained .bound-* hard link and no lock cycle can form.
+        with native_testmon_lifecycle_locks(roots, timeout_s=timeout_s, waiter_label="verify"):
             yield
     except NativeTestmonLifecycleLockTimeoutError as exc:
         raise PytestResourceError(str(exc)) from exc

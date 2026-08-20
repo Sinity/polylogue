@@ -3182,6 +3182,45 @@ def test_native_testmon_lifecycle_lock_serializes_checkout_state(tmp_path: Path)
     assert contender_entered.is_set()
 
 
+@pytest.mark.uses_real_clock("coordinates linked-worktree and main lifecycle locks")
+def test_linked_verify_lifecycle_lock_includes_main_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = tmp_path / "main"
+    lane = tmp_path / "lane"
+    main.mkdir()
+    lane.mkdir()
+
+    def linked_info(root: Path, **_kwargs: object) -> tuple[bool, Path] | None:
+        return (True, main) if root.resolve() == lane.resolve() else (False, main)
+
+    monkeypatch.setattr(verify, "linked_worktree_info", linked_info)
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    contender_entered = threading.Event()
+
+    def hold_linked_verify_locks() -> None:
+        with verify._native_testmon_lifecycle_lock(lane):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2)
+
+    def contend_for_main_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(main):
+            contender_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(hold_linked_verify_locks)
+        assert holder_entered.wait(timeout=2)
+        contender = pool.submit(contend_for_main_lock)
+        assert not contender_entered.wait(timeout=0.05)
+        release_holder.set()
+        holder.result(timeout=2)
+        contender.result(timeout=2)
+
+    assert contender_entered.is_set()
+
+
 def test_native_testmon_lifecycle_lock_refuses_symlink_without_touching_target(tmp_path: Path) -> None:
     cache = tmp_path / ".cache"
     cache.mkdir()

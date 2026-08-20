@@ -1135,8 +1135,11 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
         return bound_fd, _descriptor_bound_path(bound_fd), private_name
     except NativeTestmonRepairError:
         if private_name is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(private_name, dir_fd=directory_fd)
+            _unlink_bound_entry_if_owned(
+                directory_fd,
+                private_name,
+                bound_fd if bound_fd is not None else child_fd,
+            )
         if bound_fd is not None:
             os.close(bound_fd)
         if child_fd is not None:
@@ -1144,8 +1147,11 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
         raise
     except OSError as exc:
         if private_name is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(private_name, dir_fd=directory_fd)
+            _unlink_bound_entry_if_owned(
+                directory_fd,
+                private_name,
+                bound_fd if bound_fd is not None else child_fd,
+            )
         if bound_fd is not None:
             os.close(bound_fd)
         if child_fd is not None:
@@ -1167,6 +1173,21 @@ def _descriptor_bound_path(file_descriptor: int) -> Path:
     )
 
 
+def _unlink_bound_entry_if_owned(directory_fd: int, private_name: str, retained_fd: int | None) -> None:
+    """Remove a private binding only while its directory entry names the retained inode."""
+    if retained_fd is None:
+        return
+    try:
+        retained = os.fstat(retained_fd)
+        current = os.stat(private_name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if (current.st_dev, current.st_ino) != (retained.st_dev, retained.st_ino):
+        return
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(private_name, dir_fd=directory_fd)
+
+
 @contextlib.contextmanager
 def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSourceBinding | None]:
     """Retain one source inode for semantic validation and any subsequent copy."""
@@ -1183,8 +1204,7 @@ def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSour
     finally:
         try:
             if directory_fd is not None and private_name is not None:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(private_name, dir_fd=directory_fd)
+                _unlink_bound_entry_if_owned(directory_fd, private_name, child_fd)
         finally:
             try:
                 if directory_fd is not None:
@@ -1360,8 +1380,7 @@ def _atomic_copy_sqlite_database(
             os.close(destination_directory_fd)
         if source_directory_fd is not None:
             if source_private_name is not None:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(source_private_name, dir_fd=source_directory_fd)
+                _unlink_bound_entry_if_owned(source_directory_fd, source_private_name, source_child_fd)
             os.close(source_directory_fd)
         if source_child_fd is not None:
             os.close(source_child_fd)

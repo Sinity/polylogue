@@ -786,14 +786,16 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
     assert replacement_state.environment.nodeids == ("tests/test_twin.py::test_twin",)
     original_connect = sqlite3.connect
     replaced = False
+    private_entry: Path | None = None
 
     def replace_private_bound_source(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        nonlocal replaced
+        nonlocal private_entry, replaced
         if not replaced:
             private_entries = tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
             assert len(private_entries) == 1
+            private_entry = private_entries[0]
             replaced = True
-            os.replace(replacement_data, private_entries[0])
+            os.replace(replacement_data, private_entry)
         return cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
 
     monkeypatch.setattr(sqlite3, "connect", replace_private_bound_source)
@@ -819,13 +821,18 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
         assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
 
     assert replaced
+    assert private_entry is not None
+    replacement = inspect_native_testmon_environment(private_entry, environment_name="owned-environment")
+    assert replacement.valid
+    assert replacement.environment is not None
+    assert replacement.environment.nodeids == ("tests/test_twin.py::test_twin",)
 
 
 def test_source_binding_closes_descriptors_when_bound_entry_becomes_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Private-entry cleanup cannot strand descriptors when unlink sees a directory."""
+    """Private-entry cleanup leaves a directory replacement untouched."""
     source_root = tmp_path / "source"
     (source_root / "tests").mkdir(parents=True)
     source_data = _seed_partial_native_graph(
@@ -844,15 +851,14 @@ def test_source_binding_closes_descriptors_when_bound_entry_becomes_directory(
     monkeypatch.setattr(testmon_bootstrap, "_open_owned_testmon_directory", capture_directory_fd)
     bound_fd: int | None = None
     private_entry: Path | None = None
-    with pytest.raises(IsADirectoryError):
-        with native_testmon_source_binding(source_data) as binding:
-            assert binding is not None
-            bound_fd = binding.descriptor
-            private_entry = next(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
-            replacement_directory = tmp_path / "replacement-directory"
-            replacement_directory.mkdir()
-            private_entry.unlink()
-            replacement_directory.rename(private_entry)
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        bound_fd = binding.descriptor
+        private_entry = next(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
+        replacement_directory = tmp_path / "replacement-directory"
+        replacement_directory.mkdir()
+        private_entry.unlink()
+        replacement_directory.rename(private_entry)
 
     assert bound_fd is not None
     assert directory_fds
@@ -860,6 +866,7 @@ def test_source_binding_closes_descriptors_when_bound_entry_becomes_directory(
         with pytest.raises(OSError):
             os.fstat(descriptor)
     assert private_entry is not None
+    assert private_entry.is_dir()
     private_entry.rmdir()
 
 
