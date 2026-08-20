@@ -1883,6 +1883,21 @@ def _run_pytest_with_heartbeat(
         if forced_returncode is not None
         else (int(receipt_exit) if isinstance(receipt_exit, int) else (process.returncode or 0))
     )
+    if termination_reason is not None and returncode == 0:
+        # A controller can exit cleanly in the race between the runner's
+        # termination request and the supervisor observing it. The reason is
+        # still authoritative: a run the runner terminated cannot report
+        # success merely because the supervisor observed a zero controller
+        # exit. Keep the containment receipt consistent with that decision.
+        returncode = 124
+        receipt = update_receipt(
+            launch.receipt_path,
+            {
+                "status": "terminated",
+                "exit_code": returncode,
+                "termination_reason": termination_reason,
+            },
+        )
     containment = _containment_summary(launch, receipt)
     resource_summary: dict[str, Any] = {}
     if sampler is not None:
