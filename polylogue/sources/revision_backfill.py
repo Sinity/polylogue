@@ -741,6 +741,17 @@ class RevisionCensusResult:
 
 
 @dataclass(slots=True)
+class _CurrentParserReceiptShape:
+    recorded_keys_json: object
+    typed_key: object
+    revision_kind: object
+    typed_non_session: bool
+    parser_confirmed_non_session: bool
+    byte_governed_fragment: bool
+    membership_keys: list[object] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class _RevisionCensusState:
     scanned: int
     classified: int
@@ -1013,6 +1024,12 @@ def uncensused_historical_revision_raw_ids(
     Treating a bump as forcing full re-census here would mean every
     fingerprint bump re-parses the entire archive just to re-confirm facts
     that did not change.
+
+    Current-fingerprint receipts also have to prove the durable authority
+    shape. Older receipts can contain an empty key list even when membership
+    rows establish a canonical identity, so those rows must be selected for
+    recomputation instead of remaining permanently blocked by the readiness
+    predicate.
     """
     if not raw_ids:
         return ()
@@ -1048,7 +1065,78 @@ def uncensused_historical_revision_raw_ids(
                 [*raw_id_chunk, *known_fingerprints, resource_blocked_fingerprint],
             )
             uncensused.extend(str(row[0]) for row in rows)
-    return tuple(sorted(uncensused))
+            current_receipt_shapes: dict[str, _CurrentParserReceiptShape] = {}
+            for (
+                raw_id_value,
+                logical_keys_json,
+                typed_key,
+                revision_kind,
+                typed_non_session,
+                parser_confirmed_non_session,
+                byte_governed_fragment,
+                membership_key,
+            ) in conn.execute(
+                f"""
+                SELECT r.raw_id, c.logical_keys_json, r.logical_source_key, r.revision_kind,
+                       EXISTS(SELECT 1 FROM raw_artifacts AS a
+                              WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
+                              WHERE mc.raw_id = r.raw_id
+                                AND mc.parser_fingerprint = ?
+                                AND mc.status = 'non_session'),
+                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
+                              WHERE mc.raw_id = r.raw_id
+                                AND r.source_index < 0
+                                AND mc.parser_fingerprint = ?
+                                AND mc.status = 'failed'
+                                AND mc.detail = ?),
+                       m.logical_source_key
+                FROM raw_sessions AS r
+                JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                WHERE r.raw_id IN ({placeholders})
+                  AND c.parser_fingerprint = ?
+                  AND c.status = 'complete'
+                  AND c.detail LIKE 'parser-observed:%'
+                ORDER BY r.raw_id, m.logical_source_key
+                """,
+                (
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    BYTE_AUTHORITY_CENSUS_DETAIL,
+                    *raw_id_chunk,
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                ),
+            ):
+                raw_id = str(raw_id_value)
+                shape = current_receipt_shapes.setdefault(
+                    raw_id,
+                    _CurrentParserReceiptShape(
+                        logical_keys_json,
+                        typed_key,
+                        revision_kind,
+                        bool(typed_non_session),
+                        bool(parser_confirmed_non_session),
+                        bool(byte_governed_fragment),
+                    ),
+                )
+                if membership_key is not None:
+                    shape.membership_keys.append(membership_key)
+            for raw_id, shape in current_receipt_shapes.items():
+                durable_keys = durable_authority_logical_keys(
+                    raw_logical_key=shape.typed_key,
+                    revision_kind=shape.revision_kind,
+                    membership_logical_keys=shape.membership_keys,
+                )
+                if not parser_census_is_complete(
+                    recorded_keys=parser_census_logical_keys(shape.recorded_keys_json),
+                    durable_keys=durable_keys,
+                    typed_non_session=shape.typed_non_session,
+                    parser_confirmed_non_session=shape.parser_confirmed_non_session,
+                    byte_governed_fragment=shape.byte_governed_fragment,
+                ):
+                    uncensused.append(raw_id)
+    return tuple(sorted(set(uncensused)))
 
 
 def record_resource_blocked_revision_census(
