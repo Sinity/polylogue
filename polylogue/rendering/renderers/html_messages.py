@@ -11,35 +11,6 @@ from polylogue.rendering.core_messages import RenderedMessage, attach_rendered_m
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
-    from polylogue.storage.archive_views import SessionRenderProjection
-
-
-def build_projection_html_messages(
-    projection: SessionRenderProjection,
-    *,
-    render_html: Callable[[str], str],
-    preview_limit: int = 120,
-) -> list[RenderedMessage]:
-    raw_messages: list[RenderedMessage] = []
-    for msg in projection.messages:
-        content_blocks = coerce_renderable_blocks(msg.blocks)
-        text = msg.text or ""
-        if not text and not content_blocks:
-            continue
-        payload = build_rendered_message(
-            message_id=msg.message_id,
-            role=msg.role,
-            text=text,
-            timestamp=msg.sort_key,
-            content_blocks=content_blocks,
-            parent_message_id=msg.parent_message_id,
-            branch_index=msg.branch_index,
-            is_active_path=msg.is_active_path,
-            render_html=render_html,
-            preview_limit=preview_limit,
-        )
-        raw_messages.append(payload)
-    return attach_rendered_message_branches(raw_messages)
 
 
 def build_session_html_messages(
@@ -76,5 +47,4 @@ _attach_branches = attach_rendered_message_branches
 __all__ = [
     "_attach_branches",
     "build_session_html_messages",
-    "build_projection_html_messages",
 ]

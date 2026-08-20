@@ -14,7 +14,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ArchiveDaemonLifecycle,
     ArchiveDaemonStageEvent,
     ArchiveEmbeddingCatchupRun,
-    ArchiveMcpCallLogEntry,
     ArchiveRouteObservation,
     OpsCompactState,
     add_convergence_debt,
@@ -28,7 +27,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     read_cursor_lag_sample,
     read_daemon_stage_event,
     read_embedding_catchup_run,
-    read_mcp_call,
     record_cursor_lag_sample,
     record_daemon_lifecycle_heartbeat,
     record_daemon_lifecycle_signal,
@@ -607,27 +605,6 @@ def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> 
     )
 
     assert call_id == "call-1"
-    assert read_mcp_call(conn, "call-1") == ArchiveMcpCallLogEntry(
-        call_id="call-1",
-        tool_name="get_resume_brief",
-        session_id="codex-session:abc",
-        started_at_ms=1_700_002_000,
-        finished_at_ms=1_700_002_040,
-        duration_ms=40,
-        success=True,
-        error_detail=None,
-    )
-    assert read_mcp_call(conn, "call-2") == ArchiveMcpCallLogEntry(
-        call_id="call-2",
-        tool_name="compose_context_preamble",
-        session_id=None,
-        started_at_ms=1_700_002_100,
-        finished_at_ms=1_700_002_130,
-        duration_ms=30,
-        success=False,
-        error_detail="RuntimeError",
-    )
-
     by_session = list_mcp_calls(conn, session_id="codex-session:abc")
     assert [entry.call_id for entry in by_session] == ["call-4", "call-1"]
 
@@ -636,12 +613,6 @@ def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> 
 
     assert conn.execute("SELECT COUNT(*) FROM mcp_call_log").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM mcp_call_session_refs").fetchone()[0] == 4
-
-
-def test_read_mcp_call_missing_id_raises_key_error(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "ops.db")
-    with pytest.raises(KeyError):
-        read_mcp_call(conn, "does-not-exist")
 
 
 def test_record_route_observation_writes_reads_and_filters(tmp_path: Path) -> None:

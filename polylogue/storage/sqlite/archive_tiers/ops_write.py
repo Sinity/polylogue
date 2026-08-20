@@ -1501,21 +1501,6 @@ def list_mcp_calls(
     return tuple(_mcp_call_log_entry_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
 
 
-def read_mcp_call(conn: sqlite3.Connection, call_id: str) -> ArchiveMcpCallLogEntry:
-    """Read one MCP call-log entry by id."""
-    row = conn.execute(
-        """
-        SELECT call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail
-        FROM mcp_call_log
-        WHERE call_id = ?
-        """,
-        (call_id,),
-    ).fetchone()
-    if row is None:
-        raise KeyError(call_id)
-    return _mcp_call_log_entry_from_row(row)
-
-
 def _mcp_call_log_entry_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveMcpCallLogEntry:
     return ArchiveMcpCallLogEntry(
         call_id=str(row[0]),
