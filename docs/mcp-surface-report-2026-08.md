@@ -273,7 +273,9 @@ durable user-tier path and is explicitly checked for marker isolation without
 being claimed as an admission-controller participant. A separate registered
 `query` call executes a real large-result query, requires the
 `response_budget_exceeded` envelope with a non-empty advancing continuation,
-measures transient Python bytes and newly-created archive sidecars, and
+measures the exact UTF-8 byte length of the formatted string returned by the
+registered production handler (the decoded JSON is used only for field
+assertions), measures transient Python bytes and newly-created archive sidecars, and
 rejects temporary spill artifacts above the bounded thresholds. A cancelled
 registered `query` executes real result assembly before the test disconnects;
 the captured transaction must report `disconnected`, complete reader cleanup,
@@ -283,8 +285,14 @@ remain open, rejects unexpected new temporary artifacts, and runs SQLite
 
 This is application-level concurrency, cancellation, and temporary-resource
 evidence. The transient-byte measurement is process-local allocation evidence,
-not a host-wide RSS/PSS/swap benchmark; those measurements remain
-environment-dependent and are not fabricated from a unit-test result.
+and the response-budget assertion measures the formatted production wire string,
+not a compact re-encoding after parsing. This lane does not provide the full
+AC#7 host-wide RSS/PSS/swap/temp benchmark, return-to-steady-state evidence,
+health/cheap-read responsiveness evidence, or an orphan-task census; those
+measurements remain environment-dependent and are not fabricated from a
+unit-test result. The existing `polylogue-4s3c` successor owns the live-scale
+steady-state RSS/PSS/swap/temp envelope; the health/responsiveness and
+orphan-task residuals remain open until a bounded live-scale proof covers them.
 
 The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/mcp/test_server_surfaces.py::test_query_transaction_certifies_twenty_large_messages_across_api_and_mcp tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **43 passed, 0 failed**. The new evidence module contributed **4 passed** tests.
 
@@ -299,4 +307,7 @@ closure. AC#4 was asking a question the current repo state cannot literally
 answer and is restated above rather than left as a permanently-open
 impossible criterion. The `maintenance()` debt remains deferred to
 `kwsb.2`/`t46.9` and is not changed or implied to be covered by the AC#6/AC#7
-evidence in this lane.
+evidence in this lane. The AC#6 migration-harness proof and the application-level
+AC#7 concurrency/cancellation/cleanup evidence are present here, but the full
+AC#7 host-wide and steady-state/orphan criteria remain a typed partial rather
+than a satisfied claim.

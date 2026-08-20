@@ -294,7 +294,7 @@ async def test_registered_query_disconnect_drains_real_transaction(
 async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The registered query's large-result envelope leaves bounded temp state."""
+    """The registered query's formatted wire envelope leaves bounded temp state."""
     from polylogue.mcp.server import build_server
 
     monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
@@ -308,21 +308,16 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities()))
     query_fn = server._tool_manager._tools["query"].fn
 
-    async def invoke_large_query() -> dict[str, Any]:
-        return cast(
-            dict[str, Any],
-            json.loads(
-                await invoke_surface_async(
-                    query_fn,
-                    expression="messages where text:needle-mcp-large-result",
-                    limit=20,
-                )
-            ),
+    async def invoke_large_query() -> str:
+        return await invoke_surface_async(
+            query_fn,
+            expression="messages where text:needle-mcp-large-result",
+            limit=20,
         )
 
     outer_before_fds = _require_fd_probe(archive_root)
     with _installed_runtime_services(archive_root):
-        warm_response = await invoke_large_query()
+        warm_response = json.loads(await invoke_large_query())
         assert warm_response["status"] == "response_budget_exceeded"
 
         before_files = _archive_file_sizes(archive_root)
@@ -330,19 +325,23 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         tracemalloc.start()
         baseline_bytes, _ = tracemalloc.get_traced_memory()
         tracemalloc.reset_peak()
-        response = await invoke_large_query()
+        response_text = await invoke_large_query()
+        response = json.loads(response_text)
         _, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
         after_files = _archive_file_sizes(archive_root)
         after_fds = _require_fd_probe(archive_root)
         assert after_fds == before_fds
 
-    response_bytes = len(json.dumps(response, sort_keys=True).encode("utf-8"))
+    response_bytes = len(response_text.encode("utf-8"))
+    compact_response_bytes = len(json.dumps(response, sort_keys=True).encode("utf-8"))
     assert response["status"] == "response_budget_exceeded"
     assert response["original_bytes"] > MCP_RESPONSE_BUDGET_BYTES
     assert response["returned_items"] > 0
     assert response["continuation"] is not None
     assert response_bytes <= MCP_RESPONSE_BUDGET_BYTES
+    assert response_bytes > compact_response_bytes
+    assert response_text == json.dumps(response, indent=2, ensure_ascii=False, default=str)
 
     transient_bytes = max(0, peak_bytes - baseline_bytes)
     assert transient_bytes <= 8 * 1024 * 1024
