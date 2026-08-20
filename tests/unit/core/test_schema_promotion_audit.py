@@ -40,6 +40,10 @@ def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_valu
         ),
         encoding="utf-8",
     )
+    (tmp_path / "provider" / "catalog.json").write_text(
+        json.dumps({"provider": "provider", "packages": [{"version": "v1", "elements": []}]}),
+        encoding="utf-8",
+    )
 
     report = audit_schema_artifacts(tmp_path)
 
@@ -50,7 +54,11 @@ def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_valu
         ("unsafe_structural_identifier", "child:mapping:2f5a7f5d-a809-469a-a79a-8f032618fa92"),
     }
     review = {(item.category, item.value) for item in report.review_items}
-    assert ("email_or_account", "person@example.com") in review
+    assert ("email_or_account", "person@example.com") not in review
+    assert any(
+        category == "email_or_account" and value.startswith("sha256:") and value.endswith(";length=18")
+        for category, value in review
+    )
     assert ("approved_readable_value", "gpt-5.6-terra") in review
     assert ("approved_readable_value", "Europe/Warsaw") in review
 
@@ -152,6 +160,24 @@ def test_promotion_audit_blocks_a_catalog_that_lags_its_packages(tmp_path: Path)
     assert "$.packages[version=v1].sample_count" in incoherent
 
 
+def test_promotion_audit_blocks_catalog_package_schema_file_disagreement(tmp_path: Path) -> None:
+    catalog_package = _package(version="v1", sample_count=10, kinds=["session_document"])
+    disk_package = _package(version="v1", sample_count=10, kinds=["session_document"])
+    disk_elements = disk_package["elements"]
+    assert isinstance(disk_elements, list)
+    disk_element = disk_elements[0]
+    assert isinstance(disk_element, dict)
+    disk_element["schema_file"] = "package-only.schema.json.gz"
+    _stage_provider(tmp_path, catalog_package=catalog_package, disk_package=disk_package)
+
+    report = audit_schema_artifacts(tmp_path)
+
+    assert any(
+        finding.category == "catalog_incoherent" and finding.json_path.endswith(".schema_file")
+        for finding in report.blockers
+    )
+
+
 def test_promotion_audit_blocks_a_package_missing_from_the_catalog(tmp_path: Path) -> None:
     _stage_provider(
         tmp_path,
@@ -168,3 +194,19 @@ def test_promotion_audit_blocks_a_package_missing_from_the_catalog(tmp_path: Pat
 
     values = {finding.value for finding in report.blockers if finding.category == "catalog_incoherent"}
     assert "version=v2;reason=package_on_disk_absent_from_catalog" in values
+
+
+def test_promotion_audit_blocks_a_package_provider_without_catalog(tmp_path: Path) -> None:
+    package_dir = tmp_path / "provider" / "versions" / "v1"
+    package_dir.mkdir(parents=True)
+    (package_dir / "package.json").write_text(
+        json.dumps(_package(version="v1", sample_count=1, kinds=["session_document"])),
+        encoding="utf-8",
+    )
+
+    report = audit_schema_artifacts(tmp_path)
+
+    assert any(
+        finding.category == "catalog_incoherent" and finding.value == "reason=provider_catalog_missing"
+        for finding in report.blockers
+    )

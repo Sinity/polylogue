@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk
 from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 
 
+def _redacted_value(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"sha256:{digest};length={len(value)}"
+
+
 def check_privacy_guards(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
     """Check that no UUIDs, hashes, or PII leak through enum values."""
     violations: list[str] = []
@@ -19,14 +25,15 @@ def check_privacy_guards(schema: Mapping[str, object] | SchemaNode) -> CheckResu
 
     for path, values in _walk_values(root):
         for v in values:
+            redacted = _redacted_value(v)
             if _UUID_RE.match(v):
-                violations.append(f"{path}: UUID leak {v!r}")
+                violations.append(f"{path}: UUID leak {redacted}")
             elif _HEX_RE.match(v):
-                violations.append(f"{path}: hex-id leak {v!r}")
+                violations.append(f"{path}: hex-id leak {redacted}")
             elif _looks_high_entropy_token(v):
-                violations.append(f"{path}: high-entropy token {v!r}")
+                violations.append(f"{path}: high-entropy token {redacted}")
             elif not _is_safe_enum_value(v, path=path):
-                violations.append(f"{path}: unsafe value {v!r}")
+                violations.append(f"{path}: unsafe value {redacted}")
 
     if violations:
         return CheckResult(

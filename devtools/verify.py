@@ -81,6 +81,7 @@ from devtools.testmon_bootstrap import (
     _descriptor_bound_path,
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
+    linked_worktree_info,
     native_testmon_lifecycle_lock,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
@@ -221,6 +222,33 @@ def _native_testmon_lifecycle_lock(
         raise PytestResourceError(str(exc)) from exc
 
 
+@contextlib.contextmanager
+def _native_testmon_source_lifecycle_lock(
+    repo_root: Path,
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+) -> Iterator[bool]:
+    """Protect linked-worktree source preparation without extending the lane lock."""
+    linked_info = linked_worktree_info(repo_root)
+    if linked_info is None or not linked_info[0]:
+        yield True
+        return
+    try:
+        # The caller already holds the lane-local lock. lane_init acquires its
+        # linked-worktree locks in this same lane-then-common order, so waiting
+        # for the common source lock cannot form an inverse lock cycle.
+        with native_testmon_lifecycle_lock(linked_info[1], timeout_s=timeout_s, waiter_label="verify-source"):
+            yield True
+    except NativeTestmonLifecycleLockTimeoutError as exc:
+        del exc
+        yield False
+
+
+def _native_testmon_source_lock_timeout_s() -> float:
+    """Return the bounded wait used only while consulting a linked source."""
+    return _float_env(TESTMON_SOURCE_LOCK_TIMEOUT_ENV, DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S)
+
+
 def _anchor_verification_paths() -> None:
     """Use the checkout root for relative verification state when invoked inside it."""
     current = Path.cwd().resolve()
@@ -343,11 +371,13 @@ _REAL_TEST_PROGRESS_EVENTS = frozenset({"test_started", "test_finished", "test_r
 _STORAGE_SCALE_HEARTBEAT_KIND = "storage_scale_heartbeat"
 PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
+TESTMON_SOURCE_LOCK_TIMEOUT_ENV = "POLYLOGUE_VERIFY_TESTMON_SOURCE_LOCK_TIMEOUT_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
+DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
 
 
 def _is_productive_test_progress_event(event: Mapping[str, Any]) -> bool:
@@ -2716,6 +2746,10 @@ def build_verify_steps(
                         str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                     ],
                 ),
+                (
+                    "schema privacy registry",
+                    [sys.executable, "-m", "devtools.verify_schema_privacy"],
+                ),
             ]
         )
 
@@ -3323,11 +3357,19 @@ def _main(argv: list[str] | None = None) -> int:
                 path for path in preparation_required_executable_paths if (ROOT / path).is_file()
             )
             runtime_data_paths = change_impact.runtime_data_paths
+
+            def source_lock_factory() -> contextlib.AbstractContextManager[bool]:
+                return _native_testmon_source_lifecycle_lock(
+                    ROOT,
+                    timeout_s=_native_testmon_source_lock_timeout_s(),
+                )
+
             preparation = prepare_native_testmon_environment(
                 ROOT,
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
+                source_lock_factory=source_lock_factory,
             )
             if (
                 preparation.selection_mode == "bootstrap"
@@ -3340,6 +3382,7 @@ def _main(argv: list[str] | None = None) -> int:
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
+                    source_lock_factory=source_lock_factory,
                 )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)

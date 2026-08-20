@@ -291,7 +291,7 @@ def _iter_schema_units_from_db(
         # log so callers/operators can tell the two apart instead of silently
         # reading zero schema units as a clean, exhaustive result.
         logger.warning(
-            "schema sampling found no source.db tier file at %s; yielding zero schema units for %s "
+            "schema sampling missing tier=source.db path=%s; yielding zero schema units for provider=%s "
             "(this is a missing tier file, not a genuine zero-row result)",
             source_db_path,
             source_name,
