@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,6 +20,7 @@ from devtools.testmon_bootstrap import (
     classify_source_ast,
     executable_python_paths,
     inspect_native_testmon_environment,
+    native_testmon_source_binding,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
@@ -485,7 +488,71 @@ def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Pa
     assert outside.read_text(encoding="utf-8") == "external state"
 
 
-def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprinted: str) -> Path:
+def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sidecar recovery cannot reopen a replacement of the public source path."""
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (replacement_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_original.py",
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_twin.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
+    )
+    original_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
+    Path(f"{source_data}-wal").write_bytes(b"stale sidecar")
+    original_connect = sqlite3.connect
+    recovery_databases: list[Path] = []
+    executed_sql: list[str] = []
+
+    def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        database_path = Path(database)
+        recovery_databases.append(database_path)
+        if database_path == source_data:
+            os.replace(replacement_data, source_data)
+        connection = cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
+        connection.set_trace_callback(executed_sql.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        state = inspect_native_testmon_environment(
+            source_data,
+            environment_name="owned-environment",
+            data_fd=binding.descriptor,
+        )
+
+    assert state.valid
+    assert state.environment is not None
+    assert state.environment.nodeids == ("tests/test_original.py::test_original",)
+    assert recovery_databases
+    assert all(database != source_data for database in recovery_databases)
+    assert "PRAGMA wal_checkpoint(PASSIVE)" in executed_sql
+    current_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
+    assert current_identity == original_identity
+    assert replacement_data.exists()
+
+
+def _seed_partial_native_graph(
+    root: Path,
+    *,
+    environment_name: str,
+    fingerprinted: str,
+    recorded_test_name: str = "tests/test_recorded.py::test_recorded",
+) -> Path:
     """Write a sound testmon database that covers only one executable path.
 
     This is the shape an interrupted bootstrap leaves behind: real recorded
@@ -505,7 +572,7 @@ def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprint
         ).lastrowid
         execution_id = con.execute(
             "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
-            (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
+            (environment_id, recorded_test_name, 0.01, 0, 0),
         ).lastrowid
         fingerprint_id = con.execute(
             "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES (?, ?, ?, ?)",
@@ -733,6 +800,183 @@ def test_atomic_copy_retains_source_child_across_source_replacement(
     )
 
 
+def test_atomic_copy_does_not_consume_replaced_private_bound_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the actual .bound-* entry cannot redirect SQLite source open.
+
+    Both databases are valid and carry the same environment name. The node id
+    is the distinguishing evidence, so an unsafe replacement cannot pass by
+    making the copied database fail a later environment check.
+    """
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
+    )
+    source_state = inspect_native_testmon_environment(
+        source_data,
+        environment_name="owned-environment",
+    )
+    assert source_state.valid
+    assert source_state.environment is not None
+    assert source_state.environment.nodeids == ("tests/test_original.py::test_original",)
+    replacement_state = inspect_native_testmon_environment(
+        replacement_data,
+        environment_name="owned-environment",
+    )
+    assert replacement_state.valid
+    assert replacement_state.environment is not None
+    assert replacement_state.environment.nodeids == ("tests/test_twin.py::test_twin",)
+    original_connect = sqlite3.connect
+    replaced = False
+    private_entry: Path | None = None
+
+    def replace_private_bound_source(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal private_entry, replaced
+        if not replaced:
+            private_entries = tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
+            assert len(private_entries) == 1
+            private_entry = private_entries[0]
+            replaced = True
+            os.replace(replacement_data, private_entry)
+        return cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", replace_private_bound_source)
+    try:
+        _atomic_copy_sqlite_database(
+            source_data,
+            destination_data,
+            environment_name="owned-environment",
+            required_executable_paths=(),
+            deadline_monotonic=None,
+        )
+    except NativeTestmonRepairError:
+        # A platform may fail closed when the retained descriptor namespace
+        # cannot safely be reopened after the private entry is replaced.
+        assert not destination_data.exists()
+    else:
+        copied = inspect_native_testmon_environment(
+            destination_data,
+            environment_name="owned-environment",
+        )
+        assert copied.valid
+        assert copied.environment is not None
+        assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
+
+    assert replaced
+    assert private_entry is not None
+    replacement = inspect_native_testmon_environment(private_entry, environment_name="owned-environment")
+    assert replacement.valid
+    assert replacement.environment is not None
+    assert replacement.environment.nodeids == ("tests/test_twin.py::test_twin",)
+
+
+def test_source_binding_closes_descriptors_when_bound_entry_becomes_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private-entry cleanup leaves a directory replacement untouched."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    directory_fds: list[int] = []
+    original_open_directory = testmon_bootstrap._open_owned_testmon_directory
+
+    def capture_directory_fd(*args: Any, **kwargs: Any) -> int:
+        descriptor = original_open_directory(*args, **kwargs)
+        directory_fds.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(testmon_bootstrap, "_open_owned_testmon_directory", capture_directory_fd)
+    bound_fd: int | None = None
+    private_entry: Path | None = None
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        bound_fd = binding.descriptor
+        private_entry = next(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
+        replacement_directory = tmp_path / "replacement-directory"
+        replacement_directory.mkdir()
+        private_entry.unlink()
+        replacement_directory.rename(private_entry)
+
+    assert bound_fd is not None
+    assert directory_fds
+    for descriptor in (*directory_fds, bound_fd):
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert private_entry is not None
+    assert private_entry.is_dir()
+    private_entry.rmdir()
+
+
+def test_atomic_copy_carries_validated_source_descriptor_across_public_replacement(
+    tmp_path: Path,
+) -> None:
+    """A public replacement after validation cannot redirect the retained source."""
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_original.py",
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_twin.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
+    )
+
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        inspected = inspect_native_testmon_environment(
+            source_data,
+            environment_name="owned-environment",
+            data_fd=binding.descriptor,
+        )
+        assert inspected.valid
+        os.replace(replacement_data, source_data)
+        _atomic_copy_sqlite_database(
+            source_data,
+            destination_data,
+            environment_name="owned-environment",
+            required_executable_paths=(),
+            deadline_monotonic=None,
+            source_fd=binding.descriptor,
+        )
+
+    copied = inspect_native_testmon_environment(destination_data, environment_name="owned-environment")
+    assert copied.valid
+    assert copied.environment is not None
+    assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
+
+
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:
     """An interrupted bootstrap is resumable state, not corruption."""
     covered, uncovered = "polylogue/covered.py", "polylogue/uncovered.py"
@@ -831,6 +1075,93 @@ def test_probing_an_absent_environment_preserves_another_environments_graph(tmp_
     survivor = inspect_native_testmon_environment(data, environment_name=resident)
     assert survivor.environment is not None
     assert survivor.environment.nodeids == ("tests/test_recorded.py::test_recorded",)
+
+
+def test_optional_main_source_that_appears_after_binding_stays_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public source appearing after a missed bind cannot become a source."""
+    lane = tmp_path / "lane"
+    main = tmp_path / "main"
+    lane.mkdir()
+    main.mkdir()
+
+    monkeypatch.setattr(testmon_bootstrap, "testmon_environment_digest", lambda *_args, **_kwargs: "lane-environment")
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, main) if checkout.resolve() == lane.resolve() else None,
+    )
+
+    @contextlib.contextmanager
+    def source_binding(data_path: Path) -> Iterator[None]:
+        assert not data_path.exists()
+        _seed_partial_native_graph(
+            main,
+            environment_name="lane-environment",
+            fingerprinted="tests/test_recorded.py",
+        )
+        yield None
+
+    monkeypatch.setattr(testmon_bootstrap, "native_testmon_source_binding", source_binding)
+
+    original_inspect = testmon_bootstrap.inspect_native_testmon_environment
+
+    def inspect_without_unbound_source_read(
+        data_path: Path,
+        *,
+        data_fd: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if data_path == main / TESTMON_DATA_RELPATH and data_fd is None:
+            raise AssertionError("an optional source that appeared after binding must not be read unbound")
+        return original_inspect(data_path, data_fd=data_fd, **kwargs)
+
+    monkeypatch.setattr(testmon_bootstrap, "inspect_native_testmon_environment", inspect_without_unbound_source_read)
+
+    preparation = prepare_native_testmon_environment(lane)
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+    assert (main / TESTMON_DATA_RELPATH).is_file()
+
+
+def test_optional_main_invalid_parent_falls_back_to_lane_local_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unsafe optional source parent cannot reject an otherwise safe lane."""
+    lane = tmp_path / "lane"
+    main = tmp_path / "main"
+    lane.mkdir()
+    main.mkdir()
+
+    monkeypatch.setattr(testmon_bootstrap, "testmon_environment_digest", lambda *_args, **_kwargs: "lane-environment")
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, main) if checkout.resolve() == lane.resolve() else None,
+    )
+    original_validate = testmon_bootstrap._validate_owned_state_parents
+
+    def reject_main_parent(checkout: Path) -> None:
+        if checkout.resolve() == main.resolve():
+            raise NativeTestmonRepairError("refusing symlinked owned testmon parent")
+        original_validate(checkout)
+
+    monkeypatch.setattr(testmon_bootstrap, "_validate_owned_state_parents", reject_main_parent)
+
+    preparation = prepare_native_testmon_environment(
+        lane,
+        source_lock_factory=lambda: contextlib.nullcontext(True),
+    )
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+    assert preparation.fallback_allowed is True
 
 
 def test_an_interrupted_bootstrap_does_not_delete_every_environments_graph(tmp_path: Path) -> None:

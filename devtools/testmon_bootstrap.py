@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -131,6 +131,14 @@ class NativeTestmonPreparation:
     linked_worktree: bool
     main_checkout: Path | None
     fallback_allowed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class NativeTestmonSourceBinding:
+    """A source database descriptor retained across validation and copy."""
+
+    descriptor: int
+    data_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +279,25 @@ def native_testmon_lifecycle_locks(
         for root in roots:
             stack.enter_context(native_testmon_lifecycle_lock(root, timeout_s=timeout_s, waiter_label=waiter_label))
         yield
+
+
+@contextlib.contextmanager
+def _optional_native_testmon_source_lock(
+    source_lock: contextlib.AbstractContextManager[bool],
+) -> Iterator[bool]:
+    """Treat an unavailable linked source as absent without leaking its lock."""
+    try:
+        source_available = source_lock.__enter__()
+    except NativeTestmonRepairError:
+        yield False
+        return
+    try:
+        yield source_available
+    except BaseException as exc:
+        source_lock.__exit__(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        source_lock.__exit__(None, None, None)
 
 
 def _ensure_deadline(deadline_monotonic: float | None) -> None:
@@ -720,6 +747,15 @@ def inspect_native_testmon_environment(
     """Validate one native environment without interpreting plugin internals."""
     _ensure_deadline(deadline_monotonic)
     sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
+    sqlite_data_path = _descriptor_bound_path(data_fd) if data_fd is not None else data_path
+    if data_fd is not None:
+        try:
+            opened = os.fstat(data_fd)
+            current = data_path.stat()
+        except OSError as exc:
+            return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            return NativeTestmonState("invalid", "native testmon database changed while binding")
     if data_fd is None and not data_path.exists():
         if any(path.exists() or path.is_symlink() for path in sidecars):
             return NativeTestmonState("invalid", "SQLite sidecars exist without the owned database")
@@ -728,7 +764,7 @@ def inspect_native_testmon_environment(
         state = os.fstat(data_fd) if data_fd is not None else data_path.lstat()
     except OSError as exc:
         return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
-    if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+    if not stat.S_ISREG(state.st_mode) or (data_fd is None and state.st_nlink != 1) or state.st_nlink < 1:
         return NativeTestmonState("invalid", "native testmon database is not a single-link regular file")
     for sidecar in sidecars:
         try:
@@ -748,16 +784,24 @@ def inspect_native_testmon_environment(
     # crash recovery happens instead.
     if any(path.exists() for path in sidecars):
         with contextlib.suppress(sqlite3.Error, OSError):
-            recovery = sqlite3.connect(data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
+            recovery = sqlite3.connect(sqlite_data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
             try:
                 recovery.execute("PRAGMA wal_checkpoint(PASSIVE)")
             finally:
                 recovery.close()
+        if data_fd is not None:
+            try:
+                opened = os.fstat(data_fd)
+                current = data_path.stat()
+            except OSError as exc:
+                return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                return NativeTestmonState("invalid", "native testmon database changed while recovering sidecars")
     try:
         with (
             contextlib.closing(
                 sqlite3.connect(
-                    _readonly_uri(data_path),
+                    _readonly_uri(sqlite_data_path),
                     uri=True,
                     timeout=_remaining_timeout(deadline_monotonic, 10),
                 )
@@ -947,6 +991,7 @@ def certified_attestation_violation(
     *,
     environment_name: str,
     current_nodeids: Sequence[str],
+    certificate_data_path: Path | None = None,
 ) -> str | None:
     """Why this graph may NOT attest unexecuted tests, or None when it may.
 
@@ -957,7 +1002,10 @@ def certified_attestation_violation(
     and do not violate the certificate.
     """
     root = repo_root.resolve()
-    certified = read_certified_corpus(root / TESTMON_DATA_RELPATH, environment_name)
+    certified = read_certified_corpus(
+        certificate_data_path if certificate_data_path is not None else root / TESTMON_DATA_RELPATH,
+        environment_name,
+    )
     if certified is None:
         return "no completed covered run has certified this environment's corpus"
     current = {canonical_test_nodeid(nodeid) for nodeid in current_nodeids}
@@ -1064,8 +1112,9 @@ def _open_owned_testmon_directory(repo_root: Path, *, create: bool) -> int:
 
 
 def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, str]:
-    """Open and retain an owned child before exposing its descriptor-bound path."""
+    """Open and retain the private bound child before exposing its descriptor path."""
     child_fd: int | None = None
+    bound_fd: int | None = None
     private_name: str | None = None
     try:
         child_fd = os.open(
@@ -1086,24 +1135,44 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
         private_name = f".{name}.bound-{os.getpid()}-{uuid.uuid4().hex}.tmp"
         bound_child = _descriptor_bound_path(child_fd)
         os.link(bound_child, private_name, dst_dir_fd=directory_fd, follow_symlinks=True)
-        private_identity = os.stat(private_name, dir_fd=directory_fd, follow_symlinks=False)
+        # Open the link before validating it, then use the retained descriptor
+        # below. Reopening ``private_name`` after validation would let a
+        # replacement of the .bound-* entry redirect SQLite to another inode.
+        bound_fd = os.open(
+            private_name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        private_identity = os.fstat(bound_fd)
         if not stat.S_ISREG(private_identity.st_mode) or (opened.st_dev, opened.st_ino) != (
             private_identity.st_dev,
             private_identity.st_ino,
         ):
             raise NativeTestmonRepairError(f"owned testmon child link changed while binding: {name}")
-        return child_fd, _descriptor_bound_path(directory_fd) / private_name, private_name
+        os.close(child_fd)
+        child_fd = None
+        return bound_fd, _descriptor_bound_path(bound_fd), private_name
     except NativeTestmonRepairError:
         if private_name is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(private_name, dir_fd=directory_fd)
+            _unlink_bound_entry_if_owned(
+                directory_fd,
+                private_name,
+                bound_fd if bound_fd is not None else child_fd,
+            )
+        if bound_fd is not None:
+            os.close(bound_fd)
         if child_fd is not None:
             os.close(child_fd)
         raise
     except OSError as exc:
         if private_name is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(private_name, dir_fd=directory_fd)
+            _unlink_bound_entry_if_owned(
+                directory_fd,
+                private_name,
+                bound_fd if bound_fd is not None else child_fd,
+            )
+        if bound_fd is not None:
+            os.close(bound_fd)
         if child_fd is not None:
             os.close(child_fd)
         raise NativeTestmonRepairError(f"cannot bind owned testmon child {name}: {exc}") from exc
@@ -1121,6 +1190,47 @@ def _descriptor_bound_path(file_descriptor: int) -> Path:
     raise NativeTestmonRepairError(
         f"no descriptor-bound filesystem namespace is available for file descriptor {file_descriptor}"
     )
+
+
+def _unlink_bound_entry_if_owned(directory_fd: int, private_name: str, retained_fd: int | None) -> None:
+    """Remove a private binding only while its directory entry names the retained inode."""
+    if retained_fd is None:
+        return
+    try:
+        retained = os.fstat(retained_fd)
+        current = os.stat(private_name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if (current.st_dev, current.st_ino) != (retained.st_dev, retained.st_ino):
+        return
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(private_name, dir_fd=directory_fd)
+
+
+@contextlib.contextmanager
+def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSourceBinding | None]:
+    """Retain one source inode for semantic validation and any subsequent copy."""
+    if not data_path.is_file():
+        yield None
+        return
+    directory_fd: int | None = None
+    child_fd: int | None = None
+    private_name: str | None = None
+    try:
+        directory_fd = _open_owned_testmon_directory(data_path.parent.parent.parent, create=False)
+        child_fd, bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
+        yield NativeTestmonSourceBinding(child_fd, bound_path)
+    finally:
+        try:
+            if directory_fd is not None and private_name is not None:
+                _unlink_bound_entry_if_owned(directory_fd, private_name, child_fd)
+        finally:
+            try:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+            finally:
+                if child_fd is not None:
+                    os.close(child_fd)
 
 
 def _publish_validated_testmon_database(
@@ -1182,6 +1292,7 @@ def _atomic_copy_sqlite_database(
     environment_name: str,
     required_executable_paths: Sequence[str],
     deadline_monotonic: float | None,
+    source_fd: int | None = None,
 ) -> None:
     _ensure_deadline(deadline_monotonic)
     source_directory_fd: int | None = None
@@ -1189,15 +1300,25 @@ def _atomic_copy_sqlite_database(
     source_private_name: str | None = None
     destination_directory_fd: int | None = None
     temporary_fd: int | None = None
+    source_path: Path | None = None
     temporary_name = f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp"
     publication_name = f".{destination.name}.publish-{os.getpid()}-{uuid.uuid4().hex}.tmp"
     try:
-        source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
+        if source_fd is None:
+            source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
+        else:
+            source_path = _descriptor_bound_path(source_fd)
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
-        # Retain the source inode before SQLite opens it.  Reusing the held
-        # directory descriptor plus a mutable child name would let a source
-        # replacement redirect the copy after the source was inspected.
-        source_child_fd, source_path, source_private_name = _open_owned_testmon_child(source_directory_fd, source.name)
+        if source_fd is None:
+            # Retain the source inode before SQLite opens it.  The returned
+            # path is bound to the private hard-link descriptor, so replacing
+            # the public source name cannot redirect the copy; replacing the
+            # .bound-* entry makes the descriptor namespace fail closed.
+            assert source_directory_fd is not None
+            source_child_fd, source_path, source_private_name = _open_owned_testmon_child(
+                source_directory_fd, source.name
+            )
+        assert source_path is not None
         destination_name = destination.name
         temporary_fd = os.open(
             temporary_name,
@@ -1278,8 +1399,7 @@ def _atomic_copy_sqlite_database(
             os.close(destination_directory_fd)
         if source_directory_fd is not None:
             if source_private_name is not None:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(source_private_name, dir_fd=source_directory_fd)
+                _unlink_bound_entry_if_owned(source_directory_fd, source_private_name, source_child_fd)
             os.close(source_directory_fd)
         if source_child_fd is not None:
             os.close(source_child_fd)
@@ -1322,6 +1442,7 @@ def prepare_native_testmon_environment(
     pytest_profile: str = "default",
     pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
+    source_lock_factory: Callable[[], contextlib.AbstractContextManager[bool]] | None = None,
 ) -> NativeTestmonPreparation:
     """Repair derived local state and optionally reuse a matching main graph."""
     root = repo_root.resolve()
@@ -1408,24 +1529,58 @@ def prepare_native_testmon_environment(
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
-        _validate_owned_state_parents(main_checkout)
-        main_data = main_checkout / TESTMON_DATA_RELPATH
-        main = inspect_native_testmon_environment(
-            main_data,
-            environment_name=environment_name,
-            required_executable_paths=required_executable_paths,
-            deadline_monotonic=deadline_monotonic,
-        )
+        source_lock = source_lock_factory() if source_lock_factory is not None else contextlib.nullcontext(True)
+        main = NativeTestmonState("absent", "optional main native testmon state unavailable")
+        with _optional_native_testmon_source_lock(source_lock) as source_available:
+            if source_available:
+                try:
+                    _validate_owned_state_parents(main_checkout)
+                except NativeTestmonRepairError as exc:
+                    main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
+                else:
+                    main_data = main_checkout / TESTMON_DATA_RELPATH
+                    main_binding_context = native_testmon_source_binding(main_data)
+                    try:
+                        main_binding = main_binding_context.__enter__()
+                    except NativeTestmonRepairError as exc:
+                        # The linked checkout is optional. A stale private hard link or
+                        # another source-only ownership violation must not turn an
+                        # otherwise safe local bootstrap into a rejected verify.
+                        main_binding = None
+                        main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
+                    else:
+                        try:
+                            if main_binding is None:
+                                # The public source path may appear immediately after
+                                # binding checked it. Without a retained descriptor it
+                                # is not safe to inspect or copy that mutable inode.
+                                main = NativeTestmonState(
+                                    "absent",
+                                    "optional main native testmon state unavailable before descriptor binding",
+                                )
+                            else:
+                                main = inspect_native_testmon_environment(
+                                    main_data,
+                                    environment_name=environment_name,
+                                    required_executable_paths=required_executable_paths,
+                                    data_fd=main_binding.descriptor,
+                                    deadline_monotonic=deadline_monotonic,
+                                )
+                                if main.valid:
+                                    _atomic_copy_sqlite_database(
+                                        main_data,
+                                        local_data,
+                                        environment_name=environment_name,
+                                        required_executable_paths=required_executable_paths,
+                                        deadline_monotonic=deadline_monotonic,
+                                        source_fd=main_binding.descriptor,
+                                    )
+                                    copied_from = main_data
+                        finally:
+                            main_binding_context.__exit__(None, None, None)
         fallback_allowed = native_testmon_fallback_allowed(local, main)
-        if main.valid:
-            _atomic_copy_sqlite_database(
-                main_data,
-                local_data,
-                environment_name=environment_name,
-                required_executable_paths=required_executable_paths,
-                deadline_monotonic=deadline_monotonic,
-            )
-            copied_from = main_data
+
+        if copied_from is not None:
             local = inspect_native_testmon_environment(
                 local_data,
                 environment_name=environment_name,
@@ -1501,6 +1656,7 @@ __all__ = [
     "NativeTestmonLifecycleLockTimeoutError",
     "NativeTestmonPreparation",
     "NativeTestmonRepairError",
+    "NativeTestmonSourceBinding",
     "NativeTestmonState",
     "TESTMON_DATA_RELPATH",
     "classify_source_ast",
@@ -1511,6 +1667,7 @@ __all__ = [
     "native_testmon_fallback_allowed",
     "native_testmon_lifecycle_lock",
     "native_testmon_lifecycle_locks",
+    "native_testmon_source_binding",
     "prepare_native_testmon_environment",
     "remove_invalid_native_testmon_state",
     "testmon_environment_digest",
