@@ -41,18 +41,32 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from devtools import repo_root
 
 LEDGER_RELPATH = Path(".cache/fanout/lanes.jsonl")
+
+
+@dataclass(frozen=True, slots=True)
+class LaneEnvironmentAttestation:
+    """The exact native-testmon inputs and candidate environments verify may use."""
+
+    pytest_profile: str
+    pytest_environment: tuple[tuple[str, str | None], ...]
+    digests: tuple[str, ...]
+
+    @property
+    def environment(self) -> dict[str, str | None]:
+        return dict(self.pytest_environment)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -299,7 +313,21 @@ def _guard_check(worktree: Path) -> str | None:
 
 
 def lane_environment_digest(worktree: Path) -> str | None:
-    """The testmon environment name this lane's own interpreter computes."""
+    """The initial verify environment name this lane's interpreter computes."""
+    attestation = lane_environment_attestation(worktree)
+    return attestation.digests[0] if attestation is not None and attestation.digests else None
+
+
+def lane_environment_attestation(worktree: Path) -> LaneEnvironmentAttestation | None:
+    """Compute the same digest candidates as verify, using the lane interpreter.
+
+    Verify first prepares the normalized ambient environment. If that candidate
+    bootstraps with a non-default Hypothesis profile, it explicitly retries
+    with ``HYPOTHESIS_PROFILE=default``. Lane seeding must accept either
+    candidate, but only after validating the graph and its completion
+    certificate; otherwise a seed can claim warmth for a graph verify will not
+    attest.
+    """
     python = worktree / ".venv" / "bin" / "python"
     if not python.exists():
         return None
@@ -308,12 +336,19 @@ def lane_environment_digest(worktree: Path) -> str | None:
             str(python),
             "-c",
             (
+                "import json; "
                 "from pathlib import Path; "
                 "from devtools.testmon_bootstrap import testmon_environment_digest; "
                 "from devtools.verify import _native_pytest_environment, _pytest_profile; "
-                "print(testmon_environment_digest("
-                "Path.cwd(), pytest_profile=_pytest_profile(), "
-                "pytest_environment=_native_pytest_environment()))"
+                "profile = _pytest_profile(); "
+                "initial = _native_pytest_environment(); "
+                "fallback = ({**initial, 'HYPOTHESIS_PROFILE': 'default'} "
+                "if initial.get('HYPOTHESIS_PROFILE') != 'default' else None); "
+                "candidates = [initial] + ([fallback] if fallback is not None else []); "
+                "digests = [testmon_environment_digest(Path.cwd(), pytest_profile=profile, "
+                "pytest_environment=environment) for environment in candidates]; "
+                "print(json.dumps({'pytest_profile': profile, 'pytest_environment': initial, "
+                "'digests': list(dict.fromkeys(digests))}, sort_keys=True))"
             ),
         ],
         cwd=worktree,
@@ -321,23 +356,38 @@ def lane_environment_digest(worktree: Path) -> str | None:
     )
     if probe.returncode != 0:
         return None
-    return probe.stdout.strip() or None
-
-
-def graph_environments(path: Path) -> set[str]:
-    """Environment names a testmon graph actually holds, empty if unreadable."""
-    import sqlite3
-
-    if not path.is_file():
-        return set()
     try:
-        with contextlib.closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)) as conn:
-            return {str(row[0]) for row in conn.execute("SELECT DISTINCT environment_name FROM environment")}
-    except (OSError, sqlite3.Error):
-        return set()
+        payload = json.loads(probe.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    profile = payload.get("pytest_profile")
+    raw_environment = payload.get("pytest_environment")
+    raw_digests = payload.get("digests")
+    if not isinstance(profile, str) or not isinstance(raw_environment, dict) or not isinstance(raw_digests, list):
+        return None
+    expected_keys = {"HYPOTHESIS_PROFILE", "POLYLOGUE_CI"}
+    if set(raw_environment) != expected_keys:
+        return None
+    environment: list[tuple[str, str | None]] = []
+    for key in ("HYPOTHESIS_PROFILE", "POLYLOGUE_CI"):
+        value = raw_environment[key]
+        if value is not None and not isinstance(value, str):
+            return None
+        environment.append((key, value))
+    digests = tuple(value for value in raw_digests if isinstance(value, str) and value)
+    if not digests or len(digests) != len(raw_digests):
+        return None
+    return LaneEnvironmentAttestation(profile, tuple(environment), tuple(dict.fromkeys(digests)))
 
 
-def _seed_testmon_graph(root: Path, worktree: Path) -> tuple[str, bool]:
+def _seed_testmon_graph(
+    root: Path,
+    worktree: Path,
+    *,
+    attestation: LaneEnvironmentAttestation | None = None,
+) -> tuple[str, bool]:
     """Copy the coordinator's testmon graph into a lane, and say whether it helps.
 
     Returns ``(note, warm)``. ``warm`` is True only when the copied graph
@@ -381,23 +431,40 @@ def _seed_testmon_graph(root: Path, worktree: Path) -> tuple[str, bool]:
     except (OSError, sqlite3.Error) as exc:
         return f"graph seed failed ({exc}); first lane verify will bootstrap", False
 
-    environments = graph_environments(destination)
-    if not environments:
-        return "seeded graph holds no environments; first lane verify will bootstrap", False
-    digest = lane_environment_digest(worktree)
-    if digest is None:
-        return (
-            f"seeded {len(environments)} environment(s) but could not compute this lane's digest; warmth unverified"
-        ), False
-    if digest not in environments:
-        return (
-            f"seeded {len(environments)} environment(s), NONE matching this lane ({digest[:24]}...); "
-            "first lane verify will bootstrap the complete corpus"
-        ), False
-    return f"seeded and matched this lane's environment ({digest[:24]}...); verifies start warm", True
+    if attestation is None:
+        attestation = lane_environment_attestation(worktree)
+    if attestation is None:
+        return ("seeded graph but could not compute verify's normalized digest inputs; warmth unverified"), False
+    from devtools.testmon_bootstrap import certified_attestation_violation, inspect_native_testmon_environment
+
+    failures: list[str] = []
+    for digest in attestation.digests:
+        state = inspect_native_testmon_environment(destination, environment_name=digest)
+        if not state.valid or state.environment is None:
+            failures.append(f"{digest[:24]}...: {state.reason}")
+            continue
+        violation = certified_attestation_violation(
+            worktree,
+            environment_name=digest,
+            current_nodeids=state.environment.nodeids,
+        )
+        if violation is not None:
+            failures.append(f"{digest[:24]}...: {violation}")
+            continue
+        suffix = " (verify default-profile fallback)" if digest != attestation.digests[0] else ""
+        return f"seeded and certified this lane environment ({digest[:24]}...){suffix}; verifies start warm", True
+    detail = "; ".join(failures) if failures else "no candidate environment"
+    return (
+        f"seeded graph is not attestable for verify's environment candidates ({detail}); first lane verify will bootstrap",
+        False,
+    )
 
 
-def dispatch_env_lines(worktree: Path) -> tuple[str, ...]:
+def dispatch_env_lines(
+    worktree: Path,
+    *,
+    attestation: LaneEnvironmentAttestation | None = None,
+) -> tuple[str, ...]:
     """Environment a dispatched agent must apply before running lane tooling.
 
     ``_lane_env`` only sanitises the subprocesses lane-init itself spawns. An
@@ -409,6 +476,20 @@ def dispatch_env_lines(worktree: Path) -> tuple[str, ...]:
     """
     lines = [f"export VIRTUAL_ENV={worktree / '.venv'}", 'export PATH="$VIRTUAL_ENV/bin:$PATH"']
     lines.extend(f"unset {key}" for key in _INTERPRETER_DESCRIBING_ENV)
+    if attestation is None:
+        attestation = lane_environment_attestation(worktree)
+    if attestation is None:
+        lines.append("echo 'lane-init: cannot compute normalized testmon digest inputs; do not run verify' >&2")
+        lines.append("false")
+    else:
+        for key, value in attestation.pytest_environment:
+            if value is None:
+                lines.append(f"unset {key}")
+            else:
+                lines.append(f"export {key}={shlex.quote(value)}")
+        lines.append(f"# testmon pytest profile: {shlex.quote(attestation.pytest_profile)}")
+        if len(attestation.digests) > 1:
+            lines.append("# testmon fallback: HYPOTHESIS_PROFILE=default after a non-default bootstrap")
     # gh / pr-scope reach GitHub over TLS; a devshell without this resolves no
     # CA bundle and every API call fails with a certificate error.
     lines.append("export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
@@ -462,7 +543,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("lane-init: verify-worktree failed", file=sys.stderr)
         return 1
 
-    graph_note, graph_warm = _seed_testmon_graph(root, worktree)
+    attestation = lane_environment_attestation(worktree) if not args.no_venv else None
+    graph_note, graph_warm = _seed_testmon_graph(root, worktree, attestation=attestation)
     base_sha = _run(["git", "-C", str(worktree), "rev-parse", "--short=9", "HEAD"]).stdout.strip()
     workers = recommended_workers(args.expected_lanes)
     record = lane_record(
@@ -476,7 +558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     record["testmon_graph"] = graph_note
     record["testmon_warm"] = graph_warm
     record["interpreter"] = str(interpreter) if interpreter is not None else None
-    record["dispatch_env"] = list(dispatch_env_lines(worktree))
+    record["dispatch_env"] = list(dispatch_env_lines(worktree, attestation=attestation))
     ledger_path = append_ledger(coordinator_root(root), record)
 
     if args.as_json:
@@ -496,7 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  beads: {', '.join(beads)}")
         print(f"  ledger: {ledger_path}")
         print(f"  dispatch env: POLYLOGUE_PYTEST_WORKERS={workers}  (for {args.expected_lanes} concurrent lanes)")
-        for line in dispatch_env_lines(worktree):
+        for line in dispatch_env_lines(worktree, attestation=attestation):
             print(f"    {line}")
     return 0
 

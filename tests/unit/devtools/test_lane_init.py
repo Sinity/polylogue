@@ -341,7 +341,19 @@ def test_lane_environment_digest_uses_the_verify_digest_contract(
         env: dict[str, str] | None = None,
     ) -> CompletedProcess[str]:
         captured["cmd"] = list(cmd)
-        return CompletedProcess(cmd, 0, "polylogue-current\n", "")
+        return CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "pytest_profile": "correctness=complete",
+                    "pytest_environment": {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": None},
+                    "digests": ["polylogue-current"],
+                }
+            )
+            + "\n",
+            "",
+        )
 
     monkeypatch.setattr(lane_init, "_run", fake_run)
 
@@ -350,8 +362,45 @@ def test_lane_environment_digest_uses_the_verify_digest_contract(
     assert isinstance(command, list)
     probe = command[-1]
     assert isinstance(probe, str)
-    assert "pytest_profile=_pytest_profile()" in probe
-    assert "pytest_environment=_native_pytest_environment()" in probe
+    assert "fallback" in probe
+    assert "HYPOTHESIS_PROFILE': 'default'" in probe
+
+
+def test_lane_environment_attestation_includes_verify_default_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = tmp_path / "lane"
+    python = lane / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+
+    def fake_run(
+        cmd: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
+        return CompletedProcess(
+            cmd,
+            0,
+            json.dumps(
+                {
+                    "pytest_profile": "correctness=complete",
+                    "pytest_environment": {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"},
+                    "digests": ["polylogue-initial", "polylogue-default"],
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(lane_init, "_run", fake_run)
+    attestation = lane_init.lane_environment_attestation(lane)
+
+    assert attestation is not None
+    assert attestation.digests == ("polylogue-initial", "polylogue-default")
+    assert attestation.environment == {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
 
 
 def test_interpreter_guard_refuses_a_mismatched_lane_interpreter(tmp_path: Path) -> None:
@@ -425,21 +474,49 @@ def _graph_with(path: Path, environments: Sequence[str]) -> Path:
     return path
 
 
-def test_graph_environments_reads_names_and_tolerates_junk(tmp_path: Path) -> None:
-    populated = _graph_with(tmp_path / "graph.db", ["polylogue-aaa", "polylogue-bbb", "polylogue-aaa"])
-    assert lane_init.graph_environments(populated) == {"polylogue-aaa", "polylogue-bbb"}
+def _certified_graph_with(path: Path, environment_name: str) -> Path:
+    import testmon.db
 
-    assert lane_init.graph_environments(tmp_path / "absent.db") == set()
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
 
-    junk = tmp_path / "junk.db"
-    junk.write_bytes(b"not a database at all")
-    assert lane_init.graph_environments(junk) == set()
+    data = path / TESTMON_DATA_RELPATH
+    data.parent.mkdir(parents=True, exist_ok=True)
+    (path / "tests").mkdir(parents=True, exist_ok=True)
+    (path / "tests" / "test_recorded.py").write_text("def test_recorded(): pass\n", encoding="utf-8")
+    db = testmon.db.DB(str(data))
+    try:
+        con = db.con
+        environment_id = con.execute(
+            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, ?, ?)",
+            (environment_name, "", "3.14"),
+        ).lastrowid
+        execution_id = con.execute(
+            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
+            (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
+        ).lastrowid
+        fingerprint_id = con.execute(
+            "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES (?, ?, ?, ?)",
+            ("tests/test_recorded.py", b"", 0.0, ""),
+        ).lastrowid
+        con.execute(
+            "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id) VALUES (?, ?)",
+            (execution_id, fingerprint_id),
+        )
+        con.commit()
+    finally:
+        db.con.close()
+    from devtools.testmon_bootstrap import write_certified_corpus
 
-    empty = tmp_path / "empty.db"
-    import sqlite3
+    assert write_certified_corpus(path, environment_name, ["tests/test_recorded.py::test_recorded"])
+    return data
 
-    sqlite3.connect(empty).close()
-    assert lane_init.graph_environments(empty) == set()
+
+def _attestation(*digests: str, profile: str = "correctness=complete") -> lane_init.LaneEnvironmentAttestation:
+    return lane_init.LaneEnvironmentAttestation(
+        profile,
+        (("HYPOTHESIS_PROFILE", "default"), ("POLYLOGUE_CI", None)),
+        digests,
+    )
 
 
 def test_seed_reports_cold_when_the_graph_lacks_this_lanes_environment(
@@ -460,13 +537,12 @@ def test_seed_reports_cold_when_the_graph_lacks_this_lanes_environment(
 
     root = tmp_path / "root"
     lane = tmp_path / "lane"
-    _graph_with(root / TESTMON_DATA_RELPATH, ["polylogue-stale-one", "polylogue-stale-two"])
-    monkeypatch.setattr(lane_init, "lane_environment_digest", lambda _worktree: "polylogue-current")
+    _certified_graph_with(root, "polylogue-stale")
 
-    note, warm = lane_init._seed_testmon_graph(root, lane)
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
 
     assert warm is False
-    assert "NONE matching this lane" in note
+    assert "not attestable" in note
     assert "bootstrap" in note
     assert (lane / TESTMON_DATA_RELPATH).is_file()
 
@@ -475,17 +551,28 @@ def test_seed_reports_warm_only_on_a_real_environment_match(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
-
     root = tmp_path / "root"
     lane = tmp_path / "lane"
-    _graph_with(root / TESTMON_DATA_RELPATH, ["polylogue-stale", "polylogue-current"])
-    monkeypatch.setattr(lane_init, "lane_environment_digest", lambda _worktree: "polylogue-current")
+    _certified_graph_with(root, "polylogue-current")
 
-    note, warm = lane_init._seed_testmon_graph(root, lane)
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
 
     assert warm is True
     assert "verifies start warm" in note
+
+
+def test_seed_accepts_verify_default_profile_fallback_when_certified(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    _certified_graph_with(root, "polylogue-default")
+    attestation = _attestation("polylogue-initial", "polylogue-default", profile="ci")
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=attestation)
+
+    assert warm is True
+    assert "verify default-profile fallback" in note
 
 
 def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -499,10 +586,9 @@ def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypa
     assert "no coordinator graph" in note
 
     _graph_with(root / TESTMON_DATA_RELPATH, [])
-    monkeypatch.setattr(lane_init, "lane_environment_digest", lambda _worktree: "polylogue-current")
-    note, warm = lane_init._seed_testmon_graph(root, lane)
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
     assert warm is False
-    assert "no environments" in note
+    assert "not attestable" in note
 
 
 def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
@@ -515,12 +601,26 @@ def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
     root = tmp_path / "root"
     lane = tmp_path / "lane"
     _graph_with(root / TESTMON_DATA_RELPATH, ["polylogue-something"])
-    monkeypatch.setattr(lane_init, "lane_environment_digest", lambda _worktree: None)
-
     note, warm = lane_init._seed_testmon_graph(root, lane)
 
     assert warm is False
-    assert "warmth unverified" in note
+    assert "normalized digest inputs" in note
+
+
+def test_seed_rejects_a_minimal_fake_graph_even_with_a_matching_environment(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+
+    _graph_with(root / TESTMON_DATA_RELPATH, ["polylogue-current"])
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
+
+    assert warm is False
+    assert "not attestable" in note
+    assert "schema version changed" in note
 
 
 def test_distribution_mutation_makes_a_seeded_graph_unattestable(
@@ -548,12 +648,10 @@ def test_distribution_mutation_makes_a_seeded_graph_unattestable(
         pytest_environment=digest_inputs,
     )
     assert unattestable != recorded
-    monkeypatch.setattr(lane_init, "lane_environment_digest", lambda _worktree: unattestable)
-
-    note, warm = lane_init._seed_testmon_graph(root, lane)
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation(unattestable))
 
     assert warm is False
-    assert "NONE matching this lane" in note
+    assert "not attestable" in note
     assert "bootstrap" in note
 
 
@@ -592,7 +690,7 @@ def test_dispatch_env_lines_carry_the_unsets_and_the_ca_bundle(tmp_path: Path) -
     the remedy has to be printed where a dispatcher reads it.
     """
     lane = tmp_path / "lane"
-    lines = lane_init.dispatch_env_lines(lane)
+    lines = lane_init.dispatch_env_lines(lane, attestation=_attestation())
     joined = "\n".join(lines)
 
     assert f"export VIRTUAL_ENV={lane / '.venv'}" in lines
@@ -600,3 +698,15 @@ def test_dispatch_env_lines_carry_the_unsets_and_the_ca_bundle(tmp_path: Path) -
         assert f"unset {key}" in lines
     assert "export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in lines
     assert "$VIRTUAL_ENV/bin:$PATH" in joined
+
+
+def test_dispatch_env_lines_bind_normalized_testmon_inputs(tmp_path: Path) -> None:
+    lines = lane_init.dispatch_env_lines(
+        tmp_path / "lane",
+        attestation=_attestation("polylogue-initial", "polylogue-default", profile="correctness=complete"),
+    )
+
+    assert "export HYPOTHESIS_PROFILE=default" in lines
+    assert "unset POLYLOGUE_CI" in lines
+    assert "# testmon pytest profile: correctness=complete" in lines
+    assert "# testmon fallback: HYPOTHESIS_PROFILE=default after a non-default bootstrap" in lines
