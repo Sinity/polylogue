@@ -34,6 +34,31 @@ def _receipt(
     )
 
 
+def _application_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
+    return conn.execute(
+        """
+        SELECT decision_id, raw_id, session_id, logical_source_key, source_revision,
+               acquisition_generation, decision, accepted_raw_id,
+               accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, baseline_raw_id,
+               predecessor_raw_id, append_end_offset, detail, decided_at_ms
+        FROM raw_revision_applications ORDER BY decision_id
+        """
+    ).fetchall()
+
+
+def _head_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
+    return conn.execute(
+        """
+        SELECT logical_source_key, session_id, accepted_raw_id,
+               accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier,
+               acquisition_generation, append_end_offset, decided_at_ms
+        FROM raw_revision_heads ORDER BY logical_source_key
+        """
+    ).fetchall()
+
+
 def test_application_receipt_is_idempotent_and_rejects_older_head() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(INDEX_DDL)
@@ -143,7 +168,18 @@ def test_equal_frontier_cas_rejects_conflicting_frontier_state(changes: dict[str
 def test_decision_id_binds_accepted_frontier_evidence() -> None:
     receipt = _receipt()
 
-    assert receipt.decision_id != replace(receipt, accepted_frontier=200).decision_id
+    for changed in (
+        replace(receipt, accepted_content_hash=b"x" * 32),
+        replace(receipt, accepted_source_revision="revision-2"),
+        replace(receipt, accepted_frontier_kind="semantic"),
+        replace(receipt, accepted_frontier=200),
+        replace(receipt, acquisition_generation=2),
+        replace(receipt, append_end_offset=101),
+        replace(receipt, raw_id="raw-other"),
+        replace(receipt, session_id="codex-session:other"),
+        replace(receipt, decision=ApplicationDecision.APPLIED_APPEND),
+    ):
+        assert receipt.decision_id != changed.decision_id
 
 
 @pytest.mark.parametrize(
@@ -176,7 +212,7 @@ def test_persisted_higher_frontier_twin_under_same_id_cannot_rewrite_receipt_or_
     )
     conn.commit()
 
-    with pytest.raises(RuntimeError, match="immutable accepted frontier evidence"):
+    with pytest.raises(RuntimeError, match="immutable evidence"):
         record_revision_application_sync(conn, receipt, decided_at_ms=20)
 
     assert conn.execute(
@@ -209,7 +245,10 @@ def test_equal_frontier_cas_allows_same_raw_supersede(changes: dict[str, Any]) -
     record_revision_application_sync(conn, receipt, decided_at_ms=10)
 
     reapplied = replace(receipt, **changes)
+    assert reapplied.decision_id != receipt.decision_id
     record_revision_application_sync(conn, reapplied, decided_at_ms=20)
+
+    assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (2,)
 
     row = conn.execute(
         """
@@ -230,6 +269,8 @@ def test_equal_frontier_cas_rejects_cross_raw_conflict_without_fold_authorizatio
     conn.executescript(INDEX_DDL)
     receipt = _receipt()
     record_revision_application_sync(conn, receipt, decided_at_ms=10)
+    before_applications = _application_rows(conn)
+    before_heads = _head_rows(conn)
 
     conflicting = replace(
         receipt,
@@ -243,6 +284,8 @@ def test_equal_frontier_cas_rejects_cross_raw_conflict_without_fold_authorizatio
     assert receipt.accepted_raw_id is not None
     assert receipt.accepted_raw_id in message
     assert "raw-conflict" in message
+    assert _application_rows(conn) == before_applications
+    assert _head_rows(conn) == before_heads
 
 
 def test_equal_frontier_cas_idempotent_same_everything_reapplication() -> None:
@@ -251,12 +294,12 @@ def test_equal_frontier_cas_idempotent_same_everything_reapplication() -> None:
     conn.executescript(INDEX_DDL)
     receipt = _receipt()
     record_revision_application_sync(conn, receipt, decided_at_ms=10)
+    before_applications = _application_rows(conn)
+    before_heads = _head_rows(conn)
     record_revision_application_sync(conn, receipt, decided_at_ms=20)
 
-    row = conn.execute(
-        "SELECT accepted_raw_id, accepted_content_hash, decided_at_ms FROM raw_revision_heads"
-    ).fetchone()
-    assert row == (receipt.accepted_raw_id, receipt.accepted_content_hash, 10)
+    assert _application_rows(conn) == before_applications
+    assert _head_rows(conn) == before_heads
 
 
 def test_larger_full_snapshot_supersedes_deeper_append_generation() -> None:

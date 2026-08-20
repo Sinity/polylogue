@@ -1901,10 +1901,11 @@ def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path
                 decision_id, raw_id, session_id, logical_source_key,
                 source_revision, acquisition_generation, decision,
                 accepted_raw_id, accepted_source_revision, accepted_content_hash,
-                detail, decided_at_ms
+                accepted_frontier_kind, accepted_frontier, detail, decided_at_ms
             ) VALUES ('old-superseded', 'raw-old-full', 'codex-session:session-1',
                       'codex:session-1', 'revision-old', 1, 'superseded',
-                      'raw-new-full', 'revision-new', ?, 'superseded by accepted full', 1)
+                      'raw-new-full', 'revision-new', ?, 'byte', 20,
+                      'superseded by accepted full', 1)
             """,
             (bytes(32),),
         )

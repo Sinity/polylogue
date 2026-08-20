@@ -968,6 +968,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # table copy-forward.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=71,
+        # n6 n6rkz: raw application decision ids now bind all immutable
+        # accepted-evidence fields, and the semantic duplicate index follows
+        # that same shape. Existing rows need raw replay to receive the new
+        # identities without treating a mutable head as historical evidence.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

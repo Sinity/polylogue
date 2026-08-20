@@ -223,8 +223,9 @@ def _accepted_head_receipt_row(
         sqlite3.Row | None,
         conn.execute(
             """
-            SELECT accepted_source_revision, accepted_content_hash,
-                   accepted_frontier_kind, accepted_frontier
+            SELECT session_id, accepted_raw_id, accepted_source_revision,
+                   accepted_content_hash, accepted_frontier_kind,
+                   accepted_frontier, acquisition_generation, append_end_offset
             FROM raw_revision_heads
             WHERE logical_source_key = ?
             """,
@@ -263,6 +264,11 @@ def _validate_application_receipt_contents(
     expected_head_frontier = _require_not_none(
         expected_head.accepted_frontier,
         f"{context} expected head lacks a frontier",
+    )
+    expected_head_session_id = expected_head.session_id
+    expected_head_raw_id = _require_not_none(
+        expected_head.accepted_raw_id,
+        f"{context} expected head lacks an accepted raw id",
     )
     for row in rows:
         decision_id = str(row["decision_id"])
@@ -330,11 +336,18 @@ def _validate_application_receipt_contents(
             f"{context} receipt {decision_id} has a stale append end offset",
         )
     _require(
-        str(accepted_head["accepted_source_revision"]) == expected_head_source_revision
+        str(accepted_head["session_id"]) == expected_head_session_id
+        and str(accepted_head["accepted_raw_id"]) == expected_head_raw_id
+        and str(accepted_head["accepted_source_revision"]) == expected_head_source_revision
         and bytes(accepted_head["accepted_content_hash"]) == expected_head_content_hash
         and str(accepted_head["accepted_frontier_kind"]) == expected_head_frontier_kind
         and int(accepted_head["accepted_frontier"]) == expected_head_frontier,
         f"{context} accepted head has stale reaffirmation contents",
+    )
+    _require(
+        int(accepted_head["acquisition_generation"]) == expected_head.acquisition_generation
+        and accepted_head["append_end_offset"] == expected_head.append_end_offset,
+        f"{context} accepted head has stale acquisition or append evidence",
     )
 
 
@@ -793,11 +806,89 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
 
         with sqlite3.connect(negative_control_root / "index.db") as index_conn:
             index_conn.execute(
+                "UPDATE raw_revision_applications SET accepted_frontier_kind = ? WHERE decision_id = ?",
+                ("semantic", reparse_receipt.decision_id),
+            )
+            stale_frontier_kind_applications = _application_receipt_rows(
+                index_conn,
+                raw_id=raw_id,
+                logical_source_key="unknown:reparse-browser",
+            )
+            stale_frontier_kind_head = _require_not_none(
+                _accepted_head_receipt_row(index_conn, logical_source_key="unknown:reparse-browser"),
+                "stale frontier kind anti-vacuity head is not durable",
+            )
+            index_conn.commit()
+        try:
+            _validate_application_receipt_contents(
+                stale_frontier_kind_applications,
+                expected_application_receipts_by_id,
+                context="stale frontier kind anti-vacuity control",
+                accepted_head=stale_frontier_kind_head,
+                expected_head=reparse_receipt,
+            )
+        except RawAuthorityRestartProofError as exc:
+            _require(
+                "accepted frontier" in str(exc),
+                f"stale frontier kind anti-vacuity failed for the wrong field: {exc}",
+            )
+        else:
+            raise RawAuthorityRestartProofError(
+                "stale frontier kind anti-vacuity control unexpectedly accepted a mutated frontier kind"
+            )
+
+        with sqlite3.connect(negative_control_root / "index.db") as index_conn:
+            index_conn.execute(
+                """
+                UPDATE raw_revision_applications
+                SET source_revision = ?, accepted_frontier_kind = ?, accepted_frontier = ?,
+                    acquisition_generation = ?, append_end_offset = ?
+                WHERE decision_id = ?
+                """,
+                (
+                    reparse_receipt.source_revision,
+                    reparse_receipt.accepted_frontier_kind,
+                    reparse_receipt.accepted_frontier,
+                    reparse_receipt.acquisition_generation,
+                    1,
+                    reparse_receipt.decision_id,
+                ),
+            )
+            stale_append_offset_applications = _application_receipt_rows(
+                index_conn,
+                raw_id=raw_id,
+                logical_source_key="unknown:reparse-browser",
+            )
+            stale_append_offset_head = _require_not_none(
+                _accepted_head_receipt_row(index_conn, logical_source_key="unknown:reparse-browser"),
+                "stale append offset anti-vacuity head is not durable",
+            )
+            index_conn.commit()
+        try:
+            _validate_application_receipt_contents(
+                stale_append_offset_applications,
+                expected_application_receipts_by_id,
+                context="stale append offset anti-vacuity control",
+                accepted_head=stale_append_offset_head,
+                expected_head=reparse_receipt,
+            )
+        except RawAuthorityRestartProofError as exc:
+            _require(
+                "append end offset" in str(exc),
+                f"stale append offset anti-vacuity failed for the wrong field: {exc}",
+            )
+        else:
+            raise RawAuthorityRestartProofError(
+                "stale append offset anti-vacuity control unexpectedly accepted a mutated append offset"
+            )
+
+        with sqlite3.connect(negative_control_root / "index.db") as index_conn:
+            index_conn.execute(
                 """
                 DELETE FROM raw_revision_applications
-                WHERE raw_id = ? AND logical_source_key = ? AND decision = ?
+                WHERE raw_id = ? AND logical_source_key = ?
                 """,
-                (raw_id, "unknown:reparse-browser", ApplicationDecision.REPARSE_REAFFIRMATION.value),
+                (raw_id, "unknown:reparse-browser"),
             )
             record_revision_application_sync(
                 index_conn,

@@ -1721,10 +1721,17 @@ def _revision_application_decision_id_is_exact(application: sqlite3.Row) -> bool
     payload = {
         "accepted_raw_id": application["accepted_raw_id"],
         "accepted_source_revision": application["accepted_source_revision"],
+        "accepted_content_hash": _bytes_value(application["accepted_content_hash"]).hex()
+        if application["accepted_content_hash"] is not None
+        else None,
         "accepted_frontier_kind": application["accepted_frontier_kind"],
         "accepted_frontier": application["accepted_frontier"],
+        "acquisition_generation": application["acquisition_generation"],
+        "append_end_offset": application["append_end_offset"],
+        "baseline_raw_id": application["baseline_raw_id"],
         "decision": decision.value,
         "logical_source_key": application["logical_source_key"],
+        "predecessor_raw_id": application["predecessor_raw_id"],
         "raw_id": application["raw_id"],
         "session_id": application["session_id"],
         "source_revision": application["source_revision"],

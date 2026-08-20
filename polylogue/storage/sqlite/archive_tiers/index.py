@@ -455,7 +455,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # revision application. These values are derived at application time and old
 # rows cannot be reconstructed safely from the mutable head, so v70 routes
 # existing index generations through semantic raw replay.
-INDEX_SCHEMA_VERSION = 70
+# n6 n6rkz: v71 widens raw application identity to include every immutable
+# accepted-evidence field. Existing application rows must be replayed so their
+# decision ids and duplicate constraints are rebuilt from that complete shape.
+INDEX_SCHEMA_VERSION = 71
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -553,10 +556,15 @@ CREATE TABLE IF NOT EXISTS raw_revision_applications (
     )
 ) STRICT;
 
+DROP INDEX IF EXISTS idx_raw_revision_applications_identity;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_revision_applications_identity
 ON raw_revision_applications(
-    raw_id, session_id, decision, source_revision,
-    COALESCE(accepted_source_revision, '')
+    raw_id, session_id, logical_source_key, decision, source_revision,
+    COALESCE(accepted_source_revision, ''), accepted_content_hash,
+    accepted_frontier_kind, accepted_frontier, acquisition_generation,
+    COALESCE(append_end_offset, -1), COALESCE(baseline_raw_id, ''),
+    COALESCE(predecessor_raw_id, '')
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_revision_applications_logical

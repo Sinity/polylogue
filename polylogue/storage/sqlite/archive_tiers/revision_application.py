@@ -46,10 +46,17 @@ class RevisionApplicationReceipt:
         payload = {
             "accepted_raw_id": self.accepted_raw_id,
             "accepted_source_revision": self.accepted_source_revision,
+            "accepted_content_hash": self.accepted_content_hash.hex()
+            if self.accepted_content_hash is not None
+            else None,
             "accepted_frontier_kind": self.accepted_frontier_kind,
             "accepted_frontier": self.accepted_frontier,
+            "acquisition_generation": self.acquisition_generation,
+            "append_end_offset": self.append_end_offset,
+            "baseline_raw_id": self.baseline_raw_id,
             "decision": self.decision.value,
             "logical_source_key": self.logical_source_key,
+            "predecessor_raw_id": self.predecessor_raw_id,
             "raw_id": self.raw_id,
             "session_id": self.session_id,
             "source_revision": self.source_revision,
@@ -199,9 +206,11 @@ def _record_revision_application_sync(
     if cursor.rowcount == 0:
         existing = conn.execute(
             """
-            SELECT raw_id, session_id, decision, accepted_raw_id,
+            SELECT raw_id, session_id, logical_source_key, source_revision,
+                   acquisition_generation, decision, accepted_raw_id,
                    accepted_source_revision, accepted_content_hash,
-                   accepted_frontier_kind, accepted_frontier
+                   accepted_frontier_kind, accepted_frontier, baseline_raw_id,
+                   predecessor_raw_id, append_end_offset
             FROM raw_revision_applications WHERE decision_id = ?
             """,
             (receipt.decision_id,),
@@ -210,51 +219,29 @@ def _record_revision_application_sync(
             expected = (
                 receipt.raw_id,
                 receipt.session_id,
+                receipt.logical_source_key,
+                receipt.source_revision,
+                receipt.acquisition_generation,
                 receipt.decision.value,
                 receipt.accepted_raw_id,
                 receipt.accepted_source_revision,
                 receipt.accepted_content_hash,
                 receipt.accepted_frontier_kind,
                 receipt.accepted_frontier,
+                receipt.baseline_raw_id,
+                receipt.predecessor_raw_id,
+                receipt.append_end_offset,
             )
             if tuple(existing) != expected:
-                # `decision_id` hashes every decision-defining field (raw_id,
-                # session_id, decision, logical_source_key, source_revision,
-                # accepted_raw_id, accepted_source_revision, and the
-                # accepted frontier pair) except accepted_content_hash. A
-                # row found by decision_id can therefore only disagree on a
-                # re-derived content hash. The raw/session/revision/frontier
-                # identity already matched to find this row, so that is
-                # re-derivation, not a conflicting decision: update only the
-                # content hash in place. Any other field actually differing (defensive;
-                # not reachable without a decision_id hash collision) is a
-                # genuine conflict and still rejects.
-                if tuple(existing[:5]) == expected[:5]:
-                    if tuple(existing[6:]) != expected[6:]:
-                        raise RuntimeError(
-                            "conflicting raw revision application receipt: immutable accepted frontier evidence "
-                            f"for decision_id={receipt.decision_id}"
-                        )
-                    conn.execute(
-                        """
-                        UPDATE raw_revision_applications
-                        SET accepted_content_hash = ?
-                        WHERE decision_id = ?
-                        """,
-                        (receipt.accepted_content_hash, receipt.decision_id),
-                    )
-                else:
-                    raise RuntimeError(
-                        "conflicting raw revision application receipt: "
-                        f"decision_id={receipt.decision_id} logical_source_key={receipt.logical_source_key!r} "
-                        f"incoming(raw_id={receipt.raw_id!r}, session_id={receipt.session_id!r}, "
-                        f"decision={receipt.decision.value!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
-                        f"accepted_source_revision={receipt.accepted_source_revision!r}, "
-                        f"accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)}) "
-                        f"existing(raw_id={existing[0]!r}, session_id={existing[1]!r}, decision={existing[2]!r}, "
-                        f"accepted_raw_id={existing[3]!r}, accepted_source_revision={existing[4]!r}, "
-                        f"accepted_content_hash={_hash_prefix(existing[5])})"
-                    )
+                raise RuntimeError(
+                    "conflicting raw revision application receipt: immutable evidence "
+                    f"for decision_id={receipt.decision_id} "
+                    f"incoming(accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)}, "
+                    f"acquisition_generation={receipt.acquisition_generation}, "
+                    f"append_end_offset={receipt.append_end_offset}) "
+                    f"existing(accepted_content_hash={_hash_prefix(existing[8])}, "
+                    f"acquisition_generation={existing[4]!r}, append_end_offset={existing[13]!r})"
+                )
         else:
             if receipt.decision is not ApplicationDecision.SUPERSEDED:
                 raise RuntimeError(
@@ -265,28 +252,53 @@ def _record_revision_application_sync(
                 )
             semantic_identity = conn.execute(
                 """
-                SELECT raw_id, session_id, logical_source_key, decision,
-                       accepted_source_revision, accepted_content_hash
+                SELECT raw_id, session_id, logical_source_key, source_revision,
+                       acquisition_generation, decision, accepted_source_revision,
+                       accepted_content_hash, accepted_frontier_kind,
+                       accepted_frontier, baseline_raw_id, predecessor_raw_id,
+                       append_end_offset
                 FROM raw_revision_applications
-                WHERE raw_id = ? AND session_id = ? AND decision = ?
+                WHERE raw_id = ? AND session_id = ? AND logical_source_key = ? AND decision = ?
                   AND source_revision = ?
                   AND COALESCE(accepted_source_revision, '') = COALESCE(?, '')
+                  AND acquisition_generation = ?
+                  AND accepted_content_hash IS ?
+                  AND accepted_frontier_kind IS ?
+                  AND accepted_frontier IS ?
+                  AND baseline_raw_id IS ?
+                  AND predecessor_raw_id IS ?
+                  AND append_end_offset IS ?
                 """,
                 (
                     receipt.raw_id,
                     receipt.session_id,
+                    receipt.logical_source_key,
                     receipt.decision.value,
                     receipt.source_revision,
                     receipt.accepted_source_revision,
+                    receipt.acquisition_generation,
+                    receipt.accepted_content_hash,
+                    receipt.accepted_frontier_kind,
+                    receipt.accepted_frontier,
+                    receipt.baseline_raw_id,
+                    receipt.predecessor_raw_id,
+                    receipt.append_end_offset,
                 ),
             ).fetchone()
             expected_identity = (
                 receipt.raw_id,
                 receipt.session_id,
                 receipt.logical_source_key,
+                receipt.source_revision,
+                receipt.acquisition_generation,
                 receipt.decision.value,
                 receipt.accepted_source_revision,
                 receipt.accepted_content_hash,
+                receipt.accepted_frontier_kind,
+                receipt.accepted_frontier,
+                receipt.baseline_raw_id,
+                receipt.predecessor_raw_id,
+                receipt.append_end_offset,
             )
             if semantic_identity is None or tuple(semantic_identity) != expected_identity:
                 raise RuntimeError(
