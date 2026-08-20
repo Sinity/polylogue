@@ -1203,7 +1203,6 @@ def _plan(item: RawAuthorityFrontierItem) -> RawReplayPlan:
     witness = json_document(
         {
             "schema": "polylogue.raw-authority-frontier-plan.v1",
-            "raw_id": item.raw_id,
             "state": item.state.value,
             "actuator": item.actuator.value,
             "reason": item.reason,
@@ -1397,13 +1396,17 @@ def _terminalized_preview_items(
                 continue
             input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
             witness = json.loads(str(row["authority_witness_json"]))
+            strategy_witness = witness.get("strategy_witness")
             if (
                 witness.get("state") != RawAuthorityFrontierState.SAFELY_REKEYABLE.value
                 or witness.get("actuator") != RawAuthorityActuator.COPY_FORWARD_ORIGIN.value
-                or not isinstance(witness.get("raw_id"), str)
+                or not isinstance(strategy_witness, dict)
             ):
                 continue
-            primary_raw_id = str(witness["raw_id"])
+            strategy_item = strategy_witness.get("item")
+            if not isinstance(strategy_item, dict) or not isinstance(strategy_item.get("raw_id"), str):
+                continue
+            primary_raw_id = str(strategy_item["raw_id"])
             candidates = tuple(
                 item
                 for item in current_terminal

@@ -38,7 +38,12 @@ from polylogue.storage.raw_authority import (
     resolve_raw_authority_blocker,
     validate_raw_replay_plan,
 )
-from polylogue.storage.raw_reconciler import RawAuthorityFrontierState, inspect_raw_authority_frontier
+from polylogue.storage.raw_reconciler import (
+    RawAuthorityActuator,
+    RawAuthorityFrontierItem,
+    RawAuthorityFrontierState,
+    inspect_raw_authority_frontier,
+)
 from polylogue.storage.repair import RepairResult, repair_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
@@ -47,6 +52,158 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 def _config(root: Path) -> Config:
     return Config(archive_root=root, render_root=root / "render", sources=[])
+
+
+def _frontier_test_item(
+    *,
+    raw_id: str,
+    plan_id: str,
+    input_raw_ids: tuple[str, ...],
+    strategy_witness: JSONDocument,
+) -> RawAuthorityFrontierItem:
+    return RawAuthorityFrontierItem(
+        state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
+        actuator=RawAuthorityActuator.COPY_FORWARD_ORIGIN,
+        raw_id=raw_id,
+        logical_source_key="chatgpt:test",
+        session_id="chatgpt-export:test",
+        reason="test frontier item",
+        evidence_digest="e" * 64,
+        input_raw_ids=input_raw_ids,
+        source_preconditions=json_document({"raw_id": raw_id}),
+        index_preconditions=json_document({"raw_id": raw_id}),
+        strategy_witness=strategy_witness,
+        plan_id=plan_id,
+    )
+
+
+def test_frontier_plan_v1_identity_survives_historical_and_current_witnesses(tmp_path: Path) -> None:
+    """A v1 plan without a top-level raw_id remains reusable after restart."""
+    initialize_active_archive_root(tmp_path)
+    strategy_witness = json_document(
+        {
+            "schema": "polylogue.raw-authority-strategy-witness.v1",
+            "kind": "browser_origin",
+            "item": {"raw_id": "primary-raw"},
+        }
+    )
+    item = _frontier_test_item(
+        raw_id="primary-raw",
+        plan_id="raw-authority-frontier:historical",
+        input_raw_ids=("primary-raw", "auxiliary-raw"),
+        strategy_witness=strategy_witness,
+    )
+    current = raw_reconciler_mod._plan(item)
+    assert "raw_id" not in current.authority_witness
+    historical = RawReplayPlan(
+        plan_id=current.plan_id,
+        input_digest=current.input_digest,
+        input_raw_ids=current.input_raw_ids,
+        logical_keys=current.logical_keys,
+        authority_witness=current.authority_witness,
+        source_preconditions=current.source_preconditions,
+        index_preconditions=current.index_preconditions,
+    )
+
+    first = record_raw_authority_census(
+        tmp_path,
+        (historical,),
+        selected_plan_ids=set(),
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "historical-v1-plan"},
+        residual={},
+    )
+    second = record_raw_authority_census(
+        tmp_path,
+        (current,),
+        selected_plan_ids=set(),
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "current-v1-plan"},
+        residual={},
+    )
+
+    assert first.plan_count == second.plan_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        stored = conn.execute(
+            "SELECT authority_witness_json FROM raw_authority_plans WHERE plan_id = ?",
+            (current.plan_id,),
+        ).fetchone()
+    assert stored is not None
+    assert '"raw_id":' not in str(stored[0]).split('"strategy_witness"', 1)[0]
+
+
+def test_terminal_race_requires_persisted_primary_raw_not_auxiliary_overlap(tmp_path: Path) -> None:
+    """A changed primary cannot be authorized by a terminal item sharing an old auxiliary raw."""
+    initialize_active_archive_root(tmp_path)
+    plan = RawReplayPlan(
+        plan_id="stale-copy-forward-plan",
+        input_digest="p" * 64,
+        input_raw_ids=("primary-old", "auxiliary-old"),
+        logical_keys=("chatgpt:test",),
+        authority_witness=json_document(
+            {
+                "schema": "polylogue.raw-authority-frontier-plan.v1",
+                "state": RawAuthorityFrontierState.SAFELY_REKEYABLE.value,
+                "actuator": RawAuthorityActuator.COPY_FORWARD_ORIGIN.value,
+                "reason": "stale copy-forward",
+                "evidence_digest": "p" * 64,
+                "strategy_witness": {
+                    "schema": "polylogue.raw-authority-strategy-witness.v1",
+                    "kind": "browser_origin",
+                    "item": {"raw_id": "primary-old"},
+                },
+            }
+        ),
+        source_preconditions=json_document({}),
+        index_preconditions=json_document({}),
+    )
+    census = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids={plan.plan_id},
+        mode="apply",
+        quiescent=True,
+        scope={"test": "primary-race"},
+        residual={},
+    )
+    unrelated_terminal = _frontier_test_item(
+        raw_id="primary-new",
+        plan_id="current-terminal",
+        input_raw_ids=("primary-new", "auxiliary-old", "auxiliary-new"),
+        strategy_witness=json_document(
+            {
+                "schema": "polylogue.raw-authority-strategy-witness.v1",
+                "kind": "browser_origin_terminal_ineligible",
+                "raw_id": "primary-new",
+                "reason": "terminal",
+            }
+        ),
+    )
+    matching_terminal = _frontier_test_item(
+        raw_id="primary-old",
+        plan_id="current-terminal-primary",
+        input_raw_ids=("primary-old", "auxiliary-new"),
+        strategy_witness=json_document(
+            {
+                "schema": "polylogue.raw-authority-strategy-witness.v1",
+                "kind": "browser_origin_terminal_ineligible",
+                "raw_id": "primary-old",
+                "reason": "terminal",
+            }
+        ),
+    )
+    rebound = raw_reconciler_mod._terminalized_preview_items(
+        tmp_path,
+        census.census_id,
+        {plan.plan_id},
+        (unrelated_terminal, matching_terminal),
+    )
+
+    assert rebound[plan.plan_id].raw_id == "primary-old"
+    assert rebound[plan.plan_id].input_raw_ids == plan.input_raw_ids
+    assert unrelated_terminal.raw_id != rebound[plan.plan_id].raw_id
 
 
 def _read_detail_document(root: Path, query_handle: str, *, chunk_chars: int = 256) -> dict[str, object]:
