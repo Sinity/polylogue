@@ -340,7 +340,6 @@ PYTEST_HEARTBEAT_ENV = "POLYLOGUE_VERIFY_HEARTBEAT_S"
 PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
 _REAL_TEST_PROGRESS_EVENTS = frozenset({"test_started", "test_finished", "test_report"})
-_STORAGE_SCALE_HEARTBEAT_KIND = "storage_scale_heartbeat"
 PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
@@ -352,9 +351,7 @@ DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
 
 def _is_productive_test_progress_event(event: Mapping[str, Any]) -> bool:
     """Return whether a live pytest event proves productive test progress."""
-    return event.get("event") in _REAL_TEST_PROGRESS_EVENTS or (
-        event.get("event") == "test_progress" and event.get("progress_kind") == _STORAGE_SCALE_HEARTBEAT_KIND
-    )
+    return event.get("event") in _REAL_TEST_PROGRESS_EVENTS
 
 
 def _estimate_duration_from_history(
@@ -1555,9 +1552,11 @@ def _run_pytest_with_heartbeat(
     # latest test event's own updated_at timestamp across all workers
     # (devtools/pytest_progress_plugin.py); last_progress_at is the local
     # monotonic time that a real test event marker was last seen to change.
-    # A storage-scale heartbeat is productive progress for the marked storage
-    # workload. The all-workers-D-state classifier remains authoritative and
-    # suppresses this ordinary progress deadline while it proves the stall.
+    # A storage-scale heartbeat is activity telemetry only. It may keep the
+    # selector awake while expected storage work is quiet, but it must not
+    # reset the hard no-progress stall clock. The all-workers-D-state
+    # classifier remains authoritative and suppresses this ordinary progress
+    # deadline while it proves the stall.
     initial_event = _read_latest_pytest_event(events_path, events_dir=events_dir)
     last_event_marker: str | None = initial_event.get("updated_at") if initial_event is not None else None
     last_progress_marker: str | None = (

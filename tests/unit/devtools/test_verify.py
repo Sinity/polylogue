@@ -3848,19 +3848,22 @@ def test_pytest_supervisor_natural_success_remains_success(
     assert containment["termination_reason"] is None
 
 
-def test_storage_scale_progress_heartbeat_prevents_false_silent_stall(
+def test_storage_scale_fixture_path_and_heartbeat_keep_short_node_live(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real marked storage activity remains alive past a toy stall timeout."""
+    """A marked node uses the production storage-scale fixture and finishes."""
     module = tmp_path / "test_storage_scale_heartbeat.py"
+    fixture_proof = tmp_path / "storage-scale-fixture-path.txt"
     module.write_text(
         "import os\n"
+        "from pathlib import Path\n"
         "import time\n"
         "import pytest\n"
         "pytestmark = pytest.mark.storage_scale\n"
         "def test_long_storage_scale_node(tmp_path):\n"
-        "    deadline = time.monotonic() + 1.0\n"
+        "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    deadline = time.monotonic() + 0.2\n"
         "    payload = b'x' * 4096\n"
         "    with (tmp_path / 'productive-storage.bin').open('wb') as stream:\n"
         "        while time.monotonic() < deadline:\n"
@@ -3869,176 +3872,163 @@ def test_storage_scale_progress_heartbeat_prevents_false_silent_stall(
         "            os.fsync(stream.fileno())\n",
         encoding="utf-8",
     )
+    monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
     monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.1")
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "4")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "2")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
     run = VerifyRun(tier="storage-scale-heartbeat", argv=[], git_head=None, root=tmp_path)
 
     rc, _elapsed, metadata = _run(
         "pytest storage scale heartbeat",
-        [sys.executable, "-m", "pytest", "-q", "-p", "devtools.pytest_progress_plugin", str(module)],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        cwd=str(ROOT),
         run=run,
     )
 
     step = run._payload["steps"][0]
-    artifact_dir = tmp_path / str(step["artifact_dir"])
+    artifact_dir = run.run_dir / "steps" / str(step["step_id"])
     events_path = artifact_dir / "events.jsonl"
     assert events_path.is_file()
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert rc == 0
     assert metadata.get("termination_reason") is None
+    assert fixture_proof.is_file()
+    fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
+    assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
     assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
 
 
-@pytest.mark.uses_real_clock("the selector deadline must advance while the resource sampler observes xdist state")
-def test_xdist_uninterruptible_stall_avoids_selector_spin(
+def test_storage_scale_heartbeat_cannot_hide_non_xdist_progress_stall(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The all-worker-D-state branch must wait, not spin on a zero deadline.
-
-    The process, selector, and sampler are the same seams used by the real
-    runner. The sampler supplies the kernel-observation classification directly;
-    no sleeping child is used to pretend it is an uninterruptible worker.
-    """
-    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "0.1")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S", "0.01")
-    run = VerifyRun(tier="xdist-uninterruptible-no-spin", argv=[], git_head=None, root=tmp_path)
-    artifacts = run.start_step(label="pytest xdist uninterruptible", cmd=["pytest"])
-    events_path = artifacts.step_dir / "events.jsonl"
-    events_path.write_text(
-        json.dumps(
-            {
-                "event": "test_started",
-                "nodeid": "storage::test_productive",
-                "updated_at": "2026-01-01T00:00:00Z",
-            }
-        )
-        + "\n",
+    """A marked infinite loop still reaches the real progress-stall exit."""
+    module = tmp_path / "test_storage_scale_deadlock.py"
+    fixture_proof = tmp_path / "storage-scale-deadlock-fixture-path.txt"
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_marked_infinite_loop(tmp_path):\n"
+        "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    while True:\n"
+        "        time.sleep(0.02)\n",
         encoding="utf-8",
     )
-    stdout_read, stdout_write = os.pipe()
-    stderr_read, stderr_write = os.pipe()
-    stdout_pipe = os.fdopen(stdout_read, "rb", closefd=True)
-    stderr_pipe = os.fdopen(stderr_read, "rb", closefd=True)
+    monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-non-xdist-stall", argv=[], git_head=None, root=tmp_path)
 
-    class _Process:
-        pid = os.getpid()
-        stdout = stdout_pipe
-        stderr = stderr_pipe
-        returncode: int | None = None
-
-        def poll(self) -> int | None:
-            return self.returncode
-
-    process = _Process()
-    launch = SimpleNamespace(
-        argv=["pytest"],
-        receipt_path=tmp_path / "containment.json",
-        request_path=tmp_path / "request.json",
-        mode="process-group",
-        unit=None,
-        cgroup_path=None,
-        fallback_argv=None,
-        runtime_cap_s=0.0,
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale non-xdist stall",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        cwd=str(ROOT),
+        run=run,
     )
 
-    class _AllWorkersUninterruptible:
-        def sample(self, *, event: str) -> dict[str, Any]:
-            del event
-            return {
-                "all_xdist_workers_uninterruptible": True,
-                "xdist_worker_count": 2,
-                "xdist_uninterruptible_count": 2,
-                "basetemp_allocated_kb": 0,
-            }
+    step = run._payload["steps"][0]
+    artifact_dir = run.run_dir / "steps" / str(step["step_id"])
+    event_files = sorted((artifact_dir / "events").glob("*.jsonl"))
+    assert event_files
+    events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_terminated"
+    assert metadata["termination_reason"].startswith("pytest reported no test progress for 1.5s")
+    assert fixture_proof.is_file()
+    fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
+    assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
+    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
 
-        def summary(self) -> dict[str, Any]:
-            return {}
 
-    class _OutputSelector:
-        def __init__(self) -> None:
-            self.timeouts: list[float | None] = []
-            self.terminated = False
+def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real xdist worker heartbeat does not replace node progress."""
+    module = tmp_path / "test_storage_scale_xdist_deadlock.py"
+    fixture_proof = tmp_path / "storage-scale-xdist-fixture-path.txt"
+    module.write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_marked_deadlock(tmp_path):\n"
+        "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    while True:\n"
+        "        print('deadlock-output', flush=True)\n"
+        "        time.sleep(0.02)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-deadlock-xdist", argv=[], git_head=None, root=tmp_path)
 
-        def register(self, _fileobj: object, _events: int, _data: str) -> None:
-            return None
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale deadlock",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-s",
+            "-n",
+            "1",
+            "-p",
+            "tests.conftest",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            str(module),
+        ],
+        cwd=str(ROOT),
+        run=run,
+    )
 
-        def get_map(self) -> dict[int, object]:
-            return {} if self.terminated else {1: object(), 2: object()}
-
-        def select(self, timeout: float | None = None) -> list[tuple[SimpleNamespace, int]]:
-            self.timeouts.append(timeout)
-            assert timeout is not None and timeout > 0, (
-                "selector deadline spun while xdist workers were uninterruptible"
-            )
-            time.sleep(timeout)
-            if self.terminated:
-                return []
-            os.write(stdout_write, b"controller chatter\n")
-            return [(SimpleNamespace(fd=stdout_pipe.fileno(), data="stdout", fileobj=stdout_pipe), 1)]
-
-        def close(self) -> None:
-            return None
-
-    selector = _OutputSelector()
-    receipt_state = {"terminated": False}
-
-    def request_termination(_process: object, _launch: object, *, reason: str) -> None:
-        del _process, _launch, reason
-        receipt_state["terminated"] = True
-        selector.terminated = True
-        process.returncode = 124
-        os.close(stdout_write)
-        os.close(stderr_write)
-
-    def read_containment(_path: Path) -> dict[str, Any]:
-        if receipt_state["terminated"]:
-            return {
-                "status": "terminated",
-                "exit_code": 124,
-                "termination_reason": "pytest xdist workers remained in uninterruptible I/O sleep for 0s",
-            }
-        return {"status": "running"}
-
-    try:
-        with (
-            patch("devtools.verify.enable_child_subreaper", return_value=True),
-            patch("devtools.verify.descendant_process_identities", return_value=()),
-            patch("devtools.verify.build_supervisor_launch", return_value=launch),
-            patch("devtools.verify.subprocess.Popen", return_value=process),
-            patch("devtools.verify._wait_for_supervisor_start", return_value={"status": "started"}),
-            patch("devtools.verify.selectors.DefaultSelector", return_value=selector),
-            patch("devtools.verify.ResourceSampler", return_value=_AllWorkersUninterruptible()),
-            patch("devtools.verify.read_receipt", side_effect=read_containment),
-            patch("devtools.verify._request_supervisor_termination", side_effect=request_termination),
-            patch("devtools.verify._write_pytest_progress"),
-            patch("devtools.verify.reap_exited_children"),
-        ):
-            result = verify._run_pytest_with_heartbeat(
-                ["pytest"],
-                cwd=str(tmp_path),
-                env={
-                    "POLYLOGUE_PYTEST_EVENTS_PATH": str(events_path),
-                    "POLYLOGUE_PYTEST_EVENTS_DIR": str(artifacts.events_dir),
-                },
-                t0=time.monotonic(),
-                run=run,
-                artifacts=artifacts,
-            )
-    finally:
-        stdout_pipe.close()
-        stderr_pipe.close()
-
-    assert result.returncode == 124
-    assert selector.timeouts
-    assert all(timeout is not None and timeout > 0 for timeout in selector.timeouts)
-    assert "uninterruptible I/O sleep" in result.stderr
+    step = run._payload["steps"][0]
+    artifact_dir = run.run_dir / "steps" / str(step["step_id"])
+    event_files = sorted((artifact_dir / "events").glob("*.jsonl"))
+    assert event_files
+    events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_terminated"
+    assert metadata["termination_reason"].startswith("pytest reported no test progress for 1.5s")
+    assert fixture_proof.is_file()
+    fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
+    assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
+    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+    assert any(event.get("worker_id") == "gw0" for event in events)
 
 
 def test_unmarked_silent_node_still_terminates_on_output_stall(
