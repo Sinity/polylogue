@@ -749,6 +749,36 @@ def test_seed_rejects_an_uncertified_source_before_publication(tmp_path: Path) -
     assert not (lane / TESTMON_DATA_RELPATH).exists()
 
 
+@pytest.mark.parametrize("source_shape", ["absent", "invalid"])
+def test_seed_preserves_a_certified_destination_before_rejecting_source_candidates(
+    tmp_path: Path,
+    source_shape: str,
+) -> None:
+    """A certified fallback lane survives absent or invalid coordinator candidates."""
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, inspect_native_testmon_environment
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    if source_shape == "absent":
+        _certified_graph_with(root, "unrelated-environment")
+    else:
+        _certified_graph_with_names(root, ["primary-environment", "primary-environment"])
+    _certified_graph_with(lane, "fallback-environment")
+
+    note, warm = lane_init._seed_testmon_graph(
+        root,
+        lane,
+        attestation=_attestation("primary-environment", "fallback-environment"),
+    )
+
+    assert warm is True
+    assert "preserved certified lane environment" in note
+    assert inspect_native_testmon_environment(
+        lane / TESTMON_DATA_RELPATH,
+        environment_name="fallback-environment",
+    ).valid
+
+
 @pytest.mark.uses_real_clock("coordinates lane publication with verifier preparation")
 def test_seed_serializes_with_verifier_publication_and_preserves_later_write(
     tmp_path: Path,

@@ -472,7 +472,27 @@ def _seed_testmon_graph_unlocked(
         return ("seeded graph but could not compute verify's normalized digest inputs; warmth unverified"), False
 
     initial_digest = attestation.digests[0]
-    destination_initial_state = inspect_native_testmon_environment(destination, environment_name=initial_digest)
+    destination_states = tuple(
+        (
+            digest,
+            inspect_native_testmon_environment(destination, environment_name=digest),
+        )
+        for digest in attestation.digests
+    )
+    destination_initial_state = destination_states[0][1]
+    for candidate_digest, destination_state in destination_states:
+        if destination_state.valid and destination_state.environment is not None:
+            destination_violation = certified_attestation_violation(
+                worktree,
+                environment_name=candidate_digest,
+                current_nodeids=destination_state.environment.nodeids,
+            )
+            if destination_violation is None:
+                return (
+                    f"preserved certified lane environment ({candidate_digest[:24]}...); verifies start warm",
+                    True,
+                )
+
     initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
     source_state_for_copy = initial_state
     copy_digest: str | None = initial_digest if initial_state.valid else None
@@ -501,19 +521,6 @@ def _seed_testmon_graph_unlocked(
             "no valid candidate; first lane verify will bootstrap",
             False,
         )
-
-    destination_state = inspect_native_testmon_environment(destination, environment_name=copy_digest)
-    if destination_state.valid and destination_state.environment is not None:
-        destination_violation = certified_attestation_violation(
-            worktree,
-            environment_name=copy_digest,
-            current_nodeids=destination_state.environment.nodeids,
-        )
-        if destination_violation is None:
-            return (
-                f"preserved certified lane environment ({copy_digest[:24]}...); verifies start warm",
-                True,
-            )
 
     if not source_state_for_copy.valid or source_state_for_copy.environment is None:
         return (
