@@ -3365,7 +3365,11 @@ def _main(argv: list[str] | None = None) -> int:
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
             )
-            if preparation.selection_mode == "bootstrap" and len(native_pytest_environments) > 1:
+            if (
+                preparation.selection_mode == "bootstrap"
+                and preparation.fallback_allowed
+                and len(native_pytest_environments) > 1
+            ):
                 native_pytest_environment = native_pytest_environments[1]
                 preparation = prepare_native_testmon_environment(
                     ROOT,

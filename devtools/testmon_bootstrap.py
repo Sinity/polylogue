@@ -113,6 +113,11 @@ class NativeTestmonState:
         return self.status == "incomplete" and self.environment is not None
 
 
+def native_testmon_fallback_allowed(*states: NativeTestmonState) -> bool:
+    """Allow a candidate fallback only when no observed state is invalid."""
+    return all(state.status != "invalid" for state in states)
+
+
 @dataclass(frozen=True, slots=True)
 class NativeTestmonPreparation:
     environment_name: str
@@ -122,6 +127,7 @@ class NativeTestmonPreparation:
     removed_paths: tuple[Path, ...]
     linked_worktree: bool
     main_checkout: Path | None
+    fallback_allowed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -959,6 +965,9 @@ def _atomic_copy_sqlite_database(
             0o600,
             dir_fd=destination_directory_fd,
         )
+        # O_EXCL binds this descriptor to the new inode.  Opening the child
+        # name again would let a replacement of that entry redirect SQLite.
+        temporary_sqlite_path = Path(f"/proc/self/fd/{temporary_fd}")
         with (
             contextlib.closing(
                 sqlite3.connect(
@@ -968,7 +977,7 @@ def _atomic_copy_sqlite_database(
                 )
             ) as source_connection,
             contextlib.closing(
-                sqlite3.connect(temporary, timeout=_remaining_timeout(deadline_monotonic, 60))
+                sqlite3.connect(temporary_sqlite_path, timeout=_remaining_timeout(deadline_monotonic, 60))
             ) as destination_connection,
             source_connection,
             destination_connection,
@@ -988,11 +997,7 @@ def _atomic_copy_sqlite_database(
         )
         if not copied.valid:
             raise NativeTestmonRepairError(f"copied main-checkout database failed validation: {copied.reason}")
-        descriptor = os.open(temporary, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        os.fsync(temporary_fd)
         # Remove the DESTINATION's sidecars before the replace: a stale -wal
         # from a previous database under the same name is read as this new
         # database's write-ahead log, and quick_check then fails with page
@@ -1094,6 +1099,7 @@ def prepare_native_testmon_environment(
             local.environment,
             missing_checkout_paths,
         )
+    fallback_allowed = native_testmon_fallback_allowed(local)
     info = linked_worktree_info(root, deadline_monotonic=deadline_monotonic)
     linked = bool(info and info[0])
     main_checkout = info[1] if linked and info is not None else None
@@ -1112,8 +1118,26 @@ def prepare_native_testmon_environment(
                 local.environment,
                 local.missing_executable_paths,
             )
-            return NativeTestmonPreparation(environment_name, "bootstrap", local, None, (), linked, main_checkout)
-        return NativeTestmonPreparation(environment_name, "affected", local, None, (), linked, main_checkout)
+            return NativeTestmonPreparation(
+                environment_name,
+                "bootstrap",
+                local,
+                None,
+                (),
+                linked,
+                main_checkout,
+                fallback_allowed,
+            )
+        return NativeTestmonPreparation(
+            environment_name,
+            "affected",
+            local,
+            None,
+            (),
+            linked,
+            main_checkout,
+            fallback_allowed,
+        )
 
     # Retain a merely incomplete graph. An interrupted bootstrap leaves a
     # sound database that simply has not fingerprinted every changed module
@@ -1140,6 +1164,7 @@ def prepare_native_testmon_environment(
             required_executable_paths=required_executable_paths,
             deadline_monotonic=deadline_monotonic,
         )
+        fallback_allowed = native_testmon_fallback_allowed(local, main)
         if main.valid:
             _atomic_copy_sqlite_database(
                 main_data,
@@ -1177,6 +1202,7 @@ def prepare_native_testmon_environment(
                     removed,
                     linked,
                     main_checkout,
+                    fallback_allowed,
                 )
             return NativeTestmonPreparation(
                 environment_name,
@@ -1186,6 +1212,7 @@ def prepare_native_testmon_environment(
                 removed,
                 linked,
                 main_checkout,
+                fallback_allowed,
             )
 
     if local.resumable:
@@ -1200,9 +1227,18 @@ def prepare_native_testmon_environment(
         # the run still records edges for everything it executes. The uncovered
         # paths are named in the receipt rather than paid for every time.
         return NativeTestmonPreparation(
-            environment_name, "affected", local, copied_from, removed, linked, main_checkout
+            environment_name, "affected", local, copied_from, removed, linked, main_checkout, fallback_allowed
         )
-    return NativeTestmonPreparation(environment_name, "bootstrap", local, copied_from, removed, linked, main_checkout)
+    return NativeTestmonPreparation(
+        environment_name,
+        "bootstrap",
+        local,
+        copied_from,
+        removed,
+        linked,
+        main_checkout,
+        fallback_allowed,
+    )
 
 
 __all__ = [
@@ -1219,6 +1255,7 @@ __all__ = [
     "executable_python_paths",
     "inspect_native_testmon_environment",
     "linked_worktree_info",
+    "native_testmon_fallback_allowed",
     "prepare_native_testmon_environment",
     "remove_invalid_native_testmon_state",
     "testmon_environment_digest",

@@ -422,6 +422,7 @@ def _seed_testmon_graph(
         _validate_owned_state_parents,
         certified_attestation_violation,
         inspect_native_testmon_environment,
+        native_testmon_fallback_allowed,
         validate_native_testmon_state_ownership,
     )
 
@@ -444,14 +445,8 @@ def _seed_testmon_graph(
 
     initial_digest = attestation.digests[0]
     destination_initial_state = inspect_native_testmon_environment(destination, environment_name=initial_digest)
-    if destination_initial_state.status == "invalid":
-        return (
-            "seeded lane graph's initial verify environment is invalid and not attestable; "
-            "refusing the default-profile fallback; first lane verify will bootstrap",
-            False,
-        )
     initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
-    if initial_state.status == "invalid":
+    if not native_testmon_fallback_allowed(destination_initial_state, initial_state):
         return (
             "seeded graph's initial verify environment is invalid and not attestable; "
             "refusing the default-profile fallback; "

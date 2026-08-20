@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -563,6 +565,49 @@ def test_atomic_copy_holds_destination_directory_across_parent_replacement(
     assert (destination_root / ".cache-owned" / "testmon" / "testmondata").is_file()
     assert sentinel.read_text(encoding="utf-8") == "external"
     assert list(external.iterdir()) == [sentinel]
+
+
+def test_atomic_copy_does_not_follow_replaced_temporary_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    external_db = tmp_path / "external.db"
+    sqlite3.connect(external_db).close()
+    original_connect = sqlite3.connect
+    attacked = False
+
+    def replace_temporary_child(database: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal attacked
+        temporary_entries = tuple(destination_data.parent.glob(f".{destination_data.name}.copy-*.tmp"))
+        if isinstance(database, Path) and temporary_entries and not attacked:
+            attacked = True
+            temporary_entries[0].unlink()
+            temporary_entries[0].symlink_to(external_db)
+        return original_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", replace_temporary_child)
+    with pytest.raises(NativeTestmonRepairError, match="copied main-checkout database failed validation"):
+        _atomic_copy_sqlite_database(
+            source_data,
+            destination_data,
+            environment_name="owned-environment",
+            required_executable_paths=(),
+            deadline_monotonic=None,
+        )
+
+    assert attacked
+    with sqlite3.connect(external_db) as connection:
+        assert connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == []
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:
