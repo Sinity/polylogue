@@ -250,9 +250,9 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     ``polylogue.schemas.audit.checks.check_privacy_guards`` catches UUIDs,
     hex ids, high-entropy tokens and otherwise-unsafe values recorded in
     ``x-polylogue-values`` annotations.  It is the sharper check for that
-    class -- and it ran nowhere.  ``devtools schema-audit`` is the only
-    caller, and that command is not part of any ``devtools verify`` gate,
-    so nothing enforced it on the path that actually publishes schemas.
+    class.  The required schema-bundle registry runs that predicate over
+    every committed package element; this publication audit maps its
+    blocker-shaped findings into the broader artifact report as well.
 
     That gap was not theoretical.  ``promote_cluster``'s samples path calls
     ``generate_schema_from_samples()``, which -- unlike the full ``generate``

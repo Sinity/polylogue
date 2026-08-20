@@ -1,10 +1,9 @@
 """The publication gate must run the enum-value privacy guard.
 
 `check_privacy_guards` catches UUIDs, hex ids and high-entropy tokens recorded
-verbatim in `x-polylogue-values` annotations. It existed, it was the sharper
-check for that class, and its only caller was `devtools schema-audit` -- a
-command wired into no verify gate. So nothing enforced it on the path that
-actually publishes schemas to a public repository.
+verbatim in `x-polylogue-values` annotations. The required bundle check below
+uses that predicate through the production `SchemaRegistry` over every
+committed provider package, including non-default versions.
 
 That was not theoretical: `promote_cluster`'s samples path calls
 `generate_schema_from_samples()`, which unlike the full `generate` pipeline has
@@ -18,9 +17,12 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
 from pathlib import Path
 
+from polylogue.schemas.audit.workflow import audit_schema_bundle_privacy
 from polylogue.schemas.promotion_audit import audit_schema_artifacts
+from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 
 
 def _write_element(root: Path, provider: str, document: dict[str, object]) -> None:
@@ -28,6 +30,42 @@ def _write_element(root: Path, provider: str, document: dict[str, object]) -> No
     element_dir.mkdir(parents=True, exist_ok=True)
     target = element_dir / "session_document.schema.json.gz"
     target.write_bytes(gzip.compress(json.dumps(document).encode("utf-8")))
+
+
+def test_committed_schema_bundle_privacy_guard_is_green() -> None:
+    report = audit_schema_bundle_privacy()
+
+    assert report.checks, "the required schema privacy registry must inspect committed elements"
+    assert report.all_passed, [check.format_line() for check in report.checks if check.status.value == "error"]
+
+
+def test_committed_schema_bundle_privacy_guard_red_twin(tmp_path: Path) -> None:
+    """A leak planted in a real copied package makes the required gate red."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    package = registry.get_package(provider, version=version)
+    assert package is not None
+    element = next(element for element in package.elements if element.schema_file is not None)
+    schema_file = element.schema_file
+    assert schema_file is not None
+    schema_path = bundle_root / provider / "versions" / version / "elements" / schema_file
+
+    with gzip.open(schema_path, "rt", encoding="utf-8") as stream:
+        schema = json.load(stream)
+    assert isinstance(schema, dict)
+    schema["x-polylogue-values"] = ["0f1e2d3c-4b5a-4968-8776-655443332211"]
+    with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
+        json.dump(schema, stream)
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    privacy_failures = [check for check in report.checks if check.status.value == "error"]
+    assert privacy_failures, "the registered privacy predicate must reject the planted committed-schema leak"
+    assert any(check.name == "privacy_guards" for check in privacy_failures)
+    assert any("UUID leak" in detail for check in privacy_failures for detail in check.details)
 
 
 def test_uuid_recorded_as_an_observed_value_blocks_promotion(tmp_path: Path) -> None:
