@@ -174,7 +174,6 @@ def _python_optimization_level() -> int:
 class _OwnedNativeTestmonState:
     descriptor: int
     data_path: Path
-    executable_data_path: Path
 
     def close(self) -> None:
         os.close(self.descriptor)
@@ -203,14 +202,17 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
         os.close(descriptor)
         raise NativeTestmonRepairError(f"owned testmon directory changed while binding: {parent}")
     try:
-        bound = _descriptor_bound_path(descriptor) / raw_data.name
+        # The nested pytest supervisor is a separate process.  ``/proc/self``
+        # would resolve to that child and lose this held directory descriptor;
+        # name the verifier's descriptor explicitly so the child reopens the
+        # exact directory generation even if ``.cache`` is renamed meanwhile.
+        bound = _descriptor_bound_path(descriptor, owner_pid=os.getpid()) / raw_data.name
     except NativeTestmonRepairError:
         os.close(descriptor)
         raise
     return _OwnedNativeTestmonState(
         descriptor=descriptor,
         data_path=bound,
-        executable_data_path=raw_data,
     )
 
 
@@ -2056,7 +2058,7 @@ def _run(
             cwd=cwd,
             run=run,
             timeout_s=timeout_s,
-            native_testmon_data=state.executable_data_path,
+            native_testmon_data=state.data_path,
         )
     finally:
         if temporary_state:

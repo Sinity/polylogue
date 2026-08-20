@@ -1715,6 +1715,7 @@ def test_managed_native_launch_keeps_state_inode_bound_during_parent_replacement
     ) -> tuple[int, float, dict[str, object]]:
         bound_data = kwargs["native_testmon_data"]
         assert isinstance(bound_data, Path)
+        assert str(bound_data).startswith(f"/proc/{os.getpid()}/fd/")
         (repo / ".cache").rename(repo / ".cache-owned")
         (repo / ".cache").symlink_to(external_cache, target_is_directory=True)
         bound_data.write_text("bound database", encoding="utf-8")

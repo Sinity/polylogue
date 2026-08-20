@@ -1061,7 +1061,8 @@ def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypa
     _graph_with(root / TESTMON_DATA_RELPATH, [])
     note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
     assert warm is False
-    assert "not attestable" in note
+    assert "not certified" in note
+    assert "no completed covered run has certified" in note
 
 
 def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
@@ -1092,8 +1093,8 @@ def test_seed_rejects_a_minimal_fake_graph_even_with_a_matching_environment(
     note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
 
     assert warm is False
-    assert "not attestable" in note
-    assert "initial verify environment is invalid" in note
+    assert "not certified" in note
+    assert "no completed covered run has certified" in note
 
 
 def test_distribution_mutation_makes_a_seeded_graph_unattestable(
