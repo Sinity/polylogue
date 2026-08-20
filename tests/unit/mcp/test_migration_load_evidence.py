@@ -320,6 +320,7 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
             ),
         )
 
+    outer_before_fds = _require_fd_probe(archive_root)
     with _installed_runtime_services(archive_root):
         warm_response = await invoke_large_query()
         assert warm_response["status"] == "response_budget_exceeded"
@@ -333,6 +334,8 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         _, peak_bytes = tracemalloc.get_traced_memory()
         tracemalloc.stop()
         after_files = _archive_file_sizes(archive_root)
+        after_fds = _require_fd_probe(archive_root)
+        assert after_fds == before_fds
 
     response_bytes = len(json.dumps(response, sort_keys=True).encode("utf-8"))
     assert response["status"] == "response_budget_exceeded"
@@ -352,7 +355,7 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
     temporary_sidecar_bytes = sum(after_files[path] for path in new_files if path in allowed_sidecars)
     assert temporary_sidecar_bytes <= 1 * 1024 * 1024
     assert not any(path.endswith((".tmp", ".spill", ".partial")) for path in after_files)
-    assert _archive_fd_targets(archive_root) == before_fds
+    assert _archive_fd_targets(archive_root) == outer_before_fds
 
 
 def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
@@ -367,6 +370,7 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     session_ids = _seed_archive(archive_root, count=request_count)
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+    before_fds = _require_fd_probe(archive_root)
 
     with _installed_runtime_services(archive_root):
         snapshot_refs = asyncio.run(_seed_context_deliveries(server, markers))
@@ -398,7 +402,6 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         monkeypatch.setattr(QueryAdmissionController, "admit_blocking", observe_admission)
 
         before_files = _archive_files(archive_root)
-        before_fds = _require_fd_probe(archive_root)
 
         def run_request(index: int) -> tuple[int, dict[str, dict[str, Any]]]:
             return index, asyncio.run(
@@ -407,6 +410,8 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
 
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mcp-load") as executor:
             results = dict(executor.map(run_request, range(request_count)))
+        after_fds = _require_fd_probe(archive_root)
+        assert after_fds == before_fds
 
     assert set(results) == set(range(request_count))
     for index, bundle in results.items():
