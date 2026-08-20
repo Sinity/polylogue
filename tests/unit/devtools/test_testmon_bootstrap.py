@@ -488,6 +488,64 @@ def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Pa
     assert outside.read_text(encoding="utf-8") == "external state"
 
 
+def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sidecar recovery cannot reopen a replacement of the public source path."""
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (replacement_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_original.py",
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_twin.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
+    )
+    original_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
+    Path(f"{source_data}-wal").write_bytes(b"stale sidecar")
+    original_connect = sqlite3.connect
+    recovery_databases: list[Path] = []
+    executed_sql: list[str] = []
+
+    def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        database_path = Path(database)
+        recovery_databases.append(database_path)
+        if database_path == source_data:
+            os.replace(replacement_data, source_data)
+        connection = cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
+        connection.set_trace_callback(executed_sql.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        state = inspect_native_testmon_environment(
+            source_data,
+            environment_name="owned-environment",
+            data_fd=binding.descriptor,
+        )
+
+    assert state.valid
+    assert state.environment is not None
+    assert state.environment.nodeids == ("tests/test_original.py::test_original",)
+    assert recovery_databases
+    assert all(database != source_data for database in recovery_databases)
+    assert "PRAGMA wal_checkpoint(PASSIVE)" in executed_sql
+    current_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
+    assert current_identity == original_identity
+    assert replacement_data.exists()
+
+
 def _seed_partial_native_graph(
     root: Path,
     *,

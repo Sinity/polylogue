@@ -784,7 +784,7 @@ def inspect_native_testmon_environment(
     # crash recovery happens instead.
     if any(path.exists() for path in sidecars):
         with contextlib.suppress(sqlite3.Error, OSError):
-            recovery = sqlite3.connect(data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
+            recovery = sqlite3.connect(sqlite_data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
             try:
                 recovery.execute("PRAGMA wal_checkpoint(PASSIVE)")
             finally:
