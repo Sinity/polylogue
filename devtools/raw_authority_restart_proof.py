@@ -353,19 +353,6 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
     application_timestamps = [int(row[1]) for row in applications]
     application_decision_ids = [str(row[2]) for row in applications]
     expected_application_decision_ids = sorted((baseline_receipt.decision_id, reparse_receipt.decision_id))
-    with sqlite3.connect(":memory:") as tie_conn:
-        tie_conn.execute("CREATE TABLE tie_rows (decision_id TEXT NOT NULL, decided_at_ms INTEGER NOT NULL)")
-        tie_conn.executemany(
-            "INSERT INTO tie_rows(decision_id, decided_at_ms) VALUES (?, ?)",
-            [(decision_id, 1) for decision_id in reversed(expected_application_decision_ids)],
-        )
-        unstable_tie_ids = [
-            str(row[0]) for row in tie_conn.execute("SELECT decision_id FROM tie_rows ORDER BY decided_at_ms")
-        ]
-        stable_tie_ids = [
-            str(row[0])
-            for row in tie_conn.execute("SELECT decision_id FROM tie_rows ORDER BY decided_at_ms, decision_id")
-        ]
     _require(
         application_decisions
         == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value]
@@ -373,9 +360,21 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         and application_decision_ids == expected_application_decision_ids,
         "accepted-head reparse receipts are not ordered by timestamp and decision id",
     )
+    timestamp_only_permitted_orders = (
+        tuple((decision_id, 1) for decision_id in expected_application_decision_ids),
+        tuple((decision_id, 1) for decision_id in reversed(expected_application_decision_ids)),
+    )
+    timestamp_only_orders = {
+        tuple(decision_id for decision_id, _timestamp in model_input) for model_input in timestamp_only_permitted_orders
+    }
     _require(
-        unstable_tie_ids != expected_application_decision_ids and stable_tie_ids == expected_application_decision_ids,
-        "equal-timestamp tie-break control did not distinguish unstable ordering",
+        timestamp_only_orders
+        == {
+            tuple(expected_application_decision_ids),
+            tuple(reversed(expected_application_decision_ids)),
+        }
+        and len(timestamp_only_orders) == 2,
+        "equal-timestamp timestamp-only policy did not admit both explicit permutations",
     )
     _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
     _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
@@ -383,60 +382,99 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         repair_item.reason == "current accepted head does not exactly prove the normalized session",
         f"reparse-then-repair refusal changed: {repair_item.reason}",
     )
-    with sqlite3.connect(case_root / "index.db") as index_conn:
-        index_conn.execute(
-            """
-            DELETE FROM raw_revision_applications
-            WHERE raw_id = ? AND logical_source_key = ? AND decision = ?
-            """,
-            (raw_id, "unknown:reparse-browser", ApplicationDecision.REPARSE_REAFFIRMATION.value),
-        )
-        record_revision_application_sync(
-            index_conn,
-            RevisionApplicationReceipt(
-                raw_id=raw_id,
-                session_id="chatgpt-export:reparse-browser",
-                logical_source_key="unknown:reparse-browser",
-                source_revision=str(blob_hash),
-                acquisition_generation=0,
-                decision=ApplicationDecision.SELECTED_BASELINE,
-                accepted_raw_id=raw_id,
-                accepted_source_revision=str(blob_hash),
-                accepted_content_hash=current_hash,
-                accepted_frontier_kind="byte",
-                accepted_frontier=len(payload),
-                baseline_raw_id=raw_id,
-                detail="restart-proof:anti-vacuity-single-receipt",
-            ),
-            decided_at_ms=1,
-        )
-        index_conn.commit()
+    negative_control_root = case_root.with_name(f"{case_root.name}-negative-control")
+    shutil.copytree(case_root, negative_control_root)
+    try:
+        with sqlite3.connect(negative_control_root / "index.db") as index_conn:
+            index_conn.execute(
+                """
+                DELETE FROM raw_revision_applications
+                WHERE raw_id = ? AND logical_source_key = ? AND decision = ?
+                """,
+                (raw_id, "unknown:reparse-browser", ApplicationDecision.REPARSE_REAFFIRMATION.value),
+            )
+            record_revision_application_sync(
+                index_conn,
+                RevisionApplicationReceipt(
+                    raw_id=raw_id,
+                    session_id="chatgpt-export:reparse-browser",
+                    logical_source_key="unknown:reparse-browser",
+                    source_revision=str(blob_hash),
+                    acquisition_generation=0,
+                    decision=ApplicationDecision.SELECTED_BASELINE,
+                    accepted_raw_id=raw_id,
+                    accepted_source_revision=str(blob_hash),
+                    accepted_content_hash=current_hash,
+                    accepted_frontier_kind="byte",
+                    accepted_frontier=len(payload),
+                    baseline_raw_id=raw_id,
+                    detail="restart-proof:anti-vacuity-single-receipt",
+                ),
+                decided_at_ms=1,
+            )
+            index_conn.commit()
 
-    with sqlite3.connect(case_root / "source.db") as source_conn:
-        source_conn.execute(
+        with sqlite3.connect(negative_control_root / "source.db") as source_conn:
+            source_conn.execute(
+                """
+                UPDATE raw_session_memberships
+                SET normalized_content_hash = ?
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt:reparse-browser'
+                """,
+                (bytes(32), raw_id),
+            )
+            source_conn.commit()
+
+        with sqlite3.connect(negative_control_root / "index.db") as index_conn:
+            index_conn.row_factory = sqlite3.Row
+            index_conn.execute("ATTACH DATABASE ? AS source", (str(negative_control_root / "source.db"),))
+            wrong_hash_repair_item = repair._inspect_browser_capture_origin_strategy(
+                negative_control_root,
+                raw_id,
+                conn=index_conn,
+            )
+        _require(
+            wrong_hash_repair_item.reason == "membership census does not exactly reproduce the accepted session",
+            "wrong normalized hash was not distinguished from the two-receipt refusal",
+        )
+        with sqlite3.connect(negative_control_root / "source.db") as source_conn:
+            raw_count = int(source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
+    finally:
+        shutil.rmtree(negative_control_root)
+
+    with sqlite3.connect(case_root / "index.db") as index_conn:
+        retained_applications = index_conn.execute(
             """
-            UPDATE raw_session_memberships
-            SET normalized_content_hash = ?
+            SELECT decision_id
+            FROM raw_revision_applications
+            WHERE raw_id = ? AND logical_source_key = ?
+            ORDER BY decided_at_ms, decision_id
+            """,
+            (raw_id, "unknown:reparse-browser"),
+        ).fetchall()
+        retained_head_hash, retained_session_hash = index_conn.execute(
+            """
+            SELECT h.accepted_content_hash, s.content_hash
+            FROM raw_revision_heads AS h
+            JOIN sessions AS s ON s.session_id = h.session_id
+            WHERE h.logical_source_key = 'unknown:reparse-browser'
+            """
+        ).fetchone()
+    with sqlite3.connect(case_root / "source.db") as source_conn:
+        retained_membership_hash = source_conn.execute(
+            """
+            SELECT normalized_content_hash
+            FROM raw_session_memberships
             WHERE raw_id = ? AND logical_source_key = 'chatgpt:reparse-browser'
             """,
-            (bytes(32), raw_id),
-        )
-        source_conn.commit()
-
-    with sqlite3.connect(case_root / "index.db") as index_conn:
-        index_conn.row_factory = sqlite3.Row
-        index_conn.execute("ATTACH DATABASE ? AS source", (str(case_root / "source.db"),))
-        wrong_hash_repair_item = repair._inspect_browser_capture_origin_strategy(
-            case_root,
-            raw_id,
-            conn=index_conn,
-        )
+            (raw_id,),
+        ).fetchone()[0]
     _require(
-        wrong_hash_repair_item.reason == "membership census does not exactly reproduce the accepted session",
-        "wrong normalized hash was not distinguished from the two-receipt refusal",
+        [str(row[0]) for row in retained_applications] == expected_application_decision_ids
+        and bytes(retained_head_hash) == current_hash == bytes(retained_session_hash)
+        and bytes(retained_membership_hash) == current_hash,
+        "negative control mutated the retained accepted-head reparse archive",
     )
-    with sqlite3.connect(case_root / "source.db") as source_conn:
-        raw_count = int(source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
     _require(raw_count == 1, "reparse-then-repair mutated the source raw set while refusing")
     return {
         "ordering": ordering,
