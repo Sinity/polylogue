@@ -1014,8 +1014,9 @@ def test_revision_receipt_run_identity_is_not_a_semantic_canary_difference(tmp_p
                 INSERT INTO raw_revision_applications(
                     decision_id, raw_id, session_id, logical_source_key, source_revision,
                     acquisition_generation, decision, accepted_raw_id,
-                    accepted_source_revision, accepted_content_hash, detail, decided_at_ms
-                ) VALUES (?, ?, ?, 'codex:alpha', '1', 0, 'selected_baseline', ?, '1', ?, 'selected', ?)
+                    accepted_source_revision, accepted_content_hash, accepted_frontier_kind,
+                    accepted_frontier, detail, decided_at_ms
+                ) VALUES (?, ?, ?, 'codex:alpha', '1', 0, 'selected_baseline', ?, '1', ?, 'semantic', 1, 'selected', ?)
                 """,
                 (decision_id, raw_id, session_id, raw_id, content_hash, decided_at_ms),
             )

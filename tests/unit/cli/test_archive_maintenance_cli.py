@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.cli.click_app import cli
 from polylogue.cli.command_inventory import iter_command_paths
 from polylogue.cli.commands.maintenance import _rebuild_index as maintenance_rebuild_index
@@ -2270,33 +2271,92 @@ def test_archive_read_cli_searches_archive_blocks(
 
 
 @pytest.mark.parametrize(
-    "selection_args",
-    [
-        [],
-        ["--only-missing"],
-        ["--raw-id", "raw-a", "--raw-id", "raw-b"],
-    ],
+    "selection_mode",
+    ("all", "only-missing", "explicit"),
     ids=["all", "only-missing", "explicit"],
 )
 def test_rebuild_index_source_replay_expands_every_execution_selection_to_authority_cohorts(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
-    selection_args: list[str],
+    selection_mode: str,
 ) -> None:
-    receipt_path = write_valid_rebuild_receipt(
-        cli_workspace["archive_root"], cli_workspace["archive_root"].parent / "schema-inference-gate-receipt.json"
-    )
+    root = cli_workspace["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        key = "codex-session:authority-cohort"
+        source_path = "authority-cohort.jsonl"
+        session_meta = {
+            "type": "session_meta",
+            "payload": {"id": "authority-cohort", "timestamp": "2026-08-20T00:00:00Z"},
+        }
+        baseline_message = {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "message-1",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "baseline"}],
+            },
+        }
+        appended_message = {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "message-2",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "appended"}],
+            },
+        }
+        baseline_payload = b"".join(
+            json.dumps(row, sort_keys=True).encode() + b"\n" for row in (session_meta, baseline_message)
+        )
+        full_payload = baseline_payload + json.dumps(appended_message, sort_keys=True).encode() + b"\n"
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path=source_path,
+            acquired_at_ms=1,
+            native_id="authority-cohort",
+        )
+        archive.bind_raw_revision(
+            baseline_raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=key,
+                kind=RawRevisionKind.FULL,
+                source_revision="baseline",
+                acquisition_generation=0,
+                baseline_raw_id=baseline_raw_id,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        full_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=full_payload,
+            source_path=source_path,
+            acquired_at_ms=2,
+            native_id="authority-cohort",
+        )
+        archive.bind_raw_revision(
+            full_raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=key,
+                kind=RawRevisionKind.FULL,
+                source_revision="full",
+                acquisition_generation=1,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        raw_ids = [baseline_raw_id, full_raw_id]
+    census_historical_revision_evidence(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.classify_raw_revision_cohort_for_live_watch(key)
+    receipt_path = write_valid_rebuild_receipt(root, root.parent / "schema-inference-gate-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.count_source_raw_sessions", lambda _root: 4)
-    monkeypatch.setattr(
-        "polylogue.maintenance.rebuild_index.all_index_rebuild_raw_ids",
-        lambda _root: ["raw-parent", "raw-child"],
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.rebuild_index.missing_index_raw_ids",
-        lambda _root: ["raw-parent", "raw-child"],
-    )
+    selection_args = {
+        "all": [],
+        "only-missing": ["--only-missing"],
+        "explicit": ["--raw-id", raw_ids[0]],
+    }[selection_mode]
 
     result = cli_runner.invoke(
         cli,
@@ -2307,14 +2367,18 @@ def test_rebuild_index_source_replay_expands_every_execution_selection_to_author
             "rebuild-index",
             *selection_args,
             *(["--no-promote"] if selection_args else []),
+            "--output-format",
+            "json",
         ],
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
-    assert "Classified:" in result.output
-    assert "Replayed:" in result.output
-    with sqlite3.connect(cli_workspace["archive_root"] / "ops.db") as conn:
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    closure = payload["selection_evidence"]["replay_closure"]
+    assert closure["raw_ids"] == sorted(raw_ids)
+    assert {row["raw_id"] for row in closure["raw_session_evidence"]} == set(raw_ids)
+    with sqlite3.connect(root / "ops.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM ingest_attempts WHERE phase = 'rebuild-index'").fetchone() == (0,)
 
 
