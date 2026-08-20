@@ -620,21 +620,26 @@ def _certified_graph_with(path: Path, environment_name: str) -> Path:
     return _certified_graph_with_names(path, [environment_name])
 
 
-def _certified_graph_with_names(path: Path, environment_names: Sequence[str]) -> Path:
+def _certified_graph_with_names(
+    path: Path,
+    environment_names: Sequence[str],
+    recorded_test_name: str = "tests/test_recorded.py::test_recorded",
+) -> Path:
     import testmon.db
 
     from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, write_certified_corpus
 
     data = path / TESTMON_DATA_RELPATH
     data.parent.mkdir(parents=True, exist_ok=True)
-    (path / "tests").mkdir(parents=True, exist_ok=True)
-    (path / "tests" / "test_recorded.py").write_text("def test_recorded(): pass\n", encoding="utf-8")
+    recorded_test_path = recorded_test_name.split("::", 1)[0]
+    (path / recorded_test_path).parent.mkdir(parents=True, exist_ok=True)
+    (path / recorded_test_path).write_text("def test_recorded(): pass\n", encoding="utf-8")
     db = testmon.db.DB(str(data))
     try:
         con = db.con
         fingerprint_id = con.execute(
             "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) VALUES (?, ?, ?, ?)",
-            ("tests/test_recorded.py", b"", 0.0, ""),
+            (recorded_test_path, b"", 0.0, ""),
         ).lastrowid
         for index, environment_name in enumerate(environment_names):
             environment_id = con.execute(
@@ -643,7 +648,7 @@ def _certified_graph_with_names(path: Path, environment_names: Sequence[str]) ->
             ).lastrowid
             execution_id = con.execute(
                 "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, ?, ?, ?)",
-                (environment_id, "tests/test_recorded.py::test_recorded", 0.01, 0, 0),
+                (environment_id, recorded_test_name, 0.01, 0, 0),
             ).lastrowid
             con.execute(
                 "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id) VALUES (?, ?)",
@@ -654,7 +659,7 @@ def _certified_graph_with_names(path: Path, environment_names: Sequence[str]) ->
         db.con.close()
 
     for environment_name in set(environment_names):
-        assert write_certified_corpus(path, environment_name, ["tests/test_recorded.py::test_recorded"])
+        assert write_certified_corpus(path, environment_name, [recorded_test_name])
     return data
 
 
@@ -747,6 +752,63 @@ def test_seed_rejects_an_uncertified_source_before_publication(tmp_path: Path) -
     assert warm is False
     assert "not certified" in note
     assert not (lane / TESTMON_DATA_RELPATH).exists()
+
+
+def test_seed_uses_bound_source_for_certificate_read_after_public_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement immediately before source attestation cannot redirect the certificate read."""
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    source_data = _certified_graph_with_names(
+        root,
+        ["polylogue-current"],
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    replacement_root = tmp_path / "replacement"
+    replacement_data = _certified_graph_with_names(
+        replacement_root,
+        ["polylogue-current"],
+        recorded_test_name="tests/test_replacement.py::test_replacement",
+    )
+
+    original_violation = testmon_bootstrap.certified_attestation_violation
+    swapped = False
+
+    def replace_before_certificate_read(
+        repo_root: Path,
+        *,
+        environment_name: str,
+        current_nodeids: Sequence[str],
+        certificate_data_path: Path | None = None,
+    ) -> str | None:
+        nonlocal swapped
+        if repo_root.resolve() == root.resolve() and certificate_data_path is not None and not swapped:
+            swapped = True
+            os.replace(replacement_data, source_data)
+        return original_violation(
+            repo_root,
+            environment_name=environment_name,
+            current_nodeids=current_nodeids,
+            certificate_data_path=certificate_data_path,
+        )
+
+    monkeypatch.setattr(testmon_bootstrap, "certified_attestation_violation", replace_before_certificate_read)
+
+    note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
+
+    assert swapped
+    assert warm is True
+    assert "verifies start warm" in note
+    copied = testmon_bootstrap.inspect_native_testmon_environment(
+        lane / testmon_bootstrap.TESTMON_DATA_RELPATH,
+        environment_name="polylogue-current",
+    )
+    assert copied.valid
+    assert copied.environment is not None
+    assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
 
 
 def test_seed_preserves_a_certified_destination_when_source_primary_is_absent(tmp_path: Path) -> None:

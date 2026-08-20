@@ -789,6 +789,48 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
     assert not destination_data.exists(), "a replaced .bound-* source must not publish any destination database"
 
 
+def test_source_binding_closes_descriptors_when_bound_entry_becomes_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private-entry cleanup cannot strand descriptors when unlink sees a directory."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    directory_fds: list[int] = []
+    original_open_directory = testmon_bootstrap._open_owned_testmon_directory
+
+    def capture_directory_fd(*args: Any, **kwargs: Any) -> int:
+        descriptor = original_open_directory(*args, **kwargs)
+        directory_fds.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(testmon_bootstrap, "_open_owned_testmon_directory", capture_directory_fd)
+    bound_fd: int | None = None
+    private_entry: Path | None = None
+    with pytest.raises(IsADirectoryError):
+        with native_testmon_source_binding(source_data) as binding:
+            assert binding is not None
+            bound_fd = binding.descriptor
+            private_entry = next(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
+            replacement_directory = tmp_path / "replacement-directory"
+            replacement_directory.mkdir()
+            private_entry.unlink()
+            replacement_directory.rename(private_entry)
+
+    assert bound_fd is not None
+    assert directory_fds
+    for descriptor in (*directory_fds, bound_fd):
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert private_entry is not None
+    private_entry.rmdir()
+
+
 def test_atomic_copy_carries_validated_source_descriptor_across_public_replacement(
     tmp_path: Path,
 ) -> None:
