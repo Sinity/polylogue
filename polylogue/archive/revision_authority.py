@@ -118,6 +118,28 @@ def durable_authority_logical_keys(
         return None
 
 
+def parser_census_is_complete(
+    *,
+    recorded_keys: tuple[str, ...] | None,
+    durable_keys: tuple[str, ...] | None,
+    typed_non_session: bool,
+    parser_confirmed_non_session: bool,
+    byte_governed_fragment: bool,
+) -> bool:
+    """Return whether a parser receipt proves its durable authority shape.
+
+    The receipt writer and readiness reader must apply this same predicate.
+    Empty identity sets are complete only when a durable non-session or
+    byte-authority disposition proves that no parser identity is expected.
+    """
+    return (
+        durable_keys is not None
+        and recorded_keys is not None
+        and recorded_keys == durable_keys
+        and (bool(recorded_keys) or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+    )
+
+
 #: ``raw_membership_census.detail`` marker written when a full-only,
 #: non-prefix-chain cohort is retired from byte-revision governance to
 #: membership governance (``ArchiveStore.replace_raw_membership_census``,

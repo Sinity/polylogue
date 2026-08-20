@@ -125,6 +125,7 @@ from polylogue.archive.revision_authority import (
     canonical_authority_logical_key,
     classify_historical_full_revision_streams,
     durable_authority_logical_keys,
+    parser_census_is_complete,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -2026,11 +2027,6 @@ def record_current_parser_source_census(
         and str(membership_census[0]) == "failed"
         and str(membership_census[1]) == BYTE_AUTHORITY_CENSUS_DETAIL
     )
-    if typed_non_session or byte_governed_fragment:
-        # Terminal parser evidence and other typed non-session artifacts have
-        # an authoritative empty identity set. Requiring a session logical key
-        # here makes those durable dispositions impossible to freeze.
-        durable_keys = ()
     observed_keys = (
         tuple(
             sorted(
@@ -2043,20 +2039,16 @@ def record_current_parser_source_census(
         if parser_sessions is not None
         else tuple(sorted(canonical_authority_logical_key(key) for key in inherited_logical_keys or ()))
         if inherited_logical_keys is not None
-        else ()
+        else durable_keys
         if typed_non_session or byte_governed_fragment
         else None
     )
-    complete = (
-        durable_keys is not None
-        and observed_keys is not None
-        and observed_keys == durable_keys
-        and (
-            bool(observed_keys)
-            or typed_non_session
-            or byte_governed_fragment
-            or (membership_census is not None and str(membership_census[0]) == "non_session")
-        )
+    complete = parser_census_is_complete(
+        recorded_keys=observed_keys,
+        durable_keys=durable_keys,
+        typed_non_session=typed_non_session,
+        parser_confirmed_non_session=membership_census is not None and str(membership_census[0]) == "non_session",
+        byte_governed_fragment=byte_governed_fragment,
     )
     detail = (
         "parser-observed: append fragment governed by byte revision authority"
