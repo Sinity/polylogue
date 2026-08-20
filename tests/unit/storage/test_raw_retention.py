@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage import raw_retention as raw_retention_mod
@@ -31,6 +32,10 @@ from polylogue.storage.raw_retention import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_cursor
+from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    RevisionApplicationReceipt,
+    record_revision_application_sync,
+)
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     upsert_raw_artifact,
@@ -197,29 +202,28 @@ def _seed_superseded_application(
     accepted_generation: int,
     accepted_raw_id: str,
     accepted_revision: str,
+    accepted_frontier: int,
     accepted_append_end_offset: int | None,
 ) -> None:
     with sqlite3.connect(index_db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_revision_applications (
-                decision_id, raw_id, session_id, logical_source_key,
-                source_revision, acquisition_generation, decision,
-                accepted_raw_id, accepted_source_revision, accepted_content_hash,
-                append_end_offset, detail, decided_at_ms
-            ) VALUES (?, ?, 'codex-session:session-1', 'codex:session-1', ?, ?,
-                      'superseded', ?, ?, ?, ?, 'superseded by accepted full', 2)
-            """,
-            (
-                f"decision-{raw_id}",
-                raw_id,
-                source_revision,
-                accepted_generation,
-                accepted_raw_id,
-                accepted_revision,
-                bytes(32),
-                accepted_append_end_offset,
+        record_revision_application_sync(
+            conn,
+            RevisionApplicationReceipt(
+                raw_id=raw_id,
+                session_id="codex-session:session-1",
+                logical_source_key="codex:session-1",
+                source_revision=source_revision,
+                acquisition_generation=accepted_generation,
+                decision=ApplicationDecision.SUPERSEDED,
+                accepted_raw_id=accepted_raw_id,
+                accepted_source_revision=accepted_revision,
+                accepted_content_hash=bytes(32),
+                accepted_frontier_kind="byte",
+                accepted_frontier=accepted_frontier,
+                append_end_offset=accepted_append_end_offset,
+                detail="superseded by accepted full",
             ),
+            decided_at_ms=2,
         )
 
 
@@ -408,6 +412,7 @@ def test_active_full_head_resets_retention_chain(tmp_path: Path) -> None:
         accepted_generation=1,
         accepted_raw_id="raw-new-full",
         accepted_revision="revision-new",
+        accepted_frontier=20,
         accepted_append_end_offset=None,
     )
 
@@ -2853,6 +2858,7 @@ def _seed_stale_full_reset_chain(source_db: Path, index_db: Path) -> None:
         accepted_generation=1,
         accepted_raw_id="raw-mid-full",
         accepted_revision="revision-mid",
+        accepted_frontier=20,
         accepted_append_end_offset=None,
     )
     # Already current: recorded against the live head exactly.
@@ -2863,6 +2869,7 @@ def _seed_stale_full_reset_chain(source_db: Path, index_db: Path) -> None:
         accepted_generation=2,
         accepted_raw_id="raw-new-full",
         accepted_revision="revision-new",
+        accepted_frontier=30,
         accepted_append_end_offset=None,
     )
 
@@ -2936,10 +2943,14 @@ def test_stale_supersession_reissue_authorizes_release_end_to_end(tmp_path: Path
     # row now exists for the same raw.
     with sqlite3.connect(index_db) as index_conn:
         rows = index_conn.execute(
-            "SELECT accepted_raw_id, acquisition_generation FROM raw_revision_applications "
+            "SELECT accepted_raw_id, acquisition_generation, accepted_frontier_kind, accepted_frontier "
+            "FROM raw_revision_applications "
             "WHERE raw_id = 'raw-old-full' ORDER BY acquisition_generation"
         ).fetchall()
-    assert rows == [("raw-mid-full", 1), ("raw-new-full", 2)]
+    assert rows == [
+        ("raw-mid-full", 1, "byte", 20),
+        ("raw-new-full", 2, "byte", 30),
+    ]
 
 
 def test_stale_supersession_reissue_refuses_when_head_is_in_progress_append(tmp_path: Path) -> None:
@@ -3019,6 +3030,7 @@ def test_stale_supersession_reissue_refuses_when_head_is_in_progress_append(tmp_
         accepted_generation=1,
         accepted_raw_id="raw-append-1",
         accepted_revision="revision-1",
+        accepted_frontier=15,
         accepted_append_end_offset=15,
     )
 
