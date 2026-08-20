@@ -198,7 +198,13 @@ def _application_receipt_rows(
     conn.row_factory = sqlite3.Row
     return conn.execute(
         """
-        SELECT a.*
+        SELECT a.decision_id, a.raw_id, a.session_id, a.logical_source_key,
+               a.source_revision, a.acquisition_generation, a.decision,
+               a.accepted_raw_id, a.accepted_source_revision,
+               a.accepted_content_hash, a.accepted_frontier_kind,
+               a.accepted_frontier, a.baseline_raw_id,
+               a.predecessor_raw_id, a.append_end_offset, a.detail,
+               a.decided_at_ms
         FROM raw_revision_applications AS a
         WHERE a.raw_id = ? AND a.logical_source_key = ?
         ORDER BY a.decided_at_ms, a.decision_id
@@ -236,6 +242,12 @@ def _validate_application_receipt_contents(
     expected_head: RevisionApplicationReceipt,
 ) -> None:
     _require(len(rows) == len(expected_by_id), f"{context} receipt count changed")
+    observed_decision_ids = [str(row["decision_id"]) for row in rows]
+    _require(
+        len(observed_decision_ids) == len(set(observed_decision_ids))
+        and set(observed_decision_ids) == set(expected_by_id),
+        f"{context} receipt decision identities changed",
+    )
     expected_head_source_revision = _require_not_none(
         expected_head.accepted_source_revision,
         f"{context} expected head lacks an accepted source revision",
@@ -518,6 +530,23 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         accepted_head=accepted_head,
         expected_head=reparse_receipt,
     )
+    try:
+        _validate_application_receipt_contents(
+            [applications[0], applications[0]],
+            expected_application_receipts_by_id,
+            context="duplicate decision identity anti-vacuity control",
+            accepted_head=accepted_head,
+            expected_head=reparse_receipt,
+        )
+    except RawAuthorityRestartProofError as exc:
+        _require(
+            "decision identities" in str(exc),
+            f"duplicate decision identity anti-vacuity failed for the wrong field: {exc}",
+        )
+    else:
+        raise RawAuthorityRestartProofError(
+            "duplicate decision identity anti-vacuity control unexpectedly accepted malformed evidence"
+        )
     with sqlite3.connect(":memory:") as tie_conn:
         tie_conn.execute(
             """
@@ -639,14 +668,54 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
                 "stale receipt anti-vacuity control unexpectedly accepted a mutated content hash"
             )
 
+        # Anti-vacuity: keep the accepted head valid while corrupting the
+        # persisted application row. The row itself must be validated.
+        with sqlite3.connect(negative_control_root / "index.db") as index_conn:
+            index_conn.execute(
+                "UPDATE raw_revision_applications SET source_revision = ? WHERE decision_id = ?",
+                ("corrupt-source-revision", reparse_receipt.decision_id),
+            )
+            stale_source_revision_applications = _application_receipt_rows(
+                index_conn,
+                raw_id=raw_id,
+                logical_source_key="unknown:reparse-browser",
+            )
+            stale_source_revision_head = _require_not_none(
+                _accepted_head_receipt_row(index_conn, logical_source_key="unknown:reparse-browser"),
+                "stale source revision anti-vacuity head is not durable",
+            )
+            index_conn.commit()
+        try:
+            _validate_application_receipt_contents(
+                stale_source_revision_applications,
+                expected_application_receipts_by_id,
+                context="stale source revision anti-vacuity control",
+                accepted_head=stale_source_revision_head,
+                expected_head=reparse_receipt,
+            )
+        except RawAuthorityRestartProofError as exc:
+            _require(
+                "source revision" in str(exc),
+                f"stale source revision anti-vacuity failed for the wrong field: {exc}",
+            )
+        else:
+            raise RawAuthorityRestartProofError(
+                "stale source revision anti-vacuity control unexpectedly accepted a mutated application field"
+            )
+
         with sqlite3.connect(negative_control_root / "index.db") as index_conn:
             index_conn.execute(
                 """
                 UPDATE raw_revision_applications
-                SET accepted_content_hash = ?, acquisition_generation = ?
+                SET source_revision = ?, accepted_content_hash = ?, acquisition_generation = ?
                 WHERE decision_id = ?
                 """,
-                (current_hash, reparse_receipt.acquisition_generation + 1, reparse_receipt.decision_id),
+                (
+                    reparse_receipt.source_revision,
+                    current_hash,
+                    reparse_receipt.acquisition_generation + 1,
+                    reparse_receipt.decision_id,
+                ),
             )
             stale_generation_applications = _application_receipt_rows(
                 index_conn,
@@ -680,10 +749,11 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             index_conn.execute(
                 """
                 UPDATE raw_revision_applications
-                SET accepted_frontier = ?, acquisition_generation = ?
+                SET source_revision = ?, accepted_frontier = ?, acquisition_generation = ?
                 WHERE decision_id = ?
                 """,
                 (
+                    reparse_receipt.source_revision,
                     _require_not_none(
                         reparse_receipt.accepted_frontier,
                         "stale frontier anti-vacuity receipt lacks an accepted frontier",
