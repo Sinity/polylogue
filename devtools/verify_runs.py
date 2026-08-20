@@ -1926,11 +1926,7 @@ def merge_worker_events(events_dir: Path, merged_path: Path) -> int:
 def latest_event_from_paths(*paths: Path) -> dict[str, Any] | None:
     candidates: list[dict[str, Any]] = []
     for path in paths:
-        if path.is_dir():
-            for event_file in path.glob("*.jsonl"):
-                candidates.extend(_read_last_jsonl(event_file, limit=1))
-        else:
-            candidates.extend(_read_last_jsonl(path, limit=1))
+        candidates.extend(_read_last_jsonl(path, limit=1))
     if not candidates:
         return None
     candidates.sort(key=lambda row: str(row.get("updated_at", "")))
@@ -1938,10 +1934,17 @@ def latest_event_from_paths(*paths: Path) -> dict[str, Any] | None:
 
 
 def _read_last_jsonl(path: Path, *, limit: int) -> list[dict[str, Any]]:
-    if not path.exists():
+    try:
+        if path.is_dir():
+            directory_rows: list[dict[str, Any]] = []
+            for event_file in path.glob("*.jsonl"):
+                directory_rows.extend(_read_last_jsonl(event_file, limit=limit))
+            return directory_rows
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+    except OSError:
         return []
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
+    for line in lines:
         with contextlib.suppress(json.JSONDecodeError):
             rows.append(json.loads(line))
     return rows

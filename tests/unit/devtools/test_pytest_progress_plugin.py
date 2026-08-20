@@ -85,6 +85,40 @@ def test_progress_plugin_records_call_and_setup_failures(
     assert events[2]["longrepr"] == "fixture exploded"
 
 
+def test_storage_scale_heartbeat_cadence_stays_below_stall_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(pytest_progress_plugin._STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV, "30")
+    monkeypatch.setenv(pytest_progress_plugin._STALL_TIMEOUT_ENV, "2")
+
+    assert pytest_progress_plugin._storage_scale_progress_heartbeat_s() == 1
+
+
+def test_storage_scale_tree_snapshot_tracks_real_file_changes(tmp_path: Path) -> None:
+    assert pytest_progress_plugin._storage_scale_tree_snapshot(tmp_path / "missing") is None
+    before = pytest_progress_plugin._storage_scale_tree_snapshot(tmp_path)
+    (tmp_path / "payload.bin").write_bytes(b"payload")
+    after = pytest_progress_plugin._storage_scale_tree_snapshot(tmp_path)
+
+    assert before is not None
+    assert after is not None
+    assert after != before
+    assert after[0] == 1
+    assert after[1] == len(b"payload")
+
+
+def test_storage_scale_heartbeat_does_not_publish_after_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    heartbeat = pytest_progress_plugin._StorageScaleProgressHeartbeat(
+        nodeid="tests/example.py::test_storage_scale",
+        root_supplier=lambda: None,
+    )
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(pytest_progress_plugin, "_write_event", published.append)
+
+    heartbeat._stop.set()
+    heartbeat._write_heartbeat()
+
+    assert published == []
+
+
 def test_progress_plugin_preserves_xfail_and_xpass_in_durable_statistics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
