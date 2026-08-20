@@ -110,6 +110,14 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
         for version in bundle_registry.list_versions(provider):
             package = bundle_registry.get_package(provider, version=version)
             if package is None:
+                report.checks.append(
+                    AuditCheck(
+                        name="privacy_guards",
+                        status=OutcomeStatus.ERROR,
+                        summary="Committed schema package is missing",
+                        provider=f"{provider}/{version}",
+                    )
+                )
                 continue
             for element in package.elements:
                 if element.schema_file is None:
@@ -131,6 +139,14 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                     )
                     continue
                 report.checks.append(_scoped(scope, check_privacy_guards(schema)))
+    if not report.checks:
+        report.checks.append(
+            AuditCheck(
+                name="privacy_guards",
+                status=OutcomeStatus.ERROR,
+                summary="No committed schema bundles were discovered",
+            )
+        )
     return report
 
 

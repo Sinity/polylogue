@@ -87,7 +87,7 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-testmon-2709409-d5c6e72c`.
 - `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render all`, `devtools render all --check`.
-- `devtools verify`: Run format, lint, mypy, render all, and test checks locally before pushing.
+- `devtools verify`: Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`.
