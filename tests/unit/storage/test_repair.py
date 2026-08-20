@@ -2340,7 +2340,9 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
     # The fragment is still debt -- just typed as the authority quarantine it
     # actually is, rather than as unfinished census work.
     assert targeted.census_receipt.quiescent is True
-    assert "append authority quarantine" in targeted.detail
+    assert targeted.metrics["raw_materialization_byte_authority_quarantined_count"] == 1
+    assert "1 append authority quarantine(s)" in targeted.detail
+    assert "0 append fragment(s) pending byte-authority adjudication" in targeted.detail
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         cursor = source_conn.execute(

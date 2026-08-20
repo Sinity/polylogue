@@ -35,6 +35,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
     durable_authority_logical_keys,
+    parser_census_is_complete,
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Origin, Provider
@@ -740,6 +741,17 @@ class RevisionCensusResult:
 
 
 @dataclass(slots=True)
+class _CurrentParserReceiptShape:
+    recorded_keys_json: object
+    typed_key: object
+    revision_kind: object
+    typed_non_session: bool
+    parser_confirmed_non_session: bool
+    byte_governed_fragment: bool
+    membership_keys: list[object] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class _RevisionCensusState:
     scanned: int
     classified: int
@@ -1012,6 +1024,12 @@ def uncensused_historical_revision_raw_ids(
     Treating a bump as forcing full re-census here would mean every
     fingerprint bump re-parses the entire archive just to re-confirm facts
     that did not change.
+
+    Current-fingerprint receipts also have to prove the durable authority
+    shape. Older receipts can contain an empty key list even when membership
+    rows establish a canonical identity, so those rows must be selected for
+    recomputation instead of remaining permanently blocked by the readiness
+    predicate.
     """
     if not raw_ids:
         return ()
@@ -1047,7 +1065,78 @@ def uncensused_historical_revision_raw_ids(
                 [*raw_id_chunk, *known_fingerprints, resource_blocked_fingerprint],
             )
             uncensused.extend(str(row[0]) for row in rows)
-    return tuple(sorted(uncensused))
+            current_receipt_shapes: dict[str, _CurrentParserReceiptShape] = {}
+            for (
+                raw_id_value,
+                logical_keys_json,
+                typed_key,
+                revision_kind,
+                typed_non_session,
+                parser_confirmed_non_session,
+                byte_governed_fragment,
+                membership_key,
+            ) in conn.execute(
+                f"""
+                SELECT r.raw_id, c.logical_keys_json, r.logical_source_key, r.revision_kind,
+                       EXISTS(SELECT 1 FROM raw_artifacts AS a
+                              WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
+                              WHERE mc.raw_id = r.raw_id
+                                AND mc.parser_fingerprint = ?
+                                AND mc.status = 'non_session'),
+                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
+                              WHERE mc.raw_id = r.raw_id
+                                AND r.source_index < 0
+                                AND mc.parser_fingerprint = ?
+                                AND mc.status = 'failed'
+                                AND mc.detail = ?),
+                       m.logical_source_key
+                FROM raw_sessions AS r
+                JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+                WHERE r.raw_id IN ({placeholders})
+                  AND c.parser_fingerprint = ?
+                  AND c.status = 'complete'
+                  AND c.detail LIKE 'parser-observed:%'
+                ORDER BY r.raw_id, m.logical_source_key
+                """,
+                (
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    BYTE_AUTHORITY_CENSUS_DETAIL,
+                    *raw_id_chunk,
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                ),
+            ):
+                raw_id = str(raw_id_value)
+                shape = current_receipt_shapes.setdefault(
+                    raw_id,
+                    _CurrentParserReceiptShape(
+                        logical_keys_json,
+                        typed_key,
+                        revision_kind,
+                        bool(typed_non_session),
+                        bool(parser_confirmed_non_session),
+                        bool(byte_governed_fragment),
+                    ),
+                )
+                if membership_key is not None:
+                    shape.membership_keys.append(membership_key)
+            for raw_id, shape in current_receipt_shapes.items():
+                durable_keys = durable_authority_logical_keys(
+                    raw_logical_key=shape.typed_key,
+                    revision_kind=shape.revision_kind,
+                    membership_logical_keys=shape.membership_keys,
+                )
+                if not parser_census_is_complete(
+                    recorded_keys=parser_census_logical_keys(shape.recorded_keys_json),
+                    durable_keys=durable_keys,
+                    typed_non_session=shape.typed_non_session,
+                    parser_confirmed_non_session=shape.parser_confirmed_non_session,
+                    byte_governed_fragment=shape.byte_governed_fragment,
+                ):
+                    uncensused.append(raw_id)
+    return tuple(sorted(set(uncensused)))
 
 
 def record_resource_blocked_revision_census(
@@ -1178,14 +1267,21 @@ def _census_historical_revision_evidence(
         state.scanned += 1
         state.censused.add(raw_id)
         if source_index < 0:
-            archive.replace_raw_membership_census(
-                raw_id,
-                None,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                censused_at_ms=0,
-                detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-                manage_transaction=not batched,
-            )
+            source_conn = archive._ensure_source_conn()
+            has_membership_authority = source_conn.execute(
+                "SELECT 1 FROM raw_session_memberships WHERE raw_id = ? LIMIT 1", (raw_id,)
+            ).fetchone()
+            if has_membership_authority is not None:
+                record_current_parser_source_census(source_conn, raw_id)
+            else:
+                archive.replace_raw_membership_census(
+                    raw_id,
+                    None,
+                    parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    censused_at_ms=0,
+                    detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                    manage_transaction=not batched,
+                )
             state.quarantined += 1
             commit_unit()
             return
@@ -1368,6 +1464,8 @@ def _census_historical_revision_evidence(
                 for raw_id in terminal_raw_ids - state.censused:
                     state.scanned += 1
                     state.censused.add(raw_id)
+                    record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
+                    commit_unit()
                 pending_rows = [
                     (raw_id, source_index)
                     for raw_id, source_index, terminal_non_session, _raw_rowid in rows
@@ -1571,17 +1669,36 @@ def require_current_parser_source_census(
             f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
         )
 
-    durable_bindings: dict[str, tuple[object, object, list[object], bool]] = {
-        raw_id: (None, RawRevisionKind.UNKNOWN.value, [], False) for raw_id in recorded_logical_keys
+    durable_bindings: dict[str, tuple[object, object, list[object], bool, bool, bool]] = {
+        raw_id: (None, RawRevisionKind.UNKNOWN.value, [], False, False, False) for raw_id in recorded_logical_keys
     }
     with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as source_conn:
         for selection in selections:
             where = "" if selection is None else f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            params = () if selection is None else selection
+            params = (
+                RAW_AUTHORITY_PARSER_FINGERPRINT,
+                RAW_AUTHORITY_PARSER_FINGERPRINT,
+                BYTE_AUTHORITY_CENSUS_DETAIL,
+                *(() if selection is None else selection),
+            )
             rows = source_conn.execute(
                 f"""
-                SELECT r.raw_id, r.logical_source_key, r.revision_kind, m.logical_source_key,
-                       EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+                SELECT r.raw_id, r.logical_source_key, r.revision_kind, r.source_index, m.logical_source_key,
+                       EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+                       EXISTS(
+                           SELECT 1 FROM raw_membership_census AS mc
+                           WHERE mc.raw_id = r.raw_id
+                             AND mc.parser_fingerprint = ?
+                             AND mc.status = 'non_session'
+                       ),
+                       EXISTS(
+                           SELECT 1 FROM raw_membership_census AS mc
+                           WHERE mc.raw_id = r.raw_id
+                             AND r.source_index < 0
+                             AND mc.parser_fingerprint = ?
+                             AND mc.status = 'failed'
+                             AND mc.detail = ?
+                       )
                 FROM raw_sessions AS r
                 LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
                 {where}
@@ -1589,11 +1706,35 @@ def require_current_parser_source_census(
                 """,
                 params,
             )
-            for raw_id_value, typed_key, revision_kind, membership_key, typed_non_session in rows:
+            for (
+                raw_id_value,
+                typed_key,
+                revision_kind,
+                _source_index,
+                membership_key,
+                typed_non_session,
+                parser_confirmed_non_session,
+                byte_governed_fragment,
+            ) in rows:
                 raw_id = str(raw_id_value)
                 typed_non_session = bool(typed_non_session) or raw_id in transient_non_session_raw_ids
-                existing_typed, existing_kind, memberships, existing_non_session = durable_bindings.get(
-                    raw_id, (typed_key, revision_kind, [], bool(typed_non_session))
+                (
+                    existing_typed,
+                    existing_kind,
+                    memberships,
+                    existing_non_session,
+                    existing_parser_confirmed_non_session,
+                    existing_byte_governed_fragment,
+                ) = durable_bindings.get(
+                    raw_id,
+                    (
+                        typed_key,
+                        revision_kind,
+                        [],
+                        bool(typed_non_session),
+                        bool(parser_confirmed_non_session),
+                        bool(byte_governed_fragment),
+                    ),
                 )
                 if membership_key is not None:
                     memberships.append(membership_key)
@@ -1602,21 +1743,35 @@ def require_current_parser_source_census(
                     revision_kind if existing_kind == RawRevisionKind.UNKNOWN.value else existing_kind,
                     memberships,
                     bool(typed_non_session) or existing_non_session,
+                    bool(parser_confirmed_non_session) or existing_parser_confirmed_non_session,
+                    bool(byte_governed_fragment) or existing_byte_governed_fragment,
                 )
 
     invalid_durable_bindings: set[str] = set()
     durable_logical_keys: dict[str, tuple[str, ...]] = {}
-    for raw_id, (typed_key, revision_kind, membership_keys, typed_non_session) in durable_bindings.items():
-        durable_keys = (
-            ()
-            if typed_non_session
-            else durable_authority_logical_keys(
-                raw_logical_key=typed_key,
-                revision_kind=revision_kind,
-                membership_logical_keys=membership_keys,
-            )
+    for (
+        raw_id,
+        (
+            typed_key,
+            revision_kind,
+            membership_keys,
+            typed_non_session,
+            parser_confirmed_non_session,
+            byte_governed_fragment,
+        ),
+    ) in durable_bindings.items():
+        durable_keys = durable_authority_logical_keys(
+            raw_logical_key=typed_key,
+            revision_kind=revision_kind,
+            membership_logical_keys=membership_keys,
         )
-        if durable_keys is None:
+        if durable_keys is None or not parser_census_is_complete(
+            recorded_keys=recorded_logical_keys.get(raw_id),
+            durable_keys=durable_keys,
+            typed_non_session=typed_non_session,
+            parser_confirmed_non_session=parser_confirmed_non_session,
+            byte_governed_fragment=byte_governed_fragment,
+        ):
             invalid_durable_bindings.add(raw_id)
         else:
             durable_logical_keys[raw_id] = durable_keys

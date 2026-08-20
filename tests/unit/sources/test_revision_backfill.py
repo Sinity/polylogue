@@ -32,12 +32,13 @@ from polylogue.sources.revision_backfill import (
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
+    uncensused_historical_revision_raw_ids,
     validate_frozen_source_authority,
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
@@ -103,6 +104,185 @@ def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:
     assert _browser_snapshot_fidelity([COMPACT_BROWSER_CAPTURE_INGEST_FLAG]) == "native"
     # Native takes precedence if a parser somehow reports both.
     assert _browser_snapshot_fidelity([DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG]) == "native"
+
+
+def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys(tmp_path: Path) -> None:
+    """Current receipts with legacy empty keys are re-censused when authority has a key."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        legacy_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"legacy-empty-receipt",
+            source_path="legacy-empty.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope("codex:legacy-membership", RawRevisionKind.FULL, "legacy-v1", 0),
+        )
+        canonical_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"canonical-receipt",
+            source_path="canonical.jsonl",
+            acquired_at_ms=2,
+            revision=RawRevisionEnvelope("codex:canonical-membership", RawRevisionKind.FULL, "canonical-v1", 0),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        for raw_id, logical_key, receipt_keys in (
+            (legacy_raw_id, "codex-session:legacy-membership", "[]"),
+            (
+                canonical_raw_id,
+                "codex-session:canonical-membership",
+                json.dumps(["codex-session:canonical-membership"]),
+            ),
+        ):
+            conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (raw_id, logical_key, logical_key.rsplit(":", 1)[1], "revision-1", bytes(32), 1),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_authority_parser_census (
+                    raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+                ) VALUES (?, ?, 'complete', ?, 'parser-observed: legacy receipt shape', 1)
+                """,
+                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, receipt_keys),
+            )
+        conn.commit()
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [legacy_raw_id, canonical_raw_id]) == (legacy_raw_id,)
+
+
+def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_receipt(tmp_path: Path) -> None:
+    """Re-census repairs a fragment receipt without erasing its authority key."""
+    initialize_active_archive_root(tmp_path)
+    logical_key = "codex-session:legacy-fragment"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"legacy-fragment","timestamp":"2026-08-20T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"baseline"}]}}\n'
+    )
+    fragment = b'{"type":"response_item","payload":{"type":"message","id":"legacy-suffix"}}\n'
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path="legacy-fragment.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_key, RawRevisionKind.FULL, "baseline", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=fragment,
+            source_path="legacy-fragment.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+            revision=RawRevisionEnvelope(
+                logical_key,
+                RawRevisionKind.APPEND,
+                "append-1",
+                1,
+                predecessor_source_revision="baseline",
+                predecessor_raw_id=baseline_raw_id,
+                baseline_raw_id=baseline_raw_id,
+                append_start_offset=len(baseline),
+                append_end_offset=len(baseline) + len(fragment),
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
+
+    census_historical_revision_evidence(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        with archive._ensure_source_conn():
+            archive._ensure_source_conn().execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (raw_id, "codex-session:legacy-fragment", "legacy-fragment", "revision-1", bytes(32), 1),
+            )
+            archive._ensure_source_conn().execute(
+                """
+                UPDATE raw_authority_parser_census
+                SET parser_fingerprint = ?, status = 'complete', logical_keys_json = '[]',
+                    detail = 'parser-observed: legacy receipt shape', censused_at_ms = 1
+                WHERE raw_id = ?
+                """,
+                (RAW_AUTHORITY_PARSER_FINGERPRINT, raw_id),
+            )
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        memberships = conn.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)
+        ).fetchall()
+        receipt = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+
+    assert memberships == [("codex-session:legacy-fragment",)]
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    assert parser_census_logical_keys(receipt[1]) == ("codex-session:legacy-fragment",)
+    validate_frozen_source_authority(tmp_path, selected_raw_ids=[baseline_raw_id, raw_id])
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
+
+
+def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path: Path) -> None:
+    """The real census path repairs stale terminal non-session receipts."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"terminal non-session legacy receipt",
+            source_path="terminal-legacy.jsonl",
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        with archive._ensure_source_conn():
+            archive._ensure_source_conn().execute(
+                """
+                UPDATE raw_authority_parser_census
+                SET status = 'failed', logical_keys_json = '[]',
+                    detail = 'parser-observed: legacy incomplete receipt', censused_at_ms = 1
+                WHERE raw_id = ?
+                """,
+                (raw_id,),
+            )
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        status, keys = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert status == "complete"
+    assert parser_census_logical_keys(keys) == ()
+
+    validate_frozen_source_authority(tmp_path, selected_raw_ids=[raw_id])
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
 
 def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> None:
@@ -1471,9 +1651,9 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
             (RAW_AUTHORITY_PARSER_FINGERPRINT,),
         ).fetchall()
     # polylogue-39kcs: all three raws are census-complete, including the
-    # legacy append fragment. Its receipt records the authoritative empty
-    # identity set that byte revision governance gives it -- a ``failed``
-    # receipt there matched neither branch of
+    # legacy append fragment. Its receipt records the durable identity set
+    # available to byte revision governance (empty here because this fixture
+    # has no membership binding) -- a ``failed`` receipt there matched neither branch of
     # ``uncensused_historical_revision_raw_ids``'s gate, so the fragment was
     # re-selected for census forever and raw-replay planning never started.
     # The fragment is still ``quarantined`` (asserted above); only the

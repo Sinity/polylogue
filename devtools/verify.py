@@ -2045,6 +2045,11 @@ def _run(
     if state is None:
         state = _open_owned_native_testmon_state(ROOT)
     try:
+        # The descriptor binds verify's own inspection to one checked inode.
+        # Pytest crosses systemd and xdist exec boundaries that do not promise
+        # arbitrary descriptor inheritance, so its workers receive the checked
+        # checkout-local path instead.  Native containment remains the
+        # supervisor's process-group/systemd scope contract, not an FD contract.
         return _run_step(
             label,
             cmd,

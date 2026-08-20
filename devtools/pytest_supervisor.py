@@ -700,7 +700,10 @@ def supervise(
     previous_handlers = {
         signum: signal.signal(signum, _handle_signal) for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
     }
-    process = subprocess.Popen(list(controller_cmd), start_new_session=True)
+    process = subprocess.Popen(
+        list(controller_cmd),
+        start_new_session=True,
+    )
     controller_pid = process.pid
     controller_pgid = controller_pid
     controller_sid = controller_pid

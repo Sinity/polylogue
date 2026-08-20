@@ -16,7 +16,11 @@ from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
     source_path_native_id_candidates,
 )
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, durable_authority_logical_keys
+from polylogue.archive.revision_authority import (
+    BYTE_AUTHORITY_CENSUS_DETAIL,
+    durable_authority_logical_keys,
+    parser_census_is_complete,
+)
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
@@ -403,13 +407,25 @@ def raw_materialization_readiness_snapshot(
                                WHERE mc.raw_id = r.raw_id
                                  AND mc.parser_fingerprint = ?
                                  AND mc.status = 'non_session'
+                           ),
+                           EXISTS(
+                               SELECT 1 FROM source.raw_membership_census AS mc
+                               WHERE mc.raw_id = r.raw_id
+                                 AND r.source_index < 0
+                                 AND mc.parser_fingerprint = ?
+                                 AND mc.status = 'failed'
+                                 AND mc.detail = ?
                            )
                     FROM source.raw_sessions AS r
                     LEFT JOIN source.raw_authority_parser_census AS p ON p.raw_id = r.raw_id
                     LEFT JOIN source.raw_session_memberships AS m ON m.raw_id = r.raw_id
                     ORDER BY r.raw_id, m.logical_source_key
                     """,
-                    (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+                    (
+                        RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        BYTE_AUTHORITY_CENSUS_DETAIL,
+                    ),
                 )
                 incomplete_origins: Counter[str] = Counter()
                 incomplete_origin_bytes: Counter[str] = Counter()
@@ -435,6 +451,7 @@ def raw_materialization_readiness_snapshot(
                         _membership_key,
                         typed_non_session,
                         parser_confirmed_non_session,
+                        byte_governed_fragment,
                     ) = current_row
                     recorded_keys = parser_census_logical_keys(logical_keys_json)
                     durable_keys = durable_authority_logical_keys(
@@ -447,10 +464,13 @@ def raw_materialization_readiness_snapshot(
                         receipt_raw_id is not None
                         and str(fingerprint) == RAW_AUTHORITY_PARSER_FINGERPRINT
                         and str(status) == "complete"
-                        and recorded_keys is not None
-                        and durable_keys is not None
-                        and recorded_keys == durable_keys
-                        and (bool(durable_keys) or bool(typed_non_session) or bool(parser_confirmed_non_session))
+                        and parser_census_is_complete(
+                            recorded_keys=recorded_keys,
+                            durable_keys=durable_keys,
+                            typed_non_session=bool(typed_non_session),
+                            parser_confirmed_non_session=bool(parser_confirmed_non_session),
+                            byte_governed_fragment=bool(byte_governed_fragment),
+                        )
                     )
                     if complete:
                         parser_census_complete_count += 1

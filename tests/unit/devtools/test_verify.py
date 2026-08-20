@@ -22,9 +22,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 import watchfiles
 
+import devtools.pytest_supervisor as pytest_supervisor
 from devtools import run_tests, verify, verify_runs
 from devtools.checkout_guard import CheckoutImportMismatchError
-from devtools.pytest_supervisor import write_termination_request as _write_termination_request
+from devtools.pytest_supervisor import (
+    CGROUP_MODE_ENV,
+    user_systemd_available,
+)
+from devtools.pytest_supervisor import (
+    write_termination_request as _write_termination_request,
+)
 from devtools.testmon_bootstrap import NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
 from devtools.verify import (
@@ -2931,18 +2938,38 @@ def test_native_verifier_keeps_descriptor_binding_for_parent_inspection(
 
     monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
     state = verify._open_owned_native_testmon_state(tmp_path)
+    captured: dict[str, Path | None] = {}
+
+    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
+        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
+        return 0, 0.0, {}
+
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
         assert state.data_path == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
         assert state.executable_data_path == tmp_path / verify.TESTMON_DATA
+        with patch("devtools.verify._run_step", side_effect=fake_run_step):
+            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
     finally:
         state.close()
 
+    assert captured["native_testmon_data"] == state.executable_data_path
 
-def test_native_verifier_gives_xdist_testmon_a_worker_openable_state_path(
+
+@pytest.mark.uses_real_clock("The systemd scope and xdist worker are independent exec boundaries.")
+def test_native_verifier_gives_xdist_worker_a_real_sqlite_path_through_systemd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A native xdist worker opens the testmon database through its real path."""
+    """A systemd-contained xdist worker can open the native testmon SQLite DB.
+
+    This intentionally exercises every launch boundary: verify -> systemd-run
+    -> supervisor -> pytest controller -> xdist worker.  The worker, not the
+    controller, opens SQLite, so a descriptor that vanishes at either exec
+    boundary cannot make this pass.
+    """
+    if not user_systemd_available():
+        pytest.skip("user systemd is unavailable on this host")
     descriptor_root = Path("/dev/fd")
     probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -2953,14 +2980,20 @@ def test_native_verifier_gives_xdist_testmon_a_worker_openable_state_path(
 
     monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
     monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setenv(CGROUP_MODE_ENV, "require")
     state = verify._open_owned_native_testmon_state(tmp_path)
-    observed = tmp_path / "contained-child.txt"
+    executable_data_path = state.executable_data_path
+    observed = tmp_path / "contained-worker.json"
     module = tmp_path / "test_xdist_testmon_state.py"
     module.write_text(
+        "import json\n"
         "import os\n"
+        "import sqlite3\n"
         "from pathlib import Path\n"
-        "def test_worker_receives_testmon_path():\n"
-        f"    Path({str(observed)!r}).write_text(os.environ['TESTMON_DATAFILE'])\n",
+        "def test_worker_opens_testmon_sqlite():\n"
+        "    with sqlite3.connect(os.environ['TESTMON_DATAFILE']) as connection:\n"
+        "        connection.execute('PRAGMA schema_version').fetchone()\n"
+        f"    Path({str(observed)!r}).write_text(json.dumps({{'pid': os.getpid(), 'datafile': os.environ['TESTMON_DATAFILE']}}))\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
@@ -2987,7 +3020,68 @@ def test_native_verifier_gives_xdist_testmon_a_worker_openable_state_path(
         state.close()
 
     assert rc == 0
-    assert observed.read_text(encoding="utf-8") == str(state.executable_data_path)
+    payload = json.loads(observed.read_text(encoding="utf-8"))
+    containment = json.loads((tmp_path / PYTEST_CONTAINMENT_PATH).read_text(encoding="utf-8"))
+    assert payload["datafile"] == str(executable_data_path)
+    assert payload["pid"] != containment["controller_pid"]
+    assert containment["mode"] == "systemd-scope"
+    assert containment["cgroup_owned"] is True
+
+
+@pytest.mark.uses_real_clock("The synthetic systemd launcher exercises descriptor closure across exec.")
+def test_native_verifier_does_not_depend_on_systemd_forwarding_testmon_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older systemd-run-style launch may close every non-stdio descriptor."""
+    fake_systemd_run = tmp_path / "systemd-run"
+    fake_systemd_run.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "os.closerange(3, 65536)\n"
+        "os.execv(sys.argv[sys.argv.index('--') + 1], sys.argv[sys.argv.index('--') + 1:])\n",
+        encoding="utf-8",
+    )
+    fake_systemd_run.chmod(0o755)
+    monkeypatch.setattr(pytest_supervisor, "user_systemd_available", lambda _env=None: True)
+    monkeypatch.setattr("devtools.pytest_supervisor.shutil.which", lambda _name, path=None: str(fake_systemd_run))
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setenv(CGROUP_MODE_ENV, "require")
+
+    state = verify._open_owned_native_testmon_state(tmp_path)
+    observed = tmp_path / "closed-descriptor-worker.txt"
+    module = tmp_path / "test_closed_descriptor.py"
+    module.write_text(
+        "import os\n"
+        "import sqlite3\n"
+        "from pathlib import Path\n"
+        "def test_controller_opens_real_testmon_sqlite():\n"
+        "    with sqlite3.connect(os.environ['TESTMON_DATAFILE']) as connection:\n"
+        "        connection.execute('PRAGMA schema_version').fetchone()\n"
+        f"    Path({str(observed)!r}).write_text(os.environ['TESTMON_DATAFILE'])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
+    try:
+        rc, _elapsed, _metadata = _run(
+            "pytest native closed-descriptor systemd",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "pytest-testmon",
+                "--testmon",
+                str(module),
+            ],
+            cwd=str(tmp_path),
+        )
+    finally:
+        state.close()
+
+    assert rc == 0
+    assert observed.read_text(encoding="utf-8") == str(tmp_path / verify.TESTMON_DATA)
 
 
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
@@ -3981,7 +4075,7 @@ def test_pytest_run_terminates_after_runtime_budget(
     assert "terminated owned pytest process group" in captured.err
 
 
-def test_pytest_run_terminates_with_heartbeat_disabled(
+def test_pytest_run_terminates_before_heartbeat_interval(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "30")
@@ -3992,7 +4086,7 @@ def test_pytest_run_terminates_with_heartbeat_disabled(
 
     captured = capsys.readouterr()
     assert rc == 124
-    assert metadata["heartbeat_s"] == 0.0
+    assert metadata["heartbeat_s"] == 30.0
     assert "pytest runtime exceeded 0.15s" in captured.err
 
 
