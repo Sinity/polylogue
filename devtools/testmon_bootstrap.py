@@ -1492,51 +1492,71 @@ def prepare_native_testmon_environment(
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
         _validate_owned_state_parents(main_checkout)
         main_data = main_checkout / TESTMON_DATA_RELPATH
-        with native_testmon_source_binding(main_data) as main_binding:
-            main_fd = main_binding.descriptor if main_binding is not None else None
-            main = inspect_native_testmon_environment(
-                main_data,
-                environment_name=environment_name,
-                required_executable_paths=required_executable_paths,
-                data_fd=main_fd,
-                deadline_monotonic=deadline_monotonic,
-            )
-            fallback_allowed = native_testmon_fallback_allowed(local, main)
-            if main.valid:
-                if main_binding is None:
-                    raise NativeTestmonRepairError("valid native testmon source lost its retained descriptor")
-                _atomic_copy_sqlite_database(
+        main_binding_context = native_testmon_source_binding(main_data)
+        try:
+            main_binding = main_binding_context.__enter__()
+        except NativeTestmonRepairError as exc:
+            # The linked checkout is optional. A stale private hard link or
+            # another source-only ownership violation must not turn an
+            # otherwise safe local bootstrap into a rejected verify.
+            main_binding = None
+            main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
+        else:
+            try:
+                main_fd = main_binding.descriptor if main_binding is not None else None
+                main = inspect_native_testmon_environment(
                     main_data,
-                    local_data,
                     environment_name=environment_name,
                     required_executable_paths=required_executable_paths,
-                    deadline_monotonic=deadline_monotonic,
-                    source_fd=main_binding.descriptor,
-                )
-                copied_from = main_data
-                local = inspect_native_testmon_environment(
-                    local_data,
-                    environment_name=environment_name,
-                    required_executable_paths=required_executable_paths,
+                    data_fd=main_fd,
                     deadline_monotonic=deadline_monotonic,
                 )
-                if not local.valid:
-                    raise NativeTestmonRepairError(f"published native testmon copy is invalid: {local.reason}")
-                violation = certified_attestation_violation(
-                    root,
-                    environment_name=environment_name,
-                    current_nodeids=local.environment.nodeids if local.environment is not None else (),
-                )
-                if violation is not None:
-                    local = NativeTestmonState(
-                        local.status,
-                        f"attestation refused, re-executing corpus: {violation}",
-                        local.environment,
-                        local.missing_executable_paths,
+                fallback_allowed = native_testmon_fallback_allowed(local, main)
+                if main.valid:
+                    if main_binding is None:
+                        raise NativeTestmonRepairError("valid native testmon source lost its retained descriptor")
+                    _atomic_copy_sqlite_database(
+                        main_data,
+                        local_data,
+                        environment_name=environment_name,
+                        required_executable_paths=required_executable_paths,
+                        deadline_monotonic=deadline_monotonic,
+                        source_fd=main_binding.descriptor,
                     )
+                    copied_from = main_data
+                    local = inspect_native_testmon_environment(
+                        local_data,
+                        environment_name=environment_name,
+                        required_executable_paths=required_executable_paths,
+                        deadline_monotonic=deadline_monotonic,
+                    )
+                    if not local.valid:
+                        raise NativeTestmonRepairError(f"published native testmon copy is invalid: {local.reason}")
+                    violation = certified_attestation_violation(
+                        root,
+                        environment_name=environment_name,
+                        current_nodeids=local.environment.nodeids if local.environment is not None else (),
+                    )
+                    if violation is not None:
+                        local = NativeTestmonState(
+                            local.status,
+                            f"attestation refused, re-executing corpus: {violation}",
+                            local.environment,
+                            local.missing_executable_paths,
+                        )
+                        return NativeTestmonPreparation(
+                            environment_name,
+                            "bootstrap",
+                            local,
+                            copied_from,
+                            removed,
+                            linked,
+                            main_checkout,
+                            fallback_allowed,
+                        )
                     return NativeTestmonPreparation(
                         environment_name,
-                        "bootstrap",
+                        "affected",
                         local,
                         copied_from,
                         removed,
@@ -1544,16 +1564,9 @@ def prepare_native_testmon_environment(
                         main_checkout,
                         fallback_allowed,
                     )
-                return NativeTestmonPreparation(
-                    environment_name,
-                    "affected",
-                    local,
-                    copied_from,
-                    removed,
-                    linked,
-                    main_checkout,
-                    fallback_allowed,
-                )
+            finally:
+                main_binding_context.__exit__(None, None, None)
+        fallback_allowed = native_testmon_fallback_allowed(local, main)
 
     if local.resumable:
         # OPERATOR DECISION 2026-08-18: prefer the hazard to the standstill.

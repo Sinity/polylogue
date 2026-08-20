@@ -744,7 +744,12 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Replacing the actual .bound-* entry cannot redirect SQLite source open."""
+    """Replacing the actual .bound-* entry cannot redirect SQLite source open.
+
+    Both databases are valid and carry the same environment name. The node id
+    is the distinguishing evidence, so an unsafe replacement cannot pass by
+    making the copied database fail a later environment check.
+    """
     import sqlite3
 
     source_root = tmp_path / "source"
@@ -756,13 +761,29 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
         source_root,
         environment_name="owned-environment",
         fingerprinted="tests/test_recorded.py",
+        recorded_test_name="tests/test_original.py::test_original",
     )
     destination_data = destination_root / TESTMON_DATA_RELPATH
     replacement_data = _seed_partial_native_graph(
         replacement_root,
-        environment_name="replacement-environment",
+        environment_name="owned-environment",
         fingerprinted="tests/test_recorded.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
     )
+    source_state = inspect_native_testmon_environment(
+        source_data,
+        environment_name="owned-environment",
+    )
+    assert source_state.valid
+    assert source_state.environment is not None
+    assert source_state.environment.nodeids == ("tests/test_original.py::test_original",)
+    replacement_state = inspect_native_testmon_environment(
+        replacement_data,
+        environment_name="owned-environment",
+    )
+    assert replacement_state.valid
+    assert replacement_state.environment is not None
+    assert replacement_state.environment.nodeids == ("tests/test_twin.py::test_twin",)
     original_connect = sqlite3.connect
     replaced = False
 
@@ -776,7 +797,7 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
         return cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
 
     monkeypatch.setattr(sqlite3, "connect", replace_private_bound_source)
-    with pytest.raises(NativeTestmonRepairError, match="SQLite online backup failed"):
+    try:
         _atomic_copy_sqlite_database(
             source_data,
             destination_data,
@@ -784,9 +805,20 @@ def test_atomic_copy_does_not_consume_replaced_private_bound_source(
             required_executable_paths=(),
             deadline_monotonic=None,
         )
+    except NativeTestmonRepairError:
+        # A platform may fail closed when the retained descriptor namespace
+        # cannot safely be reopened after the private entry is replaced.
+        assert not destination_data.exists()
+    else:
+        copied = inspect_native_testmon_environment(
+            destination_data,
+            environment_name="owned-environment",
+        )
+        assert copied.valid
+        assert copied.environment is not None
+        assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
 
     assert replaced
-    assert not destination_data.exists(), "a replaced .bound-* source must not publish any destination database"
 
 
 def test_source_binding_closes_descriptors_when_bound_entry_becomes_directory(
