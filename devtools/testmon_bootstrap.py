@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import fcntl
 import hashlib
 import importlib
 import importlib.metadata
@@ -32,7 +33,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -40,6 +41,7 @@ from typing import Literal
 
 TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
 TESTMON_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
 
 NativeStateStatus = Literal["absent", "valid", "invalid", "incomplete"]
 NativeSelectionMode = Literal["bootstrap", "affected"]
@@ -144,6 +146,130 @@ class NativeTestmonRepairError(RuntimeError):
 
 class NativeTestmonDeadlineError(NativeTestmonRepairError):
     """The verify invocation deadline expired during native-state preparation."""
+
+
+class NativeTestmonLifecycleLockTimeoutError(NativeTestmonRepairError):
+    """The shared native testmon lifecycle lock did not become available."""
+
+
+@contextlib.contextmanager
+def native_testmon_lifecycle_lock(
+    repo_root: Path,
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+    waiter_label: str = "testmon",
+) -> Iterator[None]:
+    """Serialize native testmon state changes for one checkout across processes."""
+    cache = repo_root.resolve() / ".cache"
+    try:
+        mode = cache.lstat().st_mode
+    except FileNotFoundError:
+        cache.mkdir(exist_ok=True)
+        mode = cache.lstat().st_mode
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot inspect native testmon lock parent {cache}: {exc}") from exc
+    if not stat.S_ISDIR(mode):
+        raise NativeTestmonRepairError(f"native testmon lock parent is not an owned directory: {cache}")
+    lock_path = cache / "native-testmon-lifecycle.lock"
+    directory_descriptor: int | None = None
+    lock_descriptor: int | None = None
+    try:
+        directory_descriptor = os.open(
+            cache,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_directory = os.fstat(directory_descriptor)
+        current_directory = cache.lstat()
+        if not stat.S_ISDIR(opened_directory.st_mode) or (opened_directory.st_dev, opened_directory.st_ino) != (
+            current_directory.st_dev,
+            current_directory.st_ino,
+        ):
+            raise NativeTestmonRepairError(f"native testmon lock parent changed while binding: {cache}")
+        lock_descriptor = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        opened_lock = os.fstat(lock_descriptor)
+        current_lock = os.stat(lock_path.name, dir_fd=directory_descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened_lock.st_mode)
+            or not stat.S_ISREG(current_lock.st_mode)
+            or opened_lock.st_nlink != 1
+            or current_lock.st_nlink != 1
+            or (opened_lock.st_dev, opened_lock.st_ino) != (current_lock.st_dev, current_lock.st_ino)
+        ):
+            raise NativeTestmonRepairError(
+                f"native testmon lifecycle lock is not an owned single-link regular file: {lock_path}"
+            )
+    except OSError as exc:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_descriptor)
+            lock_descriptor = None
+        if directory_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_descriptor)
+            directory_descriptor = None
+        raise NativeTestmonRepairError(f"cannot bind native testmon lifecycle lock {lock_path}: {exc}") from exc
+    try:
+        assert lock_descriptor is not None
+        with os.fdopen(lock_descriptor, "r+", encoding="utf-8") as handle:
+            lock_descriptor = None
+            deadline = time.monotonic() + max(0.0, timeout_s)
+            announced_wait = False
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise NativeTestmonLifecycleLockTimeoutError(
+                            f"timed out waiting for native testmon lifecycle lock after {timeout_s:.1f}s"
+                        ) from exc
+                    if not announced_wait:
+                        handle.seek(0)
+                        holder = handle.read().strip() or "another testmon lifecycle"
+                        print(
+                            f"{waiter_label}: waiting for native testmon lifecycle lock ({holder})",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        announced_wait = True
+                    time.sleep(min(0.05, remaining))
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"pid={os.getpid()}")
+            handle.flush()
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                handle.truncate()
+    finally:
+        if lock_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_descriptor)
+        if directory_descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(directory_descriptor)
+
+
+@contextlib.contextmanager
+def native_testmon_lifecycle_locks(
+    repo_roots: Iterable[Path],
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+    waiter_label: str = "testmon",
+) -> Iterator[None]:
+    """Acquire several checkout locks in path order to avoid cross-lane deadlocks."""
+    roots = sorted({path.resolve() for path in repo_roots}, key=str)
+    with contextlib.ExitStack() as stack:
+        for root in roots:
+            stack.enter_context(native_testmon_lifecycle_lock(root, timeout_s=timeout_s, waiter_label=waiter_label))
+        yield
 
 
 def _ensure_deadline(deadline_monotonic: float | None) -> None:
@@ -1306,6 +1432,7 @@ __all__ = [
     "NativeTestmonEnvironment",
     "NativeTestmonDeadlineError",
     "NativeTestmonChangeImpact",
+    "NativeTestmonLifecycleLockTimeoutError",
     "NativeTestmonPreparation",
     "NativeTestmonRepairError",
     "NativeTestmonState",
@@ -1316,6 +1443,8 @@ __all__ = [
     "inspect_native_testmon_environment",
     "linked_worktree_info",
     "native_testmon_fallback_allowed",
+    "native_testmon_lifecycle_lock",
+    "native_testmon_lifecycle_locks",
     "prepare_native_testmon_environment",
     "remove_invalid_native_testmon_state",
     "testmon_environment_digest",

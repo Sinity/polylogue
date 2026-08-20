@@ -392,6 +392,34 @@ def _seed_testmon_graph(
     *,
     attestation: LaneEnvironmentAttestation | None = None,
 ) -> tuple[str, bool]:
+    """Seed a lane while serializing source and destination testmon state."""
+    if not root.exists():
+        return "no coordinator graph to seed (first lane verify will bootstrap)", False
+    from devtools.testmon_bootstrap import (
+        NativeTestmonRepairError,
+        _validate_owned_state_parents,
+        native_testmon_lifecycle_locks,
+    )
+
+    try:
+        _validate_owned_state_parents(root)
+        _validate_owned_state_parents(worktree)
+    except NativeTestmonRepairError as exc:
+        return f"graph seed refused unsafe owned testmon path ({exc}); first lane verify will bootstrap", False
+
+    try:
+        with native_testmon_lifecycle_locks((root, worktree), waiter_label="lane-init"):
+            return _seed_testmon_graph_unlocked(root, worktree, attestation=attestation)
+    except NativeTestmonRepairError as exc:
+        return f"graph seed refused unsafe owned testmon path ({exc}); first lane verify will bootstrap", False
+
+
+def _seed_testmon_graph_unlocked(
+    root: Path,
+    worktree: Path,
+    *,
+    attestation: LaneEnvironmentAttestation | None = None,
+) -> tuple[str, bool]:
     """Copy the coordinator's testmon graph into a lane, and say whether it helps.
 
     Returns ``(note, warm)``. ``warm`` is True only when the copied graph

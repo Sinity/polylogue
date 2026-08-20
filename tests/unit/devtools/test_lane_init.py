@@ -4,13 +4,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
 
-from devtools import lane_init
+from devtools import lane_init, testmon_bootstrap, verify
 
 
 def _write_minimal_uv_project(root: Path) -> None:
@@ -703,6 +705,84 @@ def test_seed_reports_warm_only_on_a_real_environment_match(
 
     assert warm is True
     assert "verifies start warm" in note
+
+
+@pytest.mark.uses_real_clock("coordinates lane publication with verifier preparation")
+def test_seed_serializes_with_verifier_publication_and_preserves_later_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verifier write cannot be overwritten by a concurrent lane seed."""
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    verifier_source = tmp_path / "verifier-source"
+    lane.mkdir()
+    _certified_graph_with(root, "lane-environment")
+    _certified_graph_with(verifier_source, "verifier-environment")
+
+    original_copy = testmon_bootstrap._atomic_copy_sqlite_database
+    publication_started = threading.Event()
+    release_publication = threading.Event()
+    verifier_started = threading.Event()
+    verifier_finished = threading.Event()
+    first_publication = True
+    publication_state_lock = threading.Lock()
+
+    def block_lane_publication(*args: object, **kwargs: object) -> None:
+        nonlocal first_publication
+        with publication_state_lock:
+            is_lane_publication = first_publication
+            first_publication = False
+        if is_lane_publication:
+            publication_started.set()
+            assert release_publication.wait(timeout=2)
+        original_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(testmon_bootstrap, "_atomic_copy_sqlite_database", block_lane_publication)
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "testmon_environment_digest",
+        lambda checkout, **_kwargs: (
+            "verifier-environment" if checkout.resolve() == lane.resolve() else "lane-environment"
+        ),
+    )
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, verifier_source) if checkout.resolve() == lane.resolve() else None,
+    )
+
+    def verifier_prepare() -> testmon_bootstrap.NativeTestmonPreparation:
+        verifier_started.set()
+        try:
+            with verify._native_testmon_lifecycle_lock(lane):
+                return testmon_bootstrap.prepare_native_testmon_environment(lane)
+        finally:
+            verifier_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        lane_future = pool.submit(
+            lane_init._seed_testmon_graph,
+            root,
+            lane,
+            attestation=_attestation("lane-environment"),
+        )
+        assert publication_started.wait(timeout=2)
+        verifier_future = pool.submit(verifier_prepare)
+        assert verifier_started.wait(timeout=2)
+        assert not verifier_finished.wait(timeout=0.05)
+        release_publication.set()
+        note, warm = lane_future.result(timeout=2)
+        preparation = verifier_future.result(timeout=2)
+
+    assert warm is True
+    assert "verifies start warm" in note
+    assert preparation.selection_mode == "affected"
+    final_state = testmon_bootstrap.inspect_native_testmon_environment(
+        lane / testmon_bootstrap.TESTMON_DATA_RELPATH,
+        environment_name="verifier-environment",
+    )
+    assert final_state.valid
 
 
 def test_seeded_primary_copy_stays_warm_when_lane_primary_state_is_invalid(tmp_path: Path) -> None:
