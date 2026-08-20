@@ -451,6 +451,7 @@ def _seed_testmon_graph_unlocked(
         certified_attestation_violation,
         inspect_native_testmon_environment,
         native_testmon_fallback_allowed,
+        native_testmon_source_binding,
         validate_native_testmon_state_ownership,
     )
 
@@ -480,106 +481,119 @@ def _seed_testmon_graph_unlocked(
         for digest in attestation.digests
     )
     destination_initial_state = destination_states[0][1]
-    initial_state = inspect_native_testmon_environment(source, environment_name=initial_digest)
-    source_state_for_copy = initial_state
-    copy_digest: str | None = initial_digest if initial_state.valid else None
-    if destination_initial_state.valid and destination_initial_state.environment is not None:
-        destination_violation = certified_attestation_violation(
-            worktree,
+    with native_testmon_source_binding(source) as source_binding:
+        source_fd = source_binding.descriptor if source_binding is not None else None
+        initial_state = inspect_native_testmon_environment(
+            source,
             environment_name=initial_digest,
-            current_nodeids=destination_initial_state.environment.nodeids,
+            data_fd=source_fd,
         )
-        if destination_violation is None:
+        source_state_for_copy = initial_state
+        copy_digest: str | None = initial_digest if initial_state.valid else None
+        if destination_initial_state.valid and destination_initial_state.environment is not None:
+            destination_violation = certified_attestation_violation(
+                worktree,
+                environment_name=initial_digest,
+                current_nodeids=destination_initial_state.environment.nodeids,
+            )
+            if destination_violation is None:
+                return (
+                    f"preserved certified lane environment ({initial_digest[:24]}...); verifies start warm",
+                    True,
+                )
+
+        fallback_allowed = native_testmon_fallback_allowed(destination_initial_state, initial_state)
+        if fallback_allowed:
+            for candidate_digest, destination_state in destination_states[1:]:
+                if destination_state.valid and destination_state.environment is not None:
+                    destination_violation = certified_attestation_violation(
+                        worktree,
+                        environment_name=candidate_digest,
+                        current_nodeids=destination_state.environment.nodeids,
+                    )
+                    if destination_violation is None:
+                        return (
+                            f"preserved certified lane environment ({candidate_digest[:24]}...); verifies start warm",
+                            True,
+                        )
+
+        if copy_digest is None and len(attestation.digests) > 1:
+            if not fallback_allowed:
+                return (
+                    "seeded graph's initial verify environment is invalid and not attestable; "
+                    "refusing the default-profile fallback; "
+                    "first lane verify will bootstrap",
+                    False,
+                )
+            if initial_state.status in {"absent", "incomplete"}:
+                fallback_digest = attestation.digests[1]
+                fallback_state = inspect_native_testmon_environment(
+                    source,
+                    environment_name=fallback_digest,
+                    data_fd=source_fd,
+                )
+                if fallback_state.valid:
+                    copy_digest = fallback_digest
+                    source_state_for_copy = fallback_state
+        if copy_digest is None and initial_state.status == "invalid":
             return (
-                f"preserved certified lane environment ({initial_digest[:24]}...); verifies start warm",
-                True,
+                "seeded graph's initial verify environment is invalid and not attestable; first lane verify will bootstrap",
+                False,
+            )
+        if copy_digest is None:
+            return (
+                "seeded graph is not attestable for verify's environment candidates; "
+                "no valid candidate; first lane verify will bootstrap",
+                False,
             )
 
-    fallback_allowed = native_testmon_fallback_allowed(destination_initial_state, initial_state)
-    if fallback_allowed:
-        for candidate_digest, destination_state in destination_states[1:]:
-            if destination_state.valid and destination_state.environment is not None:
-                destination_violation = certified_attestation_violation(
-                    worktree,
-                    environment_name=candidate_digest,
-                    current_nodeids=destination_state.environment.nodeids,
-                )
-                if destination_violation is None:
-                    return (
-                        f"preserved certified lane environment ({candidate_digest[:24]}...); verifies start warm",
-                        True,
-                    )
-
-    if copy_digest is None and len(attestation.digests) > 1:
-        if not fallback_allowed:
+        if not source_state_for_copy.valid or source_state_for_copy.environment is None:
             return (
-                "seeded graph's initial verify environment is invalid and not attestable; "
-                "refusing the default-profile fallback; "
+                "coordinator graph is not attestable for the selected environment; first lane verify will bootstrap",
+                False,
+            )
+        source_violation = certified_attestation_violation(
+            root,
+            environment_name=copy_digest,
+            current_nodeids=source_state_for_copy.environment.nodeids,
+        )
+        if source_violation is not None:
+            return (
+                f"coordinator graph is not certified for the selected environment ({source_violation}); "
                 "first lane verify will bootstrap",
                 False,
             )
-        if initial_state.status in {"absent", "incomplete"}:
-            fallback_digest = attestation.digests[1]
-            fallback_state = inspect_native_testmon_environment(source, environment_name=fallback_digest)
-            if fallback_state.valid:
-                copy_digest = fallback_digest
-                source_state_for_copy = fallback_state
-    if copy_digest is None and initial_state.status == "invalid":
-        return (
-            "seeded graph's initial verify environment is invalid and not attestable; first lane verify will bootstrap",
-            False,
-        )
-    if copy_digest is None:
-        return (
-            "seeded graph is not attestable for verify's environment candidates; "
-            "no valid candidate; first lane verify will bootstrap",
-            False,
-        )
 
-    if not source_state_for_copy.valid or source_state_for_copy.environment is None:
-        return (
-            "coordinator graph is not attestable for the selected environment; first lane verify will bootstrap",
-            False,
-        )
-    source_violation = certified_attestation_violation(
-        root,
-        environment_name=copy_digest,
-        current_nodeids=source_state_for_copy.environment.nodeids,
-    )
-    if source_violation is not None:
-        return (
-            f"coordinator graph is not certified for the selected environment ({source_violation}); "
-            "first lane verify will bootstrap",
-            False,
-        )
+        if source_binding is None:
+            return "coordinator graph disappeared before descriptor binding; first lane verify will bootstrap", False
+        try:
+            _atomic_copy_sqlite_database(
+                source,
+                destination,
+                environment_name=copy_digest,
+                required_executable_paths=(),
+                deadline_monotonic=None,
+                source_fd=source_binding.descriptor,
+            )
+        except NativeTestmonRepairError as exc:
+            return f"graph seed failed ({exc}); first lane verify will bootstrap", False
 
-    try:
-        _atomic_copy_sqlite_database(
-            source,
-            destination,
-            environment_name=copy_digest,
-            required_executable_paths=(),
-            deadline_monotonic=None,
-        )
-    except NativeTestmonRepairError as exc:
-        return f"graph seed failed ({exc}); first lane verify will bootstrap", False
-
-    failures: list[str] = []
-    for digest in attestation.digests:
-        state = inspect_native_testmon_environment(destination, environment_name=digest)
-        if not state.valid or state.environment is None:
-            failures.append(f"{digest[:24]}...: {state.reason}")
-            continue
-        violation = certified_attestation_violation(
-            worktree,
-            environment_name=digest,
-            current_nodeids=state.environment.nodeids,
-        )
-        if violation is not None:
-            failures.append(f"{digest[:24]}...: {violation}")
-            continue
-        suffix = " (verify default-profile fallback)" if digest != attestation.digests[0] else ""
-        return f"seeded and certified this lane environment ({digest[:24]}...){suffix}; verifies start warm", True
+        failures: list[str] = []
+        for digest in attestation.digests:
+            state = inspect_native_testmon_environment(destination, environment_name=digest)
+            if not state.valid or state.environment is None:
+                failures.append(f"{digest[:24]}...: {state.reason}")
+                continue
+            violation = certified_attestation_violation(
+                worktree,
+                environment_name=digest,
+                current_nodeids=state.environment.nodeids,
+            )
+            if violation is not None:
+                failures.append(f"{digest[:24]}...: {violation}")
+                continue
+            suffix = " (verify default-profile fallback)" if digest != attestation.digests[0] else ""
+            return f"seeded and certified this lane environment ({digest[:24]}...){suffix}; verifies start warm", True
     detail = "; ".join(failures) if failures else "no candidate environment"
     return (
         f"seeded graph is not attestable for verify's environment candidates ({detail}); first lane verify will bootstrap",
