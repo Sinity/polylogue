@@ -5,7 +5,9 @@ These tests deliberately use the registered six-tool server and real
 anti-vacuity test disables the shared transaction boundary and expects the
 real query route to fail. The load test then drives all six read tools from
 multiple OS threads and checks request identity, admission, cleanup, and
-archive integrity after the calls finish.
+archive integrity after the calls finish. Additional registered-route tests
+cover cancellation during result assembly and the response-budget path for
+large results.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ import json
 import os
 import sqlite3
 import threading
+import tracemalloc
+from collections import Counter
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -33,10 +37,17 @@ from polylogue.archive.query.execution_control import (
 from polylogue.archive.query.transaction import QueryTransaction
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPArchiveStatsPayload
+from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 
-def _seed_archive(archive_root: Path, *, count: int) -> tuple[str, ...]:
+def _seed_archive(
+    archive_root: Path,
+    *,
+    count: int,
+    marker_prefix: str = "needle-mcp-load",
+    message_bytes: int = 0,
+) -> tuple[str, ...]:
     """Create distinct searchable sessions through the real archive writer."""
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, Provider
@@ -48,17 +59,18 @@ def _seed_archive(archive_root: Path, *, count: int) -> tuple[str, ...]:
             archive.write_parsed(
                 ParsedSession(
                     source_name=Provider.CHATGPT,
-                    provider_session_id=f"mcp-load-{index}",
+                    provider_session_id=f"mcp-load-{index:03d}",
                     title=f"MCP read isolation {index}",
                     messages=[
                         ParsedMessage(
                             provider_message_id="m1",
                             role=Role.USER,
-                            text=f"needle-mcp-load-{index:03d}",
+                            text=(marker := f"{marker_prefix}-{index:03d}")
+                            + (f" {'x' * message_bytes}" if message_bytes else ""),
                             blocks=[
                                 ParsedContentBlock(
                                     type=BlockType.TEXT,
-                                    text=f"needle-mcp-load-{index:03d}",
+                                    text=marker + (f" {'x' * message_bytes}" if message_bytes else ""),
                                 )
                             ],
                         )
@@ -122,24 +134,39 @@ async def test_read_migration_fails_closed_without_shared_query_transaction(
     assert result["detail"] == "RuntimeError"
 
 
-def _archive_fd_targets(archive_root: Path) -> frozenset[str]:
+def _archive_fd_targets(archive_root: Path) -> dict[str, int] | None:
     proc_fd = Path("/proc/self/fd")
-    if not proc_fd.exists():
-        return frozenset()
+    if not proc_fd.is_dir():
+        return None
     root = str(archive_root.resolve())
-    targets: set[str] = set()
+    targets: dict[str, int] = {}
     for entry in proc_fd.iterdir():
         try:
             target = os.readlink(entry)
         except OSError:
             continue
         if target == root or target.startswith(root + os.sep):
-            targets.add(target)
-    return frozenset(targets)
+            targets[target] = targets.get(target, 0) + 1
+    return targets
 
 
 def _archive_files(archive_root: Path) -> frozenset[str]:
     return frozenset(path.relative_to(archive_root).as_posix() for path in archive_root.rglob("*") if path.is_file())
+
+
+def _archive_file_sizes(archive_root: Path) -> dict[str, int]:
+    return {
+        path.relative_to(archive_root).as_posix(): path.stat().st_size
+        for path in archive_root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _require_fd_probe(archive_root: Path) -> dict[str, int]:
+    snapshot = _archive_fd_targets(archive_root)
+    if snapshot is None:
+        pytest.skip("archive descriptor cleanup evidence requires /proc/self/fd")
+    return snapshot
 
 
 async def _read_bundle(
@@ -210,6 +237,124 @@ async def _seed_context_deliveries(
     return snapshot_refs
 
 
+@pytest.mark.asyncio
+async def test_registered_query_disconnect_drains_real_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled registered query stamps disconnect and drains its reader."""
+    from polylogue.archive.query import unit_results
+    from polylogue.mcp.server import build_server
+
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
+    archive_root = tmp_path / "archive"
+    _seed_archive(archive_root, count=1)
+    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities()))
+    query_fn = server._tool_manager._tools["query"].fn
+    entered = threading.Event()
+    observed_contexts: list[QueryExecutionContext] = []
+    original_envelope = unit_results.query_unit_envelope
+
+    def hold_after_real_query(*args: Any, **kwargs: Any) -> Any:
+        execution_context = kwargs.get("execution_context")
+        assert isinstance(execution_context, QueryExecutionContext)
+        result = original_envelope(*args, **kwargs)
+        observed_contexts.append(execution_context)
+        entered.set()
+        execution_context.cancel_event.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(unit_results, "query_unit_envelope", hold_after_real_query)
+    reset_default_admission_controller_for_tests()
+    before_fds = _require_fd_probe(archive_root)
+
+    with _installed_runtime_services(archive_root):
+        task = asyncio.create_task(
+            invoke_surface_async(
+                query_fn,
+                expression="messages where text:needle-mcp-load-000",
+                limit=1,
+            )
+        )
+        assert await asyncio.to_thread(entered.wait, 5), "registered query never reached real result assembly"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(observed_contexts) == 1
+    context = observed_contexts[0]
+    assert context.owner_ref == "query_units"
+    assert context.receipt.rows_emitted == 1
+    assert context.receipt.state == "disconnected"
+    assert context.receipt.cleanup_complete is True
+    assert default_admission_controller().in_flight_weight == 0
+    assert _archive_fd_targets(archive_root) == before_fds
+
+
+@pytest.mark.asyncio
+async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registered query's large-result envelope leaves bounded temp state."""
+    from polylogue.mcp.server import build_server
+
+    monkeypatch.setenv("POLYLOGUE_NO_DAEMON", "1")
+    archive_root = tmp_path / "archive"
+    _seed_archive(
+        archive_root,
+        count=20,
+        marker_prefix="needle-mcp-large-result",
+        message_bytes=3_500,
+    )
+    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities()))
+    query_fn = server._tool_manager._tools["query"].fn
+
+    async def invoke_large_query() -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            json.loads(
+                await invoke_surface_async(
+                    query_fn,
+                    expression="messages where text:needle-mcp-large-result",
+                    limit=20,
+                )
+            ),
+        )
+
+    with _installed_runtime_services(archive_root):
+        warm_response = await invoke_large_query()
+        assert warm_response["status"] == "response_budget_exceeded"
+
+        before_files = _archive_file_sizes(archive_root)
+        before_fds = _require_fd_probe(archive_root)
+        tracemalloc.start()
+        baseline_bytes, _ = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        response = await invoke_large_query()
+        _, peak_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        after_files = _archive_file_sizes(archive_root)
+
+    response_bytes = len(json.dumps(response, sort_keys=True).encode("utf-8"))
+    assert response["status"] == "response_budget_exceeded"
+    assert response["original_bytes"] > MCP_RESPONSE_BUDGET_BYTES
+    assert response["returned_items"] > 0
+    assert response["continuation"] is not None
+    assert response_bytes <= MCP_RESPONSE_BUDGET_BYTES
+
+    transient_bytes = max(0, peak_bytes - baseline_bytes)
+    assert transient_bytes <= 8 * 1024 * 1024
+
+    new_files = set(after_files) - set(before_files)
+    allowed_sidecars = {
+        f"{database.name}-{sidecar}" for database in archive_root.glob("*.db") for sidecar in ("wal", "shm")
+    }
+    assert new_files <= allowed_sidecars
+    temporary_sidecar_bytes = sum(after_files[path] for path in new_files if path in allowed_sidecars)
+    assert temporary_sidecar_bytes <= 1 * 1024 * 1024
+    assert not any(path.endswith((".tmp", ".spill", ".partial")) for path in after_files)
+    assert _archive_fd_targets(archive_root) == before_fds
+
+
 def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -253,7 +398,7 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         monkeypatch.setattr(QueryAdmissionController, "admit_blocking", observe_admission)
 
         before_files = _archive_files(archive_root)
-        before_fds = _archive_fd_targets(archive_root)
+        before_fds = _require_fd_probe(archive_root)
 
         def run_request(index: int) -> tuple[int, dict[str, dict[str, Any]]]:
             return index, asyncio.run(
@@ -266,11 +411,12 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     assert set(results) == set(range(request_count))
     for index, bundle in results.items():
         marker = markers[index]
-        foreign_markers = set(markers) - {marker}
+        session_id = session_ids[index]
+        foreign_identities = (set(markers) | set(session_ids)) - {marker, session_id}
         for tool_name, body in bundle.items():
             assert body.get("is_error") is not True, f"{tool_name} failed for {marker}: {body}"
             serialized = json.dumps(body, sort_keys=True)
-            assert not foreign_markers.intersection(serialized), (
+            assert not any(identity in serialized for identity in foreign_identities), (
                 f"{tool_name} leaked another request identity for {marker}: {body}"
             )
         for tool_name in ("query", "explain"):
@@ -278,8 +424,8 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
                 f"{tool_name} dropped the request identity for {marker}: {bundle[tool_name]}"
             )
         for tool_name in ("read", "get"):
-            assert session_ids[index] in json.dumps(bundle[tool_name], sort_keys=True), (
-                f"{tool_name} dropped the request identity for {session_ids[index]}: {bundle[tool_name]}"
+            assert session_id in json.dumps(bundle[tool_name], sort_keys=True), (
+                f"{tool_name} dropped the request identity for {session_id}: {bundle[tool_name]}"
             )
         context_serialized = json.dumps(bundle["context"], sort_keys=True)
         assert marker in context_serialized, f"context dropped its own marker {marker}: {bundle['context']}"
@@ -289,7 +435,7 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         assert archive_status.total_sessions == request_count
         assert archive_status.total_messages == request_count
         status_serialized = json.dumps(status, sort_keys=True)
-        assert not set(markers).intersection(status_serialized), (
+        assert not any(marker in status_serialized for marker in markers), (
             f"status exposed request-specific data for {marker}: {status}"
         )
 
@@ -299,6 +445,12 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     assert max(observed_in_flight) == DEFAULT_CAPACITY
     assert all(value <= DEFAULT_CAPACITY for value in observed_in_flight)
     assert "context" not in observed_admission_owners
+    owner_counts = Counter(observed_admission_owners)
+    assert set(owner_counts) == {"query_units", "archive.resolve_ref", "status"}
+    assert owner_counts["query_units"] == request_count
+    assert owner_counts["archive.resolve_ref"] == request_count * 2
+    assert owner_counts["status"] == request_count
+    assert owner_counts.get("explain", 0) == 0
     assert controller.in_flight_weight == 0
 
     after_files = _archive_files(archive_root)

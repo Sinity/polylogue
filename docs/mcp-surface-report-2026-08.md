@@ -252,14 +252,17 @@ request identity, continuation framing, archive epochs, and cursor rejection.
 For AC#7, 32 request identities are driven from 16 OS worker threads, with 192
 registered MCP calls across the six-tool surface. `query`, `read`, `get`, and
 `explain` are checked for their own marker or session identity and for absence
-of every other request identity. Before the load, the test uses the real
-`write(operation="deliver_context")` route to record one marker-bearing
-context-delivery receipt per request, then reads each exact receipt through
-`context(result_ref=..., recipient_ref=...)`; this prevents an empty delivery
-list from passing the test. `status(scope="archive")` is intentionally a
-shared archive snapshot rather than a request-identified response, so it is
-validated against `MCPArchiveStatsPayload`, its archive scope, and the absence
-of all request markers instead of being required to echo its caller's marker.
+of every other request marker and session id. The test also records the exact
+transaction owners reached by `query`, `read`, `get`, and `status`, so a
+query-only admission observation cannot certify a bypassing handler. Before
+the load, the test uses the real `write(operation="deliver_context")` route to
+record one marker-bearing context-delivery receipt per request, then reads
+each exact receipt through `context(result_ref=..., recipient_ref=...)`; this
+prevents an empty delivery list from passing the test. `status(scope="archive")`
+is intentionally a shared archive snapshot rather than a request-identified
+response, so it is validated against `MCPArchiveStatsPayload`, its archive
+scope, and the absence of all request identities instead of being required to
+echo its caller's marker.
 
 The admission proof uses the real `QueryAdmissionController` reached by the
 consolidated routes that use `QueryTransaction`. A synchronization barrier
@@ -267,16 +270,23 @@ holds the first `DEFAULT_CAPACITY` admissions (`DEFAULT_CAPACITY == 4`) at
 once, and the test requires an observed maximum of exactly 4, no value above
 4, and final `in_flight_weight == 0`. Context receipt lookup is a distinct
 durable user-tier path and is explicitly checked for marker isolation without
-being claimed as an admission-controller participant. The test also checks
-that no archive file descriptors remain open, rejects unexpected new temporary
-artifacts, and runs SQLite `quick_check` on every archive database after the
-load.
+being claimed as an admission-controller participant. A separate registered
+`query` call executes a real large-result query, requires the
+`response_budget_exceeded` envelope with a non-empty advancing continuation,
+measures transient Python bytes and newly-created archive sidecars, and
+rejects temporary spill artifacts above the bounded thresholds. A cancelled
+registered `query` executes real result assembly before the test disconnects;
+the captured transaction must report `disconnected`, complete reader cleanup,
+and release admission. The load still checks that no archive file descriptors
+remain open, rejects unexpected new temporary artifacts, and runs SQLite
+`quick_check` on every archive database after the calls finish.
 
-This is application-level concurrency and cleanup evidence. It does not claim
-a host-wide RSS/PSS/swap benchmark across machines; those measurements remain
+This is application-level concurrency, cancellation, and temporary-resource
+evidence. The transient-byte measurement is process-local allocation evidence,
+not a host-wide RSS/PSS/swap benchmark; those measurements remain
 environment-dependent and are not fabricated from a unit-test result.
 
-The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **40 passed, 0 failed**. The new evidence module contributed **2 passed** tests.
+The focused command `devtools test tests/unit/mcp/test_migration_load_evidence.py tests/unit/mcp/test_server_surfaces.py::test_query_transaction_certifies_twenty_large_messages_across_api_and_mcp tests/unit/archive/query/test_read_surface_control.py tests/unit/archive/query/test_transaction.py tests/unit/archive/query/test_execution_control.py` passed with **43 passed, 0 failed**. The new evidence module contributed **4 passed** tests.
 
 ## 7. Bottom line
 
