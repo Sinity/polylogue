@@ -227,25 +227,22 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             .execute("SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (raw_id,))
             .fetchone()[0]
         )
-        record_revision_application_sync(
-            archive._conn,
-            RevisionApplicationReceipt(
-                raw_id=raw_id,
-                session_id="chatgpt-export:reparse-browser",
-                logical_source_key="unknown:reparse-browser",
-                source_revision=str(blob_hash),
-                acquisition_generation=0,
-                decision=ApplicationDecision.SELECTED_BASELINE,
-                accepted_raw_id=raw_id,
-                accepted_source_revision=str(blob_hash),
-                accepted_content_hash=historical_hash,
-                accepted_frontier_kind="byte",
-                accepted_frontier=len(payload),
-                baseline_raw_id=raw_id,
-                detail="restart-proof:historical-browser-head",
-            ),
-            decided_at_ms=1,
+        baseline_receipt = RevisionApplicationReceipt(
+            raw_id=raw_id,
+            session_id="chatgpt-export:reparse-browser",
+            logical_source_key="unknown:reparse-browser",
+            source_revision=str(blob_hash),
+            acquisition_generation=0,
+            decision=ApplicationDecision.SELECTED_BASELINE,
+            accepted_raw_id=raw_id,
+            accepted_source_revision=str(blob_hash),
+            accepted_content_hash=historical_hash,
+            accepted_frontier_kind="byte",
+            accepted_frontier=len(payload),
+            baseline_raw_id=raw_id,
+            detail="restart-proof:historical-browser-head",
         )
+        record_revision_application_sync(archive._conn, baseline_receipt, decided_at_ms=1)
         archive.commit()
 
     ordering: list[str] = []
@@ -326,6 +323,21 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         )
         source_conn.commit()
 
+    reparse_receipt = RevisionApplicationReceipt(
+        raw_id=raw_id,
+        session_id="chatgpt-export:reparse-browser",
+        logical_source_key="unknown:reparse-browser",
+        source_revision=str(blob_hash),
+        acquisition_generation=0,
+        decision=ApplicationDecision.REPARSE_REAFFIRMATION,
+        accepted_raw_id=raw_id,
+        accepted_source_revision=str(blob_hash),
+        accepted_content_hash=current_hash,
+        accepted_frontier_kind="byte",
+        accepted_frontier=len(payload),
+        detail="reparse:accepted_head_content_correction",
+    )
+
     with sqlite3.connect(case_root / "index.db") as index_conn:
         index_conn.row_factory = sqlite3.Row
         index_conn.execute("ATTACH DATABASE ? AS source", (str(case_root / "source.db"),))
@@ -340,12 +352,30 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
     application_decisions = [str(row[0]) for row in applications]
     application_timestamps = [int(row[1]) for row in applications]
     application_decision_ids = [str(row[2]) for row in applications]
+    expected_application_decision_ids = sorted((baseline_receipt.decision_id, reparse_receipt.decision_id))
+    with sqlite3.connect(":memory:") as tie_conn:
+        tie_conn.execute("CREATE TABLE tie_rows (decision_id TEXT NOT NULL, decided_at_ms INTEGER NOT NULL)")
+        tie_conn.executemany(
+            "INSERT INTO tie_rows(decision_id, decided_at_ms) VALUES (?, ?)",
+            [(decision_id, 1) for decision_id in reversed(expected_application_decision_ids)],
+        )
+        unstable_tie_ids = [
+            str(row[0]) for row in tie_conn.execute("SELECT decision_id FROM tie_rows ORDER BY decided_at_ms")
+        ]
+        stable_tie_ids = [
+            str(row[0])
+            for row in tie_conn.execute("SELECT decision_id FROM tie_rows ORDER BY decided_at_ms, decision_id")
+        ]
     _require(
         application_decisions
         == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value]
         and application_timestamps == [1, 1]
-        and application_decision_ids == sorted(application_decision_ids),
+        and application_decision_ids == expected_application_decision_ids,
         "accepted-head reparse receipts are not ordered by timestamp and decision id",
+    )
+    _require(
+        unstable_tie_ids != expected_application_decision_ids and stable_tie_ids == expected_application_decision_ids,
+        "equal-timestamp tie-break control did not distinguish unstable ordering",
     )
     _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
     _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
@@ -1295,7 +1325,7 @@ def run_raw_authority_restart_proof(
 def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workdir", type=Path, default=Path(".cache"))
-    parser.add_argument("--keep", action="store_true", help="Retain the three fresh synthetic case archives.")
+    parser.add_argument("--keep", action="store_true", help="Retain the four fresh synthetic case archives.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     payload = run_raw_authority_restart_proof(args.workdir, keep=args.keep)
