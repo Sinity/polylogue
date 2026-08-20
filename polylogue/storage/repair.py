@@ -1586,15 +1586,20 @@ def _canonical_browser_origin_head_is_exact(
     census = conn.execute(
         "SELECT status, member_count FROM source.raw_membership_census WHERE raw_id = ?", (raw_id,)
     ).fetchone()
-    application = conn.execute(
+    applications = conn.execute(
         """
-        SELECT session_id, source_revision, acquisition_generation, decision, accepted_raw_id,
-               accepted_source_revision, accepted_content_hash, baseline_raw_id
+        SELECT decision_id, raw_id, session_id, logical_source_key, source_revision,
+               acquisition_generation, decision, accepted_raw_id,
+               accepted_source_revision, accepted_content_hash,
+               accepted_frontier_kind, accepted_frontier, baseline_raw_id,
+               predecessor_raw_id, append_end_offset, detail, decided_at_ms
         FROM raw_revision_applications
         WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+        ORDER BY decision_id
         """,
         (raw_id, canonical_key),
-    ).fetchone()
+    ).fetchall()
+    application = applications[0] if len(applications) == 1 else None
     native_id = session_id.split(":", 1)[1]
     raw = (
         _browser_origin_source_envelope_is_exact(
@@ -1623,9 +1628,31 @@ def _canonical_browser_origin_head_is_exact(
         or membership is None
         or census is None
         or application is None
+        or not _revision_application_decision_id_is_exact(application)
         or str(canonical_head["session_id"]) != session_id
+        or str(canonical_head["accepted_raw_id"]) != raw_id
+        or str(canonical_head["accepted_source_revision"]) != source_revision
         or _bytes_value(canonical_head["accepted_content_hash"]) != accepted_hash
         or str(canonical_head["accepted_frontier_kind"]) != "byte"
+        or int(canonical_head["accepted_frontier"]) != frontier
+        or int(canonical_head["acquisition_generation"]) != generation
+        or canonical_head["append_end_offset"] is not None
+        or str(application["raw_id"]) != raw_id
+        or str(application["session_id"]) != session_id
+        or str(application["logical_source_key"]) != canonical_key
+        or str(application["source_revision"]) != source_revision
+        or int(application["acquisition_generation"]) != generation
+        or str(application["decision"]) != ApplicationDecision.SELECTED_BASELINE.value
+        or str(application["accepted_raw_id"]) != raw_id
+        or str(application["accepted_source_revision"]) != source_revision
+        or _bytes_value(application["accepted_content_hash"]) != accepted_hash
+        or str(application["accepted_frontier_kind"]) != "byte"
+        or int(application["accepted_frontier"]) != frontier
+        or str(application["baseline_raw_id"]) != raw_id
+        or application["predecessor_raw_id"] is not None
+        or application["append_end_offset"] is not None
+        or int(application["decided_at_ms"]) < 0
+        or int(application["decided_at_ms"]) != int(canonical_head["decided_at_ms"])
     ):
         return False
     try:
@@ -1659,30 +1686,15 @@ def _canonical_browser_origin_head_is_exact(
         or bytes.fromhex(session_content_hash(sessions[0])) != accepted_hash
     ):
         return False
-    return (
-        tuple(membership)
-        == (
-            native_id,
-            source_revision,
-            accepted_hash,
-            message_count,
-            generation,
-            RawRevisionAuthority.BYTE_PROVEN.value,
-            "applied",
-        )
-        and tuple(census) == ("complete", 1)
-        and tuple(application)
-        == (
-            session_id,
-            source_revision,
-            generation,
-            ApplicationDecision.SELECTED_BASELINE.value,
-            raw_id,
-            source_revision,
-            accepted_hash,
-            raw_id,
-        )
-    )
+    return tuple(membership) == (
+        native_id,
+        source_revision,
+        accepted_hash,
+        message_count,
+        generation,
+        RawRevisionAuthority.BYTE_PROVEN.value,
+        "applied",
+    ) and tuple(census) == ("complete", 1)
 
 
 def _semantic_head_snapshot(head: Mapping[str, object] | sqlite3.Row) -> dict[str, object]:

@@ -777,6 +777,63 @@ def test_unified_frontier_restores_equivalent_canonical_browser_head(tmp_path: P
     }
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "accepted_frontier = accepted_frontier + 1",
+        "accepted_frontier_kind = 'semantic'",
+        "append_end_offset = 1",
+    ],
+)
+def test_canonical_head_restore_rejects_mutated_persisted_evidence(tmp_path: Path, mutation: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        head_before = index.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset, decided_at_ms
+            FROM raw_revision_heads WHERE logical_source_key = ?
+            """,
+            ("chatgpt:browser-origin-one",),
+        ).fetchone()
+        assert head_before is not None
+        updated = index.execute(
+            f"""
+            UPDATE raw_revision_applications
+            SET {mutation}
+            WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+            """,
+            (canonical_raw_id, "chatgpt:browser-origin-one"),
+        )
+        assert updated.rowcount == 1
+        assert (
+            index.execute(
+                """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset, decided_at_ms
+            FROM raw_revision_heads WHERE logical_source_key = ?
+            """,
+                ("chatgpt:browser-origin-one",),
+            ).fetchone()
+            == head_before
+        )
+
+    browser_item = inspect_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])[0]
+    assert browser_item.status == "ineligible"
+    assert "canonical logical source" in browser_item.reason
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in census.items if item.raw_id == mismatched_raw_id)
+    assert selected.state is RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT
+    assert selected.actuator is RawAuthorityActuator.REQUEST_JUDGMENT
+    assert selected.executable is False
+
+
 @pytest.mark.parametrize("authority", ["quarantined", "byte_proven"])
 def test_unified_frontier_admits_historical_null_native_id_strategies(tmp_path: Path, authority: str) -> None:
     raw_id = (
