@@ -3062,6 +3062,16 @@ def _native_pytest_environment() -> dict[str, str | None]:
     }
 
 
+def _native_pytest_environment_candidates(
+    initial: Mapping[str, str | None] | None = None,
+) -> tuple[dict[str, str | None], ...]:
+    """Return the exact native environment candidates used by verify."""
+    environment = dict(_native_pytest_environment() if initial is None else initial)
+    if environment.get("HYPOTHESIS_PROFILE") != "default":
+        return environment, {**environment, "HYPOTHESIS_PROFILE": "default"}
+    return (environment,)
+
+
 def _native_environment_after_run(
     preparation: NativeTestmonPreparation,
     *,
@@ -3335,7 +3345,8 @@ def _main(argv: list[str] | None = None) -> int:
     runtime_data_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
     testmon_mode: str | None = None
-    native_pytest_environment = _native_pytest_environment()
+    native_pytest_environments = _native_pytest_environment_candidates()
+    native_pytest_environment = native_pytest_environments[0]
     preparation_mutation_observation: CheckoutMutationObservation | None = None
     if pytest_enabled:
         assert base_commit is not None
@@ -3354,11 +3365,8 @@ def _main(argv: list[str] | None = None) -> int:
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
             )
-            if (
-                preparation.selection_mode == "bootstrap"
-                and native_pytest_environment["HYPOTHESIS_PROFILE"] != "default"
-            ):
-                native_pytest_environment = {**native_pytest_environment, "HYPOTHESIS_PROFILE": "default"}
+            if preparation.selection_mode == "bootstrap" and len(native_pytest_environments) > 1:
+                native_pytest_environment = native_pytest_environments[1]
                 preparation = prepare_native_testmon_environment(
                     ROOT,
                     required_executable_paths=preparation_required_executable_paths,

@@ -346,15 +346,12 @@ def lane_environment_attestation(worktree: Path) -> LaneEnvironmentAttestation |
                 "import json; "
                 "from pathlib import Path; "
                 "from devtools.testmon_bootstrap import testmon_environment_digest; "
-                "from devtools.verify import _native_pytest_environment, _pytest_profile; "
+                "from devtools.verify import _native_pytest_environment_candidates, _pytest_profile; "
                 "profile = _pytest_profile(); "
-                "initial = _native_pytest_environment(); "
-                "fallback = ({**initial, 'HYPOTHESIS_PROFILE': 'default'} "
-                "if initial.get('HYPOTHESIS_PROFILE') != 'default' else None); "
-                "candidates = [initial] + ([fallback] if fallback is not None else []); "
+                "candidates = _native_pytest_environment_candidates(); "
                 "digests = [testmon_environment_digest(Path.cwd(), pytest_profile=profile, "
                 "pytest_environment=environment) for environment in candidates]; "
-                "print(json.dumps({'pytest_profile': profile, 'pytest_environment': initial, "
+                "print(json.dumps({'pytest_profile': profile, 'pytest_environment': candidates[0], "
                 "'digests': list(dict.fromkeys(digests))}, sort_keys=True))"
             ),
         ],

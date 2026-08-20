@@ -9,6 +9,7 @@ from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
+    _atomic_copy_sqlite_database,
     _testmon_schema_version,
     canonical_test_nodeid,
     classify_native_testmon_changes,
@@ -516,6 +517,52 @@ def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprint
     finally:
         db.con.close()
     return data
+
+
+def test_atomic_copy_holds_destination_directory_across_parent_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "sentinel"
+    sentinel.write_text("external", encoding="utf-8")
+    original_replace = os.replace
+
+    def replace_after_parent_swap(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        owned_cache = destination_root / ".cache"
+        owned_cache.rename(destination_root / ".cache-owned")
+        owned_cache.symlink_to(external, target_is_directory=True)
+        original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "replace", replace_after_parent_swap)
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert (destination_root / ".cache-owned" / "testmon" / "testmondata").is_file()
+    assert sentinel.read_text(encoding="utf-8") == "external"
+    assert list(external.iterdir()) == [sentinel]
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:

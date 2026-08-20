@@ -905,6 +905,35 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _open_owned_testmon_directory(repo_root: Path, *, create: bool) -> int:
+    """Open the owned testmon directory without following any path component."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise NativeTestmonRepairError("safe testmon directory operations require O_NOFOLLOW")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | nofollow
+    current = os.open(repo_root.resolve(), flags)
+    try:
+        for part in TESTMON_DATA_RELPATH.parent.parts:
+            try:
+                child = os.open(part, flags, dir_fd=current)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, 0o755, dir_fd=current)
+                child = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _owned_testmon_child(directory_fd: int, name: str) -> Path:
+    """Address a child through a held directory descriptor, not its parent path."""
+    return Path(f"/proc/self/fd/{directory_fd}/{name}")
+
+
 def _atomic_copy_sqlite_database(
     source: Path,
     destination: Path,
@@ -914,13 +943,26 @@ def _atomic_copy_sqlite_database(
     deadline_monotonic: float | None,
 ) -> None:
     _ensure_deadline(deadline_monotonic)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp")
+    source_directory_fd: int | None = None
+    destination_directory_fd: int | None = None
+    temporary_fd: int | None = None
+    temporary_name = f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp"
     try:
+        source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
+        destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
+        source_path = _owned_testmon_child(source_directory_fd, source.name)
+        temporary = _owned_testmon_child(destination_directory_fd, temporary_name)
+        destination_name = destination.name
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=destination_directory_fd,
+        )
         with (
             contextlib.closing(
                 sqlite3.connect(
-                    _readonly_uri(source),
+                    _readonly_uri(source_path),
                     uri=True,
                     timeout=_remaining_timeout(deadline_monotonic, 60),
                 )
@@ -958,20 +1000,32 @@ def _atomic_copy_sqlite_database(
         # worktree whose fresh copy sat beside a -wal from an earlier run).
         for suffix in TESTMON_SIDECAR_SUFFIXES:
             with contextlib.suppress(FileNotFoundError):
-                Path(f"{destination}{suffix}").unlink()
-        os.replace(temporary, destination)
-        _fsync_directory(destination.parent)
+                os.unlink(f"{destination_name}{suffix}", dir_fd=destination_directory_fd)
+        os.replace(
+            temporary_name,
+            destination_name,
+            src_dir_fd=destination_directory_fd,
+            dst_dir_fd=destination_directory_fd,
+        )
+        os.fsync(destination_directory_fd)
         _ensure_deadline(deadline_monotonic)
     except NativeTestmonDeadlineError:
         raise
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, NativeTestmonRepairError) as exc:
         raise NativeTestmonRepairError(f"SQLite online backup failed: {exc}") from exc
     finally:
-        with contextlib.suppress(FileNotFoundError):
-            temporary.unlink()
-        for suffix in TESTMON_SIDECAR_SUFFIXES:
+        if destination_directory_fd is not None:
             with contextlib.suppress(FileNotFoundError):
-                Path(f"{temporary}{suffix}").unlink()
+                os.unlink(temporary_name, dir_fd=destination_directory_fd)
+            for suffix in TESTMON_SIDECAR_SUFFIXES:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(f"{temporary_name}{suffix}", dir_fd=destination_directory_fd)
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        if destination_directory_fd is not None:
+            os.close(destination_directory_fd)
+        if source_directory_fd is not None:
+            os.close(source_directory_fd)
 
 
 def linked_worktree_info(

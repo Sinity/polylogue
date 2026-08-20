@@ -362,8 +362,8 @@ def test_lane_environment_digest_uses_the_verify_digest_contract(
     assert isinstance(command, list)
     probe = command[-1]
     assert isinstance(probe, str)
-    assert "fallback" in probe
-    assert "HYPOTHESIS_PROFILE': 'default'" in probe
+    assert "_native_pytest_environment_candidates" in probe
+    assert "initial.get('HYPOTHESIS_PROFILE')" not in probe
 
 
 def test_lane_environment_attestation_includes_verify_default_fallback(
@@ -401,6 +401,22 @@ def test_lane_environment_attestation_includes_verify_default_fallback(
     assert attestation is not None
     assert attestation.digests == ("polylogue-initial", "polylogue-default")
     assert attestation.environment == {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
+
+
+def test_verify_candidate_helper_preserves_deliberate_profile_and_ci(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devtools import verify
+
+    monkeypatch.setenv("HYPOTHESIS_PROFILE", "ci")
+    monkeypatch.setenv("POLYLOGUE_CI", "1")
+
+    candidates = verify._native_pytest_environment_candidates()
+
+    assert candidates == (
+        {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"},
+        {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": "1"},
+    )
 
 
 def test_interpreter_guard_refuses_a_mismatched_lane_interpreter(tmp_path: Path) -> None:
@@ -540,6 +556,7 @@ def test_seed_reports_cold_when_the_graph_lacks_this_lanes_environment(
     """
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
     _certified_graph_with(root, "polylogue-stale")
 
     note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
@@ -555,6 +572,7 @@ def test_seed_reports_warm_only_on_a_real_environment_match(
 ) -> None:
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
     _certified_graph_with(root, "polylogue-current")
 
     note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
@@ -568,6 +586,7 @@ def test_seed_accepts_verify_default_profile_fallback_when_certified(
 ) -> None:
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
     _certified_graph_with(root, "polylogue-default")
     attestation = _attestation("polylogue-initial", "polylogue-default", profile="ci")
 
@@ -580,9 +599,12 @@ def test_seed_accepts_verify_default_profile_fallback_when_certified(
 def test_seed_rejects_certified_fallback_after_an_invalid_initial_environment(
     tmp_path: Path,
 ) -> None:
+    from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+
     root = tmp_path / "root"
     lane = tmp_path / "lane"
-    _certified_graph_with_names(root, ["polylogue-initial", "polylogue-initial", "polylogue-default"])
+    _certified_graph_with(root, "polylogue-default")
+    _certified_graph_with_names(lane, ["polylogue-initial", "polylogue-initial"])
 
     note, warm = lane_init._seed_testmon_graph(
         root,
@@ -593,6 +615,7 @@ def test_seed_rejects_certified_fallback_after_an_invalid_initial_environment(
     assert warm is False
     assert "initial verify environment is invalid" in note
     assert "refusing the default-profile fallback" in note
+    assert (lane / TESTMON_DATA_RELPATH).is_file()
 
 
 def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -600,6 +623,7 @@ def test_seed_reports_cold_for_an_empty_or_absent_graph(tmp_path: Path, monkeypa
 
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
 
     note, warm = lane_init._seed_testmon_graph(root, lane)
     assert warm is False
@@ -618,6 +642,7 @@ def test_seed_reports_cold_when_the_lane_digest_cannot_be_computed(
     """An unverifiable lane must never be reported as warm."""
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
     _certified_graph_with(root, "polylogue-something")
     note, warm = lane_init._seed_testmon_graph(root, lane)
 
@@ -630,6 +655,7 @@ def test_seed_rejects_a_minimal_fake_graph_even_with_a_matching_environment(
 ) -> None:
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
     from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
 
     _graph_with(root / TESTMON_DATA_RELPATH, ["polylogue-current"])
@@ -651,6 +677,7 @@ def test_distribution_mutation_makes_a_seeded_graph_unattestable(
 
     root = tmp_path / "root"
     lane = tmp_path / "lane"
+    lane.mkdir()
     digest_inputs = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": None}
     recorded = testmon_environment_digest(
         root,
