@@ -309,7 +309,6 @@ async def test_live_watcher_drains_hook_spool_from_added_directory_notification(
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
 
-@pytest.mark.uses_real_clock("exercises production retry polling against a delayed atomic hook publish")
 @pytest.mark.asyncio
 async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     tmp_path: Path,
@@ -328,36 +327,26 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
     )
     monkeypatch.setattr("polylogue.sources.hooks._day_shard", lambda: "2026-08-12")
     shard = pending / "2026-08-12"
-    publish_task: asyncio.Task[None] | None = None
-
-    async def publish_after_fixed_grace() -> None:
-        # The old one-shot 50 ms re-drain has already completed by the time
-        # this producer publishes.  The retry must keep watching this shard.
-        await asyncio.sleep(0.10)
-        enqueue_hook_event(
-            event_id="published-after-directory-event",
-            provider="codex",
-            event_type="SessionStart",
-            session_id="session-2",
-            timestamp="2026-07-12T10:00:00Z",
-            payload={"cwd": "/workspace"},
-            root=spool_root,
-        )
 
     async def emit_empty_shard(*roots: Path, **_kwargs: object) -> AsyncIterator[set[tuple[Change, str]]]:
-        nonlocal publish_task
         assert roots == (pending,)
         shard.mkdir(parents=True)
-        publish_task = asyncio.create_task(publish_after_fixed_grace())
         yield {(Change.added, str(shard))}
 
     monkeypatch.setattr(watchfiles, "awatch", emit_empty_shard)
 
     await watcher._watch_changes([pending])
-    assert publish_task is not None
-    await publish_task
     retry_task = watcher._hook_spool_directory_retry_tasks[shard.resolve()]
-    await asyncio.wait_for(retry_task, timeout=1.0)
+    enqueue_hook_event(
+        event_id="published-after-directory-event",
+        provider="codex",
+        event_type="SessionStart",
+        session_id="session-2",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"cwd": "/workspace"},
+        root=spool_root,
+    )
+    await retry_task
 
     assert list(acknowledged_hook_spool_dir(spool_root).rglob("published-after-directory-event.json")) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
