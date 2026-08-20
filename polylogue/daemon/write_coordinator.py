@@ -12,12 +12,11 @@ import asyncio
 import contextlib
 import contextvars
 import heapq
-import os
 import threading
 import time
 import weakref
 from collections.abc import Awaitable, Callable, Iterator
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, InvalidStateError
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -459,86 +458,38 @@ async def _run_in_daemon_thread(
 ) -> T:
     """Await one context-preserving worker that cannot pin interpreter exit."""
     loop = asyncio.get_running_loop()
-    result: asyncio.Future[T] = loop.create_future()
-    scheduling_failure: ConcurrentFuture[None] = ConcurrentFuture()
-    scheduler_failure_read_fd, scheduler_failure_write_fd = os.pipe()
-    scheduler_failure_wakeup: asyncio.Future[None] = loop.create_future()
-
-    def wake_scheduler_failure() -> None:
-        with contextlib.suppress(OSError):
-            os.read(scheduler_failure_read_fd, 1)
-        if not scheduler_failure_wakeup.done():
-            scheduler_failure_wakeup.set_result(None)
-
-    loop.add_reader(scheduler_failure_read_fd, wake_scheduler_failure)
+    result: ConcurrentFuture[T] = ConcurrentFuture()
     context = contextvars.copy_context()
 
-    def publish(value: T | None = None, error: BaseException | None = None) -> None:
-        if result.done():
-            return
-        if error is not None:
-            result.set_exception(error)
-        else:
-            result.set_result(value)  # type: ignore[arg-type]
-
     def worker() -> None:
-        def schedule_publish(value: T | None = None, error: BaseException | None = None) -> None:
-            """Publish unless loop shutdown is the known terminal outcome.
+        error: BaseException | None = None
+        try:
+            value = context.run(function, *args, **kwargs)
+        except BaseException as exc:
+            error = exc
+            with contextlib.suppress(InvalidStateError):
+                result.set_exception(exc)
+        else:
+            with contextlib.suppress(InvalidStateError):
+                result.set_result(value)
 
-            A closed loop cannot receive the worker's result. Only that
-            termination state is tolerated; an unexpected RuntimeError from
-            scheduling is delivered to the awaiting coroutine so it cannot
-            masquerade as a stuck write.
-            """
-            if loop.is_closed():
+        if loop.is_closed():
+            if error is None:
                 logger.warning(
                     "daemon writer thread %s finished after its event loop already closed; "
                     "the awaiting result future was abandoned",
                     thread_name,
-                    exc_info=error,
                 )
-                return
-            try:
-                loop.call_soon_threadsafe(publish, value, error)
-            except RuntimeError as exc:
-                if not loop.is_closed():
-                    scheduling_failure.set_exception(exc)
-                    with contextlib.suppress(OSError):
-                        os.write(scheduler_failure_write_fd, b"\0")
-                    return
+            else:
                 logger.warning(
-                    "daemon writer thread %s finished while its event loop closed; "
+                    "daemon writer thread %s finished after its event loop already closed; "
                     "the awaiting result future was abandoned",
                     thread_name,
-                    exc_info=exc,
+                    exc_info=(type(error), error, error.__traceback__),
                 )
 
-        try:
-            value = context.run(function, *args, **kwargs)
-        except BaseException as exc:
-            schedule_publish(error=exc)
-        else:
-            schedule_publish(value=value)
-
     threading.Thread(target=worker, name=thread_name, daemon=True).start()
-    try:
-        done, _ = await asyncio.wait(
-            (result, scheduler_failure_wakeup),
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if scheduler_failure_wakeup in done:
-            scheduling_failure.result()
-        return result.result()
-    finally:
-        loop.remove_reader(scheduler_failure_read_fd)
-        with contextlib.suppress(OSError):
-            os.close(scheduler_failure_read_fd)
-        with contextlib.suppress(OSError):
-            os.close(scheduler_failure_write_fd)
-        if not result.done():
-            result.cancel()
-        if not scheduler_failure_wakeup.done():
-            scheduler_failure_wakeup.cancel()
+    return await asyncio.wrap_future(result, loop=loop)
 
 
 class DaemonWriteThreadBridge:

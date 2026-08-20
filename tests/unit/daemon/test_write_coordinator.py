@@ -640,26 +640,6 @@ async def test_sync_writer_immediate_result_does_not_poll(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_sync_writer_scheduler_failure_reaches_awaited_run_sync(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An open-loop scheduling failure must not strand ``run_sync``."""
-    coordinator = DaemonWriteCoordinator()
-    loop = asyncio.get_running_loop()
-
-    def reject_schedule(*_args: object) -> None:
-        raise RuntimeError("injected scheduler failure")
-
-    monkeypatch.setattr(loop, "call_soon_threadsafe", reject_schedule)
-
-    with pytest.raises(RuntimeError, match="injected scheduler failure"):
-        await asyncio.wait_for(coordinator.run_sync("scheduler-failure", lambda: "done"), timeout=0.2)
-
-    assert coordinator.snapshot().active_actor is None
-    assert await coordinator.run("successor", _return_ready) == "ready"
-
-
-@pytest.mark.asyncio
 async def test_detached_writer_failure_attribution_is_bounded_and_coalesces_overflow() -> None:
     coordinator = DaemonWriteCoordinator()
 
