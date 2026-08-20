@@ -362,6 +362,30 @@ def test_guarded_batch_proves_rollback_when_the_real_batch_fails(
         )
 
 
+def test_guarded_batch_timeout_inspects_postimage_before_failing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A batch timeout may follow a committed transaction, so its postimage is load-bearing."""
+    before = {"polylogue-a": {"id": "polylogue-a", "status": "open"}}
+    after = {"polylogue-a": {"id": "polylogue-a", "status": "closed"}}
+    snapshots = iter([before, after])
+    monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
+    monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: next(snapshots))
+    monkeypatch.setattr(guard, "_acquire_invocation_lock", lambda _cwd: _NullLock())
+
+    def timeout(*_args: object, **_kwargs: object) -> MagicMock:
+        raise subprocess.TimeoutExpired(["/real/bd", "batch", "--json"], 60)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    with pytest.raises(guard.BatchExecutionError, match="timed out after changing selected row"):
+        guard.run_guarded_batch(
+            expected_ids={"polylogue-a"},
+            prepare=lambda _before: ["close polylogue-a reason"],
+            cwd=tmp_path,
+        )
+
+
 class _NullLock:
     def __enter__(self) -> _NullLock:
         return self

@@ -385,6 +385,21 @@ def _append_merge_entry_unlocked(
     scope_attestation_digest: str | None = None,
     base_sha: str | None = None,
 ) -> None:
+    existing = [entry for entry in ledger["merges"] if entry.get("pr") == pr and entry.get("head_sha") == head_sha]
+    if existing:
+        if len(existing) != 1:
+            raise LedgerStateError(f"merge-train ledger has duplicate entries for PR #{pr} @ {head_sha[:8]}")
+        existing_entry = existing[0]
+        if scope_attestation_digest is not None and existing_entry.get("scope_attestation_digest") not in {
+            None,
+            scope_attestation_digest,
+        }:
+            raise LedgerStateError(
+                f"merge-train ledger has conflicting scope attestations for PR #{pr} @ {head_sha[:8]}"
+            )
+        if base_sha is not None and existing_entry.get("base_sha") not in {None, base_sha}:
+            raise LedgerStateError(f"merge-train ledger has conflicting base SHAs for PR #{pr} @ {head_sha[:8]}")
+        return
     merge_sequence = _merge_sequence(ledger) + 1
     entry: dict[str, Any] = {
         "pr": pr,
@@ -405,14 +420,34 @@ def _record_merge_intent(
 ) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
-        if not any(intent.get("pr") == pr and intent.get("head_sha") == head_sha for intent in ledger["merge_intents"]):
-            intent: dict[str, Any] = {"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()}
-            if scope_attestation_digest is not None:
-                intent["scope_attestation_digest"] = scope_attestation_digest
-            if base_sha is not None:
-                intent["base_sha"] = base_sha
-            ledger["merge_intents"].append(intent)
-            _write_ledger_unlocked(ledger)
+        matching = [
+            intent
+            for intent in ledger["merge_intents"]
+            if intent.get("pr") == pr and intent.get("head_sha") == head_sha
+        ]
+        if len(matching) > 1:
+            raise LedgerStateError(f"merge-train ledger has duplicate intents for PR #{pr} @ {head_sha[:8]}")
+        intent: dict[str, Any] = {"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()}
+        if scope_attestation_digest is not None:
+            intent["scope_attestation_digest"] = scope_attestation_digest
+        if base_sha is not None:
+            intent["base_sha"] = base_sha
+        if matching:
+            existing = matching[0]
+            if all(existing.get(key) == value for key, value in intent.items() if key != "intent_at"):
+                return
+            retired = dict(existing)
+            retired.update(
+                {
+                    "retired_at": time.time(),
+                    "retired_reason": "same-head merge retry replaced its validated carrier intent",
+                    "replacement_scope_attestation_digest": scope_attestation_digest,
+                }
+            )
+            ledger["retired_merge_intents"].append(retired)
+            ledger["merge_intents"] = [item for item in ledger["merge_intents"] if item is not existing]
+        ledger["merge_intents"].append(intent)
+        _write_ledger_unlocked(ledger)
 
 
 def _complete_merge_intent(pr: int, head_sha: str) -> None:

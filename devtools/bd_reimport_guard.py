@@ -736,16 +736,37 @@ def run_guarded_batch(
             raise ValueError("guarded Beads batch operations must be single non-empty lines")
         if not operations:
             return before, before
-        result = subprocess.run(
-            [real_bd, "batch", "--json"],
-            input="\n".join(operations) + "\n",
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=safe_env,
-            cwd=root,
-        )
-        after = _export_live_state(bd_command=real_bd, env=safe_env, cwd=root)
+        try:
+            result = subprocess.run(
+                [real_bd, "batch", "--json"],
+                input="\n".join(operations) + "\n",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=safe_env,
+                cwd=root,
+            )
+        except subprocess.TimeoutExpired as exc:
+            try:
+                after = _export_live_state(bd_command=real_bd, env=safe_env, cwd=root)
+            except (InvalidJsonlError, OSError, RuntimeError, subprocess.SubprocessError) as postimage_exc:
+                raise BatchExecutionError(
+                    "bd batch timed out and its postimage could not be inspected; do not retry blindly: "
+                    f"{postimage_exc}"
+                ) from postimage_exc
+            changed = sorted(bead_id for bead_id in expected_ids if before.get(bead_id) != after.get(bead_id))
+            if changed:
+                raise BatchExecutionError(
+                    "bd batch timed out after changing selected row(s), so its transaction boundary is not trustworthy: "
+                    + ", ".join(changed)
+                ) from exc
+            raise BatchExecutionError("bd batch timed out; postimage proves selected rows are unchanged") from exc
+        try:
+            after = _export_live_state(bd_command=real_bd, env=safe_env, cwd=root)
+        except (InvalidJsonlError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise BatchExecutionError(
+                f"bd batch completed but its postimage could not be inspected; do not retry blindly: {exc}"
+            ) from exc
     if result.returncode != 0:
         changed = sorted(bead_id for bead_id in expected_ids if before.get(bead_id) != after.get(bead_id))
         if changed:

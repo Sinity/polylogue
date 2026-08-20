@@ -1512,6 +1512,46 @@ def test_recovery_retires_intent_when_pr_merged_from_a_different_head(
     assert ledger["retired_merge_intents"][0]["observed_head_sha"] == "new-head"
 
 
+def test_same_head_retry_replaces_an_obsolete_carrier_intent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A retry must not merge a prior PR-body attestation for the same head."""
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._record_merge_intent(
+        42,
+        "feature-sha",
+        "old carrier",
+        scope_attestation_digest="a" * 64,
+        base_sha="old-base",
+    )
+
+    merge_boundary._record_merge_intent(
+        42,
+        "feature-sha",
+        "current carrier",
+        scope_attestation_digest="b" * 64,
+        base_sha="current-base",
+    )
+
+    intents = merge_boundary._read_ledger()["merge_intents"]
+    assert len(intents) == 1
+    assert intents[0]["title"] == "current carrier"
+    assert intents[0]["scope_attestation_digest"] == "b" * 64
+    assert intents[0]["base_sha"] == "current-base"
+
+
+def test_merge_entry_append_is_idempotent_for_a_recovered_same_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A recovery racing the caller must not create a second merge sequence entry."""
+    monkeypatch.chdir(tmp_path)
+
+    merge_boundary._append_merge_entry(42, "feature-sha", "current carrier", base_sha="current-base")
+    merge_boundary._append_merge_entry(42, "feature-sha", "current carrier", base_sha="current-base")
+
+    entries = merge_boundary._read_ledger()["merges"]
+    assert len(entries) == 1
+    assert entries[0]["merge_sequence"] == 1
+
+
 def test_external_merge_completion_write_failure_keeps_recovery_latch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

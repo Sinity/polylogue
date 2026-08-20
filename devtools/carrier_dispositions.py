@@ -287,7 +287,14 @@ def cmd_apply(pr: int, *, base_export: Path, output: Path, dry_run: bool) -> int
         if existing_receipt is None:
             _write_receipt(receipt_path, {**identity, "changed_beads": sorted(changed)})
         bd_guard.atomic_write_jsonl(output, after)
-    except (DispositionError, bd_guard.BatchExecutionError, bd_guard.InvalidJsonlError, OSError, ValueError) as exc:
+    except (
+        DispositionError,
+        bd_guard.BatchExecutionError,
+        bd_guard.InvalidJsonlError,
+        OSError,
+        subprocess.SubprocessError,
+        ValueError,
+    ) as exc:
         print(f"REFUSING carrier dispositions for PR #{pr}: {exc}", file=sys.stderr)
         return 1
     print(
