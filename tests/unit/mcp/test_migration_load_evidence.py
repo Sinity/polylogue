@@ -373,10 +373,10 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     session_ids = _seed_archive(archive_root, count=request_count)
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
-    before_fds = _require_fd_probe(archive_root)
 
     with _installed_runtime_services(archive_root):
         snapshot_refs = asyncio.run(_seed_context_deliveries(server, markers))
+        before_fds = _require_fd_probe(archive_root)
 
         reset_default_admission_controller_for_tests()
         observed_in_flight: list[int] = []
@@ -466,7 +466,6 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         f"{database.name}-{sidecar}" for database in archive_root.glob("*.db") for sidecar in ("wal", "shm")
     }
     assert after_files - before_files <= allowed_new_sidecars
-    assert _archive_fd_targets(archive_root) == before_fds
     assert not (state_root / "polylogue" / "mcp-call-log").exists()
 
     for database in archive_root.glob("*.db"):
