@@ -3815,6 +3815,8 @@ def test_pytest_stall_cannot_launder_zero_supervisor_exit(
     assert containment["status"] == "terminated"
     assert containment["exit_code"] == 124
     assert containment["termination_reason"] == "pytest produced no output for 0.15s"
+    assert isinstance(containment["controller_pid"], int)
+    assert "SIGTERM" in containment["signals_sent"]
     assert "pytest produced no output for 0.15s" in captured.err
 
 
