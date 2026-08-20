@@ -615,6 +615,8 @@ def insert_reconstructed_raw_row(
         raise ValueError(f"unsupported source schema: {schema}")
     if len(row.blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    if is_blob_hash_excised(conn, row.blob_hash):
+        raise ContentExcisedError(blob_hash=row.blob_hash, source_path=row.source_path)
 
     columns = {str(info[1]) for info in conn.execute(f"PRAGMA {schema}.table_info(raw_sessions)")}
     names = [

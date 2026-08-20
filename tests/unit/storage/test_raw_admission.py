@@ -20,9 +20,12 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     admit_raw_observation,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ContentExcisedError,
     ReconstructedRawRow,
     bind_source_raw_revision,
+    deterministic_blob_hash,
     insert_reconstructed_raw_row,
+    record_excised_blob_hash,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -701,3 +704,38 @@ def test_insert_reconstructed_raw_row_rejects_untrusted_schema_and_short_hash(tm
         insert_reconstructed_raw_row(conn, row, schema="attached; DROP TABLE raw_sessions")
     with pytest.raises(ValueError, match="32-byte"):
         insert_reconstructed_raw_row(conn, dataclasses.replace(row, blob_hash=b"\x00" * 16))
+
+
+def test_insert_reconstructed_raw_row_refuses_durably_excised_hash(tmp_path: Path) -> None:
+    """The copy-forward exemption cannot resurrect a durably excised blob."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"reconstructed": "excised"}\n'
+    blob_hash = deterministic_blob_hash(payload)
+    record_excised_blob_hash(
+        conn,
+        blob_hash=blob_hash,
+        reason="red-twin",
+        actor="test",
+        excised_at_ms=1,
+    )
+
+    with pytest.raises(ContentExcisedError, match="durably excised"):
+        insert_reconstructed_raw_row(
+            conn,
+            ReconstructedRawRow(
+                raw_id="excised-copy-forward",
+                origin=Origin.CLAUDE_AI_EXPORT.value,
+                capture_mode=Provider.CLAUDE_AI.value,
+                native_id="excised-native",
+                source_path="/copy-forward/excised.json",
+                source_index=0,
+                blob_hash=blob_hash,
+                blob_size=len(payload),
+                acquired_at_ms=1,
+                logical_source_key="claude-ai-export:excised-native",
+                source_revision=blob_hash.hex(),
+                baseline_raw_id="excised-copy-forward",
+            ),
+        )
+
+    assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == 0
