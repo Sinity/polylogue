@@ -1886,6 +1886,8 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
             or str(historical["accepted_raw_id"]) != raw_id
             or str(historical["accepted_source_revision"]) != str(head_snapshot["accepted_source_revision"])
             or _bytes_value(historical["accepted_content_hash"]) != accepted_hash
+            or str(historical["accepted_frontier_kind"]) != str(head_snapshot["accepted_frontier_kind"])
+            or int(historical["accepted_frontier"]) != cast(int, head_snapshot["accepted_frontier"])
             or int(historical["decided_at_ms"]) < 0
             or any(
                 historical[name] is not None for name in ("baseline_raw_id", "predecessor_raw_id", "append_end_offset")
@@ -2012,6 +2014,8 @@ def _canonical_browser_origin_head_is_semantically_equivalent(
         and str(application["accepted_raw_id"]) == raw_id
         and str(application["accepted_source_revision"]) == str(head_snapshot["accepted_source_revision"])
         and _bytes_value(application["accepted_content_hash"]) == accepted_hash
+        and str(application["accepted_frontier_kind"]) == str(head_snapshot["accepted_frontier_kind"])
+        and int(application["accepted_frontier"]) == cast(int, head_snapshot["accepted_frontier"])
         and all(application[name] is None for name in ("baseline_raw_id", "predecessor_raw_id", "append_end_offset"))
         and int(application["decided_at_ms"]) >= 0
         and int(application["decided_at_ms"]) == cast(int, head_snapshot["decided_at_ms"])

@@ -2554,9 +2554,10 @@ def apply_raw_revision_replay(
     ``manage_transaction=False`` batches this cohort's index.db writes
     and terminal source.db parse-state markers into the caller's open
     transaction/pending-state instead of committing them immediately
-    (polylogue-oikv) -- the caller must call ``commit()`` (or
-    ``rollback()`` on failure) itself, exactly once per batch, after
-    every cohort in the batch has been applied. ``commit()`` always
+    (polylogue-oikv). If the caller has not opened an index transaction yet,
+    this function starts one and deliberately leaves it open; the caller must
+    call ``commit()`` (or ``rollback()`` on failure) itself, exactly once per
+    batch, after every cohort in the batch has been applied. ``commit()`` always
     commits the index connection before flushing pending source markers
     (``_flush_pending_raw_parse_states``), so the "index commits, then
     source terminal markers commit" ordering invariant now holds at
@@ -2636,6 +2637,14 @@ def apply_raw_revision_replay(
     if not _is_frozen_candidate(store):
         for raw_id, refs in attachment_refs_by_raw_id.items():
             write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
+    if not manage_transaction and not store._conn.in_transaction:
+        # The reparse receipt is written immediately before its session rows.
+        # SAVEPOINT alone is not enough here: with no outer transaction SQLite
+        # releases the savepoint as a commit, so a later session-write failure
+        # would leave the accepted head advertising content that never landed.
+        # Establish the batch-owned boundary before either write and leave its
+        # disposition to the caller.
+        store._conn.execute("BEGIN")
     session_ids: set[str] = set()
     with store._conn if manage_transaction else nullcontext():
         existing_head = store._conn.execute(

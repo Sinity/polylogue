@@ -903,6 +903,54 @@ def test_inspect_conflicts_semantic_hash_divergence_evidence(tmp_path: Path) -> 
     assert item.evidence_digest is not None
 
 
+def test_semantic_browser_copy_requires_application_frontier_to_match_head(tmp_path: Path) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        row = index.execute(
+            """
+            SELECT raw_id, session_id, logical_source_key, source_revision,
+                   acquisition_generation, decision, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   baseline_raw_id, predecessor_raw_id, append_end_offset
+            FROM raw_revision_applications
+            WHERE raw_id = ? AND decision = 'selected_baseline'
+            """,
+            (semantic_raw_id,),
+        ).fetchone()
+        assert row is not None
+        receipt = RevisionApplicationReceipt(
+            raw_id=str(row[0]),
+            session_id=str(row[1]),
+            logical_source_key=str(row[2]),
+            source_revision=str(row[3]),
+            acquisition_generation=int(row[4]),
+            decision=ApplicationDecision(str(row[5])),
+            accepted_raw_id=str(row[6]),
+            accepted_source_revision=str(row[7]),
+            accepted_content_hash=bytes(row[8]),
+            accepted_frontier_kind="semantic",
+            accepted_frontier=2,
+            baseline_raw_id=str(row[9]) if row[9] is not None else None,
+            predecessor_raw_id=str(row[10]) if row[10] is not None else None,
+            append_end_offset=int(row[11]) if row[11] is not None else None,
+        )
+        index.execute(
+            """
+            UPDATE raw_revision_applications
+            SET accepted_frontier_kind = 'semantic', accepted_frontier = ?, decision_id = ?
+            WHERE raw_id = ? AND decision = 'selected_baseline'
+            """,
+            (receipt.accepted_frontier, receipt.decision_id, semantic_raw_id),
+        )
+        index.commit()
+
+    item = inspect_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])[0]
+
+    assert item.status == "ineligible"
+    assert "canonical logical source" in item.reason
+
+
 def test_unified_frontier_conflict_requires_typed_judgment_then_resumes_same_evidence(tmp_path: Path) -> None:
     mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
     canonical_raw_id = _seed_diverging_canonical_byte_head(tmp_path, mismatched_raw_id)

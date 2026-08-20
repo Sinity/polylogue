@@ -335,6 +335,37 @@ def _validate_application_receipt_contents(
             row["append_end_offset"] == expected.append_end_offset,
             f"{context} receipt {decision_id} has a stale append end offset",
         )
+        _require(
+            row["baseline_raw_id"] == expected.baseline_raw_id
+            and row["predecessor_raw_id"] == expected.predecessor_raw_id,
+            f"{context} receipt {decision_id} has stale baseline or predecessor evidence",
+        )
+        persisted = RevisionApplicationReceipt(
+            raw_id=str(row["raw_id"]),
+            session_id=str(row["session_id"]),
+            logical_source_key=str(row["logical_source_key"]),
+            source_revision=str(row["source_revision"]),
+            acquisition_generation=int(row["acquisition_generation"]),
+            decision=ApplicationDecision(str(row["decision"])),
+            accepted_raw_id=str(row["accepted_raw_id"]) if row["accepted_raw_id"] is not None else None,
+            accepted_source_revision=(
+                str(row["accepted_source_revision"]) if row["accepted_source_revision"] is not None else None
+            ),
+            accepted_content_hash=(
+                bytes(row["accepted_content_hash"]) if row["accepted_content_hash"] is not None else None
+            ),
+            accepted_frontier_kind=(
+                str(row["accepted_frontier_kind"]) if row["accepted_frontier_kind"] is not None else None
+            ),
+            accepted_frontier=(int(row["accepted_frontier"]) if row["accepted_frontier"] is not None else None),
+            baseline_raw_id=str(row["baseline_raw_id"]) if row["baseline_raw_id"] is not None else None,
+            predecessor_raw_id=str(row["predecessor_raw_id"]) if row["predecessor_raw_id"] is not None else None,
+            append_end_offset=int(row["append_end_offset"]) if row["append_end_offset"] is not None else None,
+        )
+        _require(
+            persisted.decision_id == decision_id == expected.decision_id,
+            f"{context} receipt {decision_id} has a recomputed decision identity mismatch",
+        )
     _require(
         str(accepted_head["session_id"]) == expected_head_session_id
         and str(accepted_head["accepted_raw_id"]) == expected_head_raw_id

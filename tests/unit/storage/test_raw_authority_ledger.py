@@ -1169,6 +1169,38 @@ def test_application_receipt_requires_exact_application_authority(tmp_path: Path
     assert any("no application accepted authority matches" in problem for problem in problems)
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("source_revision", "wrong-source-revision"),
+        ("accepted_source_revision", "wrong-accepted-source-revision"),
+        ("accepted_frontier_kind", "semantic"),
+        ("accepted_frontier", 999),
+        ("acquisition_generation", 999),
+        ("append_end_offset", 999),
+        ("baseline_raw_id", "wrong-baseline"),
+        ("predecessor_raw_id", "wrong-predecessor"),
+        ("decision_id", "0" * 64),
+    ],
+)
+def test_application_receipt_recovery_rejects_malformed_authority_evidence(
+    tmp_path: Path, field: str, replacement: object
+) -> None:
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id=f"malformed-{field}", source_path=f"{field}.jsonl", acquired_at_ms=1)
+    assert repair_raw_materialization(_config(tmp_path)).success is True
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+    receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
+    application_rows = cast(list[dict[str, object]], receipt["application_rows"])
+    assert application_rows
+    application_rows[0][field] = replacement
+
+    valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
+
+    assert valid is False
+    assert problems
+
+
 def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _write_codex_raw(
