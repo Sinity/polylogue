@@ -17,6 +17,8 @@ from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
 
 from .decoders import _decode_json_bytes, _iter_json_stream
+from .detection import DetectionMode
+from .origin_specs import detector_registry
 from .parsers import (
     antigravity,
     beads,
@@ -53,23 +55,6 @@ GROUP_PROVIDERS = frozenset(
 )
 STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS, Provider.HERMES})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
-# The explicit record-shape branch order below remains the production
-# implementation during the OriginSpec migration.  OriginSpec validates its
-# declared detector tightness against this projection so a new declaration
-# cannot silently contradict a stronger existing detector.
-RECORD_DETECTOR_PROVIDER_ORDER = (
-    Provider.GEMINI_CLI,
-    Provider.HERMES,
-    Provider.ANTIGRAVITY,
-    Provider.BEADS,
-    Provider.CODEX,
-    Provider.CLAUDE_CODE,
-    Provider.CHATGPT,
-    Provider.CLAUDE_AI,
-    Provider.CLAUDE_DESIGN,
-    Provider.GROK,
-    Provider.GEMINI,
-)
 _MAX_PARSE_DEPTH = 10
 
 PayloadRecord: TypeAlias = JSONDocument
@@ -193,145 +178,178 @@ def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
     return drive.looks_like(record)
 
 
-def _detect_provider_from_record_evidence(record: PayloadRecord) -> tuple[Provider | None, str]:
-    """Detect a provider from a single record, tagging the deciding evidence.
-
-    Sole implementation of the record-level detector order; ``_detect_provider_from_record``
-    below is a thin wrapper that discards the evidence label, so this is the
-    single source of truth -- there is no separate "logging" copy of the
-    decision tree that can silently drift from the real one (observability
-    gap fix, mission item 1).
-    """
-    if browser_capture.looks_like(record):
-        session = record.get("session")
-        provider = session.get("provider") if isinstance(session, dict) else None
-        return Provider.from_string(provider if isinstance(provider, str) else None), "browser_capture.looks_like"
-    # Local-agent JSON session documents share enough generic message keys with
-    # Claude Code that they must be recognized before broader validators.
-    if local_agent.looks_like_gemini_cli(record):
-        return Provider.GEMINI_CLI, "local_agent.looks_like_gemini_cli"
-    if hermes_state.looks_like_state_db_payload(record):
-        return Provider.HERMES, "hermes_state.looks_like_state_db_payload"
-    if hermes_verification.looks_like_verification_evidence_db_payload(record):
-        return Provider.HERMES, "hermes_verification.looks_like_verification_evidence_db_payload"
-    if hermes_spans.looks_like_atif_payload(record):
-        return Provider.HERMES, "hermes_spans.looks_like_atif_payload"
-    if hermes_spans.looks_like_atof_payload(record):
-        return Provider.HERMES, "hermes_spans.looks_like_atof_payload"
-    if local_agent.looks_like_hermes(record):
-        return Provider.HERMES, "local_agent.looks_like_hermes"
-    if antigravity.looks_like_markdown_export(record):
-        return Provider.ANTIGRAVITY, "antigravity.looks_like_markdown_export"
-    if antigravity.looks_like_brain_metadata(record, None):
-        return Provider.ANTIGRAVITY, "antigravity.looks_like_brain_metadata"
-    if beads.looks_like(record):
-        return Provider.BEADS, "beads.looks_like"
-    # Specific type-level checks first (Codex uses Pydantic validation;
-    # Claude Code uses a dict-key/type shape check, not Pydantic, despite
-    # ClaudeCodeRecord existing as a separate typed parse-time model), then
-    # weaker dict-key checks (ChatGPT, Claude AI, Gemini).
-    if codex.looks_like([dict(record)]):
-        return Provider.CODEX, "codex.looks_like (pydantic record validation)"
-    if claude.looks_like_code([dict(record)]):
-        return Provider.CLAUDE_CODE, "claude.looks_like_code (envelope marker, #3428)"
-    # A single record here may be an intentionally partial ChatGPT fragment
-    # (e.g. one line of a streamed JSONL sniff), not a whole assembled
-    # export document, so this uses the fragment-level check rather than
-    # ``chatgpt.looks_like``'s document-identity requirements (polylogue-t0ta).
-    if chatgpt.looks_like_fragment(record):
-        return Provider.CHATGPT, "chatgpt.looks_like_fragment (mapping node shape)"
-    # A ChatGPT shared-page (chatgpt.com/share/<id>) stream decode has no
-    # "mapping" key at all -- a flattened top-level "messages" list instead
-    # (polylogue-4zqh3). Checked here, ahead of the generic "has a messages
-    # list" fallback used elsewhere in dispatch, which would otherwise
-    # silently accept-then-drop it (no payload-asserted "id" field).
-    if chatgpt.looks_like_shared_decode(record):
-        return Provider.CHATGPT, "chatgpt.looks_like_shared_decode (shared-page stream decode)"
-    # Claude Design (bd polylogue-tbun) checked before the general claude.ai
-    # detector: its shape (messages + project, no chat_messages, camelCase
-    # contentBlocks) is a distinct, tighter product signature -- not a
-    # claude.ai variant.
-    if claude.looks_like_claude_design(record):
-        return Provider.CLAUDE_DESIGN, "claude.looks_like_claude_design"
-    if claude.looks_like_claude_memories(record):
-        return Provider.CLAUDE_AI, "claude.looks_like_claude_memories"
-    if claude.looks_like_ai(record):
-        return Provider.CLAUDE_AI, "claude.looks_like_ai (non-empty plausible chat_messages)"
-    if grok.looks_like_export(record):
-        return Provider.GROK, "grok.looks_like_export"
-    if _looks_like_gemini_mapping(record):
-        return Provider.GEMINI, "drive.looks_like (chunkedPrompt/chunks)"
-    return None, "no detector matched (single record)"
+def _first_sequence_record(payload: object) -> PayloadRecord | None:
+    if not isinstance(payload, list) or not payload:
+        return None
+    return _payload_record(payload[0])
 
 
-def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
-    return _detect_provider_from_record_evidence(record)[0]
+def _looks_like_browser_capture_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and browser_capture.looks_like(record)
 
 
-def _detect_provider_from_sequence_evidence(payloads: PayloadSequence) -> tuple[Provider | None, str]:
-    """Detect a provider from a payload sequence, tagging the deciding evidence.
-
-    Sole implementation of the sequence-level detector order; see
-    ``_detect_provider_from_record_evidence`` for the equivalent single-record
-    rationale.
-    """
-    if not payloads:
-        return None, "empty sequence"
-
-    first_record = _payload_record(payloads[0])
-    if first_record is not None:
-        # A one-document Gemini CLI JSON file reaches detection as a
-        # one-element sequence on the stream path. Preserve the established
-        # Claude-Code-before-Codex sequence ordering while restoring this
-        # stronger local-session discriminator ahead of weaker family shapes.
-        # Gemini CLI's ``.jsonl`` chat-log checkpoint format is a genuinely
-        # different multi-line shape: a session-open stub record (no
-        # ``messages`` key -- see ``local_agent.looks_like_gemini_cli``)
-        # followed by one JSON object per turn/event, so it reaches here as
-        # a many-element sequence whose bare ``sessionId`` field otherwise
-        # collides with Claude Code's own ``_STRONG_SESSION_KEYS`` (#3428
-        # sibling gap, polylogue-hs3y). Trust the stub shape at any sequence
-        # length; keep the ``messages``-embedded shape restricted to the
-        # single-document case above, unchanged.
-        if local_agent.looks_like_gemini_cli(first_record) and (
-            len(payloads) == 1 or not isinstance(first_record.get("messages"), list)
-        ):
-            return Provider.GEMINI_CLI, "local_agent.looks_like_gemini_cli (stub record)"
-        if browser_capture.looks_like(first_record):
-            provider, evidence = _detect_provider_from_record_evidence(first_record)
-            return provider, f"sequence[0] browser_capture.looks_like -> {evidence}"
-        if hermes_spans.looks_like_atof_payload(first_record):
-            return Provider.HERMES, "hermes_spans.looks_like_atof_payload (sequence[0])"
-        if beads.looks_like(first_record):
-            return Provider.BEADS, "beads.looks_like (sequence[0])"
-        # The first record of a *sequence* is a whole assembled document
-        # (e.g. one conversation from a ChatGPT bundle array), not a
-        # partial per-line fragment, so this uses the strict document-level
-        # check rather than ``looks_like_fragment`` (polylogue-t0ta).
-        if chatgpt.looks_like(first_record):
-            return Provider.CHATGPT, "chatgpt.looks_like (sequence[0] whole-document)"
-        if isinstance(first_record.get("chat_messages"), list):
-            return Provider.CLAUDE_AI, "sequence[0] chat_messages dict-key present"
-        # Claude AI account memory export (memories.json, bd polylogue-zng9)
-        # arrives as a bare top-level JSON array of one-per-account records.
-        if claude.looks_like_claude_memories(first_record):
-            return Provider.CLAUDE_AI, "claude.looks_like_claude_memories (sequence[0])"
-        if claude.looks_like_claude_design(first_record):
-            return Provider.CLAUDE_DESIGN, "claude.looks_like_claude_design (sequence[0])"
-        if grok.looks_like_export(first_record):
-            return Provider.GROK, "grok.looks_like_export (sequence[0])"
-        if _looks_like_gemini_mapping(first_record):
-            return Provider.GEMINI, "drive.looks_like (sequence[0])"
-
-    if claude.looks_like_code(payloads):
-        return Provider.CLAUDE_CODE, "claude.looks_like_code (record stream envelope markers)"
-    if codex.looks_like(payloads):
-        return Provider.CODEX, "codex.looks_like (pydantic record stream validation)"
-    return None, "no detector matched (sequence)"
+def _browser_capture_provider(payload: object) -> Provider | None:
+    record = _payload_record(payload)
+    session = record.get("session") if record is not None else None
+    provider = session.get("provider") if isinstance(session, dict) else None
+    return Provider.from_string(provider if isinstance(provider, str) else None)
 
 
-def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None:
-    return _detect_provider_from_sequence_evidence(payloads)[0]
+def _looks_like_browser_capture_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and browser_capture.looks_like(record)
+
+
+def _browser_capture_sequence_provider(payload: object) -> Provider | None:
+    return _browser_capture_provider(_first_sequence_record(payload))
+
+
+def _looks_like_gemini_cli_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and local_agent.looks_like_gemini_cli(record)
+
+
+def _looks_like_gemini_cli_sequence_stub(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return (
+        record is not None
+        and local_agent.looks_like_gemini_cli(record)
+        and (len(payload) == 1 or not isinstance(record.get("messages"), list))
+    )
+
+
+def _looks_like_hermes_state_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and hermes_state.looks_like_state_db_payload(record)
+
+
+def _looks_like_hermes_verification_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and hermes_verification.looks_like_verification_evidence_db_payload(record)
+
+
+def _looks_like_hermes_atif_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and hermes_spans.looks_like_atif_payload(record)
+
+
+def _looks_like_hermes_atof_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and hermes_spans.looks_like_atof_payload(record)
+
+
+def _looks_like_hermes_local_agent_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and local_agent.looks_like_hermes(record)
+
+
+def _looks_like_hermes_atof_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and hermes_spans.looks_like_atof_payload(record)
+
+
+def _looks_like_antigravity_markdown_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and antigravity.looks_like_markdown_export(record)
+
+
+def _looks_like_antigravity_brain_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and antigravity.looks_like_brain_metadata(record, None)
+
+
+def _looks_like_beads_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and beads.looks_like(record)
+
+
+def _looks_like_beads_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and beads.looks_like(record)
+
+
+def _looks_like_codex_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and codex.looks_like([dict(record)])
+
+
+def _looks_like_codex_stream(payload: object) -> bool:
+    return isinstance(payload, list) and codex.looks_like(payload)
+
+
+def _looks_like_claude_code_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and claude.looks_like_code([dict(record)])
+
+
+def _looks_like_claude_code_stream(payload: object) -> bool:
+    return isinstance(payload, list) and claude.looks_like_code(payload)
+
+
+def _looks_like_chatgpt_fragment_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and chatgpt.looks_like_fragment(record)
+
+
+def _looks_like_chatgpt_shared_decode_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and chatgpt.looks_like_shared_decode(record)
+
+
+def _looks_like_chatgpt_sequence_document(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and chatgpt.looks_like(record)
+
+
+def _looks_like_claude_design_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and claude.looks_like_claude_design(record)
+
+
+def _looks_like_claude_design_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and claude.looks_like_claude_design(record)
+
+
+def _looks_like_claude_memories_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and claude.looks_like_claude_memories(record)
+
+
+def _looks_like_claude_memories_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and claude.looks_like_claude_memories(record)
+
+
+def _looks_like_claude_ai_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and claude.looks_like_ai(record)
+
+
+def _looks_like_claude_ai_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and isinstance(record.get("chat_messages"), list)
+
+
+def _looks_like_grok_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and grok.looks_like_export(record)
+
+
+def _looks_like_grok_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and grok.looks_like_export(record)
+
+
+def _looks_like_gemini_mapping_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and _looks_like_gemini_mapping(record)
+
+
+def _looks_like_gemini_mapping_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and _looks_like_gemini_mapping(record)
 
 
 def detect_provider_evidence(payload: object, path: object | None = None) -> tuple[Provider | None, str]:
@@ -345,10 +363,17 @@ def detect_provider_evidence(payload: object, path: object | None = None) -> tup
     del path
 
     if record := _payload_record(payload):
-        return _detect_provider_from_record_evidence(record)
+        provider, evidence = detector_registry().detect(DetectionMode.RECORD, record)
+        return provider, evidence or "no detector matched (single record)"
     payloads = _payload_sequence(payload)
     if payloads is not None:
-        return _detect_provider_from_sequence_evidence(payloads)
+        if not payloads:
+            return None, "empty sequence"
+        provider, evidence = detector_registry().detect(DetectionMode.SEQUENCE_DOCUMENT, payloads)
+        if evidence is not None:
+            return provider, evidence
+        provider, evidence = detector_registry().detect(DetectionMode.SEQUENCE_RECORD_STREAM, payloads)
+        return provider, evidence or "no detector matched (sequence)"
     return None, "payload is not a JSON document or sequence"
 
 
@@ -1289,7 +1314,7 @@ def _lower_payload_specs(
     shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
     record = _payload_record(shaped_payload)
     if record is not None and browser_capture.looks_like(record):
-        provider = _detect_provider_from_record(record) or runtime_provider
+        provider = detect_provider(record) or runtime_provider
         return [
             LoweredPayloadSpec(
                 provider=provider,
@@ -1306,7 +1331,7 @@ def _lower_payload_specs(
             if item_record is None or not browser_capture.looks_like(item_record):
                 browser_capture_specs = []
                 break
-            provider = _detect_provider_from_record(item_record) or runtime_provider
+            provider = detect_provider(item_record) or runtime_provider
             browser_capture_specs.append(
                 LoweredPayloadSpec(
                     provider=provider,

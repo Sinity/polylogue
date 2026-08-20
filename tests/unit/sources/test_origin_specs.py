@@ -11,7 +11,8 @@ import pytest
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.assembly import get_assembly_spec
-from polylogue.sources.dispatch import RECORD_DETECTOR_PROVIDER_ORDER, STREAM_RECORD_PROVIDERS
+from polylogue.sources.detection import DetectorBinding, DetectorBindingError, compile_detector_registry
+from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.sources.origin_specs import (
     DROPPED_VALUE_VOCABULARIES,
     ORIGIN_SPEC_REGISTRY,
@@ -20,12 +21,12 @@ from polylogue.sources.origin_specs import (
     OriginSpecRegistry,
     artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
+    detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
     schema_observed_leaf_values,
     undeclared_schema_values,
     validate_assembly_spec_parity,
-    validate_dispatch_precedence,
     validate_stream_parser_parity,
 )
 
@@ -141,6 +142,28 @@ def test_lowering_fingerprint_changes_when_session_emitter_changes(
     assert before != after
 
 
+def test_lowering_fingerprint_changes_when_detector_registry_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A detector-routing change is a lowering-semantic change, not incidental code."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    detector = source_dir / "detection.py"
+    detector.write_text("def detect(payload):\n    return None\n", encoding="utf-8")
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/detection.py",))
+    origin_specs._fingerprint_sources_cached.cache_clear()
+
+    before = origin_specs.lowering_fingerprint()
+    detector.write_text("def detect(payload):\n    return payload\n", encoding="utf-8")
+    after = origin_specs.lowering_fingerprint()
+
+    assert before != after
+
+
 def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None:
     current_parser = parser_fingerprint_for_origin(Origin.CODEX_SESSION)
     command = (
@@ -154,20 +177,41 @@ def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None
     assert len(lowering_fingerprint()) == 64
 
 
-def test_origin_specs_are_parity_checked_against_current_dispatch_order() -> None:
-    assert validate_dispatch_precedence(RECORD_DETECTOR_PROVIDER_ORDER) == ()
+def test_origin_specs_compile_the_production_detector_registry() -> None:
+    registry = detector_registry()
+
+    assert registry.by_mode
+    assert all(spec.detector_bindings for spec in ORIGIN_SPECS if spec.lifecycle == "executable")
 
 
-def test_origin_spec_reports_source_locatable_missing_dispatch_provider() -> None:
-    diagnostics = validate_dispatch_precedence((Provider.CODEX,))
+def test_detector_registry_rejects_broken_declarations_with_the_binding_id() -> None:
+    codex = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    broken = replace(
+        codex,
+        detector_bindings=(
+            replace(codex.detector_bindings[0], predicate_path="polylogue.sources.dispatch:not_a_detector"),
+            *codex.detector_bindings[1:],
+        ),
+    )
+    duplicate = replace(
+        codex,
+        detector_bindings=(
+            *codex.detector_bindings,
+            DetectorBinding(
+                binding_id="codex-record-pydantic",
+                mode=codex.detector_bindings[0].mode,
+                predicate_path=codex.detector_bindings[0].predicate_path,
+                local_rank=99,
+                evidence_label="duplicate",
+                fixed_provider=Provider.CODEX,
+            ),
+        ),
+    )
 
-    assert {item.code for item in diagnostics} == {"missing_dispatch_provider"}
-    assert {item.origin for item in diagnostics} == {
-        spec.origin
-        for spec in ORIGIN_SPECS
-        if spec.lifecycle == "executable" and spec.origin is not Origin.CODEX_SESSION
-    }
-    assert {item.owner_path for item in diagnostics} == {"polylogue/sources/origin_specs.py"}
+    with pytest.raises(DetectorBindingError, match="codex-record-pydantic"):
+        compile_detector_registry(tuple(broken if spec is codex else spec for spec in ORIGIN_SPECS))
+    with pytest.raises(DetectorBindingError, match="duplicate detector binding id"):
+        compile_detector_registry(tuple(duplicate if spec is codex else spec for spec in ORIGIN_SPECS))
 
 
 def test_origin_spec_rejects_missing_fixture_and_noninjective_collision_without_policy() -> None:
@@ -178,6 +222,8 @@ def test_origin_spec_rejects_missing_fixture_and_noninjective_collision_without_
         registry.register(replace(claude, fixture_paths=()))
     with pytest.raises(ValueError, match="collision policy"):
         registry.register(replace(claude, provider_wires=(Provider.CLAUDE_CODE, Provider.DRIVE)))
+    with pytest.raises(ValueError, match="detector binding"):
+        registry.register(replace(claude, detector_bindings=()))
 
 
 def test_origin_spec_rejects_undeclared_coverage() -> None:

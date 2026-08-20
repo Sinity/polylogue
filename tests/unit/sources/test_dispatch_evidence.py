@@ -11,10 +11,11 @@ implementation.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.sources.dispatch import (
     detect_provider,
     detect_provider_evidence,
@@ -73,6 +74,35 @@ def test_detect_provider_evidence_names_the_deciding_rule_for_claude_code() -> N
 
 def test_detect_provider_evidence_reports_no_match_reason() -> None:
     provider, evidence = detect_provider_evidence({"unrelated": "shape"})
+    assert provider is None
+    assert "no detector matched" in evidence
+
+
+def test_origin_spec_binding_is_the_production_detector_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing ChatGPT's declared fragment binding removes that real-route match.
+
+    This is deliberately not a test-local dispatcher: the public evidence API
+    must compile the current OriginSpec declarations every time its declaration
+    set changes.  Before F3, OriginSpec had no executable detector bindings and
+    the handwritten dispatch tree continued to identify this payload.
+    """
+    import polylogue.sources.origin_specs as origin_specs
+
+    chatgpt = next(spec for spec in origin_specs.ORIGIN_SPECS if spec.origin is Origin.CHATGPT_EXPORT)
+    without_fragment = replace(
+        chatgpt,
+        detector_bindings=tuple(
+            binding for binding in chatgpt.detector_bindings if binding.binding_id != "chatgpt-record-fragment"
+        ),
+    )
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(without_fragment if spec is chatgpt else spec for spec in origin_specs.ORIGIN_SPECS),
+    )
+
+    provider, evidence = detect_provider_evidence(_CHATGPT_LIKE_RECORD)
+
     assert provider is None
     assert "no detector matched" in evidence
 

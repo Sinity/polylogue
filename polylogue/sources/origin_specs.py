@@ -40,6 +40,12 @@ from polylogue.declarations import (
     OutputSpec,
     validate_registry,
 )
+from polylogue.sources.detection import (
+    CompiledDetectorRegistry,
+    DetectionMode,
+    DetectorBinding,
+    compile_detector_registry,
+)
 
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
@@ -48,6 +54,7 @@ ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/sources/dispatch.py",
+    "polylogue/sources/detection.py",
     "polylogue/sources/emitter.py",
     "polylogue/pipeline/ids.py",
     "polylogue/storage/sqlite/archive_tiers/write.py",
@@ -397,6 +404,9 @@ class OriginSpec:
     #: CLI ``--origin`` shell completion). Declared here so no surface keeps a
     #: second hand-maintained per-origin description inventory.
     display_description: str
+    #: Ordered executable detector claims. Parser modules keep their shape
+    #: predicates; this declaration owns which predicates may classify input.
+    detector_bindings: tuple[DetectorBinding, ...] = ()
     artifact_rules: tuple[OriginArtifactRule, ...] = ()
     completeness_modes: tuple[OriginCompletenessMode, ...] = ()
     #: ``"module/path.py:ClassName"`` for the ``ProviderAssemblySpec`` this
@@ -484,6 +494,8 @@ class OriginSpecRegistry:
         if spec.lifecycle == "executable":
             if spec.detector_tightness is None:
                 raise ValueError(f"{spec.origin.value}: executable origin requires detector tightness")
+            if not spec.detector_bindings:
+                raise ValueError(f"{spec.origin.value}: executable origin requires detector binding")
             if not spec.parser_paths:
                 raise ValueError(f"{spec.origin.value}: executable origin requires parser binding")
             for rule in spec.artifact_rules:
@@ -1463,8 +1475,294 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
 }
 
 
-def _with_completeness_modes(spec: OriginSpec) -> OriginSpec:
-    return replace(spec, completeness_modes=_ORIGIN_COMPLETENESS_MODES[spec.origin])
+_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(Provider)
+
+_ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
+    Origin.CLAUDE_CODE_SESSION: (
+        DetectorBinding(
+            "claude-code-record-envelope",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_claude_code_record",
+            0,
+            "claude.looks_like_code (envelope marker, #3428)",
+            fixed_provider=Provider.CLAUDE_CODE,
+        ),
+        DetectorBinding(
+            "claude-code-record-stream",
+            DetectionMode.SEQUENCE_RECORD_STREAM,
+            "polylogue.sources.dispatch:_looks_like_claude_code_stream",
+            0,
+            "claude.looks_like_code (record stream envelope markers)",
+            mode_rank=0,
+            fixed_provider=Provider.CLAUDE_CODE,
+        ),
+    ),
+    Origin.CODEX_SESSION: (
+        DetectorBinding(
+            "codex-record-pydantic",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_codex_record",
+            0,
+            "codex.looks_like (pydantic record validation)",
+            fixed_provider=Provider.CODEX,
+        ),
+        DetectorBinding(
+            "codex-record-stream",
+            DetectionMode.SEQUENCE_RECORD_STREAM,
+            "polylogue.sources.dispatch:_looks_like_codex_stream",
+            0,
+            "codex.looks_like (pydantic record stream validation)",
+            mode_rank=1,
+            fixed_provider=Provider.CODEX,
+        ),
+    ),
+    Origin.GEMINI_CLI_SESSION: (
+        DetectorBinding(
+            "gemini-cli-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_gemini_cli_record",
+            0,
+            "local_agent.looks_like_gemini_cli",
+            fixed_provider=Provider.GEMINI_CLI,
+        ),
+        DetectorBinding(
+            "gemini-cli-sequence-stub",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_gemini_cli_sequence_stub",
+            0,
+            "local_agent.looks_like_gemini_cli (stub record)",
+            fixed_provider=Provider.GEMINI_CLI,
+        ),
+    ),
+    Origin.HERMES_SESSION: (
+        DetectorBinding(
+            "hermes-state-db-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_hermes_state_record",
+            0,
+            "hermes_state.looks_like_state_db_payload",
+            fixed_provider=Provider.HERMES,
+        ),
+        DetectorBinding(
+            "hermes-verification-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_hermes_verification_record",
+            1,
+            "hermes_verification.looks_like_verification_evidence_db_payload",
+            fixed_provider=Provider.HERMES,
+        ),
+        DetectorBinding(
+            "hermes-atif-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_hermes_atif_record",
+            2,
+            "hermes_spans.looks_like_atif_payload",
+            fixed_provider=Provider.HERMES,
+        ),
+        DetectorBinding(
+            "hermes-atof-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_hermes_atof_record",
+            3,
+            "hermes_spans.looks_like_atof_payload",
+            fixed_provider=Provider.HERMES,
+        ),
+        DetectorBinding(
+            "hermes-local-agent-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_hermes_local_agent_record",
+            4,
+            "local_agent.looks_like_hermes",
+            fixed_provider=Provider.HERMES,
+        ),
+        DetectorBinding(
+            "hermes-atof-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_hermes_atof_sequence",
+            0,
+            "hermes_spans.looks_like_atof_payload (sequence[0])",
+            fixed_provider=Provider.HERMES,
+        ),
+    ),
+    Origin.ANTIGRAVITY_SESSION: (
+        DetectorBinding(
+            "antigravity-markdown-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_antigravity_markdown_record",
+            0,
+            "antigravity.looks_like_markdown_export",
+            fixed_provider=Provider.ANTIGRAVITY,
+        ),
+        DetectorBinding(
+            "antigravity-brain-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_antigravity_brain_record",
+            1,
+            "antigravity.looks_like_brain_metadata",
+            fixed_provider=Provider.ANTIGRAVITY,
+        ),
+    ),
+    Origin.BEADS_ISSUE: (
+        DetectorBinding(
+            "beads-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_beads_record",
+            0,
+            "beads.looks_like",
+            fixed_provider=Provider.BEADS,
+        ),
+        DetectorBinding(
+            "beads-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_beads_sequence",
+            0,
+            "beads.looks_like (sequence[0])",
+            fixed_provider=Provider.BEADS,
+        ),
+    ),
+    Origin.CHATGPT_EXPORT: (
+        DetectorBinding(
+            "chatgpt-record-fragment",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_chatgpt_fragment_record",
+            0,
+            "chatgpt.looks_like_fragment (mapping node shape)",
+            fixed_provider=Provider.CHATGPT,
+        ),
+        DetectorBinding(
+            "chatgpt-record-shared-decode",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_chatgpt_shared_decode_record",
+            1,
+            "chatgpt.looks_like_shared_decode (shared-page stream decode)",
+            fixed_provider=Provider.CHATGPT,
+        ),
+        DetectorBinding(
+            "chatgpt-sequence-document",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_chatgpt_sequence_document",
+            0,
+            "chatgpt.looks_like (sequence[0] whole-document)",
+            fixed_provider=Provider.CHATGPT,
+        ),
+    ),
+    Origin.CLAUDE_AI_EXPORT: (
+        DetectorBinding(
+            "claude-ai-record-memories",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_claude_memories_record",
+            0,
+            "claude.looks_like_claude_memories",
+            fixed_provider=Provider.CLAUDE_AI,
+        ),
+        DetectorBinding(
+            "claude-ai-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_claude_ai_record",
+            1,
+            "claude.looks_like_ai (non-empty plausible chat_messages)",
+            fixed_provider=Provider.CLAUDE_AI,
+        ),
+        DetectorBinding(
+            "claude-ai-sequence-chat-messages",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_claude_ai_sequence",
+            0,
+            "sequence[0] chat_messages dict-key present",
+            fixed_provider=Provider.CLAUDE_AI,
+        ),
+        DetectorBinding(
+            "claude-ai-sequence-memories",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_claude_memories_sequence",
+            1,
+            "claude.looks_like_claude_memories (sequence[0])",
+            fixed_provider=Provider.CLAUDE_AI,
+        ),
+    ),
+    Origin.CLAUDE_DESIGN_SESSION: (
+        DetectorBinding(
+            "claude-design-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_claude_design_record",
+            0,
+            "claude.looks_like_claude_design",
+            fixed_provider=Provider.CLAUDE_DESIGN,
+        ),
+        DetectorBinding(
+            "claude-design-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_claude_design_sequence",
+            0,
+            "claude.looks_like_claude_design (sequence[0])",
+            fixed_provider=Provider.CLAUDE_DESIGN,
+        ),
+    ),
+    Origin.GROK_EXPORT: (
+        DetectorBinding(
+            "grok-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_grok_record",
+            0,
+            "grok.looks_like_export",
+            fixed_provider=Provider.GROK,
+        ),
+        DetectorBinding(
+            "grok-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_grok_sequence",
+            0,
+            "grok.looks_like_export (sequence[0])",
+            fixed_provider=Provider.GROK,
+        ),
+    ),
+    Origin.AISTUDIO_DRIVE: (
+        DetectorBinding(
+            "aistudio-drive-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_gemini_mapping_record",
+            0,
+            "drive.looks_like (chunkedPrompt/chunks)",
+            fixed_provider=Provider.GEMINI,
+        ),
+        DetectorBinding(
+            "aistudio-drive-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_gemini_mapping_sequence",
+            0,
+            "drive.looks_like (sequence[0])",
+            fixed_provider=Provider.GEMINI,
+        ),
+    ),
+    Origin.UNKNOWN_EXPORT: (
+        DetectorBinding(
+            "browser-capture-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_browser_capture_record",
+            0,
+            "browser_capture.looks_like",
+            dynamic_provider_path="polylogue.sources.dispatch:_browser_capture_provider",
+            dynamic_provider_allowlist=_ALL_BROWSER_CAPTURE_PROVIDERS,
+        ),
+        DetectorBinding(
+            "browser-capture-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_browser_capture_sequence",
+            0,
+            "sequence[0] browser_capture.looks_like -> browser_capture.looks_like",
+            dynamic_provider_path="polylogue.sources.dispatch:_browser_capture_sequence_provider",
+            dynamic_provider_allowlist=_ALL_BROWSER_CAPTURE_PROVIDERS,
+        ),
+    ),
+}
+
+
+def _with_declaration_fields(spec: OriginSpec) -> OriginSpec:
+    return replace(
+        spec,
+        completeness_modes=_ORIGIN_COMPLETENESS_MODES[spec.origin],
+        detector_bindings=_ORIGIN_DETECTOR_BINDINGS.get(spec.origin, ()),
+    )
 
 
 ORIGIN_SPEC_REGISTRY = OriginSpecRegistry()
@@ -1482,9 +1780,19 @@ for _spec in (
     _aistudio_drive_spec(),
     _unknown_spec(),
 ):
-    ORIGIN_SPEC_REGISTRY.register(_with_completeness_modes(_spec))
+    ORIGIN_SPEC_REGISTRY.register(_with_declaration_fields(_spec))
 ORIGIN_SPECS = ORIGIN_SPEC_REGISTRY.specs()
 _ORIGIN_SPECS_BY_ORIGIN = {spec.origin: spec for spec in ORIGIN_SPECS}
+
+
+@lru_cache(maxsize=8)
+def _compiled_detector_registry(specs: tuple[OriginSpec, ...]) -> CompiledDetectorRegistry:
+    return compile_detector_registry(specs)
+
+
+def detector_registry() -> CompiledDetectorRegistry:
+    """Return the one validated executable detector registry for current OriginSpecs."""
+    return _compiled_detector_registry(ORIGIN_SPECS)
 
 
 def origin_specs() -> tuple[OriginSpec, ...]:
@@ -1497,42 +1805,6 @@ def parser_fingerprint_for_origin(origin: Origin | str) -> str:
     """Return the current parser fingerprint for one normalized archive origin."""
     normalized = Origin.from_string(origin)
     return _ORIGIN_SPECS_BY_ORIGIN[normalized].parser_fingerprint()
-
-
-def validate_dispatch_precedence(provider_order: tuple[Provider, ...]) -> tuple[OriginSpecDiagnostic, ...]:
-    """Check that the legacy detector branch order honors declared tightness."""
-
-    positions = {provider: index for index, provider in enumerate(provider_order)}
-    diagnostics: list[OriginSpecDiagnostic] = []
-    executable = [spec for spec in ORIGIN_SPECS if spec.lifecycle == "executable"]
-    for spec in executable:
-        if not spec.provider_wires or spec.provider_wires[0] not in positions:
-            diagnostics.append(
-                OriginSpecDiagnostic(
-                    code="missing_dispatch_provider",
-                    message=f"{spec.origin.value}: provider is absent from dispatch precedence",
-                    origin=spec.origin,
-                    owner_path=spec.declaration.owner_path,
-                    repair_command=spec.declaration.repair_command,
-                )
-            )
-    ordered = sorted(executable, key=lambda spec: spec.detector_tightness or 0)
-    for left, right in zip(ordered, ordered[1:], strict=False):
-        left_position = positions.get(left.provider_wires[0])
-        right_position = positions.get(right.provider_wires[0])
-        if left_position is not None and right_position is not None and left_position > right_position:
-            diagnostics.append(
-                OriginSpecDiagnostic(
-                    code="dispatch_tightness_mismatch",
-                    message=(
-                        f"{left.origin.value}: declared tighter than {right.origin.value} but appears later in dispatch"
-                    ),
-                    origin=left.origin,
-                    owner_path="polylogue/sources/dispatch.py",
-                    repair_command="devtools test tests/unit/sources/test_origin_specs.py",
-                )
-            )
-    return tuple(sorted(diagnostics, key=lambda item: (item.origin.value, item.code)))
 
 
 def validate_stream_parser_parity(stream_record_providers: frozenset[Provider]) -> tuple[OriginSpecDiagnostic, ...]:
@@ -1621,6 +1893,7 @@ __all__ = [
     "OriginSpec",
     "OriginSpecDiagnostic",
     "OriginSpecRegistry",
+    "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
     "artifact_rule_for_path",
@@ -1628,10 +1901,10 @@ __all__ = [
     "schema_observed_leaf_values",
     "undeclared_schema_values",
     "lowering_fingerprint",
+    "detector_registry",
     "materializer_fingerprint",
     "replay_routing_fingerprint",
     "parser_fingerprint_for_origin",
     "validate_assembly_spec_parity",
-    "validate_dispatch_precedence",
     "validate_stream_parser_parity",
 ]
