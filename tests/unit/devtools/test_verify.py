@@ -3848,6 +3848,70 @@ def test_pytest_supervisor_natural_success_remains_success(
     assert containment["termination_reason"] is None
 
 
+def test_storage_scale_progress_heartbeat_prevents_false_silent_stall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real marked long node refreshes the production stall activity clock."""
+    module = tmp_path / "test_storage_scale_heartbeat.py"
+    module.write_text(
+        "import time\n"
+        "import pytest\n"
+        "pytestmark = pytest.mark.storage_scale\n"
+        "def test_long_storage_scale_node():\n"
+        "    time.sleep(2)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "4")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="storage-scale-heartbeat", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest storage scale heartbeat",
+        [sys.executable, "-m", "pytest", "-q", "-p", "devtools.pytest_progress_plugin", str(module)],
+        run=run,
+    )
+
+    step = run._payload["steps"][0]
+    artifact_dir = tmp_path / str(step["artifact_dir"])
+    event_files = list((artifact_dir / "events").glob("*.jsonl"))
+    assert event_files
+    events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rc == 0
+    assert metadata.get("termination_reason") is None
+    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+
+
+def test_unmarked_silent_node_still_terminates_on_output_stall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely silent unmarked node retains the existing stall failure."""
+    module = tmp_path / "test_silent_module.py"
+    module.write_text(
+        "import time\ndef test_silent_node():\n    time.sleep(5)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    run = VerifyRun(tier="silent-node", argv=[], git_head=None, root=tmp_path)
+
+    rc, _elapsed, metadata = _run(
+        "pytest silent node",
+        [sys.executable, "-m", "pytest", "-q", "-p", "devtools.pytest_progress_plugin", str(module)],
+        run=run,
+    )
+
+    assert rc == 124
+    assert metadata["diagnosis"] == "pytest_stall_timeout"
+    assert metadata["termination_reason"] == "pytest produced no output for 1s"
+
+
 def test_pytest_run_terminates_on_progress_stall_despite_flowing_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

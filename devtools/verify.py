@@ -1570,6 +1570,7 @@ def _run_pytest_with_heartbeat(
             elapsed = now - t0
             idle = now - last_output
             progress_idle = now - last_progress_at
+            activity_idle = min(idle, progress_idle) if seen_any_progress_event else idle
             receipt = read_receipt(launch.receipt_path)
             if receipt is not None and receipt.get("status") in {"finished", "terminated"} and selector.get_map():
                 if supervisor_finished_at is None:
@@ -1617,7 +1618,7 @@ def _run_pytest_with_heartbeat(
                         process.kill()
             if termination_reason is None and timeout_s > 0 and elapsed >= timeout_s:
                 termination_reason = f"pytest runtime exceeded {timeout_s:g}s"
-            elif termination_reason is None and stall_timeout_s > 0 and idle >= stall_timeout_s:
+            elif termination_reason is None and stall_timeout_s > 0 and activity_idle >= stall_timeout_s:
                 termination_reason = f"pytest produced no output for {stall_timeout_s:g}s"
             elif (
                 termination_reason is None

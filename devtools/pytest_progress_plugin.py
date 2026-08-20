@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -43,6 +45,8 @@ _DDL_SUFFIX = ".archive-ddl.json"
 _COUNTS_FLUSH_EVERY = 20
 _COMPLETED_COUNT = 0
 _FAILED_COUNT = 0
+_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV = "POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S"
+_DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S = 30.0
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
 
 
@@ -159,6 +163,50 @@ def _write_event(payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _storage_scale_progress_heartbeat_s() -> float:
+    """Return the cadence for long ``storage_scale`` node progress events."""
+    raw = os.environ.get(_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV)
+    if raw is not None:
+        with contextlib.suppress(ValueError):
+            value = float(raw)
+            if math.isfinite(value) and value > 0:
+                return value
+    return _DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S
+
+
+class _StorageScaleProgressHeartbeat:
+    """Keep the managed stall clock alive while one scale node is running."""
+
+    def __init__(self, *, nodeid: str) -> None:
+        self._nodeid = nodeid
+        self._interval_s = _storage_scale_progress_heartbeat_s()
+        self._stop = threading.Event()
+        self._started_at = time.monotonic()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="pytest-storage-scale-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=min(max(self._interval_s * 2, 0.1), 1.0))
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_s):
+            _write_event(
+                {
+                    "event": "test_progress",
+                    "nodeid": self._nodeid,
+                    "progress_kind": "storage_scale_heartbeat",
+                    "elapsed_s": round(time.monotonic() - self._started_at, 3),
+                }
+            )
 
 
 def _write_selection(payload: dict[str, Any]) -> None:
@@ -355,6 +403,27 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) 
             "location": [location[0], location[1], location[2]],
         }
     )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
+    """Emit live progress for a marked node whose call phase is long-running."""
+    del nextitem
+    heartbeat: _StorageScaleProgressHeartbeat | None = None
+    numprocesses = getattr(getattr(item.config, "option", None), "numprocesses", 0)
+    xdist_controller = not os.environ.get("PYTEST_XDIST_WORKER") and bool(numprocesses)
+    if (
+        item.get_closest_marker("storage_scale") is not None
+        and (os.environ.get(_EVENTS_DIR_ENV) or os.environ.get(_EVENTS_ENV))
+        and not xdist_controller
+    ):
+        heartbeat = _StorageScaleProgressHeartbeat(nodeid=str(item.nodeid))
+        heartbeat.start()
+    try:
+        yield
+    finally:
+        if heartbeat is not None:
+            heartbeat.stop()
 
 
 @pytest.hookimpl
