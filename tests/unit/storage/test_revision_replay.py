@@ -319,6 +319,52 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
     assert parser_census_logical_keys(receipt[1]) == ("codex-session:durable-append",)
 
 
+def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_path: Path) -> None:
+    """Restart validation must use the same durable shape as receipt creation."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"not valid codex jsonl",
+            source_path="terminal-corrupt.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path="terminal-corrupt.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        with archive._ensure_source_conn():
+            conn = archive._ensure_source_conn()
+            conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (raw_id, "codex-session:typed-membership", "typed-membership", "revision-1", bytes(32), 1),
+            )
+            archive_revision_governance.record_current_parser_source_census(conn, raw_id)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    expected_keys = ("codex-session:typed-membership",)
+    assert parser_census_logical_keys(receipt[1]) == expected_keys
+
+    from polylogue.sources.revision_backfill import require_current_parser_source_census
+
+    assert require_current_parser_source_census(tmp_path)[raw_id] == expected_keys
+
+
 def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> None:
     """Terminal non-session evidence settles replay without dispatching its malformed bytes."""
 
