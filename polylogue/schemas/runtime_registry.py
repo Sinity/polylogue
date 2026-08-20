@@ -451,20 +451,18 @@ class SchemaRegistry:
         return sorted((package.version for package in catalog.packages), key=_version_sort_key)
 
     def list_committed_versions(self, provider: str) -> list[str]:
-        """List package versions present in this registry's own storage root.
+        """List version directories present in this registry's own storage root.
 
         Unlike :meth:`list_versions`, this intentionally does not consult a
-        catalog or fall back to the bundled schema tree.  Audit callers need
-        to see package manifests that were committed without a catalog.
+        catalog or fall back to the bundled schema tree. Audit callers need to
+        see package manifests and element artifacts that were committed
+        without a catalog or package manifest.
         """
         provider_dir = self._committed_provider_dir(provider)
         versions_dir = provider_dir / "versions"
         if not versions_dir.is_dir():
             return []
-        return sorted(
-            (path.name for path in versions_dir.iterdir() if path.is_dir() and (path / "package.json").is_file()),
-            key=_version_sort_key,
-        )
+        return sorted((path.name for path in versions_dir.iterdir() if path.is_dir()), key=_version_sort_key)
 
     def list_committed_providers(self) -> list[str]:
         """List provider directories in this registry's own committed tree."""

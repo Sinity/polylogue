@@ -54,7 +54,11 @@ def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_valu
         ("unsafe_structural_identifier", "child:mapping:2f5a7f5d-a809-469a-a79a-8f032618fa92"),
     }
     review = {(item.category, item.value) for item in report.review_items}
-    assert ("email_or_account", "person@example.com") in review
+    assert ("email_or_account", "person@example.com") not in review
+    assert any(
+        category == "email_or_account" and value.startswith("sha256:") and value.endswith(";length=18")
+        for category, value in review
+    )
     assert ("approved_readable_value", "gpt-5.6-terra") in review
     assert ("approved_readable_value", "Europe/Warsaw") in review
 

@@ -16,6 +16,7 @@ throughout -- because it did not duplicate the check.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -106,20 +107,33 @@ def test_privacy_guard_traverses_nested_schema_containers(tmp_path: Path) -> Non
     schema_file = element.schema_file
     assert schema_file is not None
     schema_path = bundle_root / provider / "versions" / version / "elements" / schema_file
-    leaked_value = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-    nested_schema = {"type": "string", "x-polylogue-values": [leaked_value]}
+    leaked_values = {
+        "$defs": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+        "patternProperties": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "if": "3c4d5e6f-7a8b-4c9d-0e1f-2a3b4c5d6e7f",
+        "then": "4d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f8a",
+        "else": "5e6f7a8b-9c0d-4e1f-2a3b-4c5d6e7f8a9b",
+        "contains": "6f7a8b9c-0d1e-4f2a-3b4c-5d6e7f8a9b0c",
+        "prefixItems": "7a8b9c0d-1e2f-4a3b-4c5d-6e7f8a9b0c1d",
+        "nested_arrays": "8b9c0d1e-2f3a-4b4c-5d6e-7f8a9b0c1d2e",
+    }
+
+    def nested_schema(value: str) -> dict[str, object]:
+        return {"type": "string", "x-polylogue-values": [value]}
 
     with gzip.open(schema_path, "rt", encoding="utf-8") as stream:
         schema = json.load(stream)
     assert isinstance(schema, dict)
     schema.update(
         {
-            "$defs": {"definition": nested_schema},
-            "patternProperties": {"^nested": nested_schema},
-            "if": nested_schema,
-            "then": nested_schema,
-            "else": nested_schema,
-            "contains": nested_schema,
+            "$defs": {"definition": nested_schema(leaked_values["$defs"])},
+            "patternProperties": {"^nested": nested_schema(leaked_values["patternProperties"])},
+            "if": nested_schema(leaked_values["if"]),
+            "then": nested_schema(leaked_values["then"]),
+            "else": nested_schema(leaked_values["else"]),
+            "contains": nested_schema(leaked_values["contains"]),
+            "prefixItems": [nested_schema(leaked_values["prefixItems"])],
+            "nested_arrays": [[nested_schema(leaked_values["nested_arrays"])]],
         }
     )
     with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
@@ -129,8 +143,26 @@ def test_privacy_guard_traverses_nested_schema_containers(tmp_path: Path) -> Non
 
     failures = [check for check in report.checks if check.status.value == "error"]
     assert failures
-    assert any("UUID leak" in detail for check in failures for detail in check.details)
-    assert leaked_value not in report.format_text()
+    details = [detail for check in failures for detail in check.details]
+    expected_paths = {
+        "$.$defs.definition": "$defs",
+        "$.patternProperties.^nested": "patternProperties",
+        "$.if": "if",
+        "$.then": "then",
+        "$.else": "else",
+        "$.contains": "contains",
+        "$.prefixItems[0]": "prefixItems",
+        "$.nested_arrays[0][0]": "nested_arrays",
+    }
+    for field, leaked_value in leaked_values.items():
+        digest = hashlib.sha256(leaked_value.encode("utf-8")).hexdigest()[:16]
+        expected_redaction = f"sha256:{digest};length={len(leaked_value)}"
+        expected_path = next(path for path, path_field in expected_paths.items() if path_field == field)
+        assert any(
+            expected_path in detail and "UUID leak" in detail and expected_redaction in detail for detail in details
+        ), field
+    assert len([detail for detail in details if "UUID leak" in detail]) >= len(expected_paths)
+    assert all(leaked_value not in report.format_text() for leaked_value in leaked_values.values())
 
 
 def test_empty_discovered_provider_version_is_a_privacy_guard_failure(tmp_path: Path) -> None:
@@ -278,6 +310,26 @@ def test_orphan_committed_element_schema_is_privacy_audited(tmp_path: Path) -> N
     failures = [check for check in report.checks if check.status.value == "error"]
     orphan_scope = f"{provider}/{version}/{orphan_file}"
     assert any(getattr(check, "provider", None) == orphan_scope for check in failures)
+    assert any("UUID leak" in detail for check in failures for detail in check.details)
+    assert leaked_value not in report.format_text()
+
+
+def test_unmanifested_committed_version_element_is_privacy_audited(tmp_path: Path) -> None:
+    """A version gzip remains visible to the gate without package.json or catalog.json."""
+    provider = "unmanifested-provider"
+    version = "v9"
+    schema_file = "unmanifested-element.schema.json.gz"
+    schema_path = tmp_path / provider / "versions" / version / "elements" / schema_file
+    schema_path.parent.mkdir(parents=True)
+    leaked_value = "7a8b9c0d-1e2f-4a3b-4c5d-6e7f8a9b0c1d"
+    with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
+        json.dump({"type": "string", "x-polylogue-values": [leaked_value]}, stream)
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    artifact_scope = f"{provider}/{version}/{schema_file}"
+    assert any(getattr(check, "provider", None) == artifact_scope for check in failures)
     assert any("UUID leak" in detail for check in failures for detail in check.details)
     assert leaked_value not in report.format_text()
 

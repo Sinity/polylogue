@@ -17,7 +17,7 @@ import jsonschema
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, _walk_values
 from polylogue.schemas.field_stats.detection import is_dynamic_key
-from polylogue.schemas.privacy import _looks_high_entropy_token
+from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 
 AuditSeverity: TypeAlias = Literal["blocker", "review"]
 
@@ -43,6 +43,20 @@ _ABSOLUTE_PATH = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 _URL = re.compile(r"(?i)^https?://")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]|$)")
 _IDENTIFIER = re.compile(r"^(?:[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f-]{27,}|(?:rollout|session|agent)-)", re.I)
+
+
+def _redacted_value(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"sha256:{digest};length={len(value)}"
+
+
+def _privacy_value_requires_redaction(value: str, *, path: str) -> bool:
+    return (
+        _UUID_RE.match(value) is not None
+        or _HEX_RE.match(value) is not None
+        or _looks_high_entropy_token(value)
+        or not _is_safe_enum_value(value, path=path)
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -73,11 +87,11 @@ class PromotionAuditReport:
         return tuple(item for item in self.findings if item.severity == "review")
 
     def grouped_review_items(self, *, sample_limit: int = 3) -> tuple[JSONDocument, ...]:
-        """Return a lossless, operator-sized view over repeated review values.
+        """Return an operator-sized view over repeated review values.
 
-        The full finding inventory remains in ``to_payload``.  This projection
-        merely prevents a repeated structural token from hiding the few values
-        an operator must actually inspect.
+        The full finding inventory remains in ``to_payload``. This projection
+        prevents repeated values from hiding the few categories and locations
+        an operator must inspect while preserving the same redaction policy.
         """
         grouped: dict[tuple[str, str], list[PromotionAuditFinding]] = {}
         for item in self.review_items:
@@ -159,14 +173,13 @@ def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[Promo
     findings = []
     for category, pattern in _SECRET_PATTERNS.items():
         if pattern.search(value):
-            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
             findings.append(
                 PromotionAuditFinding(
                     severity="blocker",
                     category=category,
                     artifact=artifact,
                     json_path=json_path,
-                    value=f"sha256:{digest};length={len(value)}",
+                    value=_redacted_value(value),
                 )
             )
     return findings
@@ -225,13 +238,18 @@ def _walk_artifact(
                             )
                         )
                         continue
+                    review_value = (
+                        _redacted_value(text)
+                        if key == "x-polylogue-values" and _privacy_value_requires_redaction(text, path=child_path)
+                        else text
+                    )
                     findings.append(
                         PromotionAuditFinding(
                             severity="review",
                             category=_review_category(key, text),
                             artifact=artifact,
                             json_path=child_path,
-                            value=text,
+                            value=review_value,
                         )
                     )
             _walk_artifact(child, artifact=artifact, json_path=child_path, findings=findings)
@@ -324,14 +342,13 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
                 if any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
                     # Already reported under its specific secret category.
                     continue
-                digest = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()[:16]
                 findings.append(
                     PromotionAuditFinding(
                         severity="blocker",
                         category="unsafe_enum_value",
                         artifact=artifact,
                         json_path=json_path,
-                        value=f"{json_path}: {kind} sha256:{digest};length={len(raw_value)}",
+                        value=f"{json_path}: {kind} {_redacted_value(raw_value)}",
                     )
                 )
     return findings
