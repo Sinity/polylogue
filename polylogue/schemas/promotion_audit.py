@@ -15,7 +15,9 @@ from typing import Literal, TypeAlias
 import jsonschema
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, _walk_values
 from polylogue.schemas.field_stats.detection import is_dynamic_key
+from polylogue.schemas.privacy import _looks_high_entropy_token
 
 AuditSeverity: TypeAlias = Literal["blocker", "review"]
 
@@ -291,12 +293,9 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     ``_secret_findings``'s specific secret patterns, since that is already a
     (differently named) blocker.
     """
-    import ast
-
     from polylogue.core.outcomes import OutcomeStatus
     from polylogue.schemas.audit.checks import check_privacy_guards
 
-    detail_re = re.compile(r"^(.*?): (UUID leak|hex-id leak|high-entropy token) (.+)$")
     findings: list[PromotionAuditFinding] = []
     for path in sorted(root.rglob("*.schema.json.gz")):
         artifact = str(path.relative_to(root))
@@ -310,29 +309,31 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
         result = check_privacy_guards(document)
         if result.status is not OutcomeStatus.ERROR:
             continue
-        for detail in result.details:
-            match = detail_re.match(detail)
-            if match is None:
-                # The generic "unsafe value" catch-all; already classified
-                # (as a review item, not a blocker) by _walk_artifact.
-                continue
-            json_path, _kind, rendered_value = match.groups()
-            try:
-                raw_value = ast.literal_eval(rendered_value)
-            except (ValueError, SyntaxError):
-                raw_value = rendered_value
-            if isinstance(raw_value, str) and any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
-                # Already reported under its specific secret category.
-                continue
-            findings.append(
-                PromotionAuditFinding(
-                    severity="blocker",
-                    category="unsafe_enum_value",
-                    artifact=artifact,
-                    json_path=json_path,
-                    value=detail,
+        for json_path, values in _walk_values(document):
+            for raw_value in values:
+                if _UUID_RE.match(raw_value):
+                    kind = "UUID leak"
+                elif _HEX_RE.match(raw_value):
+                    kind = "hex-id leak"
+                elif _looks_high_entropy_token(raw_value):
+                    kind = "high-entropy token"
+                else:
+                    # The generic "unsafe value" catch-all is already
+                    # classified as a review item by _walk_artifact.
+                    continue
+                if any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
+                    # Already reported under its specific secret category.
+                    continue
+                digest = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()[:16]
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="unsafe_enum_value",
+                        artifact=artifact,
+                        json_path=json_path,
+                        value=f"{json_path}: {kind} sha256:{digest};length={len(raw_value)}",
+                    )
                 )
-            )
     return findings
 
 

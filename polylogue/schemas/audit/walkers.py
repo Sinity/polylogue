@@ -57,14 +57,42 @@ def _child_schema_nodes(schema: SchemaNode, path: SchemaPath) -> Iterable[tuple[
 
 
 def _walk_values(schema: SchemaNode, path: SchemaPath = "$") -> list[SchemaValueRecord]:
-    """Walk schema tree and collect all x-polylogue-values entries."""
+    """Walk every nested JSON value and collect x-polylogue-values entries.
+
+    JSON Schema adds schema-bearing keywords over time, and several of them
+    are map or list containers rather than ``properties`` children. Walking
+    all nested objects keeps the privacy predicate fail-closed for ``$defs``,
+    ``patternProperties``, conditionals, array keywords, and future schema
+    containers without maintaining another keyword allowlist.
+    """
     results: list[SchemaValueRecord] = []
     values = _string_values(schema.get("x-polylogue-values"))
     if values:
         results.append((path, values))
 
-    for child_path, child in _child_schema_nodes(schema, path):
-        results.extend(_walk_values(child, child_path))
+    for key, child in schema.items():
+        if key == "x-polylogue-values":
+            continue
+        child_path = f"{path}.{key}"
+        if isinstance(child, dict):
+            results.extend(_walk_values(child, child_path))
+        elif isinstance(child, list):
+            for index, item in enumerate(child):
+                if isinstance(item, dict):
+                    results.extend(_walk_values(item, f"{child_path}[{index}]"))
+                elif isinstance(item, list):
+                    results.extend(_walk_nested_values(item, f"{child_path}[{index}]"))
+    return results
+
+
+def _walk_nested_values(value: list[JSONValue], path: SchemaPath) -> list[SchemaValueRecord]:
+    results: list[SchemaValueRecord] = []
+    for index, item in enumerate(value):
+        item_path = f"{path}[{index}]"
+        if isinstance(item, dict):
+            results.extend(_walk_values(item, item_path))
+        elif isinstance(item, list):
+            results.extend(_walk_nested_values(item, item_path))
     return results
 
 

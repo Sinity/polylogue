@@ -41,6 +41,11 @@ def test_committed_schema_bundle_privacy_guard_is_green() -> None:
             package = registry.get_package(provider, version=version)
             assert package is not None
             expected_scopes.update(f"{provider}/{version}/{element.element_kind}" for element in package.elements)
+            expected_scopes.update(
+                f"{provider}/{version}/{schema_file}"
+                for schema_file in registry.list_committed_schema_files(provider, version)
+                if not any(element.schema_file == schema_file for element in package.elements)
+            )
 
     report = audit_schema_bundle_privacy(registry=registry)
 
@@ -67,7 +72,13 @@ def test_committed_schema_bundle_privacy_guard_red_twin(tmp_path: Path) -> None:
     with gzip.open(schema_path, "rt", encoding="utf-8") as stream:
         schema = json.load(stream)
     assert isinstance(schema, dict)
-    schema["x-polylogue-values"] = ["0f1e2d3c-4b5a-4968-8776-655443332211"]
+    leaked_value = "0f1e2d3c-4b5a-4968-8776-655443332211"
+    schema["$defs"] = {
+        "red_twin": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "x-polylogue-values": [leaked_value]}},
+        }
+    }
     with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
         json.dump(schema, stream)
 
@@ -77,6 +88,49 @@ def test_committed_schema_bundle_privacy_guard_red_twin(tmp_path: Path) -> None:
     assert privacy_failures, "the registered privacy predicate must reject the planted committed-schema leak"
     assert any(check.name == "privacy_guards" for check in privacy_failures)
     assert any("UUID leak" in detail for check in privacy_failures for detail in check.details)
+    rendered = report.format_text()
+    assert leaked_value not in rendered
+    assert "sha256:" in rendered
+
+
+def test_privacy_guard_traverses_nested_schema_containers(tmp_path: Path) -> None:
+    """Definitions and other schema containers cannot hide unsafe values."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    package = registry.get_package(provider, version=version)
+    assert package is not None
+    element = next(element for element in package.elements if element.schema_file is not None)
+    schema_file = element.schema_file
+    assert schema_file is not None
+    schema_path = bundle_root / provider / "versions" / version / "elements" / schema_file
+    leaked_value = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+    nested_schema = {"type": "string", "x-polylogue-values": [leaked_value]}
+
+    with gzip.open(schema_path, "rt", encoding="utf-8") as stream:
+        schema = json.load(stream)
+    assert isinstance(schema, dict)
+    schema.update(
+        {
+            "$defs": {"definition": nested_schema},
+            "patternProperties": {"^nested": nested_schema},
+            "if": nested_schema,
+            "then": nested_schema,
+            "else": nested_schema,
+            "contains": nested_schema,
+        }
+    )
+    with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
+        json.dump(schema, stream)
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert failures
+    assert any("UUID leak" in detail for check in failures for detail in check.details)
+    assert leaked_value not in report.format_text()
 
 
 def test_empty_discovered_provider_version_is_a_privacy_guard_failure(tmp_path: Path) -> None:
@@ -202,6 +256,76 @@ def test_committed_bundle_without_catalog_is_still_privacy_audited(tmp_path: Pat
     assert any(getattr(check, "provider", None) == provider for check in failures)
     assert any(getattr(check, "provider", None) == f"{provider}/{version}/session_document" for check in failures)
     assert any("UUID leak" in detail for check in failures for detail in check.details)
+
+
+def test_orphan_committed_element_schema_is_privacy_audited(tmp_path: Path) -> None:
+    """An element gzip absent from both manifests still participates in the gate."""
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_providers()[0]
+    version = registry.list_versions(provider)[0]
+    package = registry.get_package(provider, version=version)
+    assert package is not None
+    orphan_file = "orphan-element.schema.json.gz"
+    orphan_path = bundle_root / provider / "versions" / version / "elements" / orphan_file
+    leaked_value = "6f5e4d3c-2b1a-4987-8765-554433221100"
+    with gzip.open(orphan_path, "wt", encoding="utf-8") as stream:
+        json.dump({"type": "string", "x-polylogue-values": [leaked_value]}, stream)
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    orphan_scope = f"{provider}/{version}/{orphan_file}"
+    assert any(getattr(check, "provider", None) == orphan_scope for check in failures)
+    assert any("UUID leak" in detail for check in failures for detail in check.details)
+    assert leaked_value not in report.format_text()
+
+
+def test_committed_alias_provider_path_is_audited_literally(tmp_path: Path) -> None:
+    """Inventory discovery must not redirect an alias directory to its canonical sibling."""
+    provider = "openai"
+    version = "v1"
+    schema_file = "session_document.schema.json.gz"
+    version_dir = tmp_path / provider / "versions" / version
+    schema_path = version_dir / "elements" / schema_file
+    schema_path.parent.mkdir(parents=True)
+    leaked_value = "abcdef12-3456-4789-abcd-ef1234567890"
+    with gzip.open(schema_path, "wt", encoding="utf-8") as stream:
+        json.dump({"type": "string", "x-polylogue-values": [leaked_value]}, stream)
+    package = {
+        "provider": provider,
+        "version": version,
+        "anchor_kind": "session_document",
+        "default_element_kind": "session_document",
+        "first_seen": "",
+        "last_seen": "",
+        "bundle_scope_count": 0,
+        "sample_count": 1,
+        "elements": [
+            {
+                "element_kind": "session_document",
+                "schema_file": schema_file,
+                "sample_count": 1,
+                "artifact_count": 1,
+                "supported": True,
+            }
+        ],
+    }
+    (version_dir / "package.json").write_text(json.dumps(package), encoding="utf-8")
+    (tmp_path / provider / "catalog.json").write_text(
+        json.dumps({"provider": provider, "packages": [package]}), encoding="utf-8"
+    )
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(
+        getattr(check, "provider", None) == f"{provider}/{version}/session_document"
+        and any("UUID leak" in detail for detail in check.details)
+        for check in failures
+    )
+    assert leaked_value not in report.format_text()
 
 
 def test_catalog_and_package_schema_file_disagreement_audits_both_artifacts(tmp_path: Path) -> None:

@@ -204,6 +204,8 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                 manifests.append(catalog_package)
             if package is not None and package is not catalog_package:
                 manifests.append(package)
+
+            declared_artifacts: dict[str, tuple[bool, str]] = {}
             for manifest in manifests:
                 if not manifest.elements:
                     report.checks.append(
@@ -228,38 +230,46 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                                 )
                             )
                         continue
-                    artifact_key = (version, element.schema_file)
-                    if artifact_key in audited_artifacts:
-                        continue
-                    audited_artifacts.add(artifact_key)
-                    try:
-                        schema = bundle_registry.load_committed_schema_file(
-                            provider,
-                            version,
-                            element.schema_file,
+                    previous = declared_artifacts.get(element.schema_file)
+                    declared_artifacts[element.schema_file] = (
+                        element.supported or (previous[0] if previous is not None else False),
+                        previous[1] if previous is not None else element_scope,
+                    )
+
+            committed_schema_files = set(bundle_registry.list_committed_schema_files(provider, version))
+            artifact_files = sorted(set(declared_artifacts) | committed_schema_files)
+            for schema_file in artifact_files:
+                artifact_key = (version, schema_file)
+                if artifact_key in audited_artifacts:
+                    continue
+                audited_artifacts.add(artifact_key)
+                declared = declared_artifacts.get(schema_file)
+                element_scope = declared[1] if declared is not None else f"{scope}/{schema_file}"
+                supported = declared[0] if declared is not None else True
+                try:
+                    schema = bundle_registry.load_committed_schema_file(provider, version, schema_file)
+                except Exception as error:
+                    schema = None
+                    report.checks.append(
+                        AuditCheck(
+                            name="privacy_guards",
+                            status=OutcomeStatus.ERROR,
+                            summary=f"Committed element schema is unreadable: {type(error).__name__}",
+                            provider=element_scope,
                         )
-                    except Exception as error:
-                        schema = None
+                    )
+                if schema is None:
+                    if supported:
                         report.checks.append(
                             AuditCheck(
                                 name="privacy_guards",
                                 status=OutcomeStatus.ERROR,
-                                summary=f"Committed element schema is unreadable: {type(error).__name__}",
+                                summary="Committed element schema is missing",
                                 provider=element_scope,
                             )
                         )
-                    if schema is None:
-                        if element.supported:
-                            report.checks.append(
-                                AuditCheck(
-                                    name="privacy_guards",
-                                    status=OutcomeStatus.ERROR,
-                                    summary="Committed element schema is missing",
-                                    provider=element_scope,
-                                )
-                            )
-                        continue
-                    report.checks.append(_scoped(element_scope, check_privacy_guards(schema)))
+                    continue
+                report.checks.append(_scoped(element_scope, check_privacy_guards(schema)))
             if len(report.checks) == scope_check_start and manifests:
                 report.checks.append(
                     AuditCheck(

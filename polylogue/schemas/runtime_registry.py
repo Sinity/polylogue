@@ -270,6 +270,15 @@ class SchemaRegistry:
     def _provider_dir(self, provider: str) -> Path:
         return self.storage_root / _provider_token(provider)
 
+    def _committed_provider_dir(self, provider: str) -> Path:
+        """Return the literal provider directory in this registry's tree.
+
+        Committed-bundle audits must inspect the directory they discovered.
+        Canonical provider aliases are appropriate for runtime resolution, but
+        they must not redirect an inventory audit to another directory.
+        """
+        return self.storage_root / provider
+
     def _bundled_provider_dir(self, provider: str) -> Path:
         return SCHEMA_DIR / _provider_token(provider)
 
@@ -448,7 +457,7 @@ class SchemaRegistry:
         catalog or fall back to the bundled schema tree.  Audit callers need
         to see package manifests that were committed without a catalog.
         """
-        provider_dir = self._provider_dir(_provider_token(provider))
+        provider_dir = self._committed_provider_dir(provider)
         versions_dir = provider_dir / "versions"
         if not versions_dir.is_dir():
             return []
@@ -470,21 +479,28 @@ class SchemaRegistry:
 
     def load_committed_catalog(self, provider: str) -> SchemaPackageCatalog | None:
         """Load only the catalog at this registry's own storage root."""
-        path = self._catalog_path(_provider_token(provider))
+        path = _catalog_path(self._committed_provider_dir(provider))
         if not path.is_file():
             return None
         return SchemaPackageCatalog.from_dict(_read_json_dict(path))
 
     def load_committed_package(self, provider: str, version: str) -> SchemaVersionPackage | None:
         """Load a package manifest without consulting a catalog or fallback root."""
-        path = self._package_manifest_path(_provider_token(provider), version)
+        path = self._committed_provider_dir(provider) / "versions" / version / "package.json"
         if not path.is_file():
             return None
         return SchemaVersionPackage.from_dict(_read_json_dict(path))
 
+    def list_committed_schema_files(self, provider: str, version: str) -> list[str]:
+        """List element schema artifacts in the literal committed package tree."""
+        elements_dir = self._committed_provider_dir(provider) / "versions" / version / "elements"
+        if not elements_dir.is_dir():
+            return []
+        return sorted(path.name for path in elements_dir.glob("*.schema.json.gz") if path.is_file())
+
     def load_committed_schema_file(self, provider: str, version: str, schema_file: str) -> PublicSchemaDocument | None:
         """Load a schema artifact named by a committed package manifest."""
-        path = self._package_dir(_provider_token(provider), version) / "elements" / schema_file
+        path = self._committed_provider_dir(provider) / "versions" / version / "elements" / schema_file
         if not path.is_file():
             return None
         return _read_gzip_json_dict(path)
