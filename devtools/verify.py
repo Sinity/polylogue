@@ -1320,7 +1320,6 @@ def _run_pytest_with_heartbeat(
     run: VerifyRun | None = None,
     artifacts: PytestStepArtifacts | None = None,
     timeout_override_s: float | None = None,
-    pass_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[str]:
     heartbeat_s = _pytest_heartbeat_interval()
     timeout_s = _pytest_timeout_s() if timeout_override_s is None else max(0.0, timeout_override_s)
@@ -1358,18 +1357,16 @@ def _run_pytest_with_heartbeat(
         run_id=pytest_run_id,
         env=env,
     )
-    launch_kwargs: dict[str, Any] = {
-        "owner_pid": os.getpid(),
-        "timeout_s": timeout_s,
-        "term_grace_s": term_grace_s,
-        "receipt_path": receipt_path,
-        "run_id": pytest_run_id,
-        "env": env,
-        "cleanup_path": tmpfs_cleanup_path,
-    }
-    if pass_fds:
-        launch_kwargs["pass_fds"] = pass_fds
-    launch = build_supervisor_launch(cmd, **launch_kwargs)
+    launch = build_supervisor_launch(
+        cmd,
+        owner_pid=os.getpid(),
+        timeout_s=timeout_s,
+        term_grace_s=term_grace_s,
+        receipt_path=receipt_path,
+        run_id=pytest_run_id,
+        env=env,
+        cleanup_path=tmpfs_cleanup_path,
+    )
     sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
     sys.stderr.write(
         f"    containment: mode={launch.mode}"
@@ -1429,7 +1426,6 @@ def _run_pytest_with_heartbeat(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
-            pass_fds=getattr(launch, "pass_fds", ()),
         )
 
     def _stop_startup_attempt(
@@ -1506,7 +1502,6 @@ def _run_pytest_with_heartbeat(
             "process-group",
             None,
             None,
-            pass_fds=launch.pass_fds,
         )
         process = _spawn_supervisor(launch.argv)
         assert process.stdout is not None
@@ -2050,6 +2045,11 @@ def _run(
     if state is None:
         state = _open_owned_native_testmon_state(ROOT)
     try:
+        # The descriptor binds verify's own inspection to one checked inode.
+        # Pytest crosses systemd and xdist exec boundaries that do not promise
+        # arbitrary descriptor inheritance, so its workers receive the checked
+        # checkout-local path instead.  Native containment remains the
+        # supervisor's process-group/systemd scope contract, not an FD contract.
         return _run_step(
             label,
             cmd,
@@ -2057,7 +2057,6 @@ def _run(
             run=run,
             timeout_s=timeout_s,
             native_testmon_data=state.executable_data_path,
-            native_testmon_descriptor=state.descriptor,
         )
     finally:
         if temporary_state:
@@ -2072,7 +2071,6 @@ def _run_step(
     run: VerifyRun | None = None,
     timeout_s: float | None = None,
     native_testmon_data: Path | None = None,
-    native_testmon_descriptor: int | None = None,
 ) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
@@ -2197,7 +2195,6 @@ def _run_step(
                     run=run,
                     artifacts=artifacts,
                     timeout_override_s=timeout_s,
-                    pass_fds=() if native_testmon_descriptor is None else (native_testmon_descriptor,),
                 )
             except PytestContainmentError as exc:
                 pytest_containment_quiescent = False

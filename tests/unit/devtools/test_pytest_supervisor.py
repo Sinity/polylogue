@@ -489,63 +489,53 @@ def test_supervisor_rejects_owner_identity_captured_before_launch(tmp_path: Path
     assert final["controller_group_alive"] is False
 
 
-def test_launch_preserves_descriptor_bound_sqlite_through_supervisor(
+def test_launch_preserves_regular_sqlite_path_through_supervisor(
     tmp_path: Path,
 ) -> None:
-    """The actual launch chain keeps descriptor-backed testmon SQLite usable."""
+    """The process-group fallback keeps the worker-visible SQLite path usable."""
     testmon_root = tmp_path / "testmon"
     testmon_root.mkdir()
     datafile = testmon_root / "testmondata"
     with sqlite3.connect(datafile) as connection:
         connection.execute("CREATE TABLE proof (value TEXT NOT NULL)")
-        connection.execute("INSERT INTO proof VALUES ('descriptor-bound')")
+        connection.execute("INSERT INTO proof VALUES ('worker-visible')")
+    receipt_path = tmp_path / "containment.json"
+    result_path = tmp_path / "result.txt"
+    env = nested_pytest_env()
+    env[CGROUP_MODE_ENV] = "off"
+    env["TESTMON_DATAFILE"] = str(datafile)
+    controller = [
+        sys.executable,
+        "-c",
+        (
+            "import os, sqlite3\n"
+            "from pathlib import Path\n"
+            "with sqlite3.connect(os.environ['TESTMON_DATAFILE']) as connection:\n"
+            "    value = connection.execute('SELECT value FROM proof').fetchone()[0]\n"
+            f"Path({str(result_path)!r}).write_text(value, encoding='utf-8')\n"
+        ),
+    ]
+    launch = build_supervisor_launch(
+        controller,
+        owner_pid=os.getpid(),
+        timeout_s=5,
+        term_grace_s=0.1,
+        receipt_path=receipt_path,
+        run_id="worker-visible-sqlite",
+        env=env,
+    )
 
-    descriptor = os.open(testmon_root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        descriptor_datafile = Path(f"/proc/self/fd/{descriptor}") / datafile.name
-        if not descriptor_datafile.exists():
-            pytest.skip("this platform has no accessible descriptor namespace")
-        receipt_path = tmp_path / "containment.json"
-        result_path = tmp_path / "result.txt"
-        env = nested_pytest_env()
-        env[CGROUP_MODE_ENV] = "off"
-        env["TESTMON_DATAFILE"] = str(descriptor_datafile)
-        controller = [
-            sys.executable,
-            "-c",
-            (
-                "import os, sqlite3\n"
-                "from pathlib import Path\n"
-                "with sqlite3.connect(os.environ['TESTMON_DATAFILE']) as connection:\n"
-                "    value = connection.execute('SELECT value FROM proof').fetchone()[0]\n"
-                f"Path({str(result_path)!r}).write_text(value, encoding='utf-8')\n"
-            ),
-        ]
-        launch = build_supervisor_launch(
-            controller,
-            owner_pid=os.getpid(),
-            timeout_s=5,
-            term_grace_s=0.1,
-            receipt_path=receipt_path,
-            run_id="descriptor-sqlite",
-            env=env,
-            pass_fds=(descriptor,),
-        )
-
-        completed = subprocess.run(
-            launch.argv,
-            cwd=ROOT,
-            env=env,
-            pass_fds=launch.pass_fds,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    finally:
-        os.close(descriptor)
+    completed = subprocess.run(
+        launch.argv,
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
     assert completed.returncode == 0, completed.stderr
-    assert result_path.read_text(encoding="utf-8") == "descriptor-bound"
+    assert result_path.read_text(encoding="utf-8") == "worker-visible"
     receipt = read_receipt(receipt_path)
     assert receipt is not None
     assert receipt["exit_code"] == 0

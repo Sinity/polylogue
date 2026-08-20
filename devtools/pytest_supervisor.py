@@ -51,7 +51,6 @@ class SupervisorLaunch:
     unit: str | None
     runtime_cap_s: float | None
     fallback_argv: list[str] | None = None
-    pass_fds: tuple[int, ...] = ()
 
 
 def utc_now() -> str:
@@ -393,7 +392,6 @@ def build_supervisor_launch(
     run_id: str | None,
     env: Mapping[str, str] | None = None,
     cleanup_path: Path | None = None,
-    pass_fds: Sequence[int] = (),
 ) -> SupervisorLaunch:
     """Build the Linux supervisor command and optional owned cgroup scope."""
     values = dict(os.environ if env is None else env)
@@ -412,9 +410,6 @@ def build_supervisor_launch(
     mode = "systemd-scope" if systemd_available else "process-group"
     unit = _unit_name(run_id) if systemd_available else None
     runtime_cap_s = timeout_s + term_grace_s + 5.0 if systemd_available and timeout_s > 0 else None
-    inherited_fds = tuple(dict.fromkeys(pass_fds))
-    if any(descriptor < 0 for descriptor in inherited_fds):
-        raise ValueError("supervisor inherited file descriptors must be non-negative")
 
     def _supervisor_argv(
         launch_mode: str,
@@ -447,14 +442,12 @@ def build_supervisor_launch(
             argv.extend(("--runtime-cap-s", f"{launch_runtime_cap_s:g}"))
         if cleanup_path is not None:
             argv.extend(("--cleanup-path", str(cleanup_path)))
-        for descriptor in inherited_fds:
-            argv.extend(("--pass-fd", str(descriptor)))
         argv.extend(("--", *controller_cmd))
         return argv
 
     supervisor_argv = _supervisor_argv(mode, unit, runtime_cap_s)
     if not systemd_available:
-        return SupervisorLaunch(supervisor_argv, receipt_path, request_path, mode, None, None, pass_fds=inherited_fds)
+        return SupervisorLaunch(supervisor_argv, receipt_path, request_path, mode, None, None)
 
     systemd_run = shutil.which("systemd-run", path=values.get("PATH"))
     assert systemd_run is not None
@@ -486,7 +479,6 @@ def build_supervisor_launch(
         unit,
         runtime_cap_s,
         fallback_argv,
-        inherited_fds,
     )
 
 
@@ -651,7 +643,6 @@ def supervise(
     mode: str,
     unit: str | None,
     runtime_cap_s: float | None,
-    pass_fds: Sequence[int] = (),
 ) -> int:
     """Run one pytest controller and clean every process in its owned group."""
     request_path = termination_request_path(receipt_path)
@@ -712,7 +703,6 @@ def supervise(
     process = subprocess.Popen(
         list(controller_cmd),
         start_new_session=True,
-        pass_fds=tuple(dict.fromkeys(pass_fds)),
     )
     controller_pid = process.pid
     controller_pgid = controller_pid
@@ -913,7 +903,6 @@ def _parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--unit")
     parser.add_argument("--runtime-cap-s", type=float)
     parser.add_argument("--cleanup-path", type=Path)
-    parser.add_argument("--pass-fd", type=int, action="append", default=[])
     return parser.parse_args(option_argv), controller_cmd
 
 
@@ -1017,7 +1006,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.mode,
             unit=args.unit,
             runtime_cap_s=args.runtime_cap_s,
-            pass_fds=args.pass_fd,
         )
     finally:
         receipt = read_receipt(args.receipt)
