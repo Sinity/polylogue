@@ -2912,6 +2912,37 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
+def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native verify publishes TESTMON_DATAFILE without requiring /proc."""
+    descriptor_root = Path("/dev/fd")
+    probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (descriptor_root / str(probe)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe)
+
+    monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
+    state = verify._open_owned_native_testmon_state(tmp_path)
+    captured: dict[str, Path | None] = {}
+
+    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
+        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
+        return 0, 0.0, {}
+
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
+    try:
+        with patch("devtools.verify._run_step", side_effect=fake_run_step):
+            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
+    finally:
+        state.close()
+
+    assert captured["native_testmon_data"] == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
+
+
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
     cleaned = tmp_path / "pytest-polylogue-run-1"

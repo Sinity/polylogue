@@ -78,6 +78,7 @@ from devtools.testmon_bootstrap import (
     NativeTestmonPreparation,
     NativeTestmonRepairError,
     NativeTestmonState,
+    _descriptor_bound_path,
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
     native_testmon_lifecycle_lock,
@@ -199,7 +200,11 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
         os.close(descriptor)
         raise NativeTestmonRepairError(f"owned testmon directory changed while binding: {parent}")
-    bound = Path(f"/proc/{os.getpid()}/fd/{descriptor}") / raw_data.name
+    try:
+        bound = _descriptor_bound_path(descriptor) / raw_data.name
+    except NativeTestmonRepairError:
+        os.close(descriptor)
+        raise
     return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
 
 
