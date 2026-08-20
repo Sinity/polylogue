@@ -2916,11 +2916,11 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
-def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
+def test_native_verifier_keeps_descriptor_binding_for_parent_inspection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Native verify publishes TESTMON_DATAFILE without requiring /proc."""
+    """Parent-side testmon inspection remains descriptor-bound without /proc."""
     descriptor_root = Path("/dev/fd")
     probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -2931,27 +2931,18 @@ def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
 
     monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
     state = verify._open_owned_native_testmon_state(tmp_path)
-    captured: dict[str, Path | None] = {}
-
-    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
-        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
-        return 0, 0.0, {}
-
-    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
-        with patch("devtools.verify._run_step", side_effect=fake_run_step):
-            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
+        assert state.data_path == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
+        assert state.executable_data_path == tmp_path / verify.TESTMON_DATA
     finally:
         state.close()
 
-    assert captured["native_testmon_data"] == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
 
-
-def test_native_verifier_preserves_bound_testmon_descriptor_for_contained_child(
+def test_native_verifier_gives_xdist_testmon_a_worker_openable_state_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The descriptor-bound testmon path remains usable beyond the supervisor."""
+    """A native xdist worker opens the testmon database through its real path."""
     descriptor_root = Path("/dev/fd")
     probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -2963,26 +2954,40 @@ def test_native_verifier_preserves_bound_testmon_descriptor_for_contained_child(
     monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     state = verify._open_owned_native_testmon_state(tmp_path)
-    state.data_path.write_text("bound testmon state", encoding="utf-8")
     observed = tmp_path / "contained-child.txt"
-    child = (
+    module = tmp_path / "test_xdist_testmon_state.py"
+    module.write_text(
         "import os\n"
         "from pathlib import Path\n"
-        f"Path({str(observed)!r}).write_text(Path(os.environ['TESTMON_DATAFILE']).read_text())\n"
+        "def test_worker_receives_testmon_path():\n"
+        f"    Path({str(observed)!r}).write_text(os.environ['TESTMON_DATAFILE'])\n",
+        encoding="utf-8",
     )
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
-        rc, _elapsed, _metadata = verify._run_step(
-            "pytest native descriptor inheritance",
-            [sys.executable, "-c", child],
+        rc, _elapsed, _metadata = _run(
+            "pytest native xdist testmon path",
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "xdist",
+                "-p",
+                "pytest-testmon",
+                "-n",
+                "1",
+                "--testmon",
+                str(module),
+            ],
             cwd=str(tmp_path),
-            native_testmon_data=state.data_path,
-            native_testmon_descriptor=state.descriptor,
         )
     finally:
         state.close()
 
     assert rc == 0
-    assert observed.read_text(encoding="utf-8") == "bound testmon state"
+    assert observed.read_text(encoding="utf-8") == str(state.executable_data_path)
 
 
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:

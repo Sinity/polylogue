@@ -174,6 +174,7 @@ def _python_optimization_level() -> int:
 class _OwnedNativeTestmonState:
     descriptor: int
     data_path: Path
+    executable_data_path: Path
 
     def close(self) -> None:
         os.close(self.descriptor)
@@ -206,7 +207,11 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     except NativeTestmonRepairError:
         os.close(descriptor)
         raise
-    return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
+    return _OwnedNativeTestmonState(
+        descriptor=descriptor,
+        data_path=bound,
+        executable_data_path=raw_data,
+    )
 
 
 @contextlib.contextmanager
@@ -1315,7 +1320,6 @@ def _run_pytest_with_heartbeat(
     run: VerifyRun | None = None,
     artifacts: PytestStepArtifacts | None = None,
     timeout_override_s: float | None = None,
-    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     heartbeat_s = _pytest_heartbeat_interval()
     timeout_s = _pytest_timeout_s() if timeout_override_s is None else max(0.0, timeout_override_s)
@@ -1353,29 +1357,16 @@ def _run_pytest_with_heartbeat(
         run_id=pytest_run_id,
         env=env,
     )
-    if pass_fds:
-        launch = build_supervisor_launch(
-            cmd,
-            owner_pid=os.getpid(),
-            timeout_s=timeout_s,
-            term_grace_s=term_grace_s,
-            receipt_path=receipt_path,
-            run_id=pytest_run_id,
-            env=env,
-            cleanup_path=tmpfs_cleanup_path,
-            pass_fds=pass_fds,
-        )
-    else:
-        launch = build_supervisor_launch(
-            cmd,
-            owner_pid=os.getpid(),
-            timeout_s=timeout_s,
-            term_grace_s=term_grace_s,
-            receipt_path=receipt_path,
-            run_id=pytest_run_id,
-            env=env,
-            cleanup_path=tmpfs_cleanup_path,
-        )
+    launch = build_supervisor_launch(
+        cmd,
+        owner_pid=os.getpid(),
+        timeout_s=timeout_s,
+        term_grace_s=term_grace_s,
+        receipt_path=receipt_path,
+        run_id=pytest_run_id,
+        env=env,
+        cleanup_path=tmpfs_cleanup_path,
+    )
     sys.stderr.write(f"\n    command: {shlex.join(cmd)}\n")
     sys.stderr.write(
         f"    containment: mode={launch.mode}"
@@ -1435,7 +1426,6 @@ def _run_pytest_with_heartbeat(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
-            pass_fds=launch.pass_fds,
         )
 
     def _stop_startup_attempt(
@@ -1512,7 +1502,6 @@ def _run_pytest_with_heartbeat(
             "process-group",
             None,
             None,
-            pass_fds=launch.pass_fds,
         )
         process = _spawn_supervisor(launch.argv)
         assert process.stdout is not None
@@ -2062,8 +2051,7 @@ def _run(
             cwd=cwd,
             run=run,
             timeout_s=timeout_s,
-            native_testmon_data=state.data_path,
-            native_testmon_descriptor=state.descriptor,
+            native_testmon_data=state.executable_data_path,
         )
     finally:
         if temporary_state:
@@ -2078,7 +2066,6 @@ def _run_step(
     run: VerifyRun | None = None,
     timeout_s: float | None = None,
     native_testmon_data: Path | None = None,
-    native_testmon_descriptor: int | None = None,
 ) -> tuple[int, float, dict[str, Any]]:
     t0 = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
@@ -2203,7 +2190,6 @@ def _run_step(
                     run=run,
                     artifacts=artifacts,
                     timeout_override_s=timeout_s,
-                    pass_fds=(native_testmon_descriptor,) if native_testmon_descriptor is not None else (),
                 )
             except PytestContainmentError as exc:
                 pytest_containment_quiescent = False
