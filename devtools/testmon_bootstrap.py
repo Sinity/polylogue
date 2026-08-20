@@ -27,6 +27,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import sqlite3
 import stat
 import subprocess
@@ -790,12 +791,12 @@ def inspect_native_testmon_environment(
             recovery_path = data_path if data_fd is not None else sqlite_data_path
             recovery = sqlite3.connect(recovery_path, timeout=_remaining_timeout(deadline_monotonic, 10))
             try:
-                checkpoint = recovery.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+                checkpoint = recovery.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             finally:
                 recovery.close()
         except (sqlite3.Error, OSError) as exc:
             return NativeTestmonState("invalid", f"cannot recover native testmon sidecars: {exc}")
-        if checkpoint is None or checkpoint[0] != 0:
+        if checkpoint != (0, 0, 0):
             return NativeTestmonState("invalid", f"native testmon sidecar checkpoint failed: {checkpoint}")
         if data_fd is not None:
             try:
@@ -1238,14 +1239,14 @@ def _reclaim_stale_native_testmon_bindings(directory_fd: int, name: str) -> None
         raise NativeTestmonRepairError(f"cannot inspect native testmon source {name}: {exc}") from exc
     if not stat.S_ISREG(source.st_mode):
         raise NativeTestmonRepairError(f"native testmon source is not a regular file: {name}")
-    prefix = f".{name}.bound-"
+    private_name = re.compile(rf"\A\.{re.escape(name)}\.bound-[0-9]+-[0-9a-f]{{32}}\.tmp\Z")
     reclaimed = False
     try:
         entries = os.listdir(directory_fd)
     except OSError as exc:
         raise NativeTestmonRepairError(f"cannot list native testmon source directory: {exc}") from exc
     for entry in entries:
-        if not entry.startswith(prefix) or not entry.endswith(".tmp"):
+        if private_name.fullmatch(entry) is None:
             continue
         try:
             candidate = os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)

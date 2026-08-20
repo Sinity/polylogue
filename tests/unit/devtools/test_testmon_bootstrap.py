@@ -543,7 +543,7 @@ def test_native_inspection_rejects_public_recovery_when_source_is_replaced(
     assert state.reason == "native testmon database changed while recovering sidecars"
     assert recovery_databases
     assert source_data in recovery_databases
-    assert "PRAGMA wal_checkpoint(PASSIVE)" in executed_sql
+    assert "PRAGMA wal_checkpoint(TRUNCATE)" in executed_sql
     current_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
     assert current_identity != original_identity
     assert not replacement_data.exists()
@@ -582,6 +582,40 @@ def test_source_binding_recovers_a_real_public_wal_before_descriptor_aliasing(tm
 
     assert state.valid
     assert not tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp-wal"))
+
+
+def test_source_binding_declines_a_public_wal_that_cannot_quiesce(tmp_path: Path) -> None:
+    """A live public WAL cannot become a descriptor-bound warm source."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    writer = sqlite3.connect(source_data)
+    reader = sqlite3.connect(source_data)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        reader.execute("BEGIN")
+        reader.execute("SELECT id FROM environment").fetchall()
+        writer.execute("UPDATE environment SET environment_name = 'wal-environment'")
+        writer.commit()
+        assert Path(f"{source_data}-wal").exists()
+
+        with native_testmon_source_binding(source_data) as binding:
+            assert binding is not None
+            state = inspect_native_testmon_environment(
+                source_data,
+                environment_name="owned-environment",
+                data_fd=binding.descriptor,
+            )
+    finally:
+        reader.close()
+        writer.close()
+
+    assert state.status == "invalid"
+    assert "sidecar checkpoint failed" in state.reason
 
 
 def test_failed_private_binding_preserves_preopen_replacement(
@@ -681,6 +715,26 @@ def test_source_binding_reclaims_a_sigkill_left_matching_binding(tmp_path: Path)
     assert source_data.stat().st_nlink == 1
     assert not tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
     assert not tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp-wal"))
+
+
+def test_source_binding_preserves_malformed_same_inode_binding(tmp_path: Path) -> None:
+    """Only a private name this process could have created is reclaimable."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    malformed = source_data.with_name(f".{source_data.name}.bound-foreign.tmp")
+    os.link(source_data, malformed)
+
+    with pytest.raises(NativeTestmonRepairError, match="child changed while binding"):
+        with native_testmon_source_binding(source_data):
+            pytest.fail("malformed matching link must never become a binding")
+
+    assert malformed.exists()
+    assert source_data.stat().st_nlink == 2
 
 
 def _seed_partial_native_graph(

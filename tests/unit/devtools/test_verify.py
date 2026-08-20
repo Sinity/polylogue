@@ -3373,6 +3373,14 @@ def test_source_lock_uses_precomputed_main_checkout_without_a_second_probe(
         assert source_available is True
 
 
+def test_optional_source_lock_default_is_a_short_cache_miss_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Optional warm reuse must not inherit the full lifecycle-lock wait."""
+    monkeypatch.delenv(verify.TESTMON_SOURCE_LOCK_TIMEOUT_ENV, raising=False)
+
+    assert verify._native_testmon_source_lock_timeout_s() == 1.0
+    assert verify._native_testmon_source_lock_timeout_s() < testmon_bootstrap.NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
+
+
 @pytest.mark.uses_real_clock("proves a busy optional main source degrades to local preparation")
 def test_busy_optional_main_source_lock_is_unavailable(
     tmp_path: Path,

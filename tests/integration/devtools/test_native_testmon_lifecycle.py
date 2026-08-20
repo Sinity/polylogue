@@ -1302,7 +1302,7 @@ def test_linked_lane_reclaims_its_crash_left_main_binding(tmp_path: Path) -> Non
     assert [result.completed.returncode for result in main_results] == [0, 0]
 
     main_data = main / TESTMON_DATA_RELPATH
-    stale_private_entry = main_data.with_name(f".{main_data.name}.bound-stale.tmp")
+    stale_private_entry = main_data.with_name(f".{main_data.name}.bound-1-{'a' * 32}.tmp")
     os.link(main_data, stale_private_entry)
     lane = tmp_path / "lane"
     _git(main, "worktree", "add", "-qb", "lane", str(lane))
