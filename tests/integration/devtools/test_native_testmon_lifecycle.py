@@ -1275,6 +1275,51 @@ def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -
     assert [result.completed.returncode for result in results] == [0, 0]
 
 
+def test_linked_lane_bootstraps_when_optional_main_state_is_unusable(tmp_path: Path) -> None:
+    """An unsafe optional main graph must not reject the linked lane verify."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _init_repo(main)
+    (main / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (main / "tests" / "test_app.py").write_text(
+        "def test_value():\n    from app import VALUE\n    assert VALUE == 1\n",
+        encoding="utf-8",
+    )
+    _commit_all(main, "fixture")
+    origin = tmp_path / "origin.git"
+    _git(origin.parent, "init", "--bare", "-q", str(origin))
+    _git(main, "remote", "add", "origin", str(origin))
+    _git(main, "branch", "-M", "master")
+    _git(main, "push", "-qu", "origin", "master")
+
+    main_preparation = prepare_native_testmon_environment(main)
+    main_results = _run_plain_verify_corpus(
+        main,
+        mode="bootstrap",
+        environment_name=main_preparation.environment_name,
+    )
+    assert [result.completed.returncode for result in main_results] == [0, 0]
+
+    main_data = main / TESTMON_DATA_RELPATH
+    stale_private_entry = main_data.with_name(f".{main_data.name}.bound-stale.tmp")
+    os.link(main_data, stale_private_entry)
+    lane = tmp_path / "lane"
+    _git(main, "worktree", "add", "-qb", "lane", str(lane))
+    try:
+        lane_preparation = prepare_native_testmon_environment(lane)
+        lane_results = _run_plain_verify_corpus(
+            lane,
+            mode=lane_preparation.selection_mode,
+            environment_name=lane_preparation.environment_name,
+        )
+    finally:
+        stale_private_entry.unlink()
+
+    assert lane_preparation.selection_mode == "bootstrap"
+    assert lane_preparation.copied_from is None
+    assert [result.completed.returncode for result in lane_results] == [0, 0]
+
+
 def test_matching_main_copy_then_product_mutation_selects_and_fails_owner(tmp_path: Path) -> None:
     main = tmp_path / "main"
     main.mkdir()

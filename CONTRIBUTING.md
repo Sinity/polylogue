@@ -292,7 +292,7 @@ local pytest selection is accelerated by pytest-testmon.
 
 ```bash
 devtools verify            # static/generated gates + incremental complete-corpus pytest
-devtools verify --quick    # format + lint + mypy + render all --check (skip tests)
+devtools verify --quick    # format + lint + mypy + generated checks, including committed-schema privacy (skip tests)
 devtools verify --lab      # explicit lab checks beyond the quick/default loop
 ```
 
