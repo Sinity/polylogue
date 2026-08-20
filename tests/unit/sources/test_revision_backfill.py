@@ -1471,9 +1471,9 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
             (RAW_AUTHORITY_PARSER_FINGERPRINT,),
         ).fetchall()
     # polylogue-39kcs: all three raws are census-complete, including the
-    # legacy append fragment. Its receipt records the authoritative empty
-    # identity set that byte revision governance gives it -- a ``failed``
-    # receipt there matched neither branch of
+    # legacy append fragment. Its receipt records the durable identity set
+    # available to byte revision governance (empty here because this fixture
+    # has no membership binding) -- a ``failed`` receipt there matched neither branch of
     # ``uncensused_historical_revision_raw_ids``'s gate, so the fragment was
     # re-selected for census forever and raw-replay planning never started.
     # The fragment is still ``quarantined`` (asserted above); only the

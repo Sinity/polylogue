@@ -537,6 +537,9 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
     assert snapshot["classified"] == 1
     assert snapshot["unchecked"] == 0
     assert _category_counts(snapshot)["append-authority-quarantined"] == 1
+    parser_census = cast(Mapping[str, object], snapshot["raw_authority_parser_census"])
+    assert parser_census["complete_count"] == 1
+    assert parser_census["incomplete_count"] == 0
 
 
 def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -> None:

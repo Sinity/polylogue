@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
+    BYTE_AUTHORITY_CENSUS_DETAIL,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
@@ -274,6 +275,48 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
     from polylogue.sources.revision_backfill import require_current_parser_source_census
 
     assert require_current_parser_source_census(tmp_path)[raw_id] == ()
+
+
+def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys(tmp_path: Path) -> None:
+    """A byte-governed receipt cannot overclaim an empty durable identity set."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"append":true}\n',
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=1,
+        )
+        with archive._ensure_source_conn():
+            conn = archive._ensure_source_conn()
+            conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (raw_id, "codex-session:durable-append", "durable-append", "revision-1", bytes(32), 1),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_membership_census (
+                    raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
+                ) VALUES (?, ?, 'failed', 1, 1, ?)
+                """,
+                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, BYTE_AUTHORITY_CENSUS_DETAIL),
+            )
+            archive_revision_governance.record_current_parser_source_census(conn, raw_id)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        receipt = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    assert parser_census_logical_keys(receipt[1]) == ("codex-session:durable-append",)
 
 
 def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> None:
