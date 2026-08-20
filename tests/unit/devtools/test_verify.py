@@ -108,7 +108,10 @@ def test_quick_verify_omits_pytest() -> None:
         "lab policy schema-versioning",
         "lab policy oracle-integrity",
         "schema promotion audit",
+        "schema privacy registry",
     ]
+
+    assert dict(steps)["schema privacy registry"] == [sys.executable, "-m", "devtools.verify_schema_privacy"]
 
 
 @pytest.mark.parametrize(
@@ -2912,6 +2915,37 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
+def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native verify publishes TESTMON_DATAFILE without requiring /proc."""
+    descriptor_root = Path("/dev/fd")
+    probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (descriptor_root / str(probe)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe)
+
+    monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
+    state = verify._open_owned_native_testmon_state(tmp_path)
+    captured: dict[str, Path | None] = {}
+
+    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
+        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
+        return 0, 0.0, {}
+
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
+    try:
+        with patch("devtools.verify._run_step", side_effect=fake_run_step):
+            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
+    finally:
+        state.close()
+
+    assert captured["native_testmon_data"] == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
+
+
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
     cleaned = tmp_path / "pytest-polylogue-run-1"
@@ -3149,6 +3183,176 @@ def test_native_testmon_lifecycle_lock_serializes_checkout_state(tmp_path: Path)
         contender.result(timeout=2)
 
     assert contender_entered.is_set()
+
+
+@pytest.mark.uses_real_clock("coordinates linked-worktree source lifecycle locks")
+def test_linked_source_preparation_lifecycle_lock_includes_main_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = tmp_path / "main"
+    lane = tmp_path / "lane"
+    main.mkdir()
+    lane.mkdir()
+
+    def linked_info(root: Path, **_kwargs: object) -> tuple[bool, Path] | None:
+        return (True, main) if root.resolve() == lane.resolve() else (False, main)
+
+    monkeypatch.setattr(verify, "linked_worktree_info", linked_info)
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    contender_entered = threading.Event()
+
+    def hold_source_lock() -> None:
+        with verify._native_testmon_source_lifecycle_lock(lane):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2)
+
+    def contend_for_source_lock() -> None:
+        with verify._native_testmon_source_lifecycle_lock(lane):
+            contender_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(hold_source_lock)
+        assert holder_entered.wait(timeout=2)
+        contender = pool.submit(contend_for_source_lock)
+        assert not contender_entered.wait(timeout=0.05)
+        release_holder.set()
+        holder.result(timeout=2)
+        contender.result(timeout=2)
+
+    assert contender_entered.is_set()
+
+
+@pytest.mark.uses_real_clock("proves a busy optional main source degrades to local preparation")
+def test_busy_optional_main_source_lock_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = tmp_path / "main"
+    lane = tmp_path / "lane"
+    main.mkdir()
+    lane.mkdir()
+
+    monkeypatch.setattr(
+        verify,
+        "linked_worktree_info",
+        lambda root, **_kwargs: (True, main) if root.resolve() == lane.resolve() else None,
+    )
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_main_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(main):
+            holder_entered.set()
+            assert release_holder.wait(timeout=2)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_main_lock)
+        assert holder_entered.wait(timeout=2)
+        with verify._native_testmon_source_lifecycle_lock(lane, timeout_s=0.01) as source_available:
+            assert source_available is False
+        release_holder.set()
+        holder.result(timeout=2)
+
+
+@pytest.mark.uses_real_clock("proves a configured busy-main wait falls back to lane-local bootstrap")
+def test_busy_main_source_wait_has_bounded_liveness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devtools.testmon_bootstrap import prepare_native_testmon_environment
+
+    main = tmp_path / "main"
+    lane = tmp_path / "lane"
+    main.mkdir()
+    lane.mkdir()
+
+    monkeypatch.setattr(
+        verify,
+        "linked_worktree_info",
+        lambda root, **_kwargs: (True, main) if root.resolve() == lane.resolve() else None,
+    )
+    monkeypatch.setenv(verify.TESTMON_SOURCE_LOCK_TIMEOUT_ENV, "1.0")
+    assert verify._native_testmon_source_lock_timeout_s() == 1.0
+
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_main_lock() -> None:
+        with verify._native_testmon_lifecycle_lock(main):
+            holder_entered.set()
+            assert release_holder.wait(timeout=3)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold_main_lock)
+        assert holder_entered.wait(timeout=2)
+        started = time.monotonic()
+        preparation = prepare_native_testmon_environment(
+            lane,
+            source_lock_factory=lambda: verify._native_testmon_source_lifecycle_lock(
+                lane,
+                timeout_s=verify._native_testmon_source_lock_timeout_s(),
+            ),
+        )
+        elapsed = time.monotonic() - started
+        release_holder.set()
+        holder.result(timeout=2)
+
+    assert elapsed < 3, f"busy-main source preparation exceeded bounded liveness: {elapsed:.3f}s"
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+
+
+@pytest.mark.uses_real_clock("proves common source lock ends before linked verify lifecycle ends")
+def test_unrelated_linked_lane_proceeds_after_source_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = tmp_path / "main"
+    lane_a = tmp_path / "lane-a"
+    lane_b = tmp_path / "lane-b"
+    main.mkdir()
+    lane_a.mkdir()
+    lane_b.mkdir()
+
+    def linked_info(root: Path, **_kwargs: object) -> tuple[bool, Path] | None:
+        return (True, main) if root.resolve() in {lane_a.resolve(), lane_b.resolve()} else (False, main)
+
+    monkeypatch.setattr(verify, "linked_worktree_info", linked_info)
+    source_started = threading.Event()
+    release_source = threading.Event()
+    post_source_started = threading.Event()
+    release_full_lifecycle = threading.Event()
+    lane_b_entered = threading.Event()
+
+    def run_lane_a() -> None:
+        with verify._native_testmon_lifecycle_lock(lane_a):
+            with verify._native_testmon_source_lifecycle_lock(lane_a):
+                source_started.set()
+                assert release_source.wait(timeout=2)
+            post_source_started.set()
+            assert release_full_lifecycle.wait(timeout=2)
+
+    def run_lane_b() -> None:
+        with verify._native_testmon_lifecycle_lock(lane_b):
+            with verify._native_testmon_source_lifecycle_lock(lane_b):
+                lane_b_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        lane_a_future = pool.submit(run_lane_a)
+        assert source_started.wait(timeout=2)
+        lane_b_future = pool.submit(run_lane_b)
+        assert not lane_b_entered.wait(timeout=0.05)
+        release_source.set()
+        assert post_source_started.wait(timeout=2)
+        assert lane_b_entered.wait(timeout=2)
+        release_full_lifecycle.set()
+        lane_a_future.result(timeout=2)
+        lane_b_future.result(timeout=2)
+
+    assert lane_b_entered.is_set()
 
 
 def test_native_testmon_lifecycle_lock_refuses_symlink_without_touching_target(tmp_path: Path) -> None:
@@ -4382,6 +4586,7 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         # A real NativeTestmonPreparation always carries local_state; the
         # receipt records its status so a bootstrap's CAUSE is legible.
         local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
+        fallback_allowed=True,
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4421,6 +4626,80 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
 
     assert calls == ["pytest native parallel (affected)", "pytest native serial (affected)"]
     assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is False
+
+
+def test_verify_does_not_warm_from_default_after_invalid_initial_state(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    initial_environment = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
+    fallback_environment = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": "1"}
+    initial = SimpleNamespace(
+        environment_name="initial-environment",
+        selection_mode="bootstrap",
+        removed_paths=(),
+        copied_from=None,
+        local_state=SimpleNamespace(
+            status="invalid",
+            reason="native environment has no unique collected corpus",
+            missing_executable_paths=(),
+        ),
+        fallback_allowed=False,
+    )
+    fallback = SimpleNamespace(
+        environment_name="default-environment",
+        selection_mode="affected",
+        removed_paths=(),
+        copied_from=Path("main/.cache/testmon/testmondata"),
+        local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=()),
+        fallback_allowed=True,
+    )
+    native_state = SimpleNamespace(
+        valid=True,
+        status="valid",
+        reason="current",
+        environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
+        missing_executable_paths=(),
+    )
+    preparations: list[dict[str, str | None]] = []
+
+    def prepare(*_args: object, **kwargs: object) -> object:
+        environment = kwargs["pytest_environment"]
+        assert isinstance(environment, dict)
+        preparations.append(environment)
+        return initial if len(preparations) == 1 else fallback
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch(
+            "devtools.verify._native_pytest_environment_candidates",
+            return_value=(initial_environment, fallback_environment),
+        ),
+        patch("devtools.verify.prepare_native_testmon_environment", side_effect=prepare),
+        patch("devtools.verify._open_owned_native_testmon_state", return_value=SimpleNamespace(close=lambda: None)),
+        patch("devtools.verify._native_environment_after_run", return_value=native_state),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 0
+
+    assert preparations == [initial_environment]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["testmon_environment"]["name"] == "initial-environment"
 
 
 def test_release_authority_requires_current_complete_green_invocation() -> None:
@@ -4497,6 +4776,7 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         # A real NativeTestmonPreparation always carries local_state; the
         # receipt records its status so a bootstrap's CAUSE is legible.
         local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
+        fallback_allowed=True,
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4569,6 +4849,7 @@ def test_collection_failure_still_persists_native_run_aggregate(
             reason="native environment has no unique collected corpus",
             missing_executable_paths=(),
         ),
+        fallback_allowed=False,
     )
     invalid_state = SimpleNamespace(
         valid=False,
@@ -4628,6 +4909,7 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
         # A real NativeTestmonPreparation always carries local_state; the
         # receipt records its status so a bootstrap's CAUSE is legible.
         local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
+        fallback_allowed=True,
     )
     native_state = SimpleNamespace(
         valid=True,

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import math
@@ -73,12 +72,17 @@ from devtools.pytest_supervisor import (
     write_termination_request,
 )
 from devtools.testmon_bootstrap import (
+    NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
     NativeTestmonDeadlineError,
+    NativeTestmonLifecycleLockTimeoutError,
     NativeTestmonPreparation,
     NativeTestmonRepairError,
     NativeTestmonState,
+    _descriptor_bound_path,
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
+    linked_worktree_info,
+    native_testmon_lifecycle_lock,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
@@ -145,7 +149,6 @@ _PYTEST_CLEAR_CONFIGURED_ADDOPTS = CLEAR_CONFIGURED_ADDOPTS
 _PYTEST_MANAGED_PLUGIN_NAMES = MANAGED_PLUGIN_NAMES
 _PYTEST_MANAGED_PLUGIN_ARGS = MANAGED_PLUGIN_ARGS
 _PYTEST_CLOSED_WORLD_COLLECTION_ARGS = CLOSED_WORLD_COLLECTION_ARGS
-NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
 
 
 def _normalize_managed_pytest_environment(
@@ -198,7 +201,11 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
         os.close(descriptor)
         raise NativeTestmonRepairError(f"owned testmon directory changed while binding: {parent}")
-    bound = Path(f"/proc/{os.getpid()}/fd/{descriptor}") / raw_data.name
+    try:
+        bound = _descriptor_bound_path(descriptor) / raw_data.name
+    except NativeTestmonRepairError:
+        os.close(descriptor)
+        raise
     return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
 
 
@@ -208,99 +215,38 @@ def _native_testmon_lifecycle_lock(
     *,
     timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
 ) -> Iterator[None]:
-    """Serialize one checkout's native testmon preparation, lanes, and inspection."""
-    cache = repo_root.resolve() / ".cache"
     try:
-        mode = cache.lstat().st_mode
-    except FileNotFoundError:
-        cache.mkdir(exist_ok=True)
-        mode = cache.lstat().st_mode
-    except OSError as exc:
-        raise NativeTestmonRepairError(f"cannot inspect native testmon lock parent {cache}: {exc}") from exc
-    if not stat.S_ISDIR(mode):
-        raise NativeTestmonRepairError(f"native testmon lock parent is not an owned directory: {cache}")
-    lock_path = cache / "native-testmon-lifecycle.lock"
-    directory_descriptor: int | None = None
-    lock_descriptor: int | None = None
+        with native_testmon_lifecycle_lock(repo_root, timeout_s=timeout_s, waiter_label="verify"):
+            yield
+    except NativeTestmonLifecycleLockTimeoutError as exc:
+        raise PytestResourceError(str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _native_testmon_source_lifecycle_lock(
+    repo_root: Path,
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+) -> Iterator[bool]:
+    """Protect linked-worktree source preparation without extending the lane lock."""
+    linked_info = linked_worktree_info(repo_root)
+    if linked_info is None or not linked_info[0]:
+        yield True
+        return
     try:
-        directory_descriptor = os.open(
-            cache,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        opened_directory = os.fstat(directory_descriptor)
-        current_directory = cache.lstat()
-        if not stat.S_ISDIR(opened_directory.st_mode) or (opened_directory.st_dev, opened_directory.st_ino) != (
-            current_directory.st_dev,
-            current_directory.st_ino,
-        ):
-            raise NativeTestmonRepairError(f"native testmon lock parent changed while binding: {cache}")
-        lock_descriptor = os.open(
-            lock_path.name,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory_descriptor,
-        )
-        opened_lock = os.fstat(lock_descriptor)
-        current_lock = os.stat(lock_path.name, dir_fd=directory_descriptor, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(opened_lock.st_mode)
-            or not stat.S_ISREG(current_lock.st_mode)
-            or opened_lock.st_nlink != 1
-            or current_lock.st_nlink != 1
-            or (opened_lock.st_dev, opened_lock.st_ino) != (current_lock.st_dev, current_lock.st_ino)
-        ):
-            raise NativeTestmonRepairError(
-                f"native testmon lifecycle lock is not an owned single-link regular file: {lock_path}"
-            )
-    except OSError as exc:
-        if lock_descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.close(lock_descriptor)
-            lock_descriptor = None
-        if directory_descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.close(directory_descriptor)
-            directory_descriptor = None
-        raise NativeTestmonRepairError(f"cannot bind native testmon lifecycle lock {lock_path}: {exc}") from exc
-    try:
-        assert lock_descriptor is not None
-        with os.fdopen(lock_descriptor, "r+", encoding="utf-8") as handle:
-            lock_descriptor = None
-            deadline = time.monotonic() + max(0.0, timeout_s)
-            announced_wait = False
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError as exc:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise PytestResourceError(
-                            f"timed out waiting for native testmon lifecycle lock after {timeout_s:.1f}s"
-                        ) from exc
-                    if not announced_wait:
-                        handle.seek(0)
-                        holder = handle.read().strip() or "another verify invocation"
-                        sys.stderr.write(f"verify: waiting for native testmon lifecycle lock ({holder})\n")
-                        sys.stderr.flush()
-                        announced_wait = True
-                    time.sleep(min(0.05, remaining))
-            handle.seek(0)
-            handle.truncate()
-            handle.write(f"pid={os.getpid()}")
-            handle.flush()
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                handle.truncate()
-    finally:
-        if lock_descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.close(lock_descriptor)
-        if directory_descriptor is not None:
-            with contextlib.suppress(OSError):
-                os.close(directory_descriptor)
+        # The caller already holds the lane-local lock. lane_init acquires its
+        # linked-worktree locks in this same lane-then-common order, so waiting
+        # for the common source lock cannot form an inverse lock cycle.
+        with native_testmon_lifecycle_lock(linked_info[1], timeout_s=timeout_s, waiter_label="verify-source"):
+            yield True
+    except NativeTestmonLifecycleLockTimeoutError as exc:
+        del exc
+        yield False
+
+
+def _native_testmon_source_lock_timeout_s() -> float:
+    """Return the bounded wait used only while consulting a linked source."""
+    return _float_env(TESTMON_SOURCE_LOCK_TIMEOUT_ENV, DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S)
 
 
 def _anchor_verification_paths() -> None:
@@ -423,11 +369,13 @@ PYTEST_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S"
 PYTEST_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
 PYTEST_TERM_GRACE_ENV = "POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S"
 PYTEST_RESOURCE_INTERVAL_ENV = "POLYLOGUE_VERIFY_RESOURCE_INTERVAL_S"
+TESTMON_SOURCE_LOCK_TIMEOUT_ENV = "POLYLOGUE_VERIFY_TESTMON_SOURCE_LOCK_TIMEOUT_S"
 DEFAULT_PYTEST_HEARTBEAT_S = 30.0
 DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
+DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
 
 
 def _estimate_duration_from_history(
@@ -2752,6 +2700,10 @@ def build_verify_steps(
                         str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                     ],
                 ),
+                (
+                    "schema privacy registry",
+                    [sys.executable, "-m", "devtools.verify_schema_privacy"],
+                ),
             ]
         )
 
@@ -3062,6 +3014,16 @@ def _native_pytest_environment() -> dict[str, str | None]:
     }
 
 
+def _native_pytest_environment_candidates(
+    initial: Mapping[str, str | None] | None = None,
+) -> tuple[dict[str, str | None], ...]:
+    """Return the exact native environment candidates used by verify."""
+    environment = dict(_native_pytest_environment() if initial is None else initial)
+    if environment.get("HYPOTHESIS_PROFILE") != "default":
+        return environment, {**environment, "HYPOTHESIS_PROFILE": "default"}
+    return (environment,)
+
+
 def _native_environment_after_run(
     preparation: NativeTestmonPreparation,
     *,
@@ -3335,7 +3297,8 @@ def _main(argv: list[str] | None = None) -> int:
     runtime_data_paths: tuple[str, ...] = ()
     preparation: NativeTestmonPreparation | None = None
     testmon_mode: str | None = None
-    native_pytest_environment = _native_pytest_environment()
+    native_pytest_environments = _native_pytest_environment_candidates()
+    native_pytest_environment = native_pytest_environments[0]
     preparation_mutation_observation: CheckoutMutationObservation | None = None
     if pytest_enabled:
         assert base_commit is not None
@@ -3348,22 +3311,32 @@ def _main(argv: list[str] | None = None) -> int:
                 path for path in preparation_required_executable_paths if (ROOT / path).is_file()
             )
             runtime_data_paths = change_impact.runtime_data_paths
+
+            def source_lock_factory() -> contextlib.AbstractContextManager[bool]:
+                return _native_testmon_source_lifecycle_lock(
+                    ROOT,
+                    timeout_s=_native_testmon_source_lock_timeout_s(),
+                )
+
             preparation = prepare_native_testmon_environment(
                 ROOT,
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
+                source_lock_factory=source_lock_factory,
             )
             if (
                 preparation.selection_mode == "bootstrap"
-                and native_pytest_environment["HYPOTHESIS_PROFILE"] != "default"
+                and preparation.fallback_allowed
+                and len(native_pytest_environments) > 1
             ):
-                native_pytest_environment = {**native_pytest_environment, "HYPOTHESIS_PROFILE": "default"}
+                native_pytest_environment = native_pytest_environments[1]
                 preparation = prepare_native_testmon_environment(
                     ROOT,
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
+                    source_lock_factory=source_lock_factory,
                 )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)

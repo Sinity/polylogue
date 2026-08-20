@@ -15,7 +15,9 @@ from typing import Literal, TypeAlias
 import jsonschema
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, _walk_values
 from polylogue.schemas.field_stats.detection import is_dynamic_key
+from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
 
 AuditSeverity: TypeAlias = Literal["blocker", "review"]
 
@@ -41,6 +43,20 @@ _ABSOLUTE_PATH = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 _URL = re.compile(r"(?i)^https?://")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]|$)")
 _IDENTIFIER = re.compile(r"^(?:[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f-]{27,}|(?:rollout|session|agent)-)", re.I)
+
+
+def _redacted_value(value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"sha256:{digest};length={len(value)}"
+
+
+def _privacy_value_requires_redaction(value: str, *, path: str) -> bool:
+    return (
+        _UUID_RE.match(value) is not None
+        or _HEX_RE.match(value) is not None
+        or _looks_high_entropy_token(value)
+        or not _is_safe_enum_value(value, path=path)
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -71,11 +87,11 @@ class PromotionAuditReport:
         return tuple(item for item in self.findings if item.severity == "review")
 
     def grouped_review_items(self, *, sample_limit: int = 3) -> tuple[JSONDocument, ...]:
-        """Return a lossless, operator-sized view over repeated review values.
+        """Return an operator-sized view over repeated review values.
 
-        The full finding inventory remains in ``to_payload``.  This projection
-        merely prevents a repeated structural token from hiding the few values
-        an operator must actually inspect.
+        The full finding inventory remains in ``to_payload``. This projection
+        prevents repeated values from hiding the few categories and locations
+        an operator must inspect while preserving the same redaction policy.
         """
         grouped: dict[tuple[str, str], list[PromotionAuditFinding]] = {}
         for item in self.review_items:
@@ -157,14 +173,13 @@ def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[Promo
     findings = []
     for category, pattern in _SECRET_PATTERNS.items():
         if pattern.search(value):
-            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
             findings.append(
                 PromotionAuditFinding(
                     severity="blocker",
                     category=category,
                     artifact=artifact,
                     json_path=json_path,
-                    value=f"sha256:{digest};length={len(value)}",
+                    value=_redacted_value(value),
                 )
             )
     return findings
@@ -223,13 +238,18 @@ def _walk_artifact(
                             )
                         )
                         continue
+                    review_value = (
+                        _redacted_value(text)
+                        if key == "x-polylogue-values" and _privacy_value_requires_redaction(text, path=child_path)
+                        else text
+                    )
                     findings.append(
                         PromotionAuditFinding(
                             severity="review",
                             category=_review_category(key, text),
                             artifact=artifact,
                             json_path=child_path,
-                            value=text,
+                            value=review_value,
                         )
                     )
             _walk_artifact(child, artifact=artifact, json_path=child_path, findings=findings)
@@ -244,15 +264,25 @@ def _element_kinds(value: object) -> list[str]:
     return sorted(str(item.get("element_kind")) for item in value if isinstance(item, dict))
 
 
+def _element_schema_files(value: object) -> dict[str, object]:
+    if not isinstance(value, list):
+        return {}
+    return {
+        str(item.get("element_kind")): item.get("schema_file")
+        for item in value
+        if isinstance(item, dict) and item.get("element_kind")
+    }
+
+
 def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     """Run the enum-value privacy guard over every committed element schema.
 
     ``polylogue.schemas.audit.checks.check_privacy_guards`` catches UUIDs,
     hex ids, high-entropy tokens and otherwise-unsafe values recorded in
     ``x-polylogue-values`` annotations.  It is the sharper check for that
-    class -- and it ran nowhere.  ``devtools schema-audit`` is the only
-    caller, and that command is not part of any ``devtools verify`` gate,
-    so nothing enforced it on the path that actually publishes schemas.
+    class.  The required schema-bundle registry runs that predicate over
+    every committed package element; this publication audit maps its
+    blocker-shaped findings into the broader artifact report as well.
 
     That gap was not theoretical.  ``promote_cluster``'s samples path calls
     ``generate_schema_from_samples()``, which -- unlike the full ``generate``
@@ -281,12 +311,9 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     ``_secret_findings``'s specific secret patterns, since that is already a
     (differently named) blocker.
     """
-    import ast
-
     from polylogue.core.outcomes import OutcomeStatus
     from polylogue.schemas.audit.checks import check_privacy_guards
 
-    detail_re = re.compile(r"^(.*?): (UUID leak|hex-id leak|high-entropy token) (.+)$")
     findings: list[PromotionAuditFinding] = []
     for path in sorted(root.rglob("*.schema.json.gz")):
         artifact = str(path.relative_to(root))
@@ -300,29 +327,30 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
         result = check_privacy_guards(document)
         if result.status is not OutcomeStatus.ERROR:
             continue
-        for detail in result.details:
-            match = detail_re.match(detail)
-            if match is None:
-                # The generic "unsafe value" catch-all; already classified
-                # (as a review item, not a blocker) by _walk_artifact.
-                continue
-            json_path, _kind, rendered_value = match.groups()
-            try:
-                raw_value = ast.literal_eval(rendered_value)
-            except (ValueError, SyntaxError):
-                raw_value = rendered_value
-            if isinstance(raw_value, str) and any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
-                # Already reported under its specific secret category.
-                continue
-            findings.append(
-                PromotionAuditFinding(
-                    severity="blocker",
-                    category="unsafe_enum_value",
-                    artifact=artifact,
-                    json_path=json_path,
-                    value=detail,
+        for json_path, values in _walk_values(document):
+            for raw_value in values:
+                if _UUID_RE.match(raw_value):
+                    kind = "UUID leak"
+                elif _HEX_RE.match(raw_value):
+                    kind = "hex-id leak"
+                elif _looks_high_entropy_token(raw_value):
+                    kind = "high-entropy token"
+                else:
+                    # The generic "unsafe value" catch-all is already
+                    # classified as a review item by _walk_artifact.
+                    continue
+                if any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
+                    # Already reported under its specific secret category.
+                    continue
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="unsafe_enum_value",
+                        artifact=artifact,
+                        json_path=json_path,
+                        value=f"{json_path}: {kind} {_redacted_value(raw_value)}",
+                    )
                 )
-            )
     return findings
 
 
@@ -338,6 +366,20 @@ def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
     ``SchemaRegistry.replace_provider_packages`` keeps the two in step.
     """
     findings: list[PromotionAuditFinding] = []
+    package_paths = sorted(root.rglob("versions/*/package.json"))
+    for package_path in package_paths:
+        provider_dir = package_path.parent.parent.parent
+        if (provider_dir / "catalog.json").is_file():
+            continue
+        findings.append(
+            PromotionAuditFinding(
+                severity="blocker",
+                category="catalog_incoherent",
+                artifact=str(package_path.relative_to(root)),
+                json_path="$",
+                value="reason=provider_catalog_missing",
+            )
+        )
     for catalog_path in sorted(root.rglob("catalog.json")):
         provider_dir = catalog_path.parent
         relative = str(catalog_path.relative_to(root))
@@ -393,6 +435,22 @@ def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
                         artifact=relative,
                         json_path=f"$.packages[version={version}].elements",
                         value=f"catalog={catalog_kinds};package={manifest_kinds}",
+                    )
+                )
+            catalog_schema_files = _element_schema_files(entry.get("elements"))
+            manifest_schema_files = _element_schema_files(manifest.get("elements"))
+            for element_kind in sorted(set(catalog_schema_files) | set(manifest_schema_files)):
+                catalog_schema_file = catalog_schema_files.get(element_kind)
+                manifest_schema_file = manifest_schema_files.get(element_kind)
+                if catalog_schema_file == manifest_schema_file:
+                    continue
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="catalog_incoherent",
+                        artifact=relative,
+                        json_path=f"$.packages[version={version}].elements[element_kind={element_kind}].schema_file",
+                        value=f"catalog={catalog_schema_file!r};package={manifest_schema_file!r}",
                     )
                 )
             for field in ("sample_count", "first_seen", "last_seen"):
