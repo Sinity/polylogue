@@ -332,6 +332,7 @@ def test_version_mismatch_message_distinguishes_newer_and_older() -> None:
     assert str(SCHEMA_VERSION) in older
     assert newer != older
     assert "newer" in newer.lower()
+    assert "polylogue ops maintenance rebuild-index" in older
 
 
 def test_decision_for_unknown_version_is_explicit_mismatch(tmp_path: Path) -> None:

@@ -302,6 +302,16 @@ def _reissue_accepted_head_reparse_receipt(
     new_content_hash = bytes.fromhex(content_hash)
     if accepted_content_hash is not None and bytes(accepted_content_hash) == new_content_hash:
         return
+    source_lineage = (
+        store._ensure_source_conn()
+        .execute(
+            "SELECT baseline_raw_id, predecessor_raw_id FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        )
+        .fetchone()
+    )
+    if source_lineage is None:
+        raise RuntimeError(f"accepted-head reparse source evidence is missing for {raw_id}")
     record_revision_application_sync(
         store._conn,
         RevisionApplicationReceipt(
@@ -316,6 +326,8 @@ def _reissue_accepted_head_reparse_receipt(
             accepted_content_hash=new_content_hash,
             accepted_frontier_kind=str(head["accepted_frontier_kind"]),
             accepted_frontier=int(head["accepted_frontier"]),
+            baseline_raw_id=source_lineage[0],
+            predecessor_raw_id=source_lineage[1],
             append_end_offset=head["append_end_offset"],
             detail="reparse:accepted_head_content_correction",
         ),
@@ -356,30 +368,49 @@ def _write_parsed_precedence_result(
     current_stored_message_count = 0
     browser_precedence: BrowserCapturePrecedence = "default"
 
+    def write_with_reparse_receipt(*, force_replace: bool) -> None:
+        """Keep a reparse receipt and its session replacement in one index txn."""
+        starts_transaction = not store._conn.in_transaction
+        commits_transaction = manage_transaction and starts_transaction
+        if starts_transaction:
+            store._conn.execute("BEGIN")
+        try:
+            _reissue_accepted_head_reparse_receipt(
+                store,
+                raw_id=raw_id,
+                session_id=session_id,
+                content_hash=content_hash,
+                decided_at_ms=int(time.time() * 1000),
+            )
+            write_parsed_session_to_archive(
+                store._conn,
+                session,
+                content_hash=content_hash,
+                raw_id=raw_id,
+                merge_append=source_index < 0,
+                force_replace=force_replace,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                preacquired_attachment_blobs=preacquired_attachment_blobs,
+                # The helper owns the transaction boundary when requested;
+                # otherwise the caller owns it. Do not let the session
+                # writer's own ``with conn`` commit an outer transaction.
+                manage_transaction=False,
+                bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
+                defer_fts_rebuild=defer_fts_rebuild,
+                prepared=prepared,
+            )
+        except BaseException:
+            if commits_transaction:
+                store._conn.rollback()
+            raise
+        else:
+            if commits_transaction:
+                store._conn.commit()
+
     if revision_authoritative:
-        _reissue_accepted_head_reparse_receipt(
-            store,
-            raw_id=raw_id,
-            session_id=session_id,
-            content_hash=content_hash,
-            decided_at_ms=int(time.time() * 1000),
-        )
-        write_parsed_session_to_archive(
-            store._conn,
-            session,
-            content_hash=content_hash,
-            raw_id=raw_id,
-            merge_append=source_index < 0,
-            force_replace=source_index >= 0,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            manage_transaction=manage_transaction,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-            prepared=prepared,
-        )
+        write_with_reparse_receipt(force_replace=source_index >= 0)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
@@ -492,26 +523,7 @@ def _write_parsed_precedence_result(
             counts=counts,
         )
 
-    _reissue_accepted_head_reparse_receipt(
-        store,
-        raw_id=raw_id,
-        session_id=session_id,
-        content_hash=content_hash,
-        decided_at_ms=int(time.time() * 1000),
-    )
-    write_parsed_session_to_archive(
-        store._conn,
-        session,
-        content_hash=content_hash,
-        raw_id=raw_id,
-        merge_append=source_index < 0,
-        force_replace=browser_precedence == "replace",
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        preacquired_attachment_blobs=preacquired_attachment_blobs,
-        manage_transaction=manage_transaction,
-        prepared=prepared,
-    )
+    write_with_reparse_receipt(force_replace=browser_precedence == "replace")
     counts = store._write_counts(session)
     if (
         existing_raw_id
@@ -2555,9 +2567,10 @@ def apply_raw_revision_replay(
     ``manage_transaction=False`` batches this cohort's index.db writes
     and terminal source.db parse-state markers into the caller's open
     transaction/pending-state instead of committing them immediately
-    (polylogue-oikv) -- the caller must call ``commit()`` (or
-    ``rollback()`` on failure) itself, exactly once per batch, after
-    every cohort in the batch has been applied. ``commit()`` always
+    (polylogue-oikv). If the caller has not opened an index transaction yet,
+    this function starts one and deliberately leaves it open; the caller must
+    call ``commit()`` (or ``rollback()`` on failure) itself, exactly once per
+    batch, after every cohort in the batch has been applied. ``commit()`` always
     commits the index connection before flushing pending source markers
     (``_flush_pending_raw_parse_states``), so the "index commits, then
     source terminal markers commit" ordering invariant now holds at
@@ -2637,6 +2650,14 @@ def apply_raw_revision_replay(
     if not _is_frozen_candidate(store):
         for raw_id, refs in attachment_refs_by_raw_id.items():
             write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
+    if not manage_transaction and not store._conn.in_transaction:
+        # The reparse receipt is written immediately before its session rows.
+        # SAVEPOINT alone is not enough here: with no outer transaction SQLite
+        # releases the savepoint as a commit, so a later session-write failure
+        # would leave the accepted head advertising content that never landed.
+        # Establish the batch-owned boundary before either write and leave its
+        # disposition to the caller.
+        store._conn.execute("BEGIN")
     session_ids: set[str] = set()
     with store._conn if manage_transaction else nullcontext():
         existing_head = store._conn.execute(

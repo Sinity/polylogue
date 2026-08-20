@@ -18,14 +18,58 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
     """Exercise production repair, durable census storage, recovery, and receipt validation."""
     payload = proof.run_raw_authority_restart_proof(tmp_path, keep=True)
 
-    assert payload["schema"] == "polylogue.raw-authority-restart-proof.v1"
-    assert cast(str, payload["proof_id"]).startswith("raw-authority-restart-proof:")
+    assert payload["schema"] == "polylogue.raw-authority-restart-proof.v2"
+    assert cast(str, payload["proof_id"]).startswith("raw-authority-restart-proof:v2:")
     assert json.loads(Path(cast(str, payload["report_path"])).read_text()) == payload
+    retained_root = Path(cast(str, payload["work_root"]))
+    assert payload["case_archives_retained"] is True
+    retained_reparse_root = retained_root / "cases" / "accepted-head-reparse"
+    assert retained_reparse_root.is_dir()
     assert payload["production_limits"] == {
         "raw_artifact_limit": None,
         "max_payload_bytes": repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
         "parser_census_component_limit": repair.RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT,
     }
+    reparse = cast(dict[str, object], payload["accepted_head_reparse"])
+    assert reparse["ordering"] == ["reissue", "write"]
+    assert set(cast(list[str], reparse["application_decisions"])) == {
+        "selected_baseline",
+        "reparse_reaffirmation",
+    }
+    assert reparse["application_count"] == 2
+    assert reparse["head_content_hash"] == reparse["session_content_hash"]
+    assert reparse["repair_status"] == "ineligible"
+    assert reparse["repair_reason"] == "current accepted head does not exactly prove the normalized session"
+    assert reparse["source_raw_count_after_refusal"] == 1
+    with sqlite3.connect(retained_reparse_root / "source.db") as source_conn:
+        retained_raw_id, retained_membership_hash = source_conn.execute(
+            """
+            SELECT raw_id, normalized_content_hash
+            FROM raw_session_memberships
+            WHERE logical_source_key = 'chatgpt:reparse-browser'
+            """
+        ).fetchone()
+    with sqlite3.connect(retained_reparse_root / "index.db") as index_conn:
+        retained_applications = proof._application_receipt_rows(
+            index_conn,
+            raw_id=str(retained_raw_id),
+            logical_source_key="unknown:reparse-browser",
+        )
+        retained_head_hash, retained_session_hash = index_conn.execute(
+            """
+            SELECT h.accepted_content_hash, s.content_hash
+            FROM raw_revision_heads AS h
+            JOIN sessions AS s ON s.session_id = h.session_id
+            WHERE h.logical_source_key = 'unknown:reparse-browser'
+            """
+        ).fetchone()
+    assert len(retained_applications) == reparse["application_count"]
+    assert {str(row["decision"]) for row in retained_applications} == set(
+        cast(list[str], reparse["application_decisions"])
+    )
+    assert bytes(retained_head_hash) == bytes.fromhex(cast(str, reparse["head_content_hash"]))
+    assert bytes(retained_session_hash) == bytes.fromhex(cast(str, reparse["session_content_hash"]))
+    assert bytes(retained_membership_hash) == bytes.fromhex(cast(str, reparse["head_content_hash"]))
 
     cases = cast(list[dict[str, object]], payload["fault_matrix"])
     assert [case["boundary"] for case in cases] == [boundary.value for boundary in proof.FaultBoundary]
@@ -61,6 +105,21 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
         for case in cases
         for apply_pass in cast(list[dict[str, object]], case["apply_passes"])
     )
+
+
+def test_raw_authority_restart_proof_identity_includes_reparse_evidence(tmp_path: Path) -> None:
+    payload = proof.run_raw_authority_restart_proof(tmp_path)
+    assert payload["schema"] == "polylogue.raw-authority-restart-proof.v2"
+    discarded_root = Path(cast(str, payload["work_root"]))
+    assert payload["case_archives_retained"] is False
+    assert not (discarded_root / "cases").exists()
+    cases = cast(list[dict[str, object]], payload["fault_matrix"])
+    reparse_case = cast(dict[str, object], payload["accepted_head_reparse"])
+    changed_reparse_case = dict(reparse_case)
+    changed_reparse_case["repair_status"] = "changed-evidence"
+
+    assert payload["proof_id"] == proof._proof_identity(cases, reparse_case)
+    assert payload["proof_id"] != proof._proof_identity(cases, changed_reparse_case)
 
 
 def test_raw_authority_restart_proof_rejects_broken_ledger_conservation(tmp_path: Path) -> None:

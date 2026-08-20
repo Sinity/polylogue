@@ -9,8 +9,9 @@ import pytest
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
@@ -21,6 +22,7 @@ from polylogue.storage.raw_reconciler import (
     inspect_raw_authority_frontier,
 )
 from polylogue.storage.repair import inspect_quarantined_accepted_raws
+from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
@@ -232,7 +234,17 @@ def test_unified_frontier_applies_quarantine_refinement_without_incident_receipt
 
 @pytest.mark.parametrize(
     "mutation",
-    ["missing_blob", "blob_ref", "frontier", "session_hash", "application", "membership", "envelope"],
+    [
+        "missing_blob",
+        "blob_ref",
+        "frontier",
+        "application_frontier_kind",
+        "application_frontier",
+        "session_hash",
+        "application",
+        "membership",
+        "envelope",
+    ],
 )
 def test_unified_quarantine_strategy_rejects_mutated_authority_witness(tmp_path: Path, mutation: str) -> None:
     raw_id = _seed_invalid_head(tmp_path)
@@ -246,6 +258,10 @@ def test_unified_quarantine_strategy_rejects_mutated_authority_witness(tmp_path:
             source.execute("UPDATE blob_refs SET size_bytes = size_bytes + 1 WHERE ref_id = ?", (raw_id,))
         elif mutation == "frontier":
             index.execute("UPDATE raw_revision_heads SET accepted_frontier = accepted_frontier + 1")
+        elif mutation == "application_frontier_kind":
+            index.execute("UPDATE raw_revision_applications SET accepted_frontier_kind = 'semantic'")
+        elif mutation == "application_frontier":
+            index.execute("UPDATE raw_revision_applications SET accepted_frontier = accepted_frontier + 1")
         elif mutation == "session_hash":
             index.execute("UPDATE sessions SET content_hash = zeroblob(32)")
         elif mutation == "application":
@@ -263,6 +279,43 @@ def test_unified_quarantine_strategy_rejects_mutated_authority_witness(tmp_path:
 
     assert item.state is not RawAuthorityFrontierState.SAFELY_REKEYABLE
     assert _logical_state(tmp_path, raw_id) == before
+
+
+def test_reparse_receipt_and_head_roll_back_when_session_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed reparse leaves neither the reaffirmation receipt nor a moved head."""
+    raw_id = _seed_invalid_head(tmp_path)
+    before = {key: value for key, value in _logical_state(tmp_path, raw_id).items() if key.startswith("index.")}
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="repair-one",
+        messages=[ParsedMessage(provider_message_id="message-1", role=Role.USER, text="changed parser result")],
+    )
+
+    def fail_after_receipt(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("session write failed after receipt")
+
+    monkeypatch.setattr(revision_governance, "write_parsed_session_to_archive", fail_after_receipt)
+    with pytest.raises(RuntimeError, match="session write failed after receipt"):
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            archive.write_parsed_for_retained_raw(
+                session,
+                raw_id=raw_id,
+                source_path="repair-one.json",
+                acquired_at_ms=2,
+                revision_authoritative=True,
+            )
+
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT COUNT(*) FROM raw_revision_applications WHERE decision = 'reparse_reaffirmation'"
+        ).fetchone() == (0,)
+        assert index.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:repair-one'"
+        ).fetchone() == (raw_id,)
+    after = {key: value for key, value in _logical_state(tmp_path, raw_id).items() if key.startswith("index.")}
+    assert after == before
 
 
 def _seed_quarantined_raw_fanout(root: Path) -> tuple[str, tuple[tuple[str, str], ...]]:

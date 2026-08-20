@@ -1318,7 +1318,8 @@ def raw_replay_application_receipt(
         source = _rows(
             conn,
             f"""
-            SELECT raw_id, parsed_at_ms, parse_error
+            SELECT raw_id, source_revision, predecessor_raw_id, baseline_raw_id,
+                   append_end_offset, parsed_at_ms, parse_error
             FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id
             """,
             plan.input_raw_ids,
@@ -1326,7 +1327,7 @@ def raw_replay_application_receipt(
         memberships = _rows(
             conn,
             f"""
-            SELECT raw_id, logical_source_key, decision, decided_at_ms
+            SELECT raw_id, logical_source_key, source_revision, decision, decided_at_ms
             FROM raw_session_memberships
             WHERE raw_id IN ({marks}) ORDER BY raw_id, logical_source_key
             """,
@@ -1336,8 +1337,10 @@ def raw_replay_application_receipt(
             conn,
             f"""
             SELECT decision_id, raw_id, session_id, logical_source_key, decision,
-                   accepted_raw_id, hex(accepted_content_hash) AS accepted_content_hash,
-                   decided_at_ms
+                   source_revision, acquisition_generation, accepted_raw_id,
+                   accepted_source_revision, hex(accepted_content_hash) AS accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier, baseline_raw_id,
+                   predecessor_raw_id, append_end_offset, decided_at_ms
             FROM index_tier.raw_revision_applications
             WHERE raw_id IN ({marks}) ORDER BY raw_id, decision_id
             """,
@@ -1351,7 +1354,8 @@ def raw_replay_application_receipt(
                 SELECT logical_source_key, session_id, accepted_raw_id,
                        accepted_source_revision,
                        hex(accepted_content_hash) AS accepted_content_hash,
-                       accepted_frontier_kind, accepted_frontier
+                       accepted_frontier_kind, accepted_frontier,
+                       acquisition_generation, append_end_offset
                 FROM index_tier.raw_revision_heads
                 WHERE logical_source_key IN ({key_marks})
                 ORDER BY logical_source_key
@@ -1419,6 +1423,15 @@ def validate_raw_replay_application_receipt(
     elif head_keys != expected_keys:
         problems.append("accepted head keys do not match the immutable plan")
     input_raw_ids = set(plan.input_raw_ids)
+    source_by_raw_id = {str(row.get("raw_id")): row for row in source_rows}
+    if len(source_by_raw_id) != len(source_rows):
+        problems.append("source receipt contains duplicate raw ids")
+    membership_revisions_by_raw_and_key: dict[tuple[str, str], set[str]] = {}
+    for membership in membership_rows:
+        source_revision = membership.get("source_revision")
+        if source_revision is not None:
+            membership_key = (str(membership.get("raw_id")), str(membership.get("logical_source_key")))
+            membership_revisions_by_raw_and_key.setdefault(membership_key, set()).add(str(source_revision))
     witness = plan.authority_witness.get("memberships")
     expected_memberships = (
         {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in witness if isinstance(row, dict)}
@@ -1474,6 +1487,49 @@ def validate_raw_replay_application_receipt(
     for application in application_rows:
         key = str(application.get("logical_source_key"))
         application_keys.add(key)
+        raw_id = str(application.get("raw_id"))
+        source = source_by_raw_id.get(raw_id)
+        if source is None:
+            continue
+        source_revisions = set(membership_revisions_by_raw_and_key.get((raw_id, key), set()))
+        if not source_revisions:
+            source_revision = source.get("source_revision")
+            if source_revision is not None:
+                source_revisions.add(str(source_revision))
+        if not source_revisions:
+            problems.append(f"application has no source revision evidence for {raw_id}/{key}")
+        elif str(application.get("source_revision")) not in source_revisions:
+            problems.append(f"application source revision does not match membership evidence for {raw_id}/{key}")
+        for field in ("baseline_raw_id", "predecessor_raw_id"):
+            if application.get(field) != source.get(field):
+                problems.append(f"application {field} does not match source evidence for {raw_id}")
+        try:
+            decision = ApplicationDecision(str(application.get("decision")))
+            content_hash = application.get("accepted_content_hash")
+            content_hash_hex = None if content_hash is None else bytes.fromhex(str(content_hash)).hex()
+            decision_payload = {
+                "accepted_raw_id": application.get("accepted_raw_id"),
+                "accepted_source_revision": application.get("accepted_source_revision"),
+                "accepted_content_hash": content_hash_hex,
+                "accepted_frontier_kind": application.get("accepted_frontier_kind"),
+                "accepted_frontier": application.get("accepted_frontier"),
+                "acquisition_generation": application.get("acquisition_generation"),
+                "append_end_offset": application.get("append_end_offset"),
+                "baseline_raw_id": application.get("baseline_raw_id"),
+                "decision": decision.value,
+                "logical_source_key": application.get("logical_source_key"),
+                "predecessor_raw_id": application.get("predecessor_raw_id"),
+                "raw_id": application.get("raw_id"),
+                "session_id": application.get("session_id"),
+                "source_revision": application.get("source_revision"),
+            }
+            expected_decision_id = hashlib.sha256(
+                json.dumps(decision_payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            if str(application.get("decision_id")) != expected_decision_id:
+                problems.append(f"application decision identity is not exact for {raw_id}")
+        except (TypeError, ValueError):
+            problems.append(f"application decision identity is malformed for {raw_id}")
         head = heads_by_key.get(key)
         if head is None:
             problems.append(f"application receipt has no accepted head for {key}")
@@ -1490,6 +1546,15 @@ def validate_raw_replay_application_receipt(
         )
         if application_authority == head_authority:
             applications_matching_current_head.add(key)
+            for field in (
+                "accepted_source_revision",
+                "accepted_frontier_kind",
+                "accepted_frontier",
+                "acquisition_generation",
+                "append_end_offset",
+            ):
+                if application.get(field) != head.get(field):
+                    problems.append(f"application {field} does not match the accepted head for {key}")
         materialized_session = sessions_by_id.get(str(head.get("session_id")))
         if materialized_session is None:
             continue
