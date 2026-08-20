@@ -34,6 +34,15 @@ def test_validated_real_bd_path_accepts_absolute_binary(tmp_path: Path) -> None:
     assert guard._validated_real_bd_path(str(binary)) == binary
 
 
+def test_validated_real_bd_path_resolves_normal_shell_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binary = tmp_path / "bd"
+    binary.write_bytes(b"\x7fELF\x02\x01")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert guard._validated_real_bd_path("bd") == binary
+
+
 def test_validated_real_bd_path_rejects_wrapper_symlink() -> None:
     wrapper = Path(__file__).resolve().parents[3] / "scripts" / "bd"
 

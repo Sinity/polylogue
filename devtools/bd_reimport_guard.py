@@ -358,7 +358,10 @@ def _validated_real_bd_path(path: str) -> Path:
     """Validate the delegated Beads executable before taking the shared lock."""
     candidate = Path(path)
     if not candidate.is_absolute():
-        raise ValueError("real Beads binary path must be absolute")
+        resolved_on_path = shutil.which(path)
+        if resolved_on_path is None:
+            raise ValueError(f"real Beads binary is not on PATH: {path}")
+        candidate = Path(resolved_on_path)
     resolved = Path(os.path.realpath(candidate))
     wrapper = Path(os.path.realpath(_repo_root() / "scripts" / "bd"))
     if resolved == wrapper:
