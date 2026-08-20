@@ -704,17 +704,16 @@ def _archive_delegation_subtree_row(row: sqlite3.Row) -> ArchiveDelegationSubtre
 
 
 # polylogue-qsb4: both traversals recurse natively over the `delegations`
-# view (backed by `delegation_facts`, the richer typed source of truth --
-# see the module docstring on insights/delegation_work_evidence.py for why
-# this is a projection *source*, not a table to be replaced by the generic
-# work_evidence graph). One SQLite recursive CTE each -- no N+1, no
-# client-side stitching.
+# view (backed by `delegation_facts`, the richer typed source of truth). One
+# SQLite recursive CTE each -- no N+1, no client-side stitching.
 #
 # Quarantined edges (session_links' TopologyEdgeStatus cycle-break
 # precedent, reused verbatim: delegation_facts_source's `mapping_state =
-# 'quarantined'` rows already mark exactly this) are excluded from
-# traversal by construction (`mapping_state != 'quarantined'`), not
-# reinterpreted into a second vocabulary. A defensive visited-path guard
+# 'quarantined'` rows already mark exactly this) and authority-contradicted
+# rows are excluded from traversal by construction. The latter is not a
+# topological cycle, but it is an authoritative verdict that the inferred
+# parent edge is false; composing it would reintroduce rejected topology. A
+# defensive visited-path guard
 # (the `path`/`instr()` machinery below) is still carried on every step
 # despite that exclusion: quarantine is asserted by the topology resolver
 # over `session_links` alone, while `delegations` unions edges resolved by
@@ -724,7 +723,7 @@ def _archive_delegation_subtree_row(row: sqlite3.Row) -> ArchiveDelegationSubtre
 # edges could in principle compose into a cycle the quarantine pass never
 # saw; the guard makes that structurally unreachable rather than assumed
 # absent.
-_DELEGATION_ANCESTRY_SQL = """
+_DELEGATION_ANCESTRY_SQL = f"""
 WITH RECURSIVE ancestry(session_id, depth, child_session_id, mapping_state,
                          instruction_tool_use_block_id, link_confidence, link_method, path) AS (
     SELECT ?, 0, NULL, NULL, NULL, NULL, NULL, '/' || ? || '/'
@@ -740,7 +739,7 @@ WITH RECURSIVE ancestry(session_id, depth, child_session_id, mapping_state,
         a.path || d.parent_session_id || '/'
     FROM delegations d
     JOIN ancestry a ON d.child_session_id = a.session_id
-    WHERE d.mapping_state != 'quarantined'
+    WHERE {topology_status_composes_sql("d.mapping_state")}
       AND instr(a.path, '/' || d.parent_session_id || '/') = 0
 )
 SELECT session_id, depth, child_session_id, mapping_state, instruction_tool_use_block_id, link_confidence, link_method
@@ -748,7 +747,7 @@ FROM ancestry
 ORDER BY depth DESC
 """
 
-_DELEGATION_SUBTREE_SQL = """
+_DELEGATION_SUBTREE_SQL = f"""
 WITH RECURSIVE subtree(session_id, depth, parent_session_id, mapping_state,
                         instruction_tool_use_block_id, link_confidence, link_method, path) AS (
     SELECT ?, 0, NULL, NULL, NULL, NULL, NULL, '/' || ? || '/'
@@ -764,7 +763,7 @@ WITH RECURSIVE subtree(session_id, depth, parent_session_id, mapping_state,
         s.path || d.child_session_id || '/'
     FROM delegations d
     JOIN subtree s ON d.parent_session_id = s.session_id
-    WHERE d.mapping_state != 'quarantined'
+    WHERE {topology_status_composes_sql("d.mapping_state")}
       AND d.child_session_id IS NOT NULL
       AND instr(s.path, '/' || d.child_session_id || '/') = 0
 )
@@ -8093,11 +8092,11 @@ class ArchiveStore:
         """Resolve one `delegations` row (polylogue-y964) by its ref identity.
 
         Action-observed identity (resolved/unresolved): pass only
-        ``instruction_tool_use_block_id``. Edge-only identity (edge_only/
-        quarantined -- no parent-side dispatch action to key off): pass both
-        ``parent_session_id`` and ``child_session_id``; only rows with no
-        instruction (the edge-only mapping states) are eligible so this path
-        never shadows an action-observed row for the same pair.
+        ``instruction_tool_use_block_id``. Edge identity (edge_only,
+        quarantined, or authority-contradicted, all with no parent-side
+        dispatch action to key off): pass both ``parent_session_id`` and
+        ``child_session_id``. Only rows with no instruction are eligible, so
+        this path never shadows an action-observed row for the same pair.
         """
 
         if instruction_tool_use_block_id is not None:
@@ -8110,7 +8109,7 @@ class ArchiveStore:
                 """
                 SELECT * FROM delegations
                 WHERE parent_session_id = ? AND child_session_id = ?
-                  AND mapping_state IN ('edge_only', 'quarantined')
+                  AND mapping_state IN ('edge_only', 'quarantined', 'authority-contradicted')
                 LIMIT 1
                 """,
                 (parent_session_id, child_session_id),
@@ -8142,7 +8141,7 @@ class ArchiveStore:
             delegation_ref = f"delegation:{attempt.instruction_tool_use_block_id}"
         else:
             if attempt.child_session_id is None:
-                raise ValueError("edge-only delegation card requires a child session id")
+                raise ValueError("edge-identified delegation card requires a child session id")
             delegation_ref = "delegation:" + delegation_edge_object_id(
                 attempt.parent_session_id, attempt.child_session_id
             )
@@ -8366,7 +8365,8 @@ class ArchiveStore:
         session is always the last row (``depth=0``); its dispatchers follow
         at increasing depth, ordered root-first. Quarantined (cycle-break)
         edges are never traversed. Returns a single-row list (just the
-        origin) when ``session_id`` was never dispatched by anything."""
+        origin) when ``session_id`` was never dispatched by anything. Quarantined
+        and authority-contradicted edges are never composed into ancestry."""
 
         rows = self._conn.execute(_DELEGATION_ANCESTRY_SQL, (session_id, session_id)).fetchall()
         return [_archive_delegation_ancestry_row(row) for row in rows]
@@ -8376,8 +8376,9 @@ class ArchiveStore:
         dispatch descendants) in one recursive-CTE call, depth-annotated
         (polylogue-qsb4). The queried session is always the first row
         (``depth=0``), ordered breadth-first thereafter. Quarantined
-        (cycle-break) edges are never traversed. Returns a single-row list
-        (just the root) when ``session_id`` never dispatched anything."""
+        (cycle-break) and authority-contradicted edges are never traversed.
+        Returns a single-row list (just the root) when ``session_id`` never
+        dispatched anything."""
 
         rows = self._conn.execute(_DELEGATION_SUBTREE_SQL, (session_id, session_id)).fetchall()
         return [_archive_delegation_subtree_row(row) for row in rows]

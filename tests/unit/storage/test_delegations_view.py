@@ -977,6 +977,42 @@ def test_delegation_subtree_excludes_quarantined_edges(tmp_path: Path) -> None:
     assert [node.session_id for node in ancestry] == [child_id]
 
 
+def test_delegation_traversals_exclude_authority_contradicted_edges(tmp_path: Path) -> None:
+    """A persisted authority verdict remains readable but cannot become topology."""
+
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="contradicted-parent")
+    child_id = _insert_session(conn, native_id="contradicted-child")
+    _insert_session_link(
+        conn,
+        child_session_id=child_id,
+        dst_origin="claude-code-session",
+        dst_native_id="contradicted-parent",
+        parent_session_id=parent_id,
+        status="authority-contradicted",
+    )
+    conn.commit()
+    conn.close()
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        envelope = query_unit_envelope(
+            archive,
+            query_unit_request(expression="delegations where mapping_state:authority-contradicted", limit=10),
+        )
+        [attempt_payload] = envelope.items
+        card = archive.get_delegation_card(parent_session_id=parent_id, child_session_id=child_id)
+        subtree = archive.get_delegation_subtree(parent_id)
+        ancestry = archive.get_delegation_ancestry(child_id)
+
+    assert attempt_payload.model_dump(mode="json")["mapping_state"] == "authority-contradicted"
+    assert card is not None
+    surface_card = DelegationCardPayload.from_card(card)
+    assert surface_card.attempt.mapping_state == "authority-contradicted"
+    assert [node.session_id for node in subtree] == [parent_id]
+    assert [node.session_id for node in ancestry] == [child_id]
+
+
 def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: Path) -> None:
     """Two independent trivial-cohort (non-quarantined, `mapping_state=
     'resolved'`) edges can compose into a cycle that session_links' own

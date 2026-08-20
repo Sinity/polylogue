@@ -90,7 +90,7 @@ def materialize_snapshot(root: Path, destination: Path | None = None) -> Path:
     )
     for listing in listings:
         found = subprocess.run(listing, cwd=root, capture_output=True, check=True)
-        paths = [entry for entry in found.stdout.split(b"\0") if entry]
+        paths = [entry for entry in found.stdout.split(b"\0") if entry and (root / os.fsdecode(entry)).exists()]
         if not paths:
             continue
         # `--reflink=auto` rather than `=always`: copy-on-write where the
@@ -99,7 +99,7 @@ def materialize_snapshot(root: Path, destination: Path | None = None) -> Path:
         copy = subprocess.run(
             ["xargs", "-0", "cp", "-a", "--reflink=auto", "--parents", "-t", str(target)],
             cwd=root,
-            input=found.stdout,
+            input=b"\0".join(paths) + b"\0",
             capture_output=True,
             check=False,
         )

@@ -9,7 +9,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model, field_validator, model_validator
 from typing_extensions import Self, TypedDict
@@ -28,6 +28,7 @@ from polylogue.core.enums import (
 )
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.surfaces.action_affordances import (
     ActionAffordancePayload,
     CandidateReviewDecision,
@@ -2813,7 +2814,7 @@ class DelegationCardPayload(SurfacePayloadModel):
 #: (or must not) claim a fully resolved child -- keeps `resolve_ref` honest
 #: about what each `mapping_state` does and does not know (polylogue-y964
 #: vocabulary, polylogue-lph4 ObjectRef surface).
-DELEGATION_STATE_CAVEATS: dict[str, str] = {
+DELEGATION_STATE_CAVEATS: dict[DelegationMappingState, str] = {
     "unresolved": "dispatch action observed but no child session resolved yet (mapping_state=unresolved)",
     "edge_only": (
         "resolved child session with no discoverable parent-side dispatch action "
@@ -2824,6 +2825,9 @@ DELEGATION_STATE_CAVEATS: dict[str, str] = {
         "inferred parent link was overruled by authoritative hook evidence (mapping_state=authority-contradicted)"
     ),
 }
+
+if set(DELEGATION_STATE_CAVEATS) != set(get_args(DelegationMappingState)) - {"resolved"}:
+    raise RuntimeError("every non-resolved delegation mapping state requires a public caveat")
 
 
 class DelegationAncestryNodePayload(SurfacePayloadModel):
@@ -2934,20 +2938,160 @@ class SessionReadViewEnvelope(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
-class ObservedEventQueryRowPayload(SurfacePayloadModel):
-    """Shared terminal-query row for runtime-transform observed events."""
+_OBSERVED_EVENT_QUERY_ROW_MASK: tuple[tuple[str, str], ...] = (
+    ("kind", "kind"),
+    ("summary", "summary"),
+    ("delivery_state", "delivery_state"),
+)
+_OBSERVED_EVENT_QUERY_ROW_ANNOTATION_OVERRIDES: dict[str, object] = {
+    "kind": str,
+    "delivery_state": str,
+}
+_CONTEXT_SNAPSHOT_QUERY_ROW_MASK: tuple[tuple[str, str], ...] = (
+    ("boundary", "boundary"),
+    ("inheritance_mode", "inheritance_mode"),
+    ("metadata", "metadata"),
+)
+_CONTEXT_SNAPSHOT_QUERY_ROW_ANNOTATION_OVERRIDES: dict[str, object] = {
+    "boundary": str,
+    "inheritance_mode": str,
+    "metadata": dict[str, str],
+}
+_RUN_QUERY_ROW_MASK: tuple[tuple[str, str], ...] = (
+    ("native_session_id", "native_session_id"),
+    ("native_parent_session_id", "native_parent_session_id"),
+    ("provider_origin", "provider_origin"),
+    ("harness", "harness"),
+    ("role", "role"),
+    ("cwd", "cwd"),
+    ("git_branch", "git_branch"),
+    ("status", "status"),
+    ("confidence", "confidence"),
+)
+_RUN_QUERY_ROW_ANNOTATION_OVERRIDES: dict[str, object] = {
+    "harness": str,
+    "role": str,
+    "status": str,
+    "confidence": str,
+}
 
-    unit: Literal["observed-event"] = "observed-event"
-    event_ref: str
-    session_id: str
-    origin: str
-    title: str | None = None
-    kind: str
-    summary: str
-    delivery_state: str
-    subject_ref: str | None = None
-    object_refs: tuple[str, ...]
-    evidence_refs: tuple[str, ...]
+# These masks are the direct identity portion of the runtime-projection wire
+# families. Refs are intentionally computed below: public references use their
+# formatted wire form, while the canonical projection owns ObjectRef/EvidenceRef.
+_OBSERVED_EVENT_QUERY_ROW_BASE = _create_projection_model(
+    "ObservedEventQueryRowPayload",
+    ObservedEvent,
+    _OBSERVED_EVENT_QUERY_ROW_MASK,
+    annotation_overrides=_OBSERVED_EVENT_QUERY_ROW_ANNOTATION_OVERRIDES,
+    extra_fields={
+        "unit": (Literal["observed-event"], Field(default="observed-event")),
+        "event_ref": (str, Field(...)),
+        "session_id": (str, Field(...)),
+        "origin": (str, Field(...)),
+        "title": (str | None, Field(default=None)),
+        "subject_ref": (str | None, Field(default=None)),
+        "object_refs": (tuple[str, ...], Field(...)),
+        "evidence_refs": (tuple[str, ...], Field(...)),
+    },
+    default_overrides={"delivery_state": ...},
+    field_order=(
+        "unit",
+        "event_ref",
+        "session_id",
+        "origin",
+        "title",
+        "kind",
+        "summary",
+        "delivery_state",
+        "subject_ref",
+        "object_refs",
+        "evidence_refs",
+    ),
+)
+
+_CONTEXT_SNAPSHOT_QUERY_ROW_BASE = _create_projection_model(
+    "ContextSnapshotQueryRowPayload",
+    ContextSnapshot,
+    _CONTEXT_SNAPSHOT_QUERY_ROW_MASK,
+    annotation_overrides=_CONTEXT_SNAPSHOT_QUERY_ROW_ANNOTATION_OVERRIDES,
+    extra_fields={
+        "unit": (Literal["context-snapshot"], Field(default="context-snapshot")),
+        "snapshot_ref": (str, Field(...)),
+        "session_id": (str, Field(...)),
+        "origin": (str, Field(...)),
+        "title": (str | None, Field(default=None)),
+        "run_ref": (str, Field(...)),
+        "segment_refs": (tuple[str, ...], Field(...)),
+        "evidence_refs": (tuple[str, ...], Field(...)),
+    },
+    default_overrides={"inheritance_mode": ..., "metadata": ...},
+    field_order=(
+        "unit",
+        "snapshot_ref",
+        "session_id",
+        "origin",
+        "title",
+        "run_ref",
+        "boundary",
+        "inheritance_mode",
+        "segment_refs",
+        "evidence_refs",
+        "metadata",
+    ),
+)
+
+_RUN_QUERY_ROW_BASE = _create_projection_model(
+    "RunQueryRowPayload",
+    ProjectedRun,
+    _RUN_QUERY_ROW_MASK,
+    annotation_overrides=_RUN_QUERY_ROW_ANNOTATION_OVERRIDES,
+    extra_fields={
+        "unit": (Literal["run"], Field(default="run")),
+        "run_ref": (str, Field(...)),
+        "session_id": (str, Field(...)),
+        "origin": (str, Field(...)),
+        "title": (str | None, Field(default=None)),
+        "parent_run_ref": (str | None, Field(default=None)),
+        "agent_ref": (str | None, Field(default=None)),
+        "lineage_refs": (tuple[str, ...], Field(...)),
+        "transcript_ref": (str | None, Field(default=None)),
+        "evidence_refs": (tuple[str, ...], Field(...)),
+        "context_snapshot_ref": (str | None, Field(default=None)),
+    },
+    default_overrides={
+        "provider_origin": ...,
+        "harness": ...,
+        "role": ...,
+        "status": ...,
+        "confidence": ...,
+    },
+    field_order=(
+        "unit",
+        "run_ref",
+        "session_id",
+        "origin",
+        "title",
+        "native_session_id",
+        "native_parent_session_id",
+        "parent_run_ref",
+        "agent_ref",
+        "lineage_refs",
+        "provider_origin",
+        "harness",
+        "role",
+        "cwd",
+        "git_branch",
+        "status",
+        "confidence",
+        "transcript_ref",
+        "evidence_refs",
+        "context_snapshot_ref",
+    ),
+)
+
+
+class ObservedEventQueryRowPayload(_OBSERVED_EVENT_QUERY_ROW_BASE):  # type: ignore[valid-type,misc]
+    """Shared terminal-query row for runtime-transform observed events."""
 
     @field_validator("event_ref")
     @classmethod
@@ -2972,32 +3116,23 @@ class ObservedEventQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def from_row(cls, row: ArchiveObservedEventQueryRow) -> ObservedEventQueryRowPayload:
         event = row.event
-        return cls._from_row_generic(
-            row,
-            event_ref=event.event_ref.format(),
-            kind=event.kind,
-            summary=event.summary,
-            delivery_state=event.delivery_state,
-            subject_ref=event.subject_ref.format() if event.subject_ref is not None else None,
-            object_refs=tuple(ref.format() for ref in event.object_refs),
-            evidence_refs=tuple(ref.format() for ref in event.evidence_refs),
+        return cast(
+            ObservedEventQueryRowPayload,
+            cls._from_row_generic(
+                row,
+                event_ref=event.event_ref.format(),
+                kind=event.kind,
+                summary=event.summary,
+                delivery_state=event.delivery_state,
+                subject_ref=event.subject_ref.format() if event.subject_ref is not None else None,
+                object_refs=tuple(ref.format() for ref in event.object_refs),
+                evidence_refs=tuple(ref.format() for ref in event.evidence_refs),
+            ),
         )
 
 
-class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
+class ContextSnapshotQueryRowPayload(_CONTEXT_SNAPSHOT_QUERY_ROW_BASE):  # type: ignore[valid-type,misc]
     """Shared terminal-query row for runtime-transform context snapshots."""
-
-    unit: Literal["context-snapshot"] = "context-snapshot"
-    snapshot_ref: str
-    session_id: str
-    origin: str
-    title: str | None = None
-    run_ref: str
-    boundary: str
-    inheritance_mode: str
-    segment_refs: tuple[str, ...]
-    evidence_refs: tuple[str, ...]
-    metadata: dict[str, str]
 
     @field_validator("snapshot_ref", "run_ref")
     @classmethod
@@ -3017,41 +3152,23 @@ class ContextSnapshotQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def from_row(cls, row: ArchiveContextSnapshotQueryRow) -> ContextSnapshotQueryRowPayload:
         snapshot = row.snapshot
-        return cls._from_row_generic(
-            row,
-            snapshot_ref=snapshot.snapshot_ref.format(),
-            run_ref=snapshot.run_ref.format(),
-            boundary=snapshot.boundary,
-            inheritance_mode=snapshot.inheritance_mode,
-            segment_refs=tuple(ref.format() for ref in snapshot.segment_refs),
-            evidence_refs=tuple(ref.format() for ref in snapshot.evidence_refs),
-            metadata=dict(snapshot.metadata),
+        return cast(
+            ContextSnapshotQueryRowPayload,
+            cls._from_row_generic(
+                row,
+                snapshot_ref=snapshot.snapshot_ref.format(),
+                run_ref=snapshot.run_ref.format(),
+                boundary=snapshot.boundary,
+                inheritance_mode=snapshot.inheritance_mode,
+                segment_refs=tuple(ref.format() for ref in snapshot.segment_refs),
+                evidence_refs=tuple(ref.format() for ref in snapshot.evidence_refs),
+                metadata=dict(snapshot.metadata),
+            ),
         )
 
 
-class RunQueryRowPayload(SurfacePayloadModel):
+class RunQueryRowPayload(_RUN_QUERY_ROW_BASE):  # type: ignore[valid-type,misc]
     """Shared terminal-query row for runtime-transform runs."""
-
-    unit: Literal["run"] = "run"
-    run_ref: str
-    session_id: str
-    origin: str
-    title: str | None = None
-    native_session_id: str | None = None
-    native_parent_session_id: str | None = None
-    parent_run_ref: str | None = None
-    agent_ref: str | None = None
-    lineage_refs: tuple[str, ...]
-    provider_origin: str
-    harness: str
-    role: str
-    cwd: str | None = None
-    git_branch: str | None = None
-    status: str
-    confidence: str
-    transcript_ref: str | None = None
-    evidence_refs: tuple[str, ...]
-    context_snapshot_ref: str | None = None
 
     @field_validator("run_ref", "parent_run_ref", "agent_ref", "context_snapshot_ref")
     @classmethod
@@ -3076,24 +3193,29 @@ class RunQueryRowPayload(SurfacePayloadModel):
     @classmethod
     def from_row(cls, row: ArchiveRunQueryRow) -> RunQueryRowPayload:
         run = row.run
-        return cls._from_row_generic(
-            row,
-            run_ref=run.run_ref.format(),
-            native_session_id=run.native_session_id,
-            native_parent_session_id=run.native_parent_session_id,
-            parent_run_ref=run.parent_run_ref.format() if run.parent_run_ref is not None else None,
-            agent_ref=run.agent_ref.format() if run.agent_ref is not None else None,
-            lineage_refs=tuple(ref.format() for ref in run.lineage_refs),
-            provider_origin=run.provider_origin,
-            harness=run.harness,
-            role=run.role,
-            cwd=run.cwd,
-            git_branch=run.git_branch,
-            status=run.status,
-            confidence=run.confidence,
-            transcript_ref=run.transcript_ref.format() if run.transcript_ref is not None else None,
-            evidence_refs=tuple(ref.format() for ref in run.evidence_refs),
-            context_snapshot_ref=run.context_snapshot_ref.format() if run.context_snapshot_ref is not None else None,
+        return cast(
+            RunQueryRowPayload,
+            cls._from_row_generic(
+                row,
+                run_ref=run.run_ref.format(),
+                native_session_id=run.native_session_id,
+                native_parent_session_id=run.native_parent_session_id,
+                parent_run_ref=run.parent_run_ref.format() if run.parent_run_ref is not None else None,
+                agent_ref=run.agent_ref.format() if run.agent_ref is not None else None,
+                lineage_refs=tuple(ref.format() for ref in run.lineage_refs),
+                provider_origin=run.provider_origin,
+                harness=run.harness,
+                role=run.role,
+                cwd=run.cwd,
+                git_branch=run.git_branch,
+                status=run.status,
+                confidence=run.confidence,
+                transcript_ref=run.transcript_ref.format() if run.transcript_ref is not None else None,
+                evidence_refs=tuple(ref.format() for ref in run.evidence_refs),
+                context_snapshot_ref=run.context_snapshot_ref.format()
+                if run.context_snapshot_ref is not None
+                else None,
+            ),
         )
 
 

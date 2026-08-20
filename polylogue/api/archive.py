@@ -4638,12 +4638,12 @@ class PolylogueArchiveMixin:
     ) -> PublicRefResolutionPayload:
         """Resolve a ``delegation:`` ref against the polylogue-y964 `delegations`
         view. Two id shapes share one lookup: action-observed refs carry an
-        ``instruction_tool_use_block_id`` verbatim; edge-only refs carry the
+        ``instruction_tool_use_block_id`` verbatim; non-action refs carry the
         deterministic ``edge:<parent>::<child>`` relation identity (no
-        parent-side dispatch action exists to key off for edge_only/
-        quarantined attempts). Missing, unresolved, edge_only, and
-        quarantined states are returned as typed payloads, never silently
-        guessed."""
+        parent-side dispatch action exists to key off for edge_only,
+        quarantined, or authority-contradicted attempts). Missing, unresolved,
+        edge_only, quarantined, and authority-contradicted states are returned
+        as typed payloads, never silently guessed."""
 
         from polylogue.surfaces.payloads import (
             DELEGATION_STATE_CAVEATS,

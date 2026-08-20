@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import fields
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
+from polylogue.core.enums import DelegationMappingState
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -26,6 +27,12 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveRunQueryRow,
 )
 from polylogue.surfaces.payloads import (
+    _CONTEXT_SNAPSHOT_QUERY_ROW_ANNOTATION_OVERRIDES,
+    _CONTEXT_SNAPSHOT_QUERY_ROW_MASK,
+    _OBSERVED_EVENT_QUERY_ROW_ANNOTATION_OVERRIDES,
+    _OBSERVED_EVENT_QUERY_ROW_MASK,
+    _RUN_QUERY_ROW_ANNOTATION_OVERRIDES,
+    _RUN_QUERY_ROW_MASK,
     DELEGATION_STATE_CAVEATS,
     ActionQueryRowPayload,
     AssertionQueryRowPayload,
@@ -308,6 +315,52 @@ def test_delegation_card_payload_preserves_authority_contradicted_state() -> Non
     payload = DelegationCardPayload.from_card(card)
     assert payload.attempt.mapping_state == "authority-contradicted"
     assert "authority-contradicted" in DELEGATION_STATE_CAVEATS[payload.attempt.mapping_state]
+
+
+def test_every_non_resolved_delegation_state_has_a_public_caveat() -> None:
+    """A stored verdict cannot become a silent public card state."""
+    assert set(DELEGATION_STATE_CAVEATS) == set(get_args(DelegationMappingState)) - {"resolved"}
+
+
+@pytest.mark.parametrize(
+    ("source_model", "mask", "annotation_overrides", "payload_model", "wire_required"),
+    (
+        (
+            ObservedEvent,
+            _OBSERVED_EVENT_QUERY_ROW_MASK,
+            _OBSERVED_EVENT_QUERY_ROW_ANNOTATION_OVERRIDES,
+            ObservedEventQueryRowPayload,
+            frozenset({"delivery_state"}),
+        ),
+        (
+            ContextSnapshot,
+            _CONTEXT_SNAPSHOT_QUERY_ROW_MASK,
+            _CONTEXT_SNAPSHOT_QUERY_ROW_ANNOTATION_OVERRIDES,
+            ContextSnapshotQueryRowPayload,
+            frozenset({"inheritance_mode", "metadata"}),
+        ),
+        (
+            ProjectedRun,
+            _RUN_QUERY_ROW_MASK,
+            _RUN_QUERY_ROW_ANNOTATION_OVERRIDES,
+            RunQueryRowPayload,
+            frozenset({"provider_origin", "harness", "role", "status", "confidence"}),
+        ),
+    ),
+)
+def test_run_projection_payload_masks_preserve_canonical_field_contracts(
+    source_model: type[Any],
+    mask: tuple[tuple[str, str], ...],
+    annotation_overrides: dict[str, object],
+    payload_model: type[SurfacePayloadModel],
+    wire_required: frozenset[str],
+) -> None:
+    """Payload fields project source declarations without narrowing public wire values."""
+    for source_name, payload_name in mask:
+        source_field = source_model.model_fields[source_name]
+        payload_field = payload_model.model_fields[payload_name]
+        assert payload_field.annotation == annotation_overrides.get(source_name, source_field.annotation)
+        assert payload_field.is_required() == (payload_name in wire_required or source_field.is_required())
 
 
 def test_hybrid_row_converters_preserve_complete_wire_payloads() -> None:
