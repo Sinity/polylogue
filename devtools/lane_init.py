@@ -398,7 +398,7 @@ def _seed_testmon_graph(
     from devtools.testmon_bootstrap import (
         NativeTestmonRepairError,
         _validate_owned_state_parents,
-        native_testmon_lifecycle_locks,
+        native_testmon_lifecycle_lock,
     )
 
     try:
@@ -408,7 +408,13 @@ def _seed_testmon_graph(
         return f"graph seed refused unsafe owned testmon path ({exc}); first lane verify will bootstrap", False
 
     try:
-        with native_testmon_lifecycle_locks((root, worktree), waiter_label="lane-init"):
+        # Verify holds the lane lock while it briefly acquires the common
+        # source lock. Match that order here so a concurrent seed cannot hold
+        # the common lock while waiting for this lane.
+        with (
+            native_testmon_lifecycle_lock(worktree, waiter_label="lane-init"),
+            native_testmon_lifecycle_lock(root, waiter_label="lane-init"),
+        ):
             return _seed_testmon_graph_unlocked(root, worktree, attestation=attestation)
     except NativeTestmonRepairError as exc:
         return f"graph seed refused unsafe owned testmon path ({exc}); first lane verify will bootstrap", False

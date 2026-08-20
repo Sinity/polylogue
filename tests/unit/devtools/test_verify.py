@@ -3182,8 +3182,8 @@ def test_native_testmon_lifecycle_lock_serializes_checkout_state(tmp_path: Path)
     assert contender_entered.is_set()
 
 
-@pytest.mark.uses_real_clock("coordinates linked-worktree and main lifecycle locks")
-def test_linked_verify_lifecycle_lock_includes_main_checkout(
+@pytest.mark.uses_real_clock("coordinates linked-worktree source lifecycle locks")
+def test_linked_source_preparation_lifecycle_lock_includes_main_checkout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3200,25 +3200,75 @@ def test_linked_verify_lifecycle_lock_includes_main_checkout(
     release_holder = threading.Event()
     contender_entered = threading.Event()
 
-    def hold_linked_verify_locks() -> None:
-        with verify._native_testmon_lifecycle_lock(lane):
+    def hold_source_lock() -> None:
+        with verify._native_testmon_source_lifecycle_lock(lane):
             holder_entered.set()
             assert release_holder.wait(timeout=2)
 
-    def contend_for_main_lock() -> None:
-        with verify._native_testmon_lifecycle_lock(main):
+    def contend_for_source_lock() -> None:
+        with verify._native_testmon_source_lifecycle_lock(lane):
             contender_entered.set()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        holder = pool.submit(hold_linked_verify_locks)
+        holder = pool.submit(hold_source_lock)
         assert holder_entered.wait(timeout=2)
-        contender = pool.submit(contend_for_main_lock)
+        contender = pool.submit(contend_for_source_lock)
         assert not contender_entered.wait(timeout=0.05)
         release_holder.set()
         holder.result(timeout=2)
         contender.result(timeout=2)
 
     assert contender_entered.is_set()
+
+
+@pytest.mark.uses_real_clock("proves common source lock ends before linked verify lifecycle ends")
+def test_unrelated_linked_lane_proceeds_after_source_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = tmp_path / "main"
+    lane_a = tmp_path / "lane-a"
+    lane_b = tmp_path / "lane-b"
+    main.mkdir()
+    lane_a.mkdir()
+    lane_b.mkdir()
+
+    def linked_info(root: Path, **_kwargs: object) -> tuple[bool, Path] | None:
+        return (True, main) if root.resolve() in {lane_a.resolve(), lane_b.resolve()} else (False, main)
+
+    monkeypatch.setattr(verify, "linked_worktree_info", linked_info)
+    source_started = threading.Event()
+    release_source = threading.Event()
+    post_source_started = threading.Event()
+    release_full_lifecycle = threading.Event()
+    lane_b_entered = threading.Event()
+
+    def run_lane_a() -> None:
+        with verify._native_testmon_lifecycle_lock(lane_a):
+            with verify._native_testmon_source_lifecycle_lock(lane_a):
+                source_started.set()
+                assert release_source.wait(timeout=2)
+            post_source_started.set()
+            assert release_full_lifecycle.wait(timeout=2)
+
+    def run_lane_b() -> None:
+        with verify._native_testmon_lifecycle_lock(lane_b):
+            with verify._native_testmon_source_lifecycle_lock(lane_b):
+                lane_b_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        lane_a_future = pool.submit(run_lane_a)
+        assert source_started.wait(timeout=2)
+        lane_b_future = pool.submit(run_lane_b)
+        assert not lane_b_entered.wait(timeout=0.05)
+        release_source.set()
+        assert post_source_started.wait(timeout=2)
+        assert lane_b_entered.wait(timeout=2)
+        release_full_lifecycle.set()
+        lane_a_future.result(timeout=2)
+        lane_b_future.result(timeout=2)
+
+    assert lane_b_entered.is_set()
 
 
 def test_native_testmon_lifecycle_lock_refuses_symlink_without_touching_target(tmp_path: Path) -> None:

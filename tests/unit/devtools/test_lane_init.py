@@ -901,6 +901,11 @@ def test_seed_serializes_with_verifier_publication_and_preserves_later_write(
         "linked_worktree_info",
         lambda checkout, **_kwargs: (True, verifier_source) if checkout.resolve() == lane.resolve() else None,
     )
+    monkeypatch.setattr(
+        verify,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, verifier_source) if checkout.resolve() == lane.resolve() else None,
+    )
 
     def verifier_prepare() -> testmon_bootstrap.NativeTestmonPreparation:
         verifier_started.set()

@@ -82,7 +82,7 @@ from devtools.testmon_bootstrap import (
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
     linked_worktree_info,
-    native_testmon_lifecycle_locks,
+    native_testmon_lifecycle_lock,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
@@ -215,16 +215,29 @@ def _native_testmon_lifecycle_lock(
     *,
     timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
 ) -> Iterator[None]:
-    roots: tuple[Path, ...] = (repo_root,)
-    linked_info = linked_worktree_info(repo_root)
-    if linked_info is not None and linked_info[0]:
-        roots = (repo_root, linked_info[1])
     try:
-        # Linked-worktree verify binds, inspects, and copies the main graph
-        # while holding the lane lock. Acquire both checkout locks together in
-        # the same path order as lane-init so a main verify cannot observe the
-        # retained .bound-* hard link and no lock cycle can form.
-        with native_testmon_lifecycle_locks(roots, timeout_s=timeout_s, waiter_label="verify"):
+        with native_testmon_lifecycle_lock(repo_root, timeout_s=timeout_s, waiter_label="verify"):
+            yield
+    except NativeTestmonLifecycleLockTimeoutError as exc:
+        raise PytestResourceError(str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _native_testmon_source_lifecycle_lock(
+    repo_root: Path,
+    *,
+    timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
+) -> Iterator[None]:
+    """Protect linked-worktree source preparation without extending the lane lock."""
+    linked_info = linked_worktree_info(repo_root)
+    if linked_info is None or not linked_info[0]:
+        yield
+        return
+    try:
+        # The caller already holds the lane-local lock. lane_init acquires its
+        # linked-worktree locks in this same lane-then-common order, so waiting
+        # for the common source lock cannot form an inverse lock cycle.
+        with native_testmon_lifecycle_lock(linked_info[1], timeout_s=timeout_s, waiter_label="verify-source"):
             yield
     except NativeTestmonLifecycleLockTimeoutError as exc:
         raise PytestResourceError(str(exc)) from exc
@@ -3286,24 +3299,25 @@ def _main(argv: list[str] | None = None) -> int:
                 path for path in preparation_required_executable_paths if (ROOT / path).is_file()
             )
             runtime_data_paths = change_impact.runtime_data_paths
-            preparation = prepare_native_testmon_environment(
-                ROOT,
-                required_executable_paths=preparation_required_executable_paths,
-                pytest_profile=_pytest_profile(),
-                pytest_environment=native_pytest_environment,
-            )
-            if (
-                preparation.selection_mode == "bootstrap"
-                and preparation.fallback_allowed
-                and len(native_pytest_environments) > 1
-            ):
-                native_pytest_environment = native_pytest_environments[1]
+            with _native_testmon_source_lifecycle_lock(ROOT):
                 preparation = prepare_native_testmon_environment(
                     ROOT,
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
                 )
+                if (
+                    preparation.selection_mode == "bootstrap"
+                    and preparation.fallback_allowed
+                    and len(native_pytest_environments) > 1
+                ):
+                    native_pytest_environment = native_pytest_environments[1]
+                    preparation = prepare_native_testmon_environment(
+                        ROOT,
+                        required_executable_paths=preparation_required_executable_paths,
+                        pytest_profile=_pytest_profile(),
+                        pytest_environment=native_pytest_environment,
+                    )
             assert _ACTIVE_VERIFY_RUN is not None
             _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
         except NativeTestmonDeadlineError as exc:
