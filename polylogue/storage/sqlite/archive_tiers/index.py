@@ -451,7 +451,14 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # Grok, Antigravity, browser-capture, and Hermes titles. Existing parsed rows
 # require raw replay because an in-place schema operation cannot recover title
 # authorship from the stored untyped title text.
-INDEX_SCHEMA_VERSION = 69
+# polylogue-terra-p1: v70 persists the accepted frontier proven by each raw
+# revision application. These values are derived at application time and old
+# rows cannot be reconstructed safely from the mutable head, so v70 routes
+# existing index generations through semantic raw replay.
+# n6 n6rkz: v71 widens raw application identity to include every immutable
+# accepted-evidence field. Existing application rows must be replayed so their
+# decision ids and duplicate constraints are rebuilt from that complete shape.
+INDEX_SCHEMA_VERSION = 71
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -518,22 +525,46 @@ CREATE TABLE IF NOT EXISTS raw_revision_applications (
     accepted_content_hash    BLOB CHECK(
                                  accepted_content_hash IS NULL OR length(accepted_content_hash) = 32
                              ),
+    accepted_frontier_kind   TEXT CHECK(
+                                 accepted_frontier_kind IS NULL
+                                 OR accepted_frontier_kind IN ('byte', 'semantic')
+                             ),
+    accepted_frontier        INTEGER CHECK(
+                                 accepted_frontier IS NULL OR accepted_frontier >= 0
+                             ),
     baseline_raw_id          TEXT,
     predecessor_raw_id       TEXT,
     append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
     detail                   TEXT NOT NULL,
     decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0),
     CHECK(
-        (accepted_raw_id IS NULL AND accepted_source_revision IS NULL AND accepted_content_hash IS NULL)
+        (
+            accepted_raw_id IS NULL
+            AND accepted_source_revision IS NULL
+            AND accepted_content_hash IS NULL
+            AND accepted_frontier_kind IS NULL
+            AND accepted_frontier IS NULL
+        )
         OR
-        (accepted_raw_id IS NOT NULL AND accepted_source_revision IS NOT NULL AND accepted_content_hash IS NOT NULL)
+        (
+            accepted_raw_id IS NOT NULL
+            AND accepted_source_revision IS NOT NULL
+            AND accepted_content_hash IS NOT NULL
+            AND accepted_frontier_kind IS NOT NULL
+            AND accepted_frontier IS NOT NULL
+        )
     )
 ) STRICT;
 
+DROP INDEX IF EXISTS idx_raw_revision_applications_identity;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_revision_applications_identity
 ON raw_revision_applications(
-    raw_id, session_id, decision, source_revision,
-    COALESCE(accepted_source_revision, '')
+    raw_id, session_id, logical_source_key, decision, source_revision,
+    COALESCE(accepted_source_revision, ''), accepted_content_hash,
+    accepted_frontier_kind, accepted_frontier, acquisition_generation,
+    COALESCE(append_end_offset, -1), COALESCE(baseline_raw_id, ''),
+    COALESCE(predecessor_raw_id, '')
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_revision_applications_logical

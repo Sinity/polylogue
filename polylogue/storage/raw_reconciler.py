@@ -816,6 +816,21 @@ def _strategy_overrides(
                     witness=_browser_strategy_witness(browser_item),
                     input_raw_ids=_browser_strategy_raw_ids(browser_item),
                 )
+            elif browser_item.terminally_ineligible:
+                overrides[browser_item.raw_id] = _StrategyOverride(
+                    state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
+                    actuator=RawAuthorityActuator.NONE,
+                    reason=f"browser-origin strategy is terminally ineligible: {browser_item.reason}",
+                    witness=json_document(
+                        {
+                            "schema": "polylogue.raw-authority-strategy-witness.v1",
+                            "kind": "browser_origin_terminal_ineligible",
+                            "raw_id": browser_item.raw_id,
+                            "reason": browser_item.reason,
+                        }
+                    ),
+                    input_raw_ids=(browser_item.raw_id,),
+                )
         conflicts = inspect_browser_canonical_authority_conflicts(
             config,
             browser_chunk,
@@ -1346,6 +1361,76 @@ def _preview_plan_ids(root: Path, census_id: str) -> set[str]:
         }
 
 
+def _terminalized_preview_items(
+    root: Path,
+    census_id: str,
+    plan_ids: set[str],
+    current_items: tuple[RawAuthorityFrontierItem, ...],
+) -> dict[str, RawAuthorityFrontierItem]:
+    """Rebind an authorized copy-forward plan to a raced terminal refusal.
+
+    Durable blob excision is allowed to happen between dry-run and apply.  It
+    changes the current plan identity, so retain the authorized plan identity
+    only when the current census proves the same input raw is now a terminal
+    browser-origin refusal.  Other plan drift remains fail-closed.
+    """
+    if not plan_ids:
+        return {}
+    current_terminal = tuple(
+        item for item in current_items if item.strategy_witness.get("kind") == "browser_origin_terminal_ineligible"
+    )
+    rebound: dict[str, RawAuthorityFrontierItem] = {}
+    with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        for plan_id in sorted(plan_ids):
+            row = conn.execute(
+                """
+                SELECT input_digest, input_raw_ids_json, source_preconditions_json,
+                       index_preconditions_json, authority_witness_json
+                FROM raw_authority_plans
+                WHERE plan_id = ?
+                """,
+                (plan_id,),
+            ).fetchone()
+            if row is None:
+                continue
+            input_raw_ids = tuple(str(value) for value in json.loads(str(row["input_raw_ids_json"])))
+            witness = json.loads(str(row["authority_witness_json"]))
+            strategy_witness = witness.get("strategy_witness")
+            if (
+                witness.get("state") != RawAuthorityFrontierState.SAFELY_REKEYABLE.value
+                or witness.get("actuator") != RawAuthorityActuator.COPY_FORWARD_ORIGIN.value
+                or not isinstance(strategy_witness, dict)
+            ):
+                continue
+            strategy_item = strategy_witness.get("item")
+            if not isinstance(strategy_item, dict) or not isinstance(strategy_item.get("raw_id"), str):
+                continue
+            primary_raw_id = str(strategy_item["raw_id"])
+            candidates = tuple(
+                item
+                for item in current_terminal
+                if item.raw_id == primary_raw_id and item.strategy_witness.get("raw_id") == primary_raw_id
+            )
+            if len(candidates) != 1:
+                continue
+            current = candidates[0]
+            rebound[plan_id] = dataclasses.replace(
+                current,
+                state=RawAuthorityFrontierState(str(witness["state"])),
+                actuator=RawAuthorityActuator(str(witness["actuator"])),
+                raw_id=current.raw_id,
+                reason=str(witness["reason"]),
+                evidence_digest=str(row["input_digest"]),
+                input_raw_ids=input_raw_ids,
+                source_preconditions=json_document(json.loads(str(row["source_preconditions_json"]))),
+                index_preconditions=json_document(json.loads(str(row["index_preconditions_json"]))),
+                strategy_witness=json_document(witness["strategy_witness"]),
+                plan_id=plan_id,
+            )
+    return rebound
+
+
 def _apply_strategy(
     config: Config,
     item: RawAuthorityFrontierItem,
@@ -1366,6 +1451,7 @@ def _apply_strategy(
         _stage_quarantined_census_cohort,
         _verify_browser_origin_copy_forward_source_stage,
     )
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
     root = _archive_root(config)
     source_db = root / "source.db"
@@ -1472,30 +1558,62 @@ def _apply_strategy(
             with closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=ro", uri=True)) as proof_conn:
                 proof_conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 preview = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=proof_conn)
+            if preview.terminally_ineligible:
+                return json_document(
+                    {
+                        "strategy": item.actuator.value,
+                        "repaired_count": 0,
+                        "already_repaired_count": 0,
+                        "terminally_ineligible": True,
+                        "ineligible_reason": preview.reason,
+                    }
+                )
             if _browser_strategy_witness(preview) != item.strategy_witness:
                 raise RuntimeError("browser-origin strategy proof changed after plan authorization")
-            if preview.status == "eligible" and preview.repair_strategy == "copy_forward":
-                with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
-                    source_conn.execute("PRAGMA foreign_keys = ON")
-                    source_conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        if not preview.copy_forward_source_complete:
-                            _verify_browser_origin_copy_forward_source_stage(root, source_conn, preview)
-                            _stage_browser_origin_copy_forward_source(source_conn, preview)
-                        source_conn.commit()
-                    except Exception:
-                        source_conn.rollback()
-                        raise
-            elif preview.status == "eligible" and preview.repair_strategy == "restore_canonical_head":
-                pass
-            elif preview.status != "already_repaired":
-                raise RuntimeError(f"browser-origin strategy lost its exact proof: {preview.reason}")
+            try:
+                if preview.status == "eligible" and preview.repair_strategy == "copy_forward":
+                    with closing(sqlite3.connect(f"file:{source_db}?mode=rw", uri=True)) as source_conn:
+                        source_conn.execute("PRAGMA foreign_keys = ON")
+                        source_conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            if not preview.copy_forward_source_complete:
+                                _verify_browser_origin_copy_forward_source_stage(root, source_conn, preview)
+                                _stage_browser_origin_copy_forward_source(source_conn, preview)
+                            source_conn.commit()
+                        except Exception:
+                            source_conn.rollback()
+                            raise
+                elif preview.status == "eligible" and preview.repair_strategy == "restore_canonical_head":
+                    pass
+                elif preview.status != "already_repaired":
+                    raise RuntimeError(f"browser-origin strategy lost its exact proof: {preview.reason}")
+            except ContentExcisedError as exc:
+                return json_document(
+                    {
+                        "strategy": item.actuator.value,
+                        "repaired_count": 0,
+                        "already_repaired_count": 0,
+                        "terminally_ineligible": True,
+                        "ineligible_reason": str(exc),
+                    }
+                )
             with closing(sqlite3.connect(f"file:{config.current_db_path()}?mode=rw", uri=True)) as conn:
                 conn.execute("PRAGMA foreign_keys = ON")
                 conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     browser_locked = _inspect_browser_capture_origin_strategy(root, item.raw_id, conn=conn)
+                    if browser_locked.terminally_ineligible:
+                        conn.commit()
+                        return json_document(
+                            {
+                                "strategy": item.actuator.value,
+                                "repaired_count": 0,
+                                "already_repaired_count": 0,
+                                "terminally_ineligible": True,
+                                "ineligible_reason": browser_locked.reason,
+                            }
+                        )
                     if _browser_strategy_witness(browser_locked) != item.strategy_witness:
                         raise RuntimeError("browser-origin strategy proof changed under the apply transaction")
                     if browser_locked.status == "eligible":
@@ -1610,18 +1728,27 @@ def apply_raw_authority_frontier(
     current_by_plan = {item.plan_id: item for item in before_items}
     missing_current_ids = set(selected_plan_ids) - set(current_by_plan)
     if missing_current_ids:
-        raise RuntimeError(f"selected raw authority plans changed after preview: {sorted(missing_current_ids)}")
-    selected_items = tuple(current_by_plan[plan_id] for plan_id in selected_plan_ids)
+        terminalized = _terminalized_preview_items(root, preview_census_id, missing_current_ids, before_items)
+        unresolved_missing_ids = missing_current_ids - set(terminalized)
+        if unresolved_missing_ids:
+            raise RuntimeError(f"selected raw authority plans changed after preview: {sorted(unresolved_missing_ids)}")
+    else:
+        terminalized = {}
+    selected_items = tuple(
+        terminalized[plan_id] if plan_id in terminalized else current_by_plan[plan_id] for plan_id in selected_plan_ids
+    )
     if any(not item.executable for item in selected_items):
         raise RuntimeError("raw authority apply selected a non-executable judgment/reacquisition/debt plan")
     gap_items = tuple(item for item in before_items if item.state is not RawAuthorityFrontierState.PROVEN_CURRENT)
-    plans = tuple(_plan(item) for item in gap_items)
+    plan_items_by_id = {item.plan_id: item for item in gap_items}
+    plan_items_by_id.update({item.plan_id: item for item in selected_items})
+    plans = tuple(_plan(item) for item in plan_items_by_id.values())
     state_counts = _state_counts(before_items)
     apply_receipt = record_raw_authority_census(
         root,
         plans,
         selected_plan_ids=set(selected_plan_ids),
-        executable_plan_ids={item.plan_id for item in gap_items if item.executable},
+        executable_plan_ids={item.plan_id for item in plan_items_by_id.values() if item.executable},
         mode="apply",
         quiescent=True,
         scope={
@@ -1640,11 +1767,16 @@ def apply_raw_authority_frontier(
     for item in selected_items:
         try:
             strategy_receipt = _apply_strategy(config, item)
+            terminal = bool(strategy_receipt.get("terminally_ineligible", False))
             outcome = RawReplayPlanOutcome(
                 plan_id=item.plan_id,
                 input_raw_ids=item.input_raw_ids,
-                status=RawReplayPlanStatus.EXECUTED,
-                reason="shared raw-authority plan reached its strategy terminal state",
+                status=RawReplayPlanStatus.TERMINAL if terminal else RawReplayPlanStatus.EXECUTED,
+                reason=(
+                    "shared raw-authority plan was terminally ineligible"
+                    if terminal
+                    else "shared raw-authority plan reached its strategy terminal state"
+                ),
                 next_action="none",
                 application_receipt=json_document(
                     {

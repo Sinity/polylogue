@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
+import polylogue.storage.raw_reconciler as raw_reconciler
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import AssertionStatus, Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_authority import resolve_raw_authority_blocker
+from polylogue.storage.raw_authority import RawReplayPlanStatus, resolve_raw_authority_blocker
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierItem,
@@ -25,6 +28,7 @@ from polylogue.storage.raw_reconciler import (
 )
 from polylogue.storage.repair import (
     inspect_browser_canonical_authority_conflicts,
+    inspect_browser_capture_origin_mismatches,
     record_browser_canonical_authority_conflict_blockers,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -33,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     RevisionApplicationReceipt,
     record_revision_application_sync,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
 from polylogue.storage.sqlite.archive_tiers.user_write import mark_assertion_status
 
 
@@ -165,6 +170,38 @@ def _seed_mismatched_browser_head(root: Path, native_id: str = "browser-origin-o
             (raw_id,),
         )
     return raw_id
+
+
+def _seed_duplicate_browser_raw(root: Path) -> tuple[str, str, bytes]:
+    raw_id = _seed_mismatched_browser_head(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        duplicate_raw_id = archive.write_raw_payload(
+            provider=Provider.UNKNOWN,
+            payload=_browser_payload(),
+            source_path="browser-capture/chatgpt/duplicate.json",
+            acquired_at_ms=2,
+        )
+        archive.commit()
+    with closing(sqlite3.connect(root / "source.db")) as source:
+        blob_hash = bytes(
+            source.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        )
+        duplicate_hash = bytes(
+            source.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (duplicate_raw_id,)).fetchone()[0]
+        )
+        assert duplicate_hash == blob_hash
+    return raw_id, duplicate_raw_id, blob_hash
+
+
+def _mark_blob_excised(root: Path, blob_hash: bytes) -> None:
+    with closing(sqlite3.connect(root / "source.db")) as source, source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=blob_hash,
+            reason="focused browser copy-forward terminality proof",
+            actor="tests",
+            excised_at_ms=10,
+        )
 
 
 def _seed_legacy_browser_head_without_native_id(root: Path) -> str:
@@ -534,10 +571,13 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
         )
         source.commit()
     with closing(sqlite3.connect(root / "index.db")) as index, index:
-        accepted_hash = index.execute(
-            "SELECT accepted_content_hash FROM raw_revision_heads WHERE accepted_raw_id = ?",
+        accepted_hash, accepted_frontier_kind, accepted_frontier = index.execute(
+            """
+            SELECT accepted_content_hash, accepted_frontier_kind, accepted_frontier
+            FROM raw_revision_heads WHERE accepted_raw_id = ?
+            """,
             (semantic_raw_id,),
-        ).fetchone()[0]
+        ).fetchone()
         record_revision_application_sync(
             index,
             RevisionApplicationReceipt(
@@ -550,6 +590,8 @@ def _seed_semantic_superseded_sibling(root: Path, semantic_raw_id: str) -> str:
                 accepted_raw_id=semantic_raw_id,
                 accepted_source_revision=bytes(accepted_hash).hex(),
                 accepted_content_hash=bytes(accepted_hash),
+                accepted_frontier_kind=accepted_frontier_kind,
+                accepted_frontier=accepted_frontier,
                 detail="membership:superseded_equivalent",
             ),
             decided_at_ms=3,
@@ -606,6 +648,87 @@ def test_unified_frontier_applies_browser_origin_without_incident_receipt(tmp_pa
     assert not (tmp_path / "recovery").exists()
 
 
+def test_excised_duplicate_browser_hash_is_terminally_ineligible_during_inspection(tmp_path: Path) -> None:
+    raw_id, duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
+    _mark_blob_excised(tmp_path, blob_hash)
+
+    browser_item = inspect_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])[0]
+    assert browser_item.status == "ineligible"
+    assert browser_item.terminally_ineligible is True
+    assert "durably excised" in browser_item.reason
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    item = next(item for item in census.items if item.raw_id == raw_id)
+
+    assert item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
+    assert item.actuator is RawAuthorityActuator.NONE
+    assert item.executable is False
+    assert item.strategy_witness["kind"] == "browser_origin_terminal_ineligible"
+    assert "durably excised" in item.reason
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (duplicate_raw_id,)
+        ).fetchone() == (blob_hash,)
+
+
+def test_excised_duplicate_browser_hash_is_not_retryable_when_marked_after_preview(tmp_path: Path) -> None:
+    raw_id, _duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == raw_id)
+    assert selected.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
+    assert selected.executable
+
+    _mark_blob_excised(tmp_path, blob_hash)
+    report = apply_raw_authority_frontier(
+        _config(tmp_path),
+        preview_census_id=preview.census_id,
+        selected_plan_ids=(selected.plan_id,),
+    )
+
+    assert report.success
+    assert report.executed_plan_count == 1
+    assert report.retryable_plan_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        outcome_status = source.execute(
+            """
+            SELECT cp.outcome_status
+            FROM raw_authority_census_plans AS cp
+            WHERE cp.census_id = ? AND cp.plan_id = ?
+            """,
+            (report.census_id, selected.plan_id),
+        ).fetchone()
+        assert outcome_status == (RawReplayPlanStatus.TERMINAL.value,)
+    postflight = inspect_raw_authority_frontier(_config(tmp_path))
+    terminal_item = next(item for item in postflight.items if item.raw_id == raw_id)
+    assert terminal_item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
+    assert terminal_item.actuator is RawAuthorityActuator.NONE
+    assert terminal_item.executable is False
+    assert "durably excised" in terminal_item.reason
+
+
+def test_terminal_race_does_not_rebind_when_only_auxiliary_input_is_terminal(tmp_path: Path) -> None:
+    raw_id, _duplicate_raw_id, blob_hash = _seed_duplicate_browser_raw(tmp_path)
+    preview = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in preview.items if item.raw_id == raw_id)
+    auxiliary_raw_id = next(raw_id_value for raw_id_value in selected.input_raw_ids if raw_id_value != raw_id)
+
+    _mark_blob_excised(tmp_path, blob_hash)
+    current_terminal = next(
+        item for item in inspect_raw_authority_frontier(_config(tmp_path)).items if item.raw_id == raw_id
+    )
+    auxiliary_terminal = dataclasses.replace(current_terminal, raw_id=auxiliary_raw_id)
+    with patch.object(
+        raw_reconciler,
+        "_frontier_items",
+        return_value=((auxiliary_terminal,), 1, 0),
+    ):
+        with pytest.raises(RuntimeError, match="selected raw authority plans changed after preview"):
+            apply_raw_authority_frontier(
+                _config(tmp_path),
+                preview_census_id=preview.census_id,
+                selected_plan_ids=(selected.plan_id,),
+            )
+
+
 def test_unified_frontier_strategy_uses_the_selected_active_generation(tmp_path: Path) -> None:
     raw_id = _seed_mismatched_browser_head(tmp_path)
     active_dir = tmp_path / "generations" / "active"
@@ -652,6 +775,63 @@ def test_unified_frontier_restores_equivalent_canonical_browser_head(tmp_path: P
         RawAuthorityFrontierState.PROVEN_CURRENT.value,
         RawAuthorityFrontierState.SUPERSEDED.value,
     }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "accepted_frontier = accepted_frontier + 1",
+        "accepted_frontier_kind = 'semantic'",
+        "append_end_offset = 1",
+    ],
+)
+def test_canonical_head_restore_rejects_mutated_persisted_evidence(tmp_path: Path, mutation: str) -> None:
+    mismatched_raw_id = _seed_mismatched_browser_head(tmp_path)
+    canonical_raw_id = _seed_equivalent_canonical_head(tmp_path, mismatched_raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        head_before = index.execute(
+            """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset, decided_at_ms
+            FROM raw_revision_heads WHERE logical_source_key = ?
+            """,
+            ("chatgpt:browser-origin-one",),
+        ).fetchone()
+        assert head_before is not None
+        updated = index.execute(
+            f"""
+            UPDATE raw_revision_applications
+            SET {mutation}
+            WHERE raw_id = ? AND logical_source_key = ? AND decision = 'selected_baseline'
+            """,
+            (canonical_raw_id, "chatgpt:browser-origin-one"),
+        )
+        assert updated.rowcount == 1
+        assert (
+            index.execute(
+                """
+            SELECT logical_source_key, session_id, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   accepted_frontier_kind, accepted_frontier,
+                   acquisition_generation, append_end_offset, decided_at_ms
+            FROM raw_revision_heads WHERE logical_source_key = ?
+            """,
+                ("chatgpt:browser-origin-one",),
+            ).fetchone()
+            == head_before
+        )
+
+    browser_item = inspect_browser_capture_origin_mismatches(_config(tmp_path), [mismatched_raw_id])[0]
+    assert browser_item.status == "ineligible"
+    assert "canonical logical source" in browser_item.reason
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    selected = next(item for item in census.items if item.raw_id == mismatched_raw_id)
+    assert selected.state is RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT
+    assert selected.actuator is RawAuthorityActuator.REQUEST_JUDGMENT
+    assert selected.executable is False
 
 
 @pytest.mark.parametrize("authority", ["quarantined", "byte_proven"])
@@ -721,6 +901,54 @@ def test_inspect_conflicts_semantic_hash_divergence_evidence(tmp_path: Path) -> 
     assert item.divergent_message_index is None
     assert item.divergence_note is not None and "semantic frontier" in item.divergence_note
     assert item.evidence_digest is not None
+
+
+def test_semantic_browser_copy_requires_application_frontier_to_match_head(tmp_path: Path) -> None:
+    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
+    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        row = index.execute(
+            """
+            SELECT raw_id, session_id, logical_source_key, source_revision,
+                   acquisition_generation, decision, accepted_raw_id,
+                   accepted_source_revision, accepted_content_hash,
+                   baseline_raw_id, predecessor_raw_id, append_end_offset
+            FROM raw_revision_applications
+            WHERE raw_id = ? AND decision = 'selected_baseline'
+            """,
+            (semantic_raw_id,),
+        ).fetchone()
+        assert row is not None
+        receipt = RevisionApplicationReceipt(
+            raw_id=str(row[0]),
+            session_id=str(row[1]),
+            logical_source_key=str(row[2]),
+            source_revision=str(row[3]),
+            acquisition_generation=int(row[4]),
+            decision=ApplicationDecision(str(row[5])),
+            accepted_raw_id=str(row[6]),
+            accepted_source_revision=str(row[7]),
+            accepted_content_hash=bytes(row[8]),
+            accepted_frontier_kind="semantic",
+            accepted_frontier=2,
+            baseline_raw_id=str(row[9]) if row[9] is not None else None,
+            predecessor_raw_id=str(row[10]) if row[10] is not None else None,
+            append_end_offset=int(row[11]) if row[11] is not None else None,
+        )
+        index.execute(
+            """
+            UPDATE raw_revision_applications
+            SET accepted_frontier_kind = 'semantic', accepted_frontier = ?, decision_id = ?
+            WHERE raw_id = ? AND decision = 'selected_baseline'
+            """,
+            (receipt.accepted_frontier, receipt.decision_id, semantic_raw_id),
+        )
+        index.commit()
+
+    item = inspect_browser_capture_origin_mismatches(_config(tmp_path), [raw_id])[0]
+
+    assert item.status == "ineligible"
+    assert "canonical logical source" in item.reason
 
 
 def test_unified_frontier_conflict_requires_typed_judgment_then_resumes_same_evidence(tmp_path: Path) -> None:

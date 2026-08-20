@@ -958,6 +958,24 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # this parser-semantics-dependent, not a constraint-only widening.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=70,
+        # polylogue-terra-p1: raw_revision_applications now persists the
+        # accepted frontier proven by each application receipt. Existing rows
+        # cannot be populated from raw_revision_heads without confusing the
+        # current mutable head with historical application evidence, so this
+        # schema change requires semantic raw replay rather than a clone-safe
+        # table copy-forward.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=71,
+        # n6 n6rkz: raw application decision ids now bind all immutable
+        # accepted-evidence fields, and the semantic duplicate index follows
+        # that same shape. Existing rows need raw replay to receive the new
+        # identities without treating a mutable head as historical evidence.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

@@ -20,6 +20,9 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider, Role
@@ -97,6 +100,115 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
         "raw_revision_heads.accepted_content_hash went stale against sessions.content_hash; "
         "validate_raw_replay_application_receipt rejects exactly this mismatch"
     )
+    with sqlite3.connect(tmp_path / "source.db") as source_conn, sqlite3.connect(tmp_path / "index.db") as index_conn:
+        source_lineage = source_conn.execute(
+            "SELECT baseline_raw_id, predecessor_raw_id FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        reparse_lineage = index_conn.execute(
+            """
+            SELECT baseline_raw_id, predecessor_raw_id
+            FROM raw_revision_applications
+            WHERE raw_id = ? AND decision = 'reparse_reaffirmation'
+            """,
+            (raw_id,),
+        ).fetchone()
+    assert source_lineage is not None
+    assert reparse_lineage == source_lineage
+
+
+def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(tmp_path: Path) -> None:
+    """A batched replay cannot commit its reparse receipt before the session rows."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=PAYLOAD,
+            source_path=SOURCE_PATH,
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                LOGICAL_KEY,
+                RawRevisionKind.FULL,
+                hashlib.sha256(PAYLOAD).hexdigest(),
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        before = _hashes(tmp_path)
+        before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+
+        with patch(
+            "polylogue.storage.sqlite.archive_tiers.revision_governance.write_parsed_session_to_archive",
+            side_effect=RuntimeError("synthetic session-write failure"),
+        ):
+            with pytest.raises(RuntimeError, match="synthetic session-write failure"):
+                archive.apply_raw_revision_replay(
+                    plan,
+                    {raw_id: _session("corrected parse")},
+                    acquired_at_ms=2,
+                    manage_transaction=False,
+                )
+
+        assert archive._conn.in_transaction
+        archive.rollback()
+        assert _hashes(tmp_path) == before
+        assert (
+            archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+            == before_receipt_count
+        )
+
+
+def test_batched_retained_reparse_keeps_receipt_uncommitted_with_failed_session_write(tmp_path: Path) -> None:
+    """The grouped ingest route opens its index batch before reaffirming a head."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=PAYLOAD,
+            source_path=SOURCE_PATH,
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                LOGICAL_KEY,
+                RawRevisionKind.FULL,
+                hashlib.sha256(PAYLOAD).hexdigest(),
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        before = _hashes(tmp_path)
+        before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+
+        with patch(
+            "polylogue.storage.sqlite.archive_tiers.revision_governance.write_parsed_session_to_archive",
+            side_effect=RuntimeError("synthetic session-write failure"),
+        ):
+            with pytest.raises(RuntimeError, match="synthetic session-write failure"):
+                archive.write_parsed_for_retained_raw_result(
+                    _session("corrected parse"),
+                    raw_id=raw_id,
+                    source_path=SOURCE_PATH,
+                    acquired_at_ms=2,
+                    manage_transaction=False,
+                )
+
+        assert archive._conn.in_transaction
+        archive.rollback()
+        assert _hashes(tmp_path) == before
+        assert (
+            archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+            == before_receipt_count
+        )
 
 
 def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path) -> None:

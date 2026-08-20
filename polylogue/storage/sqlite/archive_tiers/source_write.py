@@ -66,17 +66,19 @@ def pending_raw_logical_source_key(*, origin: Origin | str, source_path: str, so
     return f"{PENDING_RAW_LOGICAL_SOURCE_PREFIX}{origin_value}:{source_index}:{source_path}:{raw_id}"
 
 
-def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
+def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes, *, schema: str = "main") -> bool:
     """Return ``True`` if ``blob_hash`` is recorded in the durable excision ledger.
 
     A cheap primary-key lookup; a no-op fast path when the table does not
     exist (an archive whose ``source.db`` predates migration 010) or is
     empty (the overwhelming common case -- excision is rare).
     """
-    if not _table_exists(conn, "excised_content"):
+    if schema not in {"main", "source"}:
+        raise ValueError(f"unsupported source schema: {schema}")
+    if not _table_exists(conn, "excised_content", schema=schema):
         return False
     row = conn.execute(
-        "SELECT 1 FROM excised_content WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
+        f"SELECT 1 FROM {schema}.excised_content WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
         (blob_hash,),
     ).fetchone()
     return row is not None
@@ -615,6 +617,8 @@ def insert_reconstructed_raw_row(
         raise ValueError(f"unsupported source schema: {schema}")
     if len(row.blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    if is_blob_hash_excised(conn, row.blob_hash, schema=schema):
+        raise ContentExcisedError(blob_hash=row.blob_hash, source_path=row.source_path)
 
     columns = {str(info[1]) for info in conn.execute(f"PRAGMA {schema}.table_info(raw_sessions)")}
     names = [
