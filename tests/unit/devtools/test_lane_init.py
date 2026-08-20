@@ -234,6 +234,76 @@ def test_main_provisions_and_verifies_a_real_lane_from_a_poisoned_coordinator(tm
     assert "give this checkout its own venv" in foreign_guard.stderr
 
 
+def test_main_seed_then_verifier_preparation_reuses_the_primary_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lane-init command boundary leaves the real verifier warm."""
+    from devtools.testmon_bootstrap import prepare_native_testmon_environment, testmon_environment_digest
+
+    coordinator = tmp_path / "coordinator"
+    lane = tmp_path / "lane"
+    project_root = Path(__file__).resolve().parents[3]
+    subprocess.run(
+        ["git", "clone", "--shared", str(project_root), str(coordinator)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    digest_inputs = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": None}
+    primary = testmon_environment_digest(
+        coordinator,
+        pytest_profile="correctness=complete",
+        pytest_environment=digest_inputs,
+    )
+    _certified_graph_with(coordinator, primary)
+
+    monkeypatch.setattr(lane_init, "repo_root", lambda: coordinator)
+    monkeypatch.setattr(lane_init, "coordinator_base_interpreter", lambda _root: Path(sys.executable))
+    monkeypatch.setattr(lane_init, "_provision_venv", lambda worktree, _interpreter=None: None)
+    monkeypatch.setattr(lane_init, "_interpreter_guard", lambda _worktree, _expected: None)
+    monkeypatch.setattr(lane_init, "_guard_check", lambda _worktree: None)
+    monkeypatch.setattr(lane_init, "lane_environment_attestation", lambda _worktree: _attestation(primary))
+    original_run = lane_init._run
+
+    def run_lane_verify(
+        cmd: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
+        if cmd[:4] == [str(lane / ".venv" / "bin" / "python"), "-m", "devtools", "workspace"]:
+            return CompletedProcess(cmd, 0, "", "")
+        return original_run(cmd, cwd=cwd, env=env)
+
+    monkeypatch.setattr(lane_init, "_run", run_lane_verify)
+
+    assert (
+        lane_init.main(
+            [
+                str(lane),
+                "--branch",
+                "feature/test/seeded-verifier",
+                "--base",
+                "HEAD",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    record = json.loads((coordinator / lane_init.LEDGER_RELPATH).read_text(encoding="utf-8").splitlines()[-1])
+    assert record["testmon_warm"] is True
+    preparation = prepare_native_testmon_environment(
+        lane,
+        pytest_profile="correctness=complete",
+        pytest_environment=digest_inputs,
+    )
+    assert preparation.environment_name == primary
+    assert preparation.selection_mode == "affected"
+    assert preparation.copied_from is None
+
+
 # ---------------------------------------------------------------------------
 # Interpreter pinning (polylogue-l218h)
 # ---------------------------------------------------------------------------

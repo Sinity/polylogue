@@ -587,17 +587,18 @@ def inspect_native_testmon_environment(
     *,
     environment_name: str,
     required_executable_paths: Sequence[str] = (),
+    data_fd: int | None = None,
     deadline_monotonic: float | None = None,
 ) -> NativeTestmonState:
     """Validate one native environment without interpreting plugin internals."""
     _ensure_deadline(deadline_monotonic)
     sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
-    if not data_path.exists():
+    if data_fd is None and not data_path.exists():
         if any(path.exists() or path.is_symlink() for path in sidecars):
             return NativeTestmonState("invalid", "SQLite sidecars exist without the owned database")
         return NativeTestmonState("absent", "native testmon database is absent")
     try:
-        state = data_path.lstat()
+        state = os.fstat(data_fd) if data_fd is not None else data_path.lstat()
     except OSError as exc:
         return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
     if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
@@ -953,11 +954,11 @@ def _atomic_copy_sqlite_database(
     destination_directory_fd: int | None = None
     temporary_fd: int | None = None
     temporary_name = f".{destination.name}.copy-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    publication_name = f".{destination.name}.publish-{os.getpid()}-{uuid.uuid4().hex}.tmp"
     try:
         source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
         source_path = _owned_testmon_child(source_directory_fd, source.name)
-        temporary = _owned_testmon_child(destination_directory_fd, temporary_name)
         destination_name = destination.name
         temporary_fd = os.open(
             temporary_name,
@@ -989,15 +990,40 @@ def _atomic_copy_sqlite_database(
                 sleep=0.05,
             )
         _ensure_deadline(deadline_monotonic)
+        # Validate through the held descriptor.  Reopening ``temporary`` by
+        # name here would allow a replacement of that directory entry to
+        # substitute a different database between the copy and validation.
         copied = inspect_native_testmon_environment(
-            temporary,
+            temporary_sqlite_path,
             environment_name=environment_name,
             required_executable_paths=required_executable_paths,
+            data_fd=temporary_fd,
             deadline_monotonic=deadline_monotonic,
         )
         if not copied.valid:
             raise NativeTestmonRepairError(f"copied main-checkout database failed validation: {copied.reason}")
         os.fsync(temporary_fd)
+        # Bind a second directory entry to the validated inode while the
+        # descriptor is still held.  Publication must not rename the mutable
+        # temporary pathname: a valid, differently-marked database could be
+        # substituted there after descriptor-bound validation.
+        os.link(
+            temporary_sqlite_path,
+            publication_name,
+            dst_dir_fd=destination_directory_fd,
+            follow_symlinks=True,
+        )
+        validated_identity = os.fstat(temporary_fd)
+        publication_identity = os.stat(
+            publication_name,
+            dir_fd=destination_directory_fd,
+            follow_symlinks=False,
+        )
+        if (validated_identity.st_dev, validated_identity.st_ino) != (
+            publication_identity.st_dev,
+            publication_identity.st_ino,
+        ):
+            raise NativeTestmonRepairError("validated SQLite publication inode changed")
         # Remove the DESTINATION's sidecars before the replace: a stale -wal
         # from a previous database under the same name is read as this new
         # database's write-ahead log, and quick_check then fails with page
@@ -1007,7 +1033,7 @@ def _atomic_copy_sqlite_database(
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(f"{destination_name}{suffix}", dir_fd=destination_directory_fd)
         os.replace(
-            temporary_name,
+            publication_name,
             destination_name,
             src_dir_fd=destination_directory_fd,
             dst_dir_fd=destination_directory_fd,
@@ -1022,6 +1048,8 @@ def _atomic_copy_sqlite_database(
         if destination_directory_fd is not None:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(temporary_name, dir_fd=destination_directory_fd)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(publication_name, dir_fd=destination_directory_fd)
             for suffix in TESTMON_SIDECAR_SUFFIXES:
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(f"{temporary_name}{suffix}", dir_fd=destination_directory_fd)

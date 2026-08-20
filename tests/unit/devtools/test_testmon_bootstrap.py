@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -567,10 +565,11 @@ def test_atomic_copy_holds_destination_directory_across_parent_replacement(
     assert list(external.iterdir()) == [sentinel]
 
 
-def test_atomic_copy_does_not_follow_replaced_temporary_child(
+def test_atomic_copy_does_not_install_a_valid_replacement_after_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A valid replacement of the old pathname cannot win publication."""
     source_root = tmp_path / "source"
     destination_root = tmp_path / "destination"
     (source_root / "tests").mkdir(parents=True)
@@ -581,33 +580,43 @@ def test_atomic_copy_does_not_follow_replaced_temporary_child(
         fingerprinted="tests/test_recorded.py",
     )
     destination_data = destination_root / TESTMON_DATA_RELPATH
-    external_db = tmp_path / "external.db"
-    sqlite3.connect(external_db).close()
-    original_connect = sqlite3.connect
+    replacement_root = tmp_path / "replacement"
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="different-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    original_replace = os.replace
     attacked = False
 
-    def replace_temporary_child(database: Any, *args: Any, **kwargs: Any) -> Any:
+    def replace_after_validation(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
         nonlocal attacked
         temporary_entries = tuple(destination_data.parent.glob(f".{destination_data.name}.copy-*.tmp"))
-        if isinstance(database, Path) and temporary_entries and not attacked:
+        if temporary_entries and not attacked:
             attacked = True
-            temporary_entries[0].unlink()
-            temporary_entries[0].symlink_to(external_db)
-        return original_connect(database, *args, **kwargs)
+            original_replace(replacement_data, temporary_entries[0])
+        original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
-    monkeypatch.setattr(sqlite3, "connect", replace_temporary_child)
-    with pytest.raises(NativeTestmonRepairError, match="copied main-checkout database failed validation"):
-        _atomic_copy_sqlite_database(
-            source_data,
-            destination_data,
-            environment_name="owned-environment",
-            required_executable_paths=(),
-            deadline_monotonic=None,
-        )
+    monkeypatch.setattr(os, "replace", replace_after_validation)
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
 
     assert attacked
-    with sqlite3.connect(external_db) as connection:
-        assert connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == []
+    copied = inspect_native_testmon_environment(destination_data, environment_name="owned-environment")
+    replacement = inspect_native_testmon_environment(destination_data, environment_name="different-environment")
+    assert copied.valid
+    assert replacement.status == "absent"
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:
