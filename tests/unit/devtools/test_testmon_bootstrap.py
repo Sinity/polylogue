@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from devtools import testmon_bootstrap
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
+    _atomic_copy_sqlite_database,
     _testmon_schema_version,
     canonical_test_nodeid,
     classify_native_testmon_changes,
@@ -516,6 +519,218 @@ def _seed_partial_native_graph(root: Path, *, environment_name: str, fingerprint
     finally:
         db.con.close()
     return data
+
+
+def test_atomic_copy_uses_dev_fd_when_proc_fd_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The macOS descriptor namespace fallback remains descriptor-bound."""
+    probe = tmp_path / "descriptor-probe"
+    probe_fd = os.open(probe, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (Path("/dev/fd") / str(probe_fd)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe_fd)
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "_DESCRIPTOR_FD_ROOTS",
+        (tmp_path / "missing-proc-fd", Path("/dev/fd")),
+    )
+
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert inspect_native_testmon_environment(
+        destination_data,
+        environment_name="owned-environment",
+    ).valid
+
+
+def test_descriptor_bound_path_fails_closed_without_a_descriptor_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fd = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        monkeypatch.setattr(testmon_bootstrap, "_DESCRIPTOR_FD_ROOTS", (tmp_path / "missing",))
+        with pytest.raises(NativeTestmonRepairError, match="descriptor-bound filesystem namespace"):
+            testmon_bootstrap._descriptor_bound_path(fd)
+    finally:
+        os.close(fd)
+
+
+def test_atomic_copy_holds_destination_directory_across_parent_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "sentinel"
+    sentinel.write_text("external", encoding="utf-8")
+    original_replace = os.replace
+
+    def replace_after_parent_swap(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        owned_cache = destination_root / ".cache"
+        owned_cache.rename(destination_root / ".cache-owned")
+        owned_cache.symlink_to(external, target_is_directory=True)
+        original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "replace", replace_after_parent_swap)
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert (destination_root / ".cache-owned" / "testmon" / "testmondata").is_file()
+    assert sentinel.read_text(encoding="utf-8") == "external"
+    assert list(external.iterdir()) == [sentinel]
+
+
+def test_atomic_copy_does_not_install_a_valid_replacement_after_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid replacement of the old pathname cannot win publication."""
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_root = tmp_path / "replacement"
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="different-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    original_replace = os.replace
+    attacked = False
+
+    def replace_after_validation(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal attacked
+        publication_entries = tuple(destination_data.parent.glob(f".{destination_data.name}.publish-*.tmp"))
+        if publication_entries and not attacked:
+            attacked = True
+            original_replace(replacement_data, publication_entries[0])
+        original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "replace", replace_after_validation)
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert attacked
+    assert len(tuple(destination_data.parent.glob(f".{destination_data.name}.publish-*.tmp"))) == 0
+    copied = inspect_native_testmon_environment(destination_data, environment_name="owned-environment")
+    replacement = inspect_native_testmon_environment(destination_data, environment_name="different-environment")
+    assert copied.valid
+    assert replacement.status == "absent"
+
+
+def test_atomic_copy_retains_source_child_across_source_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source replacement after inspection cannot redirect the SQLite copy."""
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    (source_root / "tests").mkdir(parents=True)
+    (destination_root / ".cache" / "testmon").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="replacement-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    inspected = inspect_native_testmon_environment(source_data, environment_name="owned-environment")
+    assert inspected.valid
+    original_connect = sqlite3.connect
+    replaced = False
+
+    def replace_before_source_open(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            os.replace(replacement_data, source_data)
+        return cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", replace_before_source_open)
+    _atomic_copy_sqlite_database(
+        source_data,
+        destination_data,
+        environment_name="owned-environment",
+        required_executable_paths=(),
+        deadline_monotonic=None,
+    )
+
+    assert replaced
+    assert inspect_native_testmon_environment(destination_data, environment_name="owned-environment").valid
+    assert (
+        inspect_native_testmon_environment(
+            destination_data,
+            environment_name="replacement-environment",
+        ).status
+        == "absent"
+    )
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:

@@ -2912,6 +2912,37 @@ def test_run_records_pytest_count_metadata_from_terminal_fallback() -> None:
     assert [phase["name"] for phase in receipt["phases"]] == ["execute", "quiescent"]
 
 
+def test_native_verifier_uses_portable_descriptor_namespace_for_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native verify publishes TESTMON_DATAFILE without requiring /proc."""
+    descriptor_root = Path("/dev/fd")
+    probe = os.open(tmp_path / "descriptor-probe", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not (descriptor_root / str(probe)).exists():
+            pytest.skip("this platform has no /dev/fd descriptor namespace")
+    finally:
+        os.close(probe)
+
+    monkeypatch.setattr("devtools.testmon_bootstrap._DESCRIPTOR_FD_ROOTS", (descriptor_root,))
+    state = verify._open_owned_native_testmon_state(tmp_path)
+    captured: dict[str, Path | None] = {}
+
+    def fake_run_step(*_args: object, **kwargs: object) -> tuple[int, float, dict[str, Any]]:
+        captured["native_testmon_data"] = cast(Path | None, kwargs["native_testmon_data"])
+        return 0, 0.0, {}
+
+    monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
+    try:
+        with patch("devtools.verify._run_step", side_effect=fake_run_step):
+            assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
+    finally:
+        state.close()
+
+    assert captured["native_testmon_data"] == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
+
+
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed in 0.1s\n", stderr="")
     cleaned = tmp_path / "pytest-polylogue-run-1"
@@ -4382,6 +4413,7 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         # A real NativeTestmonPreparation always carries local_state; the
         # receipt records its status so a bootstrap's CAUSE is legible.
         local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
+        fallback_allowed=True,
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4421,6 +4453,80 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
 
     assert calls == ["pytest native parallel (affected)", "pytest native serial (affected)"]
     assert json.loads(capsys.readouterr().out)["release_baseline_allowed"] is False
+
+
+def test_verify_does_not_warm_from_default_after_invalid_initial_state(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _StableMonitor:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def finish(self) -> CheckoutMutationObservation:
+            return CheckoutMutationObservation(changed=False, unavailable=False)
+
+    initial_environment = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
+    fallback_environment = {"HYPOTHESIS_PROFILE": "default", "POLYLOGUE_CI": "1"}
+    initial = SimpleNamespace(
+        environment_name="initial-environment",
+        selection_mode="bootstrap",
+        removed_paths=(),
+        copied_from=None,
+        local_state=SimpleNamespace(
+            status="invalid",
+            reason="native environment has no unique collected corpus",
+            missing_executable_paths=(),
+        ),
+        fallback_allowed=False,
+    )
+    fallback = SimpleNamespace(
+        environment_name="default-environment",
+        selection_mode="affected",
+        removed_paths=(),
+        copied_from=Path("main/.cache/testmon/testmondata"),
+        local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=()),
+        fallback_allowed=True,
+    )
+    native_state = SimpleNamespace(
+        valid=True,
+        status="valid",
+        reason="current",
+        environment=SimpleNamespace(nodeids=("tests/test_owner.py::test_owner",)),
+        missing_executable_paths=(),
+    )
+    preparations: list[dict[str, str | None]] = []
+
+    def prepare(*_args: object, **kwargs: object) -> object:
+        environment = kwargs["pytest_environment"]
+        assert isinstance(environment, dict)
+        preparations.append(environment)
+        return initial if len(preparations) == 1 else fallback
+
+    with (
+        patch("devtools.verify._git_head", return_value="head"),
+        patch("devtools.verify._git_commit", return_value="base"),
+        patch("devtools.verify._changed_test_relevant_paths", return_value=()),
+        patch(
+            "devtools.verify._native_pytest_environment_candidates",
+            return_value=(initial_environment, fallback_environment),
+        ),
+        patch("devtools.verify.prepare_native_testmon_environment", side_effect=prepare),
+        patch("devtools.verify._open_owned_native_testmon_state", return_value=SimpleNamespace(close=lambda: None)),
+        patch("devtools.verify._native_environment_after_run", return_value=native_state),
+        patch("devtools.verify.build_verify_steps", return_value=[]),
+        patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._notify"),
+    ):
+        assert main(["--json"]) == 0
+
+    assert preparations == [initial_environment]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["testmon_environment"]["name"] == "initial-environment"
 
 
 def test_release_authority_requires_current_complete_green_invocation() -> None:
@@ -4497,6 +4603,7 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         # A real NativeTestmonPreparation always carries local_state; the
         # receipt records its status so a bootstrap's CAUSE is legible.
         local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
+        fallback_allowed=True,
     )
     native_state = SimpleNamespace(
         valid=True,
@@ -4569,6 +4676,7 @@ def test_collection_failure_still_persists_native_run_aggregate(
             reason="native environment has no unique collected corpus",
             missing_executable_paths=(),
         ),
+        fallback_allowed=False,
     )
     invalid_state = SimpleNamespace(
         valid=False,
@@ -4628,6 +4736,7 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
         # A real NativeTestmonPreparation always carries local_state; the
         # receipt records its status so a bootstrap's CAUSE is legible.
         local_state=SimpleNamespace(status="valid", reason="stub", missing_executable_paths=()),
+        fallback_allowed=True,
     )
     native_state = SimpleNamespace(
         valid=True,
