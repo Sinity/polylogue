@@ -32,6 +32,7 @@ from polylogue.archive.query.execution_control import (
 )
 from polylogue.archive.query.transaction import QueryTransaction
 from polylogue.mcp.declarations.models import MCPCapabilities
+from polylogue.mcp.payloads import MCPArchiveStatsPayload
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 
@@ -145,6 +146,7 @@ async def _read_bundle(
     server: MCPServerUnderTest,
     session_id: str,
     marker: str,
+    snapshot_ref: str,
 ) -> dict[str, dict[str, Any]]:
     """Call every registered base read tool once for one request identity."""
     tools = server._tool_manager._tools
@@ -170,11 +172,42 @@ async def _read_bundle(
             await invoke_surface_async(
                 tools["context"].fn,
                 intent="lookup",
+                result_ref=snapshot_ref,
                 recipient_ref=f"agent:{marker}",
             )
         ),
         "status": json.loads(await invoke_surface_async(tools["status"].fn, scope="archive")),
     }
+
+
+async def _seed_context_deliveries(
+    server: MCPServerUnderTest,
+    markers: tuple[str, ...],
+) -> dict[str, str]:
+    """Create one durable, marker-bearing context receipt per request."""
+    write_fn = server._tool_manager._tools["write"].fn
+    snapshot_refs: dict[str, str] = {}
+    for marker in markers:
+        delivered = json.loads(
+            await invoke_surface_async(
+                write_fn,
+                operation="deliver_context",
+                fields={
+                    "recipient_ref": f"agent:{marker}",
+                    "delivered_by_ref": "user:local",
+                    "boundary": "mcp-evidence",
+                    "query": marker,
+                    "max_sessions": 1,
+                    "include_messages": True,
+                    "include_assertions": True,
+                },
+            )
+        )
+        assert delivered.get("is_error") is not True, delivered
+        assert delivered["recipient_ref"] == f"agent:{marker}"
+        assert marker in json.dumps(delivered["context_image"], sort_keys=True)
+        snapshot_refs[marker] = delivered["snapshot_ref"]
+    return snapshot_refs
 
 
 def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
@@ -188,39 +221,45 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     archive_root = tmp_path / "archive"
     session_ids = _seed_archive(archive_root, count=request_count)
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
-    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities()))
-
-    reset_default_admission_controller_for_tests()
-    observed_in_flight: list[int] = []
-    observation_lock = threading.Lock()
-    first_admitted = threading.Barrier(2)
-    barrier_participants = 0
-    participant_lock = threading.Lock()
-    original_admit = QueryAdmissionController.admit_blocking
-
-    @contextmanager
-    def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> Iterator[None]:
-        nonlocal barrier_participants
-        with original_admit(self, ctx):
-            with observation_lock:
-                observed_in_flight.append(self.in_flight_weight)
-            with participant_lock:
-                is_participant = barrier_participants < 2
-                if is_participant:
-                    barrier_participants += 1
-            if is_participant:
-                first_admitted.wait(timeout=5)
-            yield
-
-    monkeypatch.setattr(QueryAdmissionController, "admit_blocking", observe_admission)
-
-    before_files = _archive_files(archive_root)
-    before_fds = _archive_fd_targets(archive_root)
-
-    def run_request(index: int) -> tuple[int, dict[str, dict[str, Any]]]:
-        return index, asyncio.run(_read_bundle(server, session_ids[index], markers[index]))
+    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
 
     with _installed_runtime_services(archive_root):
+        snapshot_refs = asyncio.run(_seed_context_deliveries(server, markers))
+
+        reset_default_admission_controller_for_tests()
+        observed_in_flight: list[int] = []
+        observed_admission_owners: list[str | None] = []
+        observation_lock = threading.Lock()
+        capacity_barrier = threading.Barrier(DEFAULT_CAPACITY)
+        barrier_participants = 0
+        participant_lock = threading.Lock()
+        original_admit = QueryAdmissionController.admit_blocking
+
+        @contextmanager
+        def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> Iterator[None]:
+            nonlocal barrier_participants
+            with original_admit(self, ctx):
+                with observation_lock:
+                    observed_in_flight.append(self.in_flight_weight)
+                    observed_admission_owners.append(ctx.owner_ref)
+                with participant_lock:
+                    is_participant = barrier_participants < DEFAULT_CAPACITY
+                    if is_participant:
+                        barrier_participants += 1
+                if is_participant:
+                    capacity_barrier.wait(timeout=10)
+                yield
+
+        monkeypatch.setattr(QueryAdmissionController, "admit_blocking", observe_admission)
+
+        before_files = _archive_files(archive_root)
+        before_fds = _archive_fd_targets(archive_root)
+
+        def run_request(index: int) -> tuple[int, dict[str, dict[str, Any]]]:
+            return index, asyncio.run(
+                _read_bundle(server, session_ids[index], markers[index], snapshot_refs[markers[index]])
+            )
+
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mcp-load") as executor:
             results = dict(executor.map(run_request, range(request_count)))
 
@@ -242,11 +281,24 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
             assert session_ids[index] in json.dumps(bundle[tool_name], sort_keys=True), (
                 f"{tool_name} dropped the request identity for {session_ids[index]}: {bundle[tool_name]}"
             )
+        context_serialized = json.dumps(bundle["context"], sort_keys=True)
+        assert marker in context_serialized, f"context dropped its own marker {marker}: {bundle['context']}"
+        status = bundle["status"]
+        assert status["scope"] == "archive", status
+        archive_status = MCPArchiveStatsPayload.model_validate(status["archive"])
+        assert archive_status.total_sessions == request_count
+        assert archive_status.total_messages == request_count
+        status_serialized = json.dumps(status, sort_keys=True)
+        assert not set(markers).intersection(status_serialized), (
+            f"status exposed request-specific data for {marker}: {status}"
+        )
 
     controller = default_admission_controller()
     assert observed_in_flight
-    assert max(observed_in_flight) <= DEFAULT_CAPACITY
-    assert max(observed_in_flight) >= 2
+    assert barrier_participants == DEFAULT_CAPACITY
+    assert max(observed_in_flight) == DEFAULT_CAPACITY
+    assert all(value <= DEFAULT_CAPACITY for value in observed_in_flight)
+    assert "context" not in observed_admission_owners
     assert controller.in_flight_weight == 0
 
     after_files = _archive_files(archive_root)

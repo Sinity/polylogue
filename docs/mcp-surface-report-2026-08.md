@@ -250,10 +250,24 @@ archive opens, while `tests/unit/archive/query/test_transaction.py` protects
 request identity, continuation framing, archive epochs, and cursor rejection.
 
 For AC#7, 32 request identities are driven from 16 OS worker threads, with 192
-registered MCP calls across the six-tool surface. Each response is checked for
-its own identity and for absence of every other request identity. The test also
-observes the production admission controller, requires concurrent admission
-without exceeding its declared capacity, verifies zero in-flight weight, checks
+registered MCP calls across the six-tool surface. `query`, `read`, `get`, and
+`explain` are checked for their own marker or session identity and for absence
+of every other request identity. Before the load, the test uses the real
+`write(operation="deliver_context")` route to record one marker-bearing
+context-delivery receipt per request, then reads each exact receipt through
+`context(result_ref=..., recipient_ref=...)`; this prevents an empty delivery
+list from passing the test. `status(scope="archive")` is intentionally a
+shared archive snapshot rather than a request-identified response, so it is
+validated against `MCPArchiveStatsPayload`, its archive scope, and the absence
+of all request markers instead of being required to echo its caller's marker.
+
+The admission proof uses the real `QueryAdmissionController` reached by the
+consolidated routes that use `QueryTransaction`. A synchronization barrier
+holds the first `DEFAULT_CAPACITY` admissions (`DEFAULT_CAPACITY == 4`) at
+once, and the test requires an observed maximum of exactly 4, no value above
+4, and final `in_flight_weight == 0`. Context receipt lookup is a distinct
+durable user-tier path and is explicitly checked for marker isolation without
+being claimed as an admission-controller participant. The test also checks
 that no archive file descriptors remain open, rejects unexpected new temporary
 artifacts, and runs SQLite `quick_check` on every archive database after the
 load.
