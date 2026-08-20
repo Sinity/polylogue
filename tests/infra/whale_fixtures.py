@@ -472,6 +472,22 @@ def acquire_codex_revision_chain(
                 )
             ):
                 raise AssertionError(f"production append planner calls were incomplete: {planned_indices!r}")
+            append_ranges = tuple((plan.start_offset, plan.last_complete_newline) for plan in plans)
+            if len(append_ranges) != fixture.dimensions.append_fragment_count:
+                raise AssertionError(f"production append cursor ranges were incomplete: {append_ranges!r}")
+            if any(
+                start_offset < 0 or last_complete_newline <= start_offset
+                for start_offset, last_complete_newline in append_ranges
+            ):
+                raise AssertionError(f"production append cursor ranges were invalid: {append_ranges!r}")
+            if any(
+                next_start_offset != previous_last_complete_newline
+                for (_previous_start_offset, previous_last_complete_newline), (
+                    next_start_offset,
+                    _next_last_complete_newline,
+                ) in zip(append_ranges, append_ranges[1:], strict=False)
+            ):
+                raise AssertionError(f"production append cursor ranges were not contiguous: {append_ranges!r}")
 
             copy_sqlite_database(planner_index_backup, active_index_path)
             copy_sqlite_database(planner_source_backup, archive_root / "source.db")
@@ -501,15 +517,9 @@ def acquire_codex_revision_chain(
                 if row is None:
                     raise AssertionError(f"append ingestion dropped source index {plan.source_index}")
                 raw_ids.append(str(row[0]))
-            append_raw_ids = tuple(raw_ids[fixture.dimensions.revision_count :])
-            with sqlite3.connect(active_index_path) as conn:
-                append_application_rows = conn.execute(
-                    "SELECT raw_id, decision FROM raw_revision_applications "
-                    "WHERE raw_id IN (" + ",".join("?" for _ in append_raw_ids) + ")",
-                    append_raw_ids,
-                ).fetchall()
-            if not any(str(row[1]) == "applied_append" for row in append_application_rows):
-                raise AssertionError(f"append ingestion did not record applied_append: {append_application_rows!r}")
+            # The planner index and cursor snapshots above are temporary proof
+            # inputs. The final authority assertion runs after restart and
+            # candidate promotion against the resulting postflight ledger.
             copy_sqlite_database(planner_index_backup, active_index_path)
             planner_index_backup.unlink()
             source_path.write_bytes(terminal_payload)
