@@ -1267,14 +1267,21 @@ def _census_historical_revision_evidence(
         state.scanned += 1
         state.censused.add(raw_id)
         if source_index < 0:
-            archive.replace_raw_membership_census(
-                raw_id,
-                None,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                censused_at_ms=0,
-                detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-                manage_transaction=not batched,
-            )
+            source_conn = archive._ensure_source_conn()
+            has_membership_authority = source_conn.execute(
+                "SELECT 1 FROM raw_session_memberships WHERE raw_id = ? LIMIT 1", (raw_id,)
+            ).fetchone()
+            if has_membership_authority is not None:
+                record_current_parser_source_census(source_conn, raw_id)
+            else:
+                archive.replace_raw_membership_census(
+                    raw_id,
+                    None,
+                    parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    censused_at_ms=0,
+                    detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                    manage_transaction=not batched,
+                )
             state.quarantined += 1
             commit_unit()
             return

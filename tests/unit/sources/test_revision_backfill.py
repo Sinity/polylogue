@@ -157,6 +157,92 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
     assert uncensused_historical_revision_raw_ids(tmp_path, [legacy_raw_id, canonical_raw_id]) == (legacy_raw_id,)
 
 
+def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_receipt(tmp_path: Path) -> None:
+    """Re-census repairs a fragment receipt without erasing its authority key."""
+    initialize_active_archive_root(tmp_path)
+    logical_key = "codex-session:legacy-fragment"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"legacy-fragment","timestamp":"2026-08-20T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"baseline"}]}}\n'
+    )
+    fragment = b'{"type":"response_item","payload":{"type":"message","id":"legacy-suffix"}}\n'
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path="legacy-fragment.jsonl",
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                logical_key, RawRevisionKind.FULL, "baseline", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=fragment,
+            source_path="legacy-fragment.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+            revision=RawRevisionEnvelope(
+                logical_key,
+                RawRevisionKind.APPEND,
+                "append-1",
+                1,
+                predecessor_source_revision="baseline",
+                predecessor_raw_id=baseline_raw_id,
+                baseline_raw_id=baseline_raw_id,
+                append_start_offset=len(baseline),
+                append_end_offset=len(baseline) + len(fragment),
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
+
+    census_historical_revision_evidence(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        with archive._ensure_source_conn():
+            archive._ensure_source_conn().execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (raw_id, "codex-session:legacy-fragment", "legacy-fragment", "revision-1", bytes(32), 1),
+            )
+            archive._ensure_source_conn().execute(
+                """
+                UPDATE raw_authority_parser_census
+                SET parser_fingerprint = ?, status = 'complete', logical_keys_json = '[]',
+                    detail = 'parser-observed: legacy receipt shape', censused_at_ms = 1
+                WHERE raw_id = ?
+                """,
+                (RAW_AUTHORITY_PARSER_FINGERPRINT, raw_id),
+            )
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        memberships = conn.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)
+        ).fetchall()
+        receipt = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+
+    assert memberships == [("codex-session:legacy-fragment",)]
+    assert receipt is not None
+    assert receipt[0] == "complete"
+    assert parser_census_logical_keys(receipt[1]) == ("codex-session:legacy-fragment",)
+    validate_frozen_source_authority(tmp_path, selected_raw_ids=[baseline_raw_id, raw_id])
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
+
+
 def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path: Path) -> None:
     """The real census path repairs stale terminal non-session receipts."""
     initialize_active_archive_root(tmp_path)
