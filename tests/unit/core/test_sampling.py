@@ -222,9 +222,13 @@ class TestLoadSamplesFromDb:
             result = load_samples_from_db("chatgpt", db_path=db)
 
         assert result == []
-        assert any("source.db" in record.message and record.levelno == logging.WARNING for record in caplog.records), [
-            record.message for record in caplog.records
-        ]
+        assert any(
+            record.levelno == logging.WARNING
+            and "tier=source.db" in record.message
+            and str(db.parent / "source.db") in record.message
+            and "provider=chatgpt" in record.message
+            for record in caplog.records
+        ), [record.message for record in caplog.records]
 
     def test_nonexistent_db_with_default_path(self) -> None:
         # When db_path=None and default doesn't exist, should return []
