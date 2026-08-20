@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -1275,8 +1276,8 @@ def test_empty_linked_worktree_with_empty_main_self_bootstraps(tmp_path: Path) -
     assert [result.completed.returncode for result in results] == [0, 0]
 
 
-def test_linked_lane_bootstraps_when_optional_main_state_is_unusable(tmp_path: Path) -> None:
-    """An unsafe optional main graph must not reject the linked lane verify."""
+def test_linked_lane_reclaims_its_crash_left_main_binding(tmp_path: Path) -> None:
+    """A matching crash-left main binding is reclaimed before warm reuse."""
     main = tmp_path / "main"
     main.mkdir()
     _init_repo(main)
@@ -1313,10 +1314,11 @@ def test_linked_lane_bootstraps_when_optional_main_state_is_unusable(tmp_path: P
             environment_name=lane_preparation.environment_name,
         )
     finally:
-        stale_private_entry.unlink()
+        with contextlib.suppress(FileNotFoundError):
+            stale_private_entry.unlink()
 
-    assert lane_preparation.selection_mode == "bootstrap"
-    assert lane_preparation.copied_from is None
+    assert lane_preparation.selection_mode == "affected"
+    assert lane_preparation.copied_from == main_data
     assert [result.completed.returncode for result in lane_results] == [0, 0]
 
 

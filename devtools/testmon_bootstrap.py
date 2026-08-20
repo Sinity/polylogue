@@ -783,12 +783,20 @@ def inspect_native_testmon_environment(
     # master graph and a 20,500-test rebuild). Checkpoint first so ordinary
     # crash recovery happens instead.
     if any(path.exists() for path in sidecars):
-        with contextlib.suppress(sqlite3.Error, OSError):
-            recovery = sqlite3.connect(sqlite_data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
+        try:
+            # A descriptor alias preserves inode identity but changes SQLite's
+            # sidecar basename. Recover a real public WAL before reopening the
+            # retained descriptor for semantic inspection.
+            recovery_path = data_path if data_fd is not None else sqlite_data_path
+            recovery = sqlite3.connect(recovery_path, timeout=_remaining_timeout(deadline_monotonic, 10))
             try:
-                recovery.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                checkpoint = recovery.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             finally:
                 recovery.close()
+        except (sqlite3.Error, OSError) as exc:
+            return NativeTestmonState("invalid", f"cannot recover native testmon sidecars: {exc}")
+        if checkpoint is None or checkpoint[0] != 0:
+            return NativeTestmonState("invalid", f"native testmon sidecar checkpoint failed: {checkpoint}")
         if data_fd is not None:
             try:
                 opened = os.fstat(data_fd)
@@ -1157,7 +1165,7 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
             _unlink_bound_entry_if_owned(
                 directory_fd,
                 private_name,
-                bound_fd if bound_fd is not None else child_fd,
+                child_fd,
             )
         if bound_fd is not None:
             os.close(bound_fd)
@@ -1169,7 +1177,7 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
             _unlink_bound_entry_if_owned(
                 directory_fd,
                 private_name,
-                bound_fd if bound_fd is not None else child_fd,
+                child_fd,
             )
         if bound_fd is not None:
             os.close(bound_fd)
@@ -1207,22 +1215,77 @@ def _unlink_bound_entry_if_owned(directory_fd: int, private_name: str, retained_
         os.unlink(private_name, dir_fd=directory_fd)
 
 
+def _unlink_bound_sidecars_if_owned(directory_fd: int, private_name: str) -> None:
+    """Discard descriptor-alias sidecars created during a bound read."""
+    for suffix in TESTMON_SIDECAR_SUFFIXES:
+        sidecar_name = f"{private_name}{suffix}"
+        try:
+            state = os.stat(sidecar_name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        if stat.S_ISREG(state.st_mode) and state.st_nlink == 1:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(sidecar_name, dir_fd=directory_fd)
+
+
+def _reclaim_stale_native_testmon_bindings(directory_fd: int, name: str) -> None:
+    """Reclaim only crash-left private links to the current source inode."""
+    try:
+        source = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot inspect native testmon source {name}: {exc}") from exc
+    if not stat.S_ISREG(source.st_mode):
+        raise NativeTestmonRepairError(f"native testmon source is not a regular file: {name}")
+    prefix = f".{name}.bound-"
+    reclaimed = False
+    try:
+        entries = os.listdir(directory_fd)
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot list native testmon source directory: {exc}") from exc
+    for entry in entries:
+        if not entry.startswith(prefix) or not entry.endswith(".tmp"):
+            continue
+        try:
+            candidate = os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect stale native testmon binding {entry}: {exc}") from exc
+        if stat.S_ISREG(candidate.st_mode) and (candidate.st_dev, candidate.st_ino) == (source.st_dev, source.st_ino):
+            os.unlink(entry, dir_fd=directory_fd)
+            reclaimed = True
+    if reclaimed:
+        os.fsync(directory_fd)
+
+
 @contextlib.contextmanager
 def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSourceBinding | None]:
     """Retain one source inode for semantic validation and any subsequent copy."""
-    if not data_path.is_file():
-        yield None
-        return
     directory_fd: int | None = None
     child_fd: int | None = None
     private_name: str | None = None
     try:
+        try:
+            present = data_path.is_file()
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect native testmon source {data_path}: {exc}") from exc
+        if not present:
+            yield None
+            return
         directory_fd = _open_owned_testmon_directory(data_path.parent.parent.parent, create=False)
+        _reclaim_stale_native_testmon_bindings(directory_fd, data_path.name)
         child_fd, bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
         yield NativeTestmonSourceBinding(child_fd, bound_path)
+    except NativeTestmonRepairError:
+        raise
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot bind native testmon source {data_path}: {exc}") from exc
     finally:
         try:
             if directory_fd is not None and private_name is not None:
+                _unlink_bound_sidecars_if_owned(directory_fd, private_name)
                 _unlink_bound_entry_if_owned(directory_fd, private_name, child_fd)
         finally:
             try:
@@ -1442,7 +1505,7 @@ def prepare_native_testmon_environment(
     pytest_profile: str = "default",
     pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
-    source_lock_factory: Callable[[], contextlib.AbstractContextManager[bool]] | None = None,
+    source_lock_factory: Callable[[Path], contextlib.AbstractContextManager[bool]] | None = None,
 ) -> NativeTestmonPreparation:
     """Repair derived local state and optionally reuse a matching main graph."""
     root = repo_root.resolve()
@@ -1529,7 +1592,9 @@ def prepare_native_testmon_environment(
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
-        source_lock = source_lock_factory() if source_lock_factory is not None else contextlib.nullcontext(True)
+        source_lock = (
+            source_lock_factory(main_checkout) if source_lock_factory is not None else contextlib.nullcontext(True)
+        )
         main = NativeTestmonState("absent", "optional main native testmon state unavailable")
         with _optional_native_testmon_source_lock(source_lock) as source_available:
             if source_available:

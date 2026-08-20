@@ -81,7 +81,6 @@ from devtools.testmon_bootstrap import (
     _descriptor_bound_path,
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
-    linked_worktree_info,
     native_testmon_lifecycle_lock,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
@@ -207,10 +206,28 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     except NativeTestmonRepairError:
         os.close(descriptor)
         raise
+    # ``/proc/self/fd`` would be evaluated by a child as *that child's* file
+    # descriptor table.  Name this verifier's descriptor explicitly instead:
+    # systemd/xdist children can reopen it without inheriting an arbitrary fd,
+    # and the path still reaches the inode we certified even if ``.cache`` is
+    # renamed between preparation and launch.
+    executable_parent = Path("/proc") / str(os.getpid()) / "fd" / str(descriptor)
+    try:
+        executable_identity = executable_parent.stat()
+    except OSError as exc:
+        os.close(descriptor)
+        raise NativeTestmonRepairError(
+            f"cannot publish descriptor-bound native testmon path for subprocesses: {executable_parent}: {exc}"
+        ) from exc
+    if (executable_identity.st_dev, executable_identity.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(descriptor)
+        raise NativeTestmonRepairError(
+            f"descriptor-bound native testmon path changed while publishing: {executable_parent}"
+        )
     return _OwnedNativeTestmonState(
         descriptor=descriptor,
         data_path=bound,
-        executable_data_path=raw_data,
+        executable_data_path=executable_parent / raw_data.name,
     )
 
 
@@ -229,20 +246,16 @@ def _native_testmon_lifecycle_lock(
 
 @contextlib.contextmanager
 def _native_testmon_source_lifecycle_lock(
-    repo_root: Path,
     *,
+    main_checkout: Path,
     timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
 ) -> Iterator[bool]:
-    """Protect linked-worktree source preparation without extending the lane lock."""
-    linked_info = linked_worktree_info(repo_root)
-    if linked_info is None or not linked_info[0]:
-        yield True
-        return
+    """Protect an already-resolved linked-worktree source preparation."""
     try:
         # The caller already holds the lane-local lock. lane_init acquires its
         # linked-worktree locks in this same lane-then-common order, so waiting
         # for the common source lock cannot form an inverse lock cycle.
-        with native_testmon_lifecycle_lock(linked_info[1], timeout_s=timeout_s, waiter_label="verify-source"):
+        with native_testmon_lifecycle_lock(main_checkout, timeout_s=timeout_s, waiter_label="verify-source"):
             yield True
     except NativeTestmonLifecycleLockTimeoutError as exc:
         del exc
@@ -2045,11 +2058,9 @@ def _run(
     if state is None:
         state = _open_owned_native_testmon_state(ROOT)
     try:
-        # The descriptor binds verify's own inspection to one checked inode.
-        # Pytest crosses systemd and xdist exec boundaries that do not promise
-        # arbitrary descriptor inheritance, so its workers receive the checked
-        # checkout-local path instead.  Native containment remains the
-        # supervisor's process-group/systemd scope contract, not an FD contract.
+        # The verifier retains the directory descriptor.  Its PID-qualified
+        # procfs path stays valid across the systemd and xdist exec boundaries
+        # without relying on descriptor inheritance or a mutable checkout path.
         return _run_step(
             label,
             cmd,
@@ -3370,9 +3381,9 @@ def _main(argv: list[str] | None = None) -> int:
             )
             runtime_data_paths = change_impact.runtime_data_paths
 
-            def source_lock_factory() -> contextlib.AbstractContextManager[bool]:
+            def source_lock_factory(main_checkout: Path) -> contextlib.AbstractContextManager[bool]:
                 return _native_testmon_source_lifecycle_lock(
-                    ROOT,
+                    main_checkout=main_checkout,
                     timeout_s=_native_testmon_source_lock_timeout_s(),
                 )
 

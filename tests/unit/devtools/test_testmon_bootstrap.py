@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
+import sqlite3
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
@@ -488,11 +492,11 @@ def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Pa
     assert outside.read_text(encoding="utf-8") == "external state"
 
 
-def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
+def test_native_inspection_rejects_public_recovery_when_source_is_replaced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sidecar recovery cannot reopen a replacement of the public source path."""
+    """Public-basename WAL recovery revalidates the retained source inode."""
     import sqlite3
 
     source_root = tmp_path / "source"
@@ -535,15 +539,148 @@ def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
             data_fd=binding.descriptor,
         )
 
-    assert state.valid
-    assert state.environment is not None
-    assert state.environment.nodeids == ("tests/test_original.py::test_original",)
+    assert state.status == "invalid"
+    assert state.reason == "native testmon database changed while recovering sidecars"
     assert recovery_databases
-    assert all(database != source_data for database in recovery_databases)
+    assert source_data in recovery_databases
     assert "PRAGMA wal_checkpoint(PASSIVE)" in executed_sql
     current_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
-    assert current_identity == original_identity
-    assert replacement_data.exists()
+    assert current_identity != original_identity
+    assert not replacement_data.exists()
+
+
+def test_source_binding_recovers_a_real_public_wal_before_descriptor_aliasing(tmp_path: Path) -> None:
+    """A crash-left WAL is recovered under its public basename, not an fd alias."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    script = (
+        "import os, sqlite3, sys\n"
+        "database = sys.argv[1]\n"
+        "connection = sqlite3.connect(database)\n"
+        "connection.execute('PRAGMA journal_mode=WAL')\n"
+        'connection.execute("UPDATE environment SET environment_name = ? WHERE environment_name = ?", '
+        "('wal-environment', 'owned-environment'))\n"
+        "connection.commit()\n"
+        "os._exit(0)\n"
+    )
+    crashed = subprocess.run([sys.executable, "-c", script, str(source_data)], check=False)
+    assert crashed.returncode == 0
+    assert Path(f"{source_data}-wal").exists()
+
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+        state = inspect_native_testmon_environment(
+            source_data,
+            environment_name="wal-environment",
+            data_fd=binding.descriptor,
+        )
+
+    assert state.valid
+    assert not tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp-wal"))
+
+
+def test_failed_private_binding_preserves_preopen_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Binding cleanup must witness the original child, not a replacement fd."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"replacement must survive rejected binding")
+    original_open = os.open
+    private_entry: Path | None = None
+
+    def replace_before_private_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, *args: Any, **kwargs: Any
+    ) -> int:
+        nonlocal private_entry
+        if isinstance(path, str) and path.startswith(f".{source_data.name}.bound-"):
+            private_entry = source_data.parent / path
+            os.replace(replacement, private_entry)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_private_open)
+    directory_fd = testmon_bootstrap._open_owned_testmon_directory(source_root, create=False)
+    try:
+        with pytest.raises(NativeTestmonRepairError, match="child link changed"):
+            testmon_bootstrap._open_owned_testmon_child(directory_fd, source_data.name)
+    finally:
+        os.close(directory_fd)
+
+    assert private_entry is not None
+    assert private_entry.read_bytes() == b"replacement must survive rejected binding"
+
+
+def test_source_binding_normalizes_disappearing_parent_to_repair_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Optional-source callers can fall back only when open races are typed."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+
+    def disappearing_parent(*_args: Any, **_kwargs: Any) -> int:
+        raise FileNotFoundError("source parent disappeared")
+
+    monkeypatch.setattr(testmon_bootstrap, "_open_owned_testmon_directory", disappearing_parent)
+    with pytest.raises(NativeTestmonRepairError, match="cannot bind native testmon source"):
+        with native_testmon_source_binding(source_data):
+            pytest.fail("disappearing source parent must not produce a binding")
+
+
+def test_source_binding_reclaims_a_sigkill_left_matching_binding(tmp_path: Path) -> None:
+    """A later locked source bind reclaims only the crash-left private hard link."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    script = (
+        "from devtools.testmon_bootstrap import native_testmon_source_binding\n"
+        "from pathlib import Path\n"
+        "import sys, time\n"
+        "with native_testmon_source_binding(Path(sys.argv[1])):\n"
+        "    print('bound', flush=True)\n"
+        "    time.sleep(60)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(source_data)],
+        cwd=Path.cwd(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "bound"
+    process.send_signal(signal.SIGKILL)
+    process.communicate(timeout=10)
+    assert process.returncode == -signal.SIGKILL
+    assert source_data.stat().st_nlink == 2
+
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+
+    assert source_data.stat().st_nlink == 1
+    assert not tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp"))
+    assert not tuple(source_data.parent.glob(f".{source_data.name}.bound-*.tmp-wal"))
 
 
 def _seed_partial_native_graph(
@@ -1155,7 +1292,7 @@ def test_optional_main_invalid_parent_falls_back_to_lane_local_bootstrap(
 
     preparation = prepare_native_testmon_environment(
         lane,
-        source_lock_factory=lambda: contextlib.nullcontext(True),
+        source_lock_factory=lambda _main_checkout: contextlib.nullcontext(True),
     )
 
     assert preparation.selection_mode == "bootstrap"
