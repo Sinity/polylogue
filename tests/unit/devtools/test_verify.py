@@ -3863,7 +3863,7 @@ def test_storage_scale_fixture_path_and_heartbeat_keep_short_node_live(
         "pytestmark = pytest.mark.storage_scale\n"
         "def test_long_storage_scale_node(tmp_path):\n"
         "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
-        "    deadline = time.monotonic() + 0.2\n"
+        "    deadline = time.monotonic() + 3.5\n"
         "    payload = b'x' * 4096\n"
         "    with (tmp_path / 'productive-storage.bin').open('wb') as stream:\n"
         "        while time.monotonic() < deadline:\n"
@@ -3875,8 +3875,8 @@ def test_storage_scale_fixture_path_and_heartbeat_keep_short_node_live(
     monkeypatch.setenv("STORAGE_SCALE_FIXTURE_PROOF", str(fixture_proof))
     monkeypatch.setenv("POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S", "0.1")
     monkeypatch.setenv("POLYLOGUE_VERIFY_HEARTBEAT_S", "0.05")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "4")
-    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "2")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "10")
+    monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "3")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
     run = VerifyRun(tier="storage-scale-heartbeat", argv=[], git_head=None, root=tmp_path)
 
@@ -3904,10 +3904,23 @@ def test_storage_scale_fixture_path_and_heartbeat_keep_short_node_live(
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert rc == 0
     assert metadata.get("termination_reason") is None
+    assert metadata["stall_timeout_s"] == 3.0
     assert fixture_proof.is_file()
     fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
     assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
-    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+    heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
+    assert heartbeat_events
+    assert max(float(event["elapsed_s"]) for event in heartbeat_events) >= 3.0
+
+
+def test_storage_scale_heartbeat_is_the_only_synthetic_productive_event() -> None:
+    assert verify._is_productive_test_progress_event(
+        {"event": "test_progress", "progress_kind": "storage_scale_heartbeat"}
+    )
+    assert not verify._is_productive_test_progress_event(
+        {"event": "test_progress", "progress_kind": "untyped-heartbeat"}
+    )
+    assert not verify._is_productive_test_progress_event({"event": "heartbeat"})
 
 
 def test_storage_scale_heartbeat_cannot_hide_non_xdist_progress_stall(
@@ -3925,7 +3938,9 @@ def test_storage_scale_heartbeat_cannot_hide_non_xdist_progress_stall(
         "pytestmark = pytest.mark.storage_scale\n"
         "def test_marked_infinite_loop(tmp_path):\n"
         "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    (tmp_path / 'initial-storage-write').write_bytes(b'initial')\n"
         "    while True:\n"
+        "        print('marked-deadlock-output', flush=True)\n"
         "        time.sleep(0.02)\n",
         encoding="utf-8",
     )
@@ -3944,6 +3959,7 @@ def test_storage_scale_heartbeat_cannot_hide_non_xdist_progress_stall(
             "-m",
             "pytest",
             "-q",
+            "-s",
             "-p",
             "tests.conftest",
             "-p",
@@ -3965,7 +3981,8 @@ def test_storage_scale_heartbeat_cannot_hide_non_xdist_progress_stall(
     assert fixture_proof.is_file()
     fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
     assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
-    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+    heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
+    assert len(heartbeat_events) <= 2
 
 
 def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
@@ -3983,6 +4000,7 @@ def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
         "pytestmark = pytest.mark.storage_scale\n"
         "def test_marked_deadlock(tmp_path):\n"
         "    Path(os.environ['STORAGE_SCALE_FIXTURE_PROOF']).write_text(str(tmp_path))\n"
+        "    (tmp_path / 'initial-storage-write').write_bytes(b'initial')\n"
         "    while True:\n"
         "        print('deadlock-output', flush=True)\n"
         "        time.sleep(0.02)\n",
@@ -4022,12 +4040,15 @@ def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
     assert event_files
     events = [json.loads(line) for path in event_files for line in path.read_text(encoding="utf-8").splitlines()]
     assert rc == 124
-    assert metadata["diagnosis"] == "pytest_terminated"
-    assert metadata["termination_reason"].startswith("pytest reported no test progress for 1.5s")
+    assert metadata["diagnosis"] in {"pytest_terminated", "pytest_stall_timeout"}
+    assert metadata["termination_reason"].startswith(
+        ("pytest reported no test progress for 1.5s", "pytest produced no output for 1.5s")
+    )
     assert fixture_proof.is_file()
     fixture_path = Path(fixture_proof.read_text(encoding="utf-8"))
     assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
-    assert any(event.get("progress_kind") == "storage_scale_heartbeat" for event in events)
+    heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
+    assert len(heartbeat_events) <= 2
     assert any(event.get("worker_id") == "gw0" for event in events)
 
 

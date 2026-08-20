@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +47,7 @@ _COUNTS_FLUSH_EVERY = 20
 _COMPLETED_COUNT = 0
 _FAILED_COUNT = 0
 _STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV = "POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S"
+_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
 _DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S = 30.0
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
 
@@ -166,24 +168,75 @@ def _write_event(payload: dict[str, Any]) -> None:
 
 
 def _storage_scale_progress_heartbeat_s() -> float:
-    """Return the cadence for long ``storage_scale`` node progress events."""
+    """Return a cadence that can refresh progress before the stall deadline."""
+    value = _DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S
     raw = os.environ.get(_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV)
     if raw is not None:
         with contextlib.suppress(ValueError):
-            value = float(raw)
-            if math.isfinite(value) and value > 0:
-                return value
-    return _DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S
+            configured = float(raw)
+            if math.isfinite(configured) and configured > 0:
+                value = configured
+    raw_stall = os.environ.get(_STALL_TIMEOUT_ENV)
+    if raw_stall is not None:
+        with contextlib.suppress(ValueError):
+            stall_timeout = float(raw_stall)
+            if math.isfinite(stall_timeout) and stall_timeout > 0:
+                value = min(value, stall_timeout / 2)
+    return value
+
+
+def _storage_scale_tree_snapshot(root: Path) -> tuple[int, int, int] | None:
+    """Return file count, total bytes, and newest mtime below a test's tree."""
+    if not root.is_dir():
+        return None
+    total_bytes = 0
+    file_count = 0
+    newest_mtime_ns = 0
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        with entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    stat_result = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                file_count += 1
+                total_bytes += stat_result.st_size
+                newest_mtime_ns = max(newest_mtime_ns, stat_result.st_mtime_ns)
+    return file_count, total_bytes, newest_mtime_ns
+
+
+def _storage_scale_root_for_item(item: Any) -> Path | None:
+    """Return the exact redirected tree after fixture setup has bound it."""
+    fixture_root = getattr(item, "funcargs", {}).get("tmp_path")
+    if isinstance(fixture_root, Path):
+        return fixture_root
+    return None
 
 
 class _StorageScaleProgressHeartbeat:
-    """Keep the managed stall clock alive while one scale node is running."""
+    """Report observed storage-tree changes for one marked scale node."""
 
-    def __init__(self, *, nodeid: str) -> None:
+    def __init__(self, *, nodeid: str, root_supplier: Callable[[], Path | None]) -> None:
         self._nodeid = nodeid
+        self._root_supplier = root_supplier
         self._interval_s = _storage_scale_progress_heartbeat_s()
         self._stop = threading.Event()
         self._started_at = time.monotonic()
+        self._root: Path | None = None
+        self._last_snapshot: tuple[int, int, int] | None = None
         self._thread = threading.Thread(
             target=self._run,
             name="pytest-storage-scale-heartbeat",
@@ -199,14 +252,29 @@ class _StorageScaleProgressHeartbeat:
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_s):
-            _write_event(
-                {
-                    "event": "test_progress",
-                    "nodeid": self._nodeid,
-                    "progress_kind": "storage_scale_heartbeat",
-                    "elapsed_s": round(time.monotonic() - self._started_at, 3),
-                }
-            )
+            root = self._root_supplier()
+            if root is None:
+                continue
+            if self._root is None:
+                self._root = root
+                self._last_snapshot = _storage_scale_tree_snapshot(root)
+                continue
+            snapshot = _storage_scale_tree_snapshot(root)
+            if snapshot is None or snapshot == self._last_snapshot:
+                continue
+            self._last_snapshot = snapshot
+            self._write_heartbeat()
+
+    def _write_heartbeat(self) -> None:
+        """Record one observed storage-tree change."""
+        _write_event(
+            {
+                "event": "test_progress",
+                "nodeid": self._nodeid,
+                "progress_kind": "storage_scale_heartbeat",
+                "elapsed_s": round(time.monotonic() - self._started_at, 3),
+            }
+        )
 
 
 def _write_selection(payload: dict[str, Any]) -> None:
@@ -407,7 +475,7 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
-    """Emit live progress for a marked node whose call phase is long-running."""
+    """Observe storage progress for a marked node across setup and call."""
     del nextitem
     heartbeat: _StorageScaleProgressHeartbeat | None = None
     numprocesses = getattr(getattr(item.config, "option", None), "numprocesses", 0)
@@ -417,7 +485,10 @@ def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
         and (os.environ.get(_EVENTS_DIR_ENV) or os.environ.get(_EVENTS_ENV))
         and not xdist_controller
     ):
-        heartbeat = _StorageScaleProgressHeartbeat(nodeid=str(item.nodeid))
+        heartbeat = _StorageScaleProgressHeartbeat(
+            nodeid=str(item.nodeid),
+            root_supplier=lambda: _storage_scale_root_for_item(item),
+        )
         heartbeat.start()
     try:
         yield
