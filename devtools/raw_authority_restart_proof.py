@@ -39,7 +39,11 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     record_revision_application_sync,
 )
 
-_PROOF_SCHEMA = "polylogue.raw-authority-restart-proof.v1"
+# The accepted-head reparse evidence is part of the report and proof identity.
+# Keep that expanded shape and identity explicitly versioned instead of
+# presenting it as a legacy v1 receipt.
+_PROOF_SCHEMA = "polylogue.raw-authority-restart-proof.v2"
+_PROOF_IDENTITY_PREFIX = "raw-authority-restart-proof:v2:"
 _CASE_SCHEMA = "polylogue.raw-authority-restart-proof-case.v1"
 _TERMINAL_STATUSES = {
     RawReplayPlanStatus.EXECUTED.value,
@@ -270,7 +274,12 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
 
     with sqlite3.connect(case_root / "index.db") as index_conn:
         applications = index_conn.execute(
-            "SELECT decision FROM raw_revision_applications WHERE raw_id = ? AND logical_source_key = ? ORDER BY decision_id",
+            """
+            SELECT decision, decided_at_ms, decision_id
+            FROM raw_revision_applications
+            WHERE raw_id = ? AND logical_source_key = ?
+            ORDER BY decided_at_ms, decision_id
+            """,
             (raw_id, "unknown:reparse-browser"),
         ).fetchall()
         head_hash, session_hash = index_conn.execute(
@@ -324,12 +333,13 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
         )
 
     _require(ordering == ["reissue", "write"], f"accepted-head reparse ordering changed: {ordering}")
+    _require(len(applications) == 2, "accepted-head reparse receipt count is not durable")
     _require(
         [str(row[0]) for row in applications]
-        == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value],
-        "accepted-head reparse did not append the typed reaffirmation receipt",
+        == [ApplicationDecision.SELECTED_BASELINE.value, ApplicationDecision.REPARSE_REAFFIRMATION.value]
+        and int(applications[0][1]) < int(applications[1][1]),
+        "accepted-head reparse receipts are not ordered chronologically",
     )
-    _require(len(applications) == 2, "accepted-head reparse receipt count is not durable")
     _require(bytes(head_hash) == current_hash == bytes(session_hash), "reparse head and session hashes diverged")
     _require(repair_item.status == "ineligible", "reparse-then-repair did not fail closed")
     _require(
@@ -1185,7 +1195,7 @@ def _proof_identity(cases: list[dict[str, object]], reparse_case: dict[str, obje
         "accepted_head_reparse": _stable_reparse_case_summary(reparse_case),
     }
     digest = hashlib.sha256(json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return f"raw-authority-restart-proof:{digest[:24]}"
+    return f"{_PROOF_IDENTITY_PREFIX}{digest[:24]}"
 
 
 def run_raw_authority_restart_proof(
@@ -1201,7 +1211,7 @@ def run_raw_authority_restart_proof(
     cases_root.mkdir(parents=True)
 
     cases = [_run_case(cases_root / boundary.value, boundary) for boundary in FaultBoundary]
-    reparse_case = _exercise_accepted_head_reparse(root / "accepted-head-reparse")
+    reparse_case = _exercise_accepted_head_reparse(cases_root / "accepted-head-reparse")
     report: dict[str, object] = {
         "schema": _PROOF_SCHEMA,
         "proof_id": _proof_identity(cases, reparse_case),

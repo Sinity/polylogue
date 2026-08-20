@@ -18,9 +18,12 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
     """Exercise production repair, durable census storage, recovery, and receipt validation."""
     payload = proof.run_raw_authority_restart_proof(tmp_path, keep=True)
 
-    assert payload["schema"] == "polylogue.raw-authority-restart-proof.v1"
-    assert cast(str, payload["proof_id"]).startswith("raw-authority-restart-proof:")
+    assert payload["schema"] == "polylogue.raw-authority-restart-proof.v2"
+    assert cast(str, payload["proof_id"]).startswith("raw-authority-restart-proof:v2:")
     assert json.loads(Path(cast(str, payload["report_path"])).read_text()) == payload
+    retained_root = Path(cast(str, payload["work_root"]))
+    assert payload["case_archives_retained"] is True
+    assert (retained_root / "cases" / "accepted-head-reparse").is_dir()
     assert payload["production_limits"] == {
         "raw_artifact_limit": None,
         "max_payload_bytes": repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES,
@@ -73,6 +76,10 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
 
 def test_raw_authority_restart_proof_identity_includes_reparse_evidence(tmp_path: Path) -> None:
     payload = proof.run_raw_authority_restart_proof(tmp_path)
+    assert payload["schema"] == "polylogue.raw-authority-restart-proof.v2"
+    discarded_root = Path(cast(str, payload["work_root"]))
+    assert payload["case_archives_retained"] is False
+    assert not (discarded_root / "cases").exists()
     cases = cast(list[dict[str, object]], payload["fault_matrix"])
     reparse_case = cast(dict[str, object], payload["accepted_head_reparse"])
     changed_reparse_case = dict(reparse_case)
