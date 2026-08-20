@@ -326,10 +326,17 @@ def test_merge_auto_records_when_no_fresh_receipt_then_merges(monkeypatch: pytes
     assert ledger["merges"][0]["title"] == "fix: thing (#42)"
 
 
-def test_merge_executes_validated_satisfied_disposition_only_after_squash(
+def test_merge_records_scope_without_mutating_beads_or_directly_pushing_master(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Drive cmd_merge itself, with fake gh/bd processes, to pin the post-merge boundary."""
+    """The real merge path must not create unpublished tracker state.
+
+    ``bd`` reimports the checkout JSONL for each separate invocation.  The
+    old ``show -> close -> export`` sequence therefore treated independent
+    processes as one mutable transaction and then tried to repair the result
+    with a raw ``master`` push.  The wrapper's authority is the exact-head
+    scope attestation and merge ledger, not Beads lifecycle publication.
+    """
     monkeypatch.chdir(tmp_path)
     pr_view = _base_pr_view()
     carrier = {
@@ -349,7 +356,6 @@ def test_merge_executes_validated_satisfied_disposition_only_after_squash(
     carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
     pr_view["body"] = pr_scope.render_carrier(carrier)
     calls: list[list[str]] = []
-    bead = {"id": "polylogue-test-scope", "status": "open"}
     base_run = _fake_run(pr_view)
     merged = False
 
@@ -363,13 +369,6 @@ def test_merge_executes_validated_satisfied_disposition_only_after_squash(
             return MagicMock(
                 returncode=0, stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "m" * 40}}), stderr=""
             )
-        if cmd[:2] == ["bd", "show"]:
-            return MagicMock(returncode=0, stdout=json.dumps(bead), stderr="")
-        if cmd[:2] == ["bd", "close"]:
-            bead.update({"status": "closed", "close_reason": cmd[cmd.index("--reason") + 1]})
-            return MagicMock(returncode=0, stdout=json.dumps(bead), stderr="")
-        if cmd[:2] == ["bd", "export"]:
-            return MagicMock(returncode=0, stdout="", stderr="")
         return base_run(cmd, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -387,54 +386,15 @@ def test_merge_executes_validated_satisfied_disposition_only_after_squash(
         )
         == 0
     )
-    squash_index = next(index for index, command in enumerate(calls) if command[:3] == ["gh", "pr", "merge"])
-    close_index = next(index for index, command in enumerate(calls) if command[:2] == ["bd", "close"])
-    assert squash_index < close_index
-    assert ["bd", "export", "-o", ".beads/issues.jsonl"] in calls
-    close = next(command for command in calls if command[:2] == ["bd", "close"])
-    assert "pr=42" in close[close.index("--reason") + 1]
-    assert "merge=" in close[close.index("--reason") + 1]
-    assert "disposition=" in close[close.index("--reason") + 1]
-
-
-def test_disposition_marker_binds_the_complete_typed_disposition() -> None:
-    first = {
-        "bead_id": "polylogue-test-scope",
-        "disposition": "partial",
-        "evidence": [{"kind": "test", "ref": "test.py"}],
-        "successors": ["polylogue-next"],
-    }
-    changed_successor = {**first, "successors": ["polylogue-other"]}
-    changed_disposition = {**first, "disposition": "deferred"}
-
-    marker = merge_boundary._disposition_marker(42, "m" * 40, first)
-    assert marker != merge_boundary._disposition_marker(42, "m" * 40, changed_successor)
-    assert marker != merge_boundary._disposition_marker(42, "m" * 40, changed_disposition)
-
-
-def test_preflight_rejects_already_closed_disposition_target(monkeypatch: pytest.MonkeyPatch) -> None:
-    scope = pr_scope.ScopeVerdict(
-        ok=True,
-        carrier_version=2,
-        scope_kind=pr_scope.ScopeKind.BEAD,
-        dispositions=(
-            pr_scope.ValidatedDisposition(
-                bead_id="polylogue-test-scope",
-                disposition=pr_scope.ScopeDisposition.SATISFIED,
-                evidence=(pr_scope.EvidenceRef(pr_scope.EvidenceKind.TEST, "test.py"),),
-                successors=(),
-            ),
-        ),
-    )
-    monkeypatch.setattr(merge_boundary, "_live_bead_statuses", lambda: {"polylogue-test-scope": "closed"})
-
-    with pytest.raises(merge_boundary.LedgerStateError, match="closed before squash"):
-        merge_boundary._preflight_live_dispositions(scope)
-
-
-def test_projected_status_rejects_closing_an_active_archive_waiver() -> None:
-    with pytest.raises(merge_boundary.LedgerStateError, match="waiver bead polylogue-feu0 is closed"):
-        merge_boundary._validate_projected_archive_registry({"polylogue-feu0": "closed"})
+    assert any(command[:3] == ["gh", "pr", "merge"] for command in calls)
+    assert not any(command and command[0] == "bd" for command in calls)
+    assert not any(command[:2] == ["git", "push"] for command in calls)
+    ledger = merge_boundary._read_ledger()
+    assert ledger["merge_intents"] == []
+    assert ledger["merges"][0]["pr"] == 42
+    scope = merge_gate._scope_verdict(42, pr_view, head_sha="abc123", checkout_root=tmp_path)
+    expected = pr_scope.attestation_payload(scope, head_sha="abc123", base_sha=merge_gate._base_sha(pr_view))
+    assert ledger["merges"][0]["scope_attestation_digest"] == expected["attestation_digest"]
 
 
 def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
@@ -879,9 +839,10 @@ def test_merge_with_verify_returns_nonzero_when_terminal_authority_is_rejected(
         == 1
     )
     assert merge_boundary._read_ledger()["merges"]
+    assert merge_boundary._read_ledger()["merge_intents"] == []
 
 
-def test_merge_with_verify_defers_disposition_completion_until_after_terminal_verify(
+def test_merge_with_verify_reconciles_intent_after_terminal_verify(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -897,7 +858,7 @@ def test_merge_with_verify_defers_disposition_completion_until_after_terminal_ve
     monkeypatch.setattr(
         merge_boundary,
         "_complete_merge_intent",
-        lambda _pr, _head_sha: events.append("dispositions"),
+        lambda _pr, _head_sha: events.append("reconciliation"),
     )
 
     assert (
@@ -913,7 +874,7 @@ def test_merge_with_verify_defers_disposition_completion_until_after_terminal_ve
         )
         == 0
     )
-    assert events == ["verify", "dispositions"]
+    assert events == ["verify", "reconciliation"]
 
 
 def test_post_merge_terminal_verify_rejects_stale_feature_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1437,7 +1398,14 @@ def test_external_merge_before_completion_is_reconciled_from_durable_intent(
         if cmd[:3] == ["gh", "pr", "view"] and merged:
             return MagicMock(
                 returncode=0,
-                stdout=json.dumps({"state": "MERGED", "headRefOid": "abc123", "mergeCommit": {"oid": "merge-commit"}}),
+                stdout=json.dumps(
+                    {
+                        **pr_view,
+                        "state": "MERGED",
+                        "headRefOid": "abc123",
+                        "mergeCommit": {"oid": "merge-commit"},
+                    }
+                ),
                 stderr="",
             )
         return base_run(cmd, **kwargs)

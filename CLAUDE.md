@@ -513,7 +513,7 @@ workflow, not optional conveniences — use them at the point named, every time:
   any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
   exit, a changed head-bound scope attestation, an unresolved GitHub review thread, or a changes-requested review), strips a
   doubled `(#N) (#N)` squash-subject suffix, then runs the actual
-  `gh pr merge --squash`, then executes the carrier's validated v2 dispositions after GitHub reports the squash merge SHA: satisfied Beads close with that typed marker, residual dispositions recheck successors and append their marker, and one Beads export records the batch. A disposition failure never rolls back the merge; it leaves the merge intent recoverable and train status nonterminal. `--dry-run` runs every check without merging;
+  `gh pr merge --squash`, then records the exact-head scope attestation in the merge ledger. Carrier dispositions are whole-Bead scope declarations, not Beads lifecycle commands: this wrapper never invokes `bd`, mutates Dolt, exports `.beads/issues.jsonl`, or pushes `master`. After a merged PR, run `devtools workspace carrier-dispositions <PR> --base-export <follow-on>/.beads/issues.jsonl --output <follow-on>/.beads/issues.jsonl`: it validates the merged PR/head/attestation and live successor/registry state, applies one guarded `bd batch`, and writes a scoped export plus receipt for a normal follow-on PR. A terminal verify failure does not erase the post-merge ledger reconciliation. `--dry-run` runs every check without merging;
   `--with-verify` immediately runs and records the merge-train's terminal
   verify after merging. `devtools workspace merge train-status`
   reports (exit 1) any PRs merged since the last recorded terminal verify.

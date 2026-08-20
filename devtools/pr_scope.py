@@ -524,6 +524,14 @@ def validate_carrier(
         records=records,
         reasons=reasons,
     )
+    if not is_draft and not is_v1 and carrier.get("scope_kind") == ScopeKind.BEAD.value:
+        for bead_id in assigned_ids:
+            record = records.get(bead_id)
+            if record is not None and record.get("status") == "closed":
+                reasons.append(
+                    f"{bead_id}: an open PR cannot carry a pre-applied terminal disposition; "
+                    "run the explicit post-merge carrier-dispositions workflow after merge"
+                )
     return ScopeVerdict(
         ok=not reasons,
         reasons=reasons,

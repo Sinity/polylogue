@@ -62,12 +62,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
-import hashlib
 import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -156,6 +154,13 @@ def _validate_ledger(data: object) -> dict[str, Any]:
                     or entry["merge_sequence"] <= 0
                 )
             )
+            or (
+                entry.get("scope_attestation_digest") is not None
+                and (
+                    not isinstance(entry.get("scope_attestation_digest"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", entry["scope_attestation_digest"]) is None
+                )
+            )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge entry")
     intents = data.get("merge_intents")
@@ -172,6 +177,13 @@ def _validate_ledger(data: object) -> dict[str, Any]:
             or not isinstance(intent.get("title"), str)
             or not intent["title"]
             or not _is_real_number(intent.get("intent_at"))
+            or (
+                intent.get("scope_attestation_digest") is not None
+                and (
+                    not isinstance(intent.get("scope_attestation_digest"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", intent["scope_attestation_digest"]) is None
+                )
+            )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge intent")
     retired_intents = data.get("retired_merge_intents")
@@ -345,310 +357,41 @@ def _merge_sequence(ledger: Mapping[str, Any]) -> int:
     return sequence
 
 
-def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
+def _append_merge_entry(pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
-        _append_merge_entry_unlocked(ledger, pr, head_sha, title)
+        _append_merge_entry_unlocked(ledger, pr, head_sha, title, scope_attestation_digest=scope_attestation_digest)
         _write_ledger_unlocked(ledger)
 
 
-def _append_merge_entry_unlocked(ledger: dict[str, Any], pr: int, head_sha: str, title: str) -> None:
+def _append_merge_entry_unlocked(
+    ledger: dict[str, Any], pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None
+) -> None:
     merge_sequence = _merge_sequence(ledger) + 1
-    ledger["merges"].append(
-        {
-            "pr": pr,
-            "head_sha": head_sha,
-            "title": title,
-            "merged_at": time.time(),
-            "merge_sequence": merge_sequence,
-        }
-    )
-
-
-def _scope_intent(scope: pr_scope.ScopeVerdict) -> dict[str, Any] | None:
-    if scope.carrier_version != 2:
-        return None
-    return {
-        "carrier_version": scope.carrier_version,
-        "scope_kind": scope.scope_kind.value if scope.scope_kind is not None else None,
-        "dispositions": [
-            {
-                "bead_id": item.bead_id,
-                "disposition": item.disposition.value,
-                "evidence": [{"kind": ref.kind.value, "ref": ref.ref} for ref in item.evidence],
-                "successors": list(item.successors),
-            }
-            for item in scope.dispositions
-        ],
+    entry: dict[str, Any] = {
+        "pr": pr,
+        "head_sha": head_sha,
+        "title": title,
+        "merged_at": time.time(),
+        "merge_sequence": merge_sequence,
     }
+    if scope_attestation_digest is not None:
+        entry["scope_attestation_digest"] = scope_attestation_digest
+    ledger["merges"].append(entry)
 
 
-def _record_merge_intent(pr: int, head_sha: str, title: str, *, scope: pr_scope.ScopeVerdict | None = None) -> None:
+def _record_merge_intent(pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         if not any(intent.get("pr") == pr and intent.get("head_sha") == head_sha for intent in ledger["merge_intents"]):
             intent: dict[str, Any] = {"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()}
-            if scope is not None and (scope_intent := _scope_intent(scope)) is not None:
-                intent["scope"] = scope_intent
+            if scope_attestation_digest is not None:
+                intent["scope_attestation_digest"] = scope_attestation_digest
             ledger["merge_intents"].append(intent)
             _write_ledger_unlocked(ledger)
 
 
-def _merged_commit_sha(pr: int) -> str:
-    info = _gh_json(["pr", "view", str(pr), "--json", "state,mergeCommit"])
-    merge_commit = info.get("mergeCommit")
-    merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
-    if info.get("state") != "MERGED" or not isinstance(merge_sha, str) or not merge_sha:
-        raise LedgerStateError(f"PR #{pr} merged without an observable squash merge SHA")
-    return merge_sha
-
-
-def _live_bead(bead_id: str, *, cwd: Path | None = None) -> dict[str, Any]:
-    result = subprocess.run(["bd", "show", bead_id, "--json"], capture_output=True, text=True, timeout=60, cwd=cwd)
-    if result.returncode != 0:
-        raise LedgerStateError(f"could not inspect Bead {bead_id}: {result.stderr.strip()[:300]}")
-    payload = json.loads(result.stdout)
-    if isinstance(payload, list):
-        payload = payload[0] if len(payload) == 1 else None
-    if not isinstance(payload, dict) or payload.get("id") != bead_id:
-        raise LedgerStateError(f"Bead {bead_id} returned malformed live state")
-    return payload
-
-
-def _disposition_marker(pr: int, merge_sha: str, item: Mapping[str, Any]) -> str:
-    disposition_digest = hashlib.sha256(
-        json.dumps(dict(item), sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return f"carrier-disposition pr={pr} merge={merge_sha} bead={item['bead_id']} disposition={disposition_digest}"
-
-
-def _live_bead_statuses() -> dict[str, str]:
-    result = subprocess.run(["bd", "list", "--all", "-n", "0", "--json"], capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        raise LedgerStateError(f"could not inspect live Bead statuses: {result.stderr.strip()[:300]}")
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, list):
-        raise LedgerStateError("live Bead status query returned malformed state")
-    statuses: dict[str, str] = {}
-    for record in payload:
-        if not isinstance(record, dict):
-            raise LedgerStateError("live Bead status query returned malformed record")
-        bead_id, status = record.get("id"), record.get("status")
-        if not isinstance(bead_id, str) or not bead_id or not isinstance(status, str) or not status:
-            raise LedgerStateError("live Bead status query returned malformed record")
-        if bead_id in statuses:
-            raise LedgerStateError(f"live Bead status query returned duplicate Bead {bead_id}")
-        statuses[bead_id] = status
-    return statuses
-
-
-def _validate_projected_archive_registry(statuses: Mapping[str, str]) -> None:
-    from polylogue.maintenance.archive_verification import validate_archive_verification_registry
-
-    try:
-        validate_archive_verification_registry(waiver_bead_statuses=statuses)
-    except ValueError as exc:
-        raise LedgerStateError(str(exc)) from exc
-
-
-def _preflight_live_dispositions(scope: pr_scope.ScopeVerdict) -> None:
-    """Reject state races and registry violations before the squash boundary."""
-    projected_statuses = _live_bead_statuses()
-    for disposition in scope.dispositions:
-        status = projected_statuses.get(disposition.bead_id)
-        if status is None:
-            raise LedgerStateError(f"disposition target {disposition.bead_id} does not exist before squash merge")
-        if status == "closed":
-            raise LedgerStateError(f"disposition target {disposition.bead_id} is closed before squash merge")
-        if disposition.disposition is pr_scope.ScopeDisposition.SATISFIED:
-            projected_statuses[disposition.bead_id] = "closed"
-            continue
-        for successor in disposition.successors:
-            if projected_statuses.get(successor) == "closed":
-                raise LedgerStateError(f"residual successor {successor} is closed before squash merge")
-    _validate_projected_archive_registry(projected_statuses)
-
-
-def _execute_dispositions(intent: Mapping[str, Any], *, merge_sha: str, cwd: Path) -> None:
-    scope = intent.get("scope")
-    if not isinstance(scope, dict) or scope.get("scope_kind") == pr_scope.ScopeKind.SELF_CONTAINED.value:
-        return
-    dispositions = scope.get("dispositions")
-    if not isinstance(dispositions, list):
-        raise LedgerStateError("merge intent has no typed carrier dispositions")
-    for item in dispositions:
-        if not isinstance(item, dict):
-            raise LedgerStateError("merge intent has malformed typed carrier disposition")
-        bead_id = item.get("bead_id")
-        disposition = item.get("disposition")
-        if not isinstance(bead_id, str) or not isinstance(disposition, str):
-            raise LedgerStateError("merge intent has malformed typed carrier disposition")
-        marker = _disposition_marker(int(intent["pr"]), merge_sha, item)
-        live = _live_bead(bead_id, cwd=cwd)
-        if disposition == pr_scope.ScopeDisposition.SATISFIED.value:
-            if live.get("status") == "closed":
-                if live.get("close_reason") != marker:
-                    raise LedgerStateError(f"Bead {bead_id} was closed independently; refusing to overwrite it")
-                continue
-            close = subprocess.run(
-                ["bd", "close", bead_id, "--reason", marker, "--json"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=cwd,
-            )
-            if close.returncode != 0:
-                raise LedgerStateError(f"could not close Bead {bead_id}: {close.stderr.strip()[:300]}")
-        elif disposition in {
-            item.value for item in pr_scope.ScopeDisposition if item is not pr_scope.ScopeDisposition.SATISFIED
-        }:
-            for successor in item.get("successors", []):
-                successor_record = _live_bead(str(successor), cwd=cwd)
-                if successor_record.get("status") == "closed":
-                    raise LedgerStateError(f"residual successor {successor} is closed at disposition execution")
-            update = subprocess.run(
-                ["bd", "update", bead_id, "--append-notes", marker, "--json"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=cwd,
-            )
-            if update.returncode != 0:
-                raise LedgerStateError(
-                    f"could not record {disposition} disposition for Bead {bead_id}: {update.stderr.strip()[:300]}"
-                )
-        else:
-            raise LedgerStateError(f"merge intent has unknown disposition {disposition!r}")
-    exported = subprocess.run(
-        ["bd", "export", "-o", ".beads/issues.jsonl"], capture_output=True, text=True, timeout=60, cwd=cwd
-    )
-    if exported.returncode != 0:
-        raise LedgerStateError(f"could not export carrier disposition batch: {exported.stderr.strip()[:300]}")
-
-
-@contextlib.contextmanager
-def _merged_master_worktree(merge_sha: str) -> Iterator[Path]:
-    """Yield a disposable worktree bound to the fetched master containing a merge.
-
-    The invoking PR checkout is deliberately never the Beads export authority.
-    This keeps a dirty operator main checkout untouched while making the
-    resulting JSONL commit originate from the branch that future hook imports
-    actually read.
-    """
-    checkout_root = merge_gate._repository_root()
-    temporary = Path(tempfile.mkdtemp(prefix="polylogue-carrier-master-"))
-    added = False
-    try:
-        fetched = subprocess.run(
-            ["git", "fetch", "origin", "master"], capture_output=True, text=True, cwd=checkout_root, timeout=120
-        )
-        if fetched.returncode != 0:
-            raise LedgerStateError(f"could not fetch master for carrier disposition: {fetched.stderr.strip()[:300]}")
-        master = subprocess.run(
-            ["git", "rev-parse", "origin/master"], capture_output=True, text=True, cwd=checkout_root, timeout=30
-        )
-        if master.returncode != 0:
-            raise LedgerStateError("could not resolve fetched origin/master for carrier disposition")
-        master_sha = master.stdout.strip()
-        contains = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", merge_sha, master_sha],
-            capture_output=True,
-            text=True,
-            cwd=checkout_root,
-            timeout=30,
-        )
-        if contains.returncode != 0:
-            raise LedgerStateError("fetched master does not contain the observed squash merge")
-        created = subprocess.run(
-            ["git", "worktree", "add", "--detach", str(temporary), master_sha],
-            capture_output=True,
-            text=True,
-            cwd=checkout_root,
-            timeout=120,
-        )
-        if created.returncode != 0:
-            raise LedgerStateError(
-                f"could not create master-bound disposition worktree: {created.stderr.strip()[:300]}"
-            )
-        added = True
-        yield temporary
-    finally:
-        if added:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", str(temporary)],
-                capture_output=True,
-                text=True,
-                cwd=checkout_root,
-                timeout=120,
-            )
-        else:
-            shutil.rmtree(temporary, ignore_errors=True)
-
-
-def _commit_master_disposition_snapshot(intent: Mapping[str, Any], *, merge_sha: str, cwd: Path) -> None:
-    staged = subprocess.run(["git", "add", ".beads/issues.jsonl"], capture_output=True, text=True, cwd=cwd, timeout=60)
-    if staged.returncode != 0:
-        raise LedgerStateError(f"could not stage master carrier disposition snapshot: {staged.stderr.strip()[:300]}")
-    changed = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"], capture_output=True, text=True, cwd=cwd, timeout=30
-    )
-    if changed.returncode not in {0, 1}:
-        raise LedgerStateError("could not inspect staged master carrier disposition snapshot")
-    if changed.returncode == 1:
-        committed = subprocess.run(
-            ["git", "commit", "-m", f"chore(beads): record carrier dispositions for PR #{intent['pr']}"],
-            capture_output=True,
-            text=True,
-            cwd=cwd,
-            timeout=120,
-        )
-        if committed.returncode != 0:
-            raise LedgerStateError(
-                f"could not commit master carrier disposition snapshot: {committed.stderr.strip()[:300]}"
-            )
-        pushed = subprocess.run(
-            ["git", "push", "origin", "HEAD:master"], capture_output=True, text=True, cwd=cwd, timeout=120
-        )
-        if pushed.returncode != 0:
-            raise LedgerStateError(
-                f"could not publish master carrier disposition snapshot: {pushed.stderr.strip()[:300]}"
-            )
-
-    # Re-fetch and re-import the committed master snapshot. This is the
-    # persistence proof that a later master-side Beads import cannot rewind the
-    # just-applied disposition to the feature branch's older JSONL.
-    fetched = subprocess.run(["git", "fetch", "origin", "master"], capture_output=True, text=True, cwd=cwd, timeout=120)
-    if fetched.returncode != 0:
-        raise LedgerStateError(f"could not re-fetch committed master carrier snapshot: {fetched.stderr.strip()[:300]}")
-    reset = subprocess.run(
-        ["git", "reset", "--hard", "origin/master"], capture_output=True, text=True, cwd=cwd, timeout=60
-    )
-    if reset.returncode != 0:
-        raise LedgerStateError("could not restore the disposable master disposition worktree")
-    imported = subprocess.run(
-        ["bd", "import", "--input", ".beads/issues.jsonl"], capture_output=True, text=True, cwd=cwd, timeout=60
-    )
-    if imported.returncode != 0:
-        raise LedgerStateError(f"master carrier snapshot could not be reimported: {imported.stderr.strip()[:300]}")
-    scope = intent.get("scope")
-    if isinstance(scope, dict):
-        for item in scope.get("dispositions", []):
-            if not isinstance(item, dict) or not isinstance(item.get("bead_id"), str):
-                raise LedgerStateError("master carrier snapshot has malformed typed disposition")
-            marker = _disposition_marker(int(intent["pr"]), merge_sha, item)
-            if marker not in json.dumps(_live_bead(item["bead_id"], cwd=cwd), sort_keys=True):
-                raise LedgerStateError(
-                    f"master carrier reimport did not preserve disposition for Bead {item['bead_id']}"
-                )
-
-
-def _execute_master_dispositions(intent: Mapping[str, Any], *, merge_sha: str) -> None:
-    with _merged_master_worktree(merge_sha) as master_worktree:
-        _execute_dispositions(intent, merge_sha=merge_sha, cwd=master_worktree)
-        _commit_master_disposition_snapshot(intent, merge_sha=merge_sha, cwd=master_worktree)
-
-
-def _complete_merge_intent(pr: int, head_sha: str, *, merge_sha: str | None = None) -> None:
+def _complete_merge_intent(pr: int, head_sha: str) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         intents = ledger["merge_intents"]
@@ -656,16 +399,15 @@ def _complete_merge_intent(pr: int, head_sha: str, *, merge_sha: str | None = No
         if not matching:
             return
         intent = matching[0]
-        if isinstance(intent.get("scope"), dict):
-            resolved_merge_sha = merge_sha or _merged_commit_sha(pr)
-            try:
-                _execute_master_dispositions(intent, merge_sha=resolved_merge_sha)
-            except LedgerStateError as exc:
-                intent["disposition_error"] = str(exc)
-                _write_ledger_unlocked(ledger)
-                raise
         if not any(entry.get("pr") == pr and entry.get("head_sha") == head_sha for entry in ledger["merges"]):
-            _append_merge_entry_unlocked(ledger, pr, head_sha, str(intent["title"]))
+            digest = intent.get("scope_attestation_digest")
+            _append_merge_entry_unlocked(
+                ledger,
+                pr,
+                head_sha,
+                str(intent["title"]),
+                scope_attestation_digest=digest if isinstance(digest, str) else None,
+            )
         ledger["merge_intents"] = [item for item in intents if item is not intent]
         _write_ledger_unlocked(ledger)
 
@@ -685,7 +427,7 @@ def _retire_superseded_merge_intent(intent: Mapping[str, Any], *, observed_head_
         retired.update(
             {
                 "retired_at": time.time(),
-                "retired_reason": "PR merged from a different head; carrier dispositions were not executed",
+                "retired_reason": "PR merged from a different head; recorded scope attestation was not accepted",
                 "observed_head_sha": observed_head_sha,
             }
         )
@@ -702,11 +444,18 @@ def _reconcile_merge_intents(*, skip: set[tuple[int, str]] | None = None) -> Non
         if skip is not None and identity in skip:
             continue
         try:
-            info = _gh_json(["pr", "view", str(intent["pr"]), "--json", "state,mergeCommit,headRefOid"])
+            info = _gh_json(
+                [
+                    "pr",
+                    "view",
+                    str(intent["pr"]),
+                    "--json",
+                    "state,mergeCommit,headRefOid,baseRefOid,body,isDraft,author,files",
+                ]
+            )
         except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
             raise LedgerStateError(f"could not reconcile merge intent for PR #{intent['pr']}: {exc}") from exc
-        merge_commit = info.get("mergeCommit")
-        if info.get("state") != "MERGED" or not isinstance(merge_commit, dict) or not merge_commit.get("oid"):
+        if info.get("state") != "MERGED":
             raise LedgerStateError(f"unresolved durable merge intent for PR #{intent['pr']}")
         observed_head_sha = info.get("headRefOid")
         if not isinstance(observed_head_sha, str) or not observed_head_sha:
@@ -714,7 +463,24 @@ def _reconcile_merge_intents(*, skip: set[tuple[int, str]] | None = None) -> Non
         if observed_head_sha != intent["head_sha"]:
             _retire_superseded_merge_intent(intent, observed_head_sha=observed_head_sha)
             continue
-        _complete_merge_intent(int(intent["pr"]), str(intent["head_sha"]), merge_sha=str(merge_commit["oid"]))
+        recorded_attestation = intent.get("scope_attestation_digest")
+        if recorded_attestation is not None:
+            scope = merge_gate._scope_verdict(
+                int(intent["pr"]),
+                info,
+                head_sha=observed_head_sha,
+                checkout_root=merge_gate._repository_root(),
+            )
+            observed_attestation = pr_scope.attestation_payload(
+                scope,
+                head_sha=observed_head_sha,
+                base_sha=merge_gate._base_sha(info),
+            )["attestation_digest"]
+            if not scope.ok or observed_attestation != recorded_attestation:
+                raise LedgerStateError(
+                    f"merged PR #{intent['pr']} no longer matches its recorded exact-head scope attestation"
+                )
+        _complete_merge_intent(int(intent["pr"]), str(intent["head_sha"]))
         if any(
             item.get("pr") == intent["pr"] and item.get("head_sha") == intent["head_sha"]
             for item in _read_ledger()["merge_intents"]
@@ -1099,12 +865,6 @@ def cmd_merge(
         print(f"REFUSING to merge PR #{pr}: structured scope changed after merge-gate validation", file=sys.stderr)
         return 1
     try:
-        _preflight_live_dispositions(final_scope)
-    except LedgerStateError as exc:
-        print(f"REFUSING to merge PR #{pr}: {exc}", file=sys.stderr)
-        return 1
-
-    try:
         with merge_gate.adversarial_review_lock(pr):
             review_ok, review_reason, review_digest = merge_gate.adversarial_review_verdict(
                 pr, head_sha, max_age_s=max_age_s
@@ -1113,7 +873,12 @@ def cmd_merge(
             if not review_ok or review_digest != admitted_digest:
                 print(f"REFUSING to merge PR #{pr}: {review_reason}", file=sys.stderr)
                 return 1
-            _record_merge_intent(pr, head_sha, clean_title, scope=final_scope)
+            _record_merge_intent(
+                pr,
+                head_sha,
+                clean_title,
+                scope_attestation_digest=str(final_attestation),
+            )
             merge_result = subprocess.run(
                 [
                     "gh",
@@ -1139,38 +904,46 @@ def cmd_merge(
 
     print(f"merged PR #{pr} @ {head_sha[:8]}: {clean_title!r}")
 
+    terminal_exit = 0
     if with_verify:
         try:
-            # The disposition batch exports the tracked Beads JSONL. Keep the
-            # invoking checkout clean until the optional terminal verifier has
-            # run, while retaining this observed merge intent for recovery.
-            _append_merge_entry(pr, head_sha, clean_title)
+            _append_merge_entry(
+                pr,
+                head_sha,
+                clean_title,
+                scope_attestation_digest=str(final_attestation),
+            )
             _reconcile_merge_intents(skip={(pr, head_sha)})
             ledger_snapshot = _terminal_verify_snapshot()
         except LedgerStateError as exc:
             print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
-            return 1
-        target_sha = _fetched_merged_default_branch_sha(pr)
-        if target_sha is None:
-            print(
-                "REFUSING terminal verify: the fetched default branch does not prove this squash merge is included",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"running post-merge broad verify (merge-train terminal step): {verify_command!r}")
-        verify_exit = _run_post_merge_terminal_verify(verify_command, target_sha, ledger_snapshot=ledger_snapshot)
-        if verify_exit != 0:
-            return verify_exit
+            terminal_exit = 1
+        else:
+            target_sha = _fetched_merged_default_branch_sha(pr)
+            if target_sha is None:
+                print(
+                    "REFUSING terminal verify: the fetched default branch does not prove this squash merge is included",
+                    file=sys.stderr,
+                )
+                terminal_exit = 1
+            else:
+                print(f"running post-merge broad verify (merge-train terminal step): {verify_command!r}")
+                terminal_exit = _run_post_merge_terminal_verify(
+                    verify_command, target_sha, ledger_snapshot=ledger_snapshot
+                )
 
     try:
         _complete_merge_intent(pr, head_sha)
     except LedgerStateError as exc:
         print(
-            f"MERGED PR #{pr}, but carrier dispositions remain incomplete: {exc}. "
+            f"MERGED PR #{pr}, but merge-ledger reconciliation remains incomplete: {exc}. "
             f"Recovery: devtools workspace merge train-status",
             file=sys.stderr,
         )
         return 1
+
+    if terminal_exit != 0:
+        return terminal_exit
 
     if not with_verify:
         print(

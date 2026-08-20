@@ -519,7 +519,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace merge",
         "workspace",
-        "Merge boundary wrapper: refuses `gh pr merge` without a fresh receipt, then applies validated v2 dispositions after the squash SHA.",
+        "Merge boundary wrapper: refuses `gh pr merge` without a fresh exact-head receipt, then records the carrier attestation in the merge ledger.",
         "devtools.merge_boundary",
         use_when=(
             "Replace a bare `gh pr merge --squash` with this at the actual merge boundary "
@@ -529,7 +529,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
             "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
-            "without merging. `--with-verify` immediately runs and records the merge-train's "
+            "without merging. Carrier dispositions attest the PR's whole-Bead scope; this command never mutates Beads or publishes `.beads/issues.jsonl`. Use an explicit, scoped Beads publication workflow for tracker state. `--with-verify` immediately runs and records the merge-train's "
             "terminal full-suite verify after merging; otherwise it prints a reminder. "
             "`train-status` reports (exit 1) any PRs merged since the last recorded terminal "
             "verify. The terminal step records itself: a plain `devtools verify` that earns "
@@ -541,6 +541,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace merge 3517 --dry-run",
             "devtools workspace merge 3517 --with-verify",
             "devtools workspace merge train-status",
+        ),
+    ),
+    CommandSpec(
+        "workspace carrier-dispositions",
+        "workspace",
+        "Apply a merged PR's typed carrier dispositions in one explicit Beads batch and prepare a follow-on export.",
+        "devtools.carrier_dispositions",
+        use_when=(
+            "After a squash merge, apply its exact-head-attested Bead dispositions without granting the merge wrapper "
+            "tracker-write or default-branch-push authority. The command verifies the merged PR, carrier, merge-ledger "
+            "attestation, live successor/registry conditions, and one guarded `bd batch`; it writes a bounded JSONL export "
+            "and immutable receipt for a normal follow-on PR."
+        ),
+        examples=(
+            "devtools workspace carrier-dispositions 3517 --base-export /work/follow-on/.beads/issues.jsonl --output /work/follow-on/.beads/issues.jsonl",
+            "devtools workspace carrier-dispositions 3517 --base-export /work/follow-on/.beads/issues.jsonl --output /work/follow-on/.beads/issues.jsonl --dry-run",
         ),
     ),
     CommandSpec(

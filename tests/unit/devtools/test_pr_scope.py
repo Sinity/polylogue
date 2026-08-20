@@ -1247,6 +1247,18 @@ def test_check_uses_prospective_merge_state_for_assigned_bead(
     assert f"assigned Bead record(s) missing: {ASSIGNED}" in verdict.reasons
 
 
+def test_check_rejects_a_terminal_target_before_the_pr_is_merged(beads_path: Path) -> None:
+    carrier = pr_scope.build_carrier(_v2_input(), head_sha=HEAD_SHA, beads_path=beads_path)
+    records = [json.loads(line) for line in beads_path.read_text().splitlines()]
+    records[0]["status"] = "closed"
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+
+    verdict = pr_scope.validate_carrier(carrier, head_sha=HEAD_SHA, is_draft=False, beads_path=beads_path)
+
+    assert not verdict.ok
+    assert any("pre-applied terminal disposition" in reason for reason in verdict.reasons)
+
+
 def test_check_rejects_stale_canonical_beads_digest(
     beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

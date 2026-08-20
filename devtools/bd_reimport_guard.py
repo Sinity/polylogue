@@ -85,6 +85,10 @@ class InvalidJsonlError(ValueError):
     """Raised when a candidate JSONL payload fails structural validation."""
 
 
+class BatchExecutionError(RuntimeError):
+    """A guarded Beads batch did not leave a provable all-or-nothing result."""
+
+
 @dataclass(frozen=True, slots=True)
 class RowOutcome:
     issue_id: str
@@ -698,6 +702,52 @@ def _bd_import_rows(
             )
     finally:
         Path(import_path).unlink(missing_ok=True)
+
+
+def run_guarded_batch(
+    operations: list[str],
+    *,
+    expected_ids: set[str],
+    cwd: Path | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Run one real ``bd batch`` while holding the shared worktree lock.
+
+    The normal wrapper lock cannot span independent ``bd export`` and
+    ``bd batch`` processes.  This is the narrow production path for callers
+    that must inspect a live preimage, perform one Dolt transaction, and
+    inspect the postimage without another linked worktree interleaving a
+    guarded Beads invocation.  A failed batch is accepted only when every
+    selected row is byte-for-byte unchanged from the preimage.
+    """
+    if not expected_ids:
+        raise ValueError("guarded Beads batch requires at least one expected row")
+    if any("\n" in operation or not operation.strip() for operation in operations):
+        raise ValueError("guarded Beads batch operations must be single non-empty lines")
+    root = (cwd or Path.cwd()).resolve()
+    real_bd = str(_validated_real_bd_path(os.environ.get("POLYLOGUE_BD_REAL", "bd")))
+    safe_env = os.environ.copy()
+    safe_env["BD_IMPORT_AUTO"] = "false"
+    with _acquire_invocation_lock(root):
+        before = _export_live_state(bd_command=real_bd, env=safe_env, cwd=root)
+        result = subprocess.run(
+            [real_bd, "batch", "--json"],
+            input="\n".join(operations) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=safe_env,
+            cwd=root,
+        )
+        after = _export_live_state(bd_command=real_bd, env=safe_env, cwd=root)
+    if result.returncode != 0:
+        changed = sorted(bead_id for bead_id in expected_ids if before.get(bead_id) != after.get(bead_id))
+        if changed:
+            raise BatchExecutionError(
+                "bd batch failed after changing selected row(s), so its transaction boundary is not trustworthy: "
+                + ", ".join(changed)
+            )
+        raise BatchExecutionError(f"bd batch rolled back: {result.stderr.strip()[:300] or result.stdout.strip()[:300]}")
+    return before, after
 
 
 def _find_candidate_jsonl(start: Path | None = None) -> Path | None:
