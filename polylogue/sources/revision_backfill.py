@@ -1457,6 +1457,8 @@ def _census_historical_revision_evidence(
                 for raw_id in terminal_raw_ids - state.censused:
                     state.scanned += 1
                     state.censused.add(raw_id)
+                    record_current_parser_source_census(archive._ensure_source_conn(), raw_id)
+                    commit_unit()
                 pending_rows = [
                     (raw_id, source_index)
                     for raw_id, source_index, terminal_non_session, _raw_rowid in rows

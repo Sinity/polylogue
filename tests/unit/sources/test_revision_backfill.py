@@ -38,7 +38,7 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
@@ -155,6 +155,48 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
         conn.commit()
 
     assert uncensused_historical_revision_raw_ids(tmp_path, [legacy_raw_id, canonical_raw_id]) == (legacy_raw_id,)
+
+
+def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path: Path) -> None:
+    """The real census path repairs stale terminal non-session receipts."""
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"terminal non-session legacy receipt",
+            source_path="terminal-legacy.jsonl",
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        with archive._ensure_source_conn():
+            archive._ensure_source_conn().execute(
+                """
+                UPDATE raw_authority_parser_census
+                SET status = 'failed', logical_keys_json = '[]',
+                    detail = 'parser-observed: legacy incomplete receipt', censused_at_ms = 1
+                WHERE raw_id = ?
+                """,
+                (raw_id,),
+            )
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        status, keys = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert status == "complete"
+    assert parser_census_logical_keys(keys) == ()
+
+    validate_frozen_source_authority(tmp_path, selected_raw_ids=[raw_id])
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
 
 def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> None:

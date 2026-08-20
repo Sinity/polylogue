@@ -2027,6 +2027,7 @@ def record_current_parser_source_census(
         and str(membership_census[0]) == "failed"
         and str(membership_census[1]) == BYTE_AUTHORITY_CENSUS_DETAIL
     )
+    parser_confirmed_non_session = membership_census is not None and str(membership_census[0]) == "non_session"
     observed_keys = (
         tuple(
             sorted(
@@ -2040,14 +2041,14 @@ def record_current_parser_source_census(
         else tuple(sorted(canonical_authority_logical_key(key) for key in inherited_logical_keys or ()))
         if inherited_logical_keys is not None
         else durable_keys
-        if typed_non_session or byte_governed_fragment
+        if typed_non_session or parser_confirmed_non_session or byte_governed_fragment
         else None
     )
     complete = parser_census_is_complete(
         recorded_keys=observed_keys,
         durable_keys=durable_keys,
         typed_non_session=typed_non_session,
-        parser_confirmed_non_session=membership_census is not None and str(membership_census[0]) == "non_session",
+        parser_confirmed_non_session=parser_confirmed_non_session,
         byte_governed_fragment=byte_governed_fragment,
     )
     detail = (
