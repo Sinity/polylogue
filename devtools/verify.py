@@ -3404,10 +3404,10 @@ def _main(argv: list[str] | None = None) -> int:
         # entirely. runtime_data_paths still lands in the receipt and in
         # `devtools why`, so the exposure is visible per run.
         #
-        # Every plain run is complete-corpus scoped: forceselect executes
-        # changed-dep, never-recorded, and previously-failing tests, and
-        # attests the rest from their unchanged recorded greens. "bootstrap"
-        # (no sound graph for this environment digest) executes everything.
+        # A plain run selects changed-dependency, never-recorded, and
+        # previously-failing tests from a compatible graph. "bootstrap" means
+        # no graph exists for this environment and is refused below; only the
+        # explicit --all route executes the complete corpus.
         testmon_mode = (
             "all"
             if args.all_tests
@@ -3424,6 +3424,23 @@ def _main(argv: list[str] | None = None) -> int:
             runtime_data_paths=runtime_data_paths,
             copied_from=str(preparation.copied_from) if preparation.copied_from is not None else None,
         )
+        if preparation.selection_mode == "bootstrap" and not args.all_tests:
+            return _finalize_preflight_failure(
+                verify_run,
+                started_at=started_at,
+                tier=tier,
+                head=head,
+                verification_scope=planned_scope,
+                diagnosis="native_testmon_graph_unavailable",
+                exit_code=2,
+                message=(
+                    "no compatible native pytest-testmon graph is available; "
+                    "run explicitly named tests or pass --all to build the complete corpus"
+                ),
+                use_json=bool(use_json),
+                mutation_monitor=mutation_monitor,
+                initial_worktree_fingerprint=checkout_fingerprint,
+            )
         if preparation.removed_paths:
             sys.stderr.write(
                 "verify: repaired invalid native pytest-testmon state by removing only "

@@ -12,8 +12,9 @@ does only the checkout boundary work that the plugin cannot do itself:
   SQLite online backup plus atomic rename.
 
 There are no seed markers, completion stamps, shard ledgers, or release grants.
-An absent main database is normal.  The next plain verify invocation builds
-the current environment by running the ordinary correctness corpus.
+An absent graph is reported to the caller.  Only an explicitly requested
+complete-corpus run may build a new environment; plain verification reuses a
+compatible graph or refuses before pytest starts.
 """
 
 from __future__ import annotations
