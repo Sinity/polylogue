@@ -137,7 +137,7 @@ index additions that can be grouped into one schema bump, and do not call a
 full reingest necessary unless the changed semantics actually require replaying
 source rows.
 
-The policy lint (`devtools lab policy schema-versioning`) validates derived-tier
+The policy lint (`devtools verify schema-versioning`) validates derived-tier
 lifecycle declarations and clone-safe benign-DDL shapes while allowing numbered
 durable-tier SQL migrations. It does not attempt to classify Python helpers by
 their names; ad hoc open-path upgrades remain unsupported because the runtime

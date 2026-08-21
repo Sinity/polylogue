@@ -19,6 +19,12 @@ from .corpus import CorpusRequest, CorpusSourceKind
 from .metadata import ScenarioMetadata
 
 
+def _devtools_argv(subcommand: str, *argv: str) -> tuple[str, ...]:
+    """Render a control-plane invocation without importing devtools policy."""
+
+    return ("devtools", *subcommand.split(), *argv)
+
+
 class ExecutionKind(str, Enum):
     """Authored execution substrate for scenario-bearing catalogs."""
 
@@ -282,31 +288,23 @@ class ExecutionSpec:
         if self.kind is ExecutionKind.PIPELINE_PROBE:
             if self.pipeline_probe is None:
                 return None
-            from devtools.command_catalog import control_plane_argv
-
-            return tuple(control_plane_argv("lab probe pipeline", *self.pipeline_probe.to_argv()))
+            return _devtools_argv("bench pipeline", *self.pipeline_probe.to_argv())
         if self.kind is ExecutionKind.POLYLOGUE:
             return ("polylogue", "--plain", *self.argv)
         if self.kind is ExecutionKind.DEVTOOLS:
-            from devtools.command_catalog import control_plane_argv
-
-            return tuple(control_plane_argv(self.subcommand, *self.argv))
+            return _devtools_argv(self.subcommand, *self.argv)
         if self.kind is ExecutionKind.MEMORY_BUDGET:
             if self.wrapped is None or self.max_rss_mb <= 0:
                 return None
             wrapped_command = self.wrapped.command
             if wrapped_command is None:
                 return None
-            from devtools.command_catalog import control_plane_argv
-
-            return tuple(
-                control_plane_argv(
-                    "bench memory",
-                    "--max-rss-mb",
-                    str(self.max_rss_mb),
-                    "--",
-                    *wrapped_command,
-                )
+            return _devtools_argv(
+                "bench memory",
+                "--max-rss-mb",
+                str(self.max_rss_mb),
+                "--",
+                *wrapped_command,
             )
         if self.kind is ExecutionKind.PYTEST:
             return ("pytest", *self.argv)
@@ -323,11 +321,7 @@ class ExecutionSpec:
             wrapped_display = self.wrapped.display_command or self.wrapped.command
             if wrapped_display is None:
                 return command
-            from devtools.command_catalog import control_plane_argv
-
-            return tuple(
-                control_plane_argv("bench memory", "--max-rss-mb", str(self.max_rss_mb), "--", *wrapped_display)
-            )
+            return _devtools_argv("bench memory", "--max-rss-mb", str(self.max_rss_mb), "--", *wrapped_display)
         return command
 
     @property

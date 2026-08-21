@@ -117,7 +117,7 @@ def test_beads_only_gate_uses_structural_bead_graph_command(git_repo: Path, monk
     assert pre_push_gate.run_gate([update], cwd=git_repo) == "beads"
     assert len(commands) == 1
     assert commands[0][:3] == [sys.executable, "-m", "devtools"]
-    assert command_name_from_tokens(commands[0][3:]) == "lab policy bead-graph"
+    assert command_name_from_tokens(commands[0][3:]) == "verify bead-graph"
     assert commands[0][-2:] == ["--export", ".beads/issues.jsonl"]
 
 

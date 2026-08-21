@@ -16,7 +16,7 @@ repo conventions in [`CONVENTIONS.md`](CONVENTIONS.md).
   cadence (kept deliberately parallel to sinex's; divergences are marked
   intentional).
 - Repo-agent helper scripts live under `devtools/` as proper commands, not in
-  `.agent/` — `devtools lab policy bead-graph` (bead-graph invariant lint; run
+  `.agent/` — `devtools verify bead-graph` (bead-graph invariant lint; run
   before shipping bead-state deltas), `devtools workspace
   bead-reimport-guard`, `devtools workspace delivery-gate-status`, `devtools
   workspace bead-batch-show` (polylogue-kapb: `.agent/scripts/` and

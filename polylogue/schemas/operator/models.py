@@ -356,7 +356,7 @@ class SchemaCommitRequest:
     ``privacy_config`` takes the same ``JSONDocument | None`` payload shape as
     ``SchemaInferRequest.privacy_config`` (converted internally via
     ``privacy_config_from_payload``), so CLI callers can build it the same way
-    ``devtools lab schema generate`` already does.
+    ``devtools workspace schema generate`` already does.
     """
 
     provider: str

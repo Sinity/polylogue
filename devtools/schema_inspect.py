@@ -1,4 +1,4 @@
-"""Inspect committed schema packages from the devtools lab surface."""
+"""Inspect committed schema packages from the devtools workspace surface."""
 
 from __future__ import annotations
 

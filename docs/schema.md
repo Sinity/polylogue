@@ -307,7 +307,7 @@ polylogue ops doctor                     # schema health + referential integrity
 polylogue ops doctor --schemas           # provider-schema conformance over raw records
 ```
 
-The `devtools lab schema roundtrip` command verifies committed provider
+The `devtools verify schema-roundtrip` command verifies committed provider
 schema packages reload and roundtrip cleanly through typed models.
 
 ---

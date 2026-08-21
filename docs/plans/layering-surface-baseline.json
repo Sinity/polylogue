@@ -5,11 +5,6 @@
     "import": "devtools.checkout_guard"
   },
   {
-    "target": "polylogue",
-    "file": "polylogue/scenarios/execution.py",
-    "import": "devtools.command_catalog"
-  },
-  {
     "target": "polylogue/api",
     "file": "polylogue/api/__init__.py",
     "import": "polylogue.storage.embeddings.materialization"

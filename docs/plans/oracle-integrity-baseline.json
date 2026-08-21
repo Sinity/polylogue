@@ -204,7 +204,7 @@
       "path": "polylogue/schemas/observation_models.py"
     }
   ],
-  "generated_by": "devtools lab policy oracle-integrity --write-baseline",
+  "generated_by": "devtools verify oracle-integrity --write-baseline",
   "purpose": "Pre-existing oracle-integrity findings, exempted as a ratchet so the gate is adoptable today. Each entry is a WS-F deletion-sweep worklist item, not an endorsement. Removing entries is the goal.",
   "schema_version": 1
 }

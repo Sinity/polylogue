@@ -201,9 +201,8 @@ rules:
       the devtools command catalog; that entry and archive_space_report's were
       pruned from the baseline once both modules relocated into
       polylogue/operations/ (WS-C tranche 3). The two remaining importers
-      (click_app.py's checkout_guard safety check, scenarios/execution.py's
-      command_catalog reference, tracked as the tranche-2 60gzo scenario-
-      layering item) are an audited allowlist, not an accepted pattern: new
+      (click_app.py's checkout_guard safety check) is an audited allowlist,
+      not an accepted pattern: new
       ones fail, and the right fix for an entry is to move the code into
       polylogue/ where its caller lives.
     disallow:

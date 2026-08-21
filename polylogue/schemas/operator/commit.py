@@ -1,6 +1,6 @@
 """Commit a real full-corpus schema generation into registered packages.
 
-``generate_provider_schema``/``infer_schema`` (what ``devtools lab schema
+``generate_provider_schema``/``infer_schema`` (what ``devtools workspace schema
 generate`` calls) only ever return a ``GenerationResult`` -- they never call
 ``persist_generated_provider_bundle``, the function that actually writes
 ``polylogue/schemas/providers/<provider>/versions/...`` via

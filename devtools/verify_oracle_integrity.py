@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
                 "adoptable today. Each entry is a WS-F deletion-sweep worklist item, not an "
                 "endorsement. Removing entries is the goal."
             ),
-            "generated_by": "devtools lab policy oracle-integrity --write-baseline",
+            "generated_by": "devtools verify oracle-integrity --write-baseline",
             "entries": entries,
         }
         target = root / BASELINE_PATH

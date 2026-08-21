@@ -9,7 +9,6 @@ from devtools.command_catalog import (
     control_plane_command,
     featured_command_specs,
     grouped_command_specs,
-    verification_lab_command_specs,
 )
 
 
@@ -18,10 +17,10 @@ def test_control_plane_helpers_render_consistent_invocations() -> None:
     assert control_plane_argv("status", "--json") == ("devtools", "status", "--json")
     assert control_plane_command("render all", "--check") == "devtools render all --check"
     assert control_plane_argv("render all", "--check") == ("devtools", "render", "all", "--check")
-    assert control_plane_command("lab schema roundtrip", "--all") == "devtools lab schema roundtrip --all"
-    assert control_plane_argv("lab schema roundtrip", "--all") == ("devtools", "lab", "schema", "roundtrip", "--all")
+    assert control_plane_command("verify schema-roundtrip", "--all") == "devtools verify schema-roundtrip --all"
+    assert control_plane_argv("verify schema-roundtrip", "--all") == ("devtools", "verify", "schema-roundtrip", "--all")
     assert command_name_from_tokens(["render", "all", "--check"]) == "render all"
-    assert command_name_from_tokens(["lab", "schema", "roundtrip", "--all"]) == "lab schema roundtrip"
+    assert command_name_from_tokens(["verify", "schema-roundtrip", "--all"]) == "verify schema-roundtrip"
 
 
 def test_command_specs_have_unique_names_and_known_categories() -> None:
@@ -46,21 +45,12 @@ def test_featured_command_specs_are_actionable() -> None:
         assert spec.to_dict()["argv"] == list(spec.argv)
 
 
-def test_verification_lab_surface_is_explicit_and_implemented() -> None:
-    specs = verification_lab_command_specs()
-
-    assert specs == tuple(spec for spec in COMMAND_SPECS if spec.category == "verification lab")
-    assert {spec.category for spec in specs} == {"verification lab"}
-    assert len({(spec.module, spec.entrypoint) for spec in specs}) == len(specs)
-
-    for spec in specs:
-        assert spec.module.startswith("devtools.")
-        assert spec.use_when
-        assert spec.examples
-        assert callable(spec.resolve_main())
+def test_catalog_uses_command_ownership_categories() -> None:
+    assert "verification lab" not in {spec.category for spec in COMMAND_SPECS}
+    assert {"verify schema-roundtrip", "bench pipeline", "workspace schema commit"} <= set(COMMANDS)
 
 
 def test_bead_graph_catalog_exposes_json_report() -> None:
-    graph = COMMANDS["lab policy bead-graph"]
+    graph = COMMANDS["verify bead-graph"]
 
     assert any("--json" in example for example in graph.examples)

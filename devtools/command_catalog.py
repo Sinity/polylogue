@@ -14,7 +14,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "core",
     "generated surfaces",
     "release",
-    "verification lab",
+    "verification",
     "verification",
     "benchmarking",
     "workspace",
@@ -265,8 +265,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab provider completeness",
-        "verification lab",
+        "verify provider-completeness",
+        "verification",
         "Report provider/importer package completeness by origin and capture mode.",
         "devtools.provider_completeness",
         use_when=(
@@ -274,10 +274,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "before claiming a provider/importer mode is product-ready."
         ),
         examples=(
-            "devtools lab provider completeness",
-            "devtools lab provider completeness --json",
-            "devtools lab provider completeness --origin codex-session --json",
-            "devtools lab provider completeness --check",
+            "devtools verify provider-completeness",
+            "devtools verify provider-completeness --json",
+            "devtools verify provider-completeness --origin codex-session --json",
+            "devtools verify provider-completeness --check",
         ),
     ),
     CommandSpec(
@@ -356,8 +356,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab snapshot read-surface",
-        "verification lab",
+        "verify read-surface",
+        "verification",
         "Capture and compare archive read-surface snapshots.",
         "devtools.self_verify",
         use_when=(
@@ -365,8 +365,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "archives against the captured envelope baseline."
         ),
         examples=(
-            "devtools lab snapshot read-surface capture --out .local/self-verify/baseline.json",
-            "devtools lab snapshot read-surface compare .local/self-verify/baseline.json .local/self-verify/candidate.json --json",
+            "devtools verify read-surface capture --out .local/self-verify/baseline.json",
+            "devtools verify read-surface compare .local/self-verify/baseline.json .local/self-verify/candidate.json --json",
         ),
     ),
     CommandSpec(
@@ -1205,8 +1205,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "lab policy schema-versioning",
-        "verification lab",
+        "verify schema-versioning",
+        "verification",
         "Verify durable-tier migration and derived-tier rebuild boundaries.",
         "devtools.verify_schema_upgrade_lane",
         use_when=(
@@ -1215,11 +1215,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "migrations with a backup gate; derived tiers are rebuilt or "
             "blue-green replaced from source evidence."
         ),
-        examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
+        examples=("devtools verify schema-versioning", "devtools verify schema-versioning --json"),
     ),
     CommandSpec(
-        "lab policy oracle-integrity",
-        "verification lab",
+        "verify oracle-integrity",
+        "verification",
         "Verify tests certify production-reachable code and never read ambient user paths.",
         "devtools.verify_oracle_integrity",
         use_when=(
@@ -1235,13 +1235,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "deletions derived from grep."
         ),
         examples=(
-            "devtools lab policy oracle-integrity",
-            "devtools lab policy oracle-integrity --ignore-baseline --json",
+            "devtools verify oracle-integrity",
+            "devtools verify oracle-integrity --ignore-baseline --json",
         ),
     ),
     CommandSpec(
-        "lab policy bead-graph",
-        "verification lab",
+        "verify bead-graph",
+        "verification",
         "Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references.",
         "devtools.verify_bead_graph",
         use_when=(
@@ -1252,14 +1252,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "checks existing registry Bead references and never makes prose or campaign mirrors authority."
         ),
         examples=(
-            "devtools lab policy bead-graph",
-            "devtools lab policy bead-graph --export .beads/issues.jsonl --json",
-            "devtools lab policy bead-graph --export .beads/issues.jsonl --forcing-root polylogue-818fy --require-resolved --json",
+            "devtools verify bead-graph",
+            "devtools verify bead-graph --export .beads/issues.jsonl --json",
+            "devtools verify bead-graph --export .beads/issues.jsonl --forcing-root polylogue-818fy --require-resolved --json",
         ),
     ),
     CommandSpec(
-        "lab policy timestamp-doctrine",
-        "verification lab",
+        "verify timestamp-doctrine",
+        "verification",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
         "devtools.verify_timestamp_doctrine",
         use_when=(
@@ -1269,11 +1269,11 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "an explicit additive migration to fix later -- catching it before merge is orders "
             "cheaper than a copy-forward migration after."
         ),
-        examples=("devtools lab policy timestamp-doctrine", "devtools lab policy timestamp-doctrine --json"),
+        examples=("devtools verify timestamp-doctrine", "devtools verify timestamp-doctrine --json"),
     ),
     CommandSpec(
-        "lab policy insight-honesty",
-        "verification lab",
+        "verify insight-honesty",
+        "verification",
         "Verify every registered insight product is rigor-contracted or exempt.",
         "devtools.verify_insight_rigor_honesty",
         use_when=(
@@ -1283,7 +1283,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` "
             "instead of showing as uncovered."
         ),
-        examples=("devtools lab policy insight-honesty", "devtools lab policy insight-honesty --json"),
+        examples=("devtools verify insight-honesty", "devtools verify insight-honesty --json"),
     ),
     CommandSpec(
         "release verify-distribution",
@@ -1297,8 +1297,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools release verify-distribution",),
     ),
     CommandSpec(
-        "lab probe cost-reconciliation",
-        "verification lab",
+        "workspace cost-reconciliation",
+        "verification",
         "Reconcile Polylogue token accounting against private provider stores.",
         "devtools.cost_reconciliation_probe",
         use_when=(
@@ -1306,20 +1306,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Claude stats-cache.json before publishing cost or usage-analysis claims."
         ),
         examples=(
-            "devtools lab probe cost-reconciliation --json",
-            "devtools lab probe cost-reconciliation --codex-state ~/.codex/state_5.sqlite --json",
-            "devtools lab probe cost-reconciliation --claude-stats-cache ~/.config/claude/stats-cache.json --check",
+            "devtools workspace cost-reconciliation --json",
+            "devtools workspace cost-reconciliation --codex-state ~/.codex/state_5.sqlite --json",
+            "devtools workspace cost-reconciliation --claude-stats-cache ~/.config/claude/stats-cache.json --check",
         ),
     ),
     CommandSpec(
-        "lab probe pipeline",
-        "verification lab",
+        "bench pipeline",
+        "verification",
         "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
         "devtools.pipeline_probe",
         use_when="Run real pipeline stages and optionally capture emitted summaries as regression cases.",
         examples=(
-            "devtools lab probe pipeline --provider chatgpt --stage parse",
-            "devtools lab probe pipeline --input-mode archive-subset --capture-regression live-parse-drift",
+            "devtools bench pipeline --provider chatgpt --stage parse",
+            "devtools bench pipeline --input-mode archive-subset --capture-regression live-parse-drift",
         ),
     ),
     CommandSpec(
@@ -1331,66 +1331,55 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
-        "lab run",
-        "verification lab",
+        "verify scenario",
+        "verification",
         "Run a named archive verification scenario.",
         "devtools.lab_scenario",
-        entrypoint="run_main",
-        use_when="Run a scenario such as rebuild-safety through the direct lab command path.",
+        use_when="Run a named archive verification scenario through the direct CLI path.",
         examples=(
-            "devtools lab run rebuild-safety",
-            "devtools lab run rebuild-safety --report-dir .cache/rebuild-safety-report --json",
+            "devtools verify scenario list",
+            "devtools verify scenario run archive-smoke --tier 0",
+            "devtools verify scenario run rebuild-safety --report-dir .cache/rebuild-safety-report --json",
         ),
     ),
     CommandSpec(
-        "lab smoke",
-        "verification lab",
-        "Run direct archive and reader smoke sets.",
-        "devtools.lab_scenario",
-        use_when="Run direct archive and reader smoke sets outside the archive CLI.",
-        examples=(
-            "devtools lab smoke list",
-            "devtools lab smoke run archive-smoke --tier 0",
-        ),
-    ),
-    CommandSpec(
-        "lab schema list",
-        "verification lab",
+        "workspace schema list",
+        "verification",
         "List committed schema packages, versions, and evidence manifests.",
         "devtools.schema_inspect",
         entrypoint="list_main",
         use_when="Inspect committed provider schema package catalogs without presenting them as normal archive usage.",
-        examples=("devtools lab schema list --provider chatgpt --json",),
+        examples=("devtools workspace schema list --provider chatgpt --json",),
     ),
     CommandSpec(
-        "lab schema compare",
-        "verification lab",
+        "workspace schema compare",
+        "verification",
         "Compare two committed schema package versions for a provider.",
         "devtools.schema_inspect",
         entrypoint="compare_main",
         use_when="Review schema package drift between committed versions in the lab surface.",
-        examples=("devtools lab schema compare --provider chatgpt --from v1 --to v2 --markdown",),
+        examples=("devtools workspace schema compare --provider chatgpt --from v1 --to v2 --markdown",),
     ),
     CommandSpec(
-        "lab schema explain",
-        "verification lab",
+        "workspace schema explain",
+        "verification",
         "Explain a committed package element schema with evidence and annotations.",
         "devtools.schema_inspect",
         entrypoint="explain_main",
         use_when="Inspect schema package annotations, semantic roles, and review evidence from the lab surface.",
-        examples=("devtools lab schema explain --provider chatgpt --version latest --verbose",),
+        examples=("devtools workspace schema explain --provider chatgpt --version latest --verbose",),
     ),
     CommandSpec(
-        "lab schema generate",
-        "verification lab",
+        "workspace schema generate",
+        "verification",
         "Generate provider schema packages and optional evidence clusters.",
         "devtools.schema_generate",
         use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
-        examples=("devtools lab schema generate --provider chatgpt --cluster",),
+        examples=("devtools workspace schema generate --provider chatgpt --cluster",),
     ),
     CommandSpec(
-        "lab schema commit",
-        "verification lab",
+        "workspace schema commit",
+        "verification",
         "Persist a real full-corpus schema generation into committed provider packages.",
         "devtools.schema_commit",
         use_when=(
@@ -1398,29 +1387,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "archive -- 'lab schema generate' only ever previews and never writes committed package files."
         ),
         examples=(
-            "devtools lab schema commit --provider chatgpt --full-corpus --dry-run",
-            "devtools lab schema commit --provider chatgpt --full-corpus",
+            "devtools workspace schema commit --provider chatgpt --full-corpus --dry-run",
+            "devtools workspace schema commit --provider chatgpt --full-corpus",
         ),
     ),
     CommandSpec(
-        "lab schema promote",
-        "verification lab",
+        "workspace schema promote",
+        "verification",
         "Promote a schema evidence cluster into a registered package version.",
         "devtools.schema_promote",
         use_when="Turn reviewed schema evidence clusters into committed provider schema packages.",
-        examples=("devtools lab schema promote --provider chatgpt --cluster chatgpt-message-v2",),
+        examples=("devtools workspace schema promote --provider chatgpt --cluster chatgpt-message-v2",),
     ),
     CommandSpec(
-        "lab schema audit",
-        "verification lab",
+        "verify schema-audit",
+        "verification",
         "Run committed provider schema package quality checks.",
         "devtools.schema_audit",
         use_when="Check committed schema package quality gates without presenting them as normal archive usage.",
-        examples=("devtools lab schema audit --provider chatgpt --json",),
+        examples=("devtools verify schema-audit --provider chatgpt --json",),
     ),
     CommandSpec(
-        "lab schema parser-diff",
-        "verification lab",
+        "workspace schema parser-diff",
+        "verification",
         "List observed provider wire keys that no parser references.",
         "devtools.schema_parser_diff",
         use_when=(
@@ -1429,14 +1418,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "is name-based, so read the parser before acting on a row."
         ),
         examples=(
-            "devtools lab schema parser-diff",
-            "devtools lab schema parser-diff --provider codex --min-encountered 1000",
-            "devtools lab schema parser-diff --json",
+            "devtools workspace schema parser-diff",
+            "devtools workspace schema parser-diff --provider codex --min-encountered 1000",
+            "devtools workspace schema parser-diff --json",
         ),
     ),
     CommandSpec(
-        "lab schema roundtrip",
-        "verification lab",
+        "verify schema-roundtrip",
+        "verification",
         "Verify committed provider schema packages reload and roundtrip cleanly.",
         "devtools.verify_schema_roundtrip",
         use_when=(
@@ -1444,19 +1433,19 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and every supported element schema must be reachable from the runtime registry."
         ),
         examples=(
-            "devtools lab schema roundtrip --provider chatgpt",
-            "devtools lab schema roundtrip --all --json",
+            "devtools verify schema-roundtrip --provider chatgpt",
+            "devtools verify schema-roundtrip --all --json",
         ),
     ),
     CommandSpec(
-        "lab probe capture-regression",
-        "verification lab",
+        "bench capture-regression",
+        "verification",
         "Capture pipeline-probe summaries as durable local regression cases.",
         "devtools.regression_capture",
         use_when="Turn a live or probe failure JSON summary into a replayable local regression artifact.",
         examples=(
-            "devtools lab probe capture-regression --input probe.json --name parse-drift",
-            "devtools lab probe pipeline --json | devtools lab probe capture-regression --name parse-drift --tag live",
+            "devtools bench capture-regression --input probe.json --name parse-drift",
+            "devtools bench pipeline --json | devtools bench capture-regression --name parse-drift --tag live",
         ),
     ),
     CommandSpec(
@@ -1577,10 +1566,6 @@ def featured_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> t
     return tuple(spec for spec in commands if spec.featured)
 
 
-def verification_lab_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> tuple[CommandSpec, ...]:
-    return tuple(spec for spec in commands if spec.category == "verification lab")
-
-
 def grouped_command_specs(commands: Iterable[CommandSpec] = COMMAND_SPECS) -> OrderedDict[str, list[CommandSpec]]:
     grouped: OrderedDict[str, list[CommandSpec]] = OrderedDict((category, []) for category in CATEGORY_ORDER)
     for spec in commands:
@@ -1603,5 +1588,4 @@ __all__ = [
     "control_plane_command",
     "featured_command_specs",
     "grouped_command_specs",
-    "verification_lab_command_specs",
 ]

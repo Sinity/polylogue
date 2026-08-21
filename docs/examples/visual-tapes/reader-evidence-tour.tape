@@ -11,7 +11,7 @@ Set Height 680
 Set Padding 20
 
 Hide
-Type "devtools lab smoke run reader-visual-smoke --json --report-dir reader-evidence-tour >/dev/null 2>&1 && printf 'REA''DY\n'"
+Type "devtools verify scenario run reader-visual-smoke --json --report-dir reader-evidence-tour >/dev/null 2>&1 && printf 'REA''DY\n'"
 Enter
 Wait+Screen@150s /READY/
 Type "clear"

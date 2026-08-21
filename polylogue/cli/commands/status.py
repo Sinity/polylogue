@@ -1845,7 +1845,7 @@ def _render_schema_drift_status(env: AppEnv, drift: dict[str, Any]) -> None:
             f"    [{color}]origin {origin}: {risky_rate:.0%} of {total} records since {since_date} "
             f"carry unseen shapes[/{color}]{example_text}"
         )
-    env.ui.console.print("    next action: devtools lab schema generate/promote (detection only)")
+    env.ui.console.print("    next action: devtools workspace schema generate/promote (detection only)")
 
 
 def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:

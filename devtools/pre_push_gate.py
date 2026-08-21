@@ -98,7 +98,7 @@ def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
     if is_beads_only(paths):
         print("pre-push: Beads-only diff; checking the structured dependency graph.", file=sys.stderr)
         _run(
-            [sys.executable, "-m", *control_plane_argv("lab policy bead-graph", "--export", ".beads/issues.jsonl")],
+            [sys.executable, "-m", *control_plane_argv("verify bead-graph", "--export", ".beads/issues.jsonl")],
             cwd=cwd,
         )
         return "beads"
