@@ -34,8 +34,8 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar
@@ -350,6 +350,49 @@ class QueryAdmissionController:
             self._in_flight -= weight
             self._cond.notify_all()
 
+    async def _admit_async(self, ctx: QueryExecutionContext) -> int:
+        """Admit without occupying a storage worker while queued.
+
+        The controller remains the sole owner of class-aware queueing and
+        weights. Async callers re-check the thread-safe state at a short
+        cadence so a queued scan cannot consume a bounded archive-read worker
+        before its class is eligible to run.
+        """
+        weight = self.clamped_weight(ctx)
+        started = time.monotonic()
+        queued = False
+        try:
+            while True:
+                with self._cond:
+                    if not queued:
+                        self._queues[ctx.workload_class].append(ctx.call_id)
+                        ctx.receipt.queue_position = len(self._queues[ctx.workload_class]) - 1
+                        queued = True
+                    if self._may_admit_locked(ctx, weight):
+                        self._queues[ctx.workload_class].popleft()
+                        self._in_flight += weight
+                        ctx.receipt.queued_s = time.monotonic() - started
+                        ctx.receipt.state = "admitted"
+                        self._cond.notify_all()
+                        return weight
+                    if ctx.should_abort():
+                        raise _abort_error(ctx)
+                await asyncio.sleep(0.01)
+        except BaseException:
+            with self._cond:
+                self._remove_queued_locked(ctx)
+                self._cond.notify_all()
+            raise
+
+    @asynccontextmanager
+    async def admit_async(self, ctx: QueryExecutionContext) -> AsyncIterator[None]:
+        """Async admission that reserves capacity before worker submission."""
+        weight = await self._admit_async(ctx)
+        try:
+            yield
+        finally:
+            self._release(ctx, weight)
+
     @contextmanager
     def admit_blocking(self, ctx: QueryExecutionContext) -> Iterator[None]:
         """Synchronous admission for threaded callers (daemon HTTP handlers)."""
@@ -574,10 +617,19 @@ async def execute_archive_read(
     reader = InterruptibleSQLiteRead(ctx)
 
     def _admitted_run() -> T:
-        with admission.admit_blocking(ctx):
-            return reader.run(archive_root, work, read_timeout=read_timeout)
+        return reader.run(archive_root, work, read_timeout=read_timeout)
 
-    worker = asyncio.create_task(asyncio.to_thread(_admitted_run))
+    from polylogue.storage.sqlite.async_adapter import default_archive_read_async_adapter
+
+    async def _admitted_submission() -> T:
+        # Keep the lease inside the shielded task. A client disconnect may
+        # stop awaiting this coroutine after its bounded drain, but capacity
+        # must remain held until the owned SQLite worker has actually cleaned
+        # up and returned.
+        async with admission.admit_async(ctx):
+            return await default_archive_read_async_adapter().run(_admitted_run)
+
+    worker = asyncio.create_task(_admitted_submission())
     try:
         result = await asyncio.shield(worker)
     except asyncio.CancelledError:
@@ -588,7 +640,10 @@ async def execute_archive_read(
             # but Python-side post-processing is uninterruptible — do not
             # wait on it forever. An undrained worker keeps running in the
             # background and still performs its own cleanup on exit.
-            await asyncio.wait_for(worker, timeout=DISCONNECT_DRAIN_TIMEOUT_S)
+            # Timeout ends the caller's drain wait, never the lease-owning
+            # runner: the underlying executor operation may still be cleaning
+            # up and must retain admission until it returns.
+            await asyncio.wait_for(asyncio.shield(worker), timeout=DISCONNECT_DRAIN_TIMEOUT_S)
         except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError, asyncio.CancelledError):
             pass
         except TimeoutError:
