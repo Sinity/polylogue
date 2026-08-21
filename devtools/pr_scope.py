@@ -571,6 +571,8 @@ def _validate_carrier_disposition_receipt(
         reasons.append("carrier disposition receipt changed_beads does not match mutated_beads")
     if receipt.get("dispositions") != _disposition_payload(dispositions):
         reasons.append("carrier disposition receipt dispositions do not match the carrier")
+    if not set(mutated_ids).issubset({item.bead_id for item in dispositions}):
+        reasons.append("carrier disposition receipt mutates a Bead outside its source disposition targets")
     for item in dispositions:
         record = records.get(item.bead_id)
         if record is None:

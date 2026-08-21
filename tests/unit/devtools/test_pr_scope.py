@@ -1431,6 +1431,21 @@ def test_carrier_disposition_scope_binds_the_committed_receipt_and_source_pr(
     assert verdict.source_pr == 4040
     assert verdict.execution_id == execution_id
 
+    receipt["changed_beads"] = [ASSIGNED, OTHER_ASSIGNED]
+    receipt_path.write_text(json.dumps(receipt))
+    carrier["mutated_beads"] = [ASSIGNED, OTHER_ASSIGNED]
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        repository="Sinity/polylogue",
+    )
+
+    assert not verdict.ok
+    assert any("outside its source disposition targets" in reason for reason in verdict.reasons)
+
 
 def test_carrier_disposition_scope_rejects_an_independently_closed_target(
     beads_path: Path,
