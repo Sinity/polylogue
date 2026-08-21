@@ -60,10 +60,14 @@ call); a script that wants the guarantee can import and call
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 import sys
+import sysconfig
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 
 import tomllib
@@ -121,12 +125,58 @@ class CheckoutEnvironmentFingerprint:
             ),
             "linked_worktree": self.linked_worktree,
             "verify_state_origin": str(self.verify_state_origin) if self.verify_state_origin else None,
+            "quick_gate_toolchain": quick_gate_toolchain_fingerprint(self.checkout_root),
             "artifacts": [artifact.as_dict() for artifact in self.artifacts],
         }
 
 
 _VERIFY_STATE_DIR = Path(".cache/verify")
 _VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
+_QUICK_GATE_EXECUTABLES = ("ruff", "mypy", "dmypy")
+_QUICK_GATE_PACKAGE_FILES = ("pyproject.toml", "uv.lock")
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def quick_gate_toolchain_fingerprint(repo_root: Path) -> dict[str, object]:
+    """Return the bounded runtime/toolchain state that affects ``verify --quick``."""
+    executables: dict[str, dict[str, str | None]] = {}
+    for name in _QUICK_GATE_EXECUTABLES:
+        resolved = shutil.which(name)
+        path = Path(resolved).resolve() if resolved else None
+        executables[name] = {
+            "path": str(path) if path is not None else None,
+            "sha256": _sha256_file(path) if path is not None else None,
+        }
+    packages: dict[str, str | None] = {}
+    for name in ("ruff", "mypy"):
+        try:
+            packages[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            packages[name] = None
+    files = {name: _sha256_file(repo_root / name) for name in _QUICK_GATE_PACKAGE_FILES}
+    return {
+        "executables": executables,
+        "packages": packages,
+        "python": {
+            "executable": str(Path(sys.executable).resolve()),
+            "version": sys.version,
+            "implementation": sys.implementation.name,
+            "prefix": sys.prefix,
+            "base_prefix": sys.base_prefix,
+            "stdlib": sysconfig.get_paths().get("stdlib"),
+        },
+        "package_files": files,
+    }
 
 
 def resolved_polylogue_path() -> Path:

@@ -228,6 +228,7 @@ def test_matching_quick_receipt_is_reused(git_repo: Path, monkeypatch: pytest.Mo
     environment = {"python_executable": "/venv/bin/python", "artifacts": []}
     _quick_receipt(git_repo, head=head, environment=environment)
     commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_worktree_is_clean", lambda cwd: True)
     monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
     monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
 

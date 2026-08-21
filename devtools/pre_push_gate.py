@@ -97,8 +97,21 @@ def _run(command: list[str], *, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
 
+def _worktree_is_clean(cwd: Path) -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and not result.stderr and not result.stdout
+
+
 def _current_provenance(cwd: Path) -> tuple[dict[str, object], str] | None:
     """Return the live provenance required to trust a cached quick receipt."""
+    if not _worktree_is_clean(cwd):
+        return None
     try:
         environment = assert_polylogue_matches_checkout(cwd, context="pre-push").as_dict()
     except (CheckoutImportMismatchError, ImportError, OSError, ValueError):
@@ -140,6 +153,10 @@ def _has_compatible_quick_receipt(
     )
 
 
+def _updates_match_head(updates: list[PushUpdate], head: str | None) -> bool:
+    return head is not None and all(_is_zero_sha(update.local_sha) or update.local_sha == head for update in updates)
+
+
 def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
     paths = changed_paths(updates, cwd=cwd)
     if is_beads_only(paths):
@@ -151,7 +168,12 @@ def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
         return "beads"
 
     current = _git("rev-parse", "HEAD", cwd=cwd)
-    if _has_compatible_quick_receipt(cwd=cwd, head=current, provenance=_current_provenance(cwd)):
+    provenance_before = (
+        _current_provenance(cwd) if _updates_match_head(updates, current) and _worktree_is_clean(cwd) else None
+    )
+    candidate = _has_compatible_quick_receipt(cwd=cwd, head=current, provenance=provenance_before)
+    provenance_after = _current_provenance(cwd) if candidate and _worktree_is_clean(cwd) else None
+    if candidate and provenance_before == provenance_after:
         print(f"pre-push: compatible quick receipt reused ({current[:8]}).", file=sys.stderr)
         return "reused"
 
