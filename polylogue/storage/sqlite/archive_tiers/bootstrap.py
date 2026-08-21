@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -126,7 +127,7 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 _TIER_INIT_COUNTS: dict[tuple[str, str], int] = {}
 _TIER_INIT_COUNTS_LOCK = threading.Lock()
 
-_TIER_PROTOTYPES: dict[tuple[str, int], Path] = {}
+_TIER_PROTOTYPES: dict[tuple[str, int, str], Path] = {}
 _TIER_PROTOTYPE_DIR: Path | None = None
 _PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier) - {ArchiveTier.EMBEDDINGS}
 
@@ -158,10 +159,17 @@ def _tier_prototype_dir() -> Path:
     return _TIER_PROTOTYPE_DIR
 
 
+def _tier_prototype_key(tier: ArchiveTier, required_version: int) -> tuple[str, int, str]:
+    """Identify a prototype by every input that shapes its SQLite pages."""
+    ddl_digest = hashlib.sha256(archive_tier_spec(tier).ddl.encode()).hexdigest()
+    return tier.value, required_version, ddl_digest
+
+
 def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> bool:
     """Page-copy a cached empty tier onto ``conn``; False when unavailable or unfaithful."""
+    key = _tier_prototype_key(tier, required_version)
     with _TIER_PROTOTYPE_LOCK:
-        prototype = _TIER_PROTOTYPES.get((tier.value, required_version))
+        prototype = _TIER_PROTOTYPES.get(key)
     if prototype is None or not prototype.is_file():
         return False
     try:
@@ -174,19 +182,19 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
     # discarded rather than trusted, and the caller falls back to real DDL.
     if stored != required_version:
         with _TIER_PROTOTYPE_LOCK:
-            _TIER_PROTOTYPES.pop((tier.value, required_version), None)
+            _TIER_PROTOTYPES.pop(key, None)
         return False
     return True
 
 
 def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> None:
     """Snapshot a freshly materialised empty tier for reuse in this process."""
-    key = (tier.value, required_version)
+    key = _tier_prototype_key(tier, required_version)
     with _TIER_PROTOTYPE_LOCK:
         if key in _TIER_PROTOTYPES:
             return
     try:
-        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}.db"
+        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}.db"
         with contextlib.closing(sqlite3.connect(destination)) as target:
             conn.backup(target)
     except (OSError, sqlite3.Error):

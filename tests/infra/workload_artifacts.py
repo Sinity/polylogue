@@ -475,6 +475,10 @@ def _read_manifest(path: Path) -> SeededArchiveManifest:
 _VALIDATED_ARTIFACTS: dict[tuple[str, str], SeededArchiveArtifact] = {}
 
 
+class _ArtifactValidationContentionError(RuntimeError):
+    """A good published artifact could not be inspected yet, not rejected."""
+
+
 def _artifact_still_placed(artifact: SeededArchiveArtifact) -> bool:
     """Cheap presence/size check standing in for a full revalidation.
 
@@ -524,9 +528,28 @@ def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifa
         _sqlite_integrity(root)
         _validate_facts(root, manifest.facts)
         _validate_frontier_convergence(root)
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            raise _ArtifactValidationContentionError(f"published artifact validation is contended: {root}") from exc
+        return None
     except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
         return None
     return SeededArchiveArtifact(root=root, manifest=manifest)
+
+
+def _validate_artifact_with_retry(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifact | None:
+    """Wait briefly for a concurrent reader before treating an artifact as stale."""
+    deadline = time.monotonic() + 5.0
+    attempt = 0
+    while True:
+        try:
+            return _validate_artifact(root, key)
+        except _ArtifactValidationContentionError:
+            if time.monotonic() >= deadline:
+                raise
+            attempt += 1
+            gc.collect()
+            time.sleep(min(0.05 * attempt, 0.5))
 
 
 def _make_read_only(root: Path) -> None:
@@ -574,7 +597,7 @@ def build_seeded_archive(
     with lock_path.open("a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
-        cached = _validate_artifact(final_root, key)
+        cached = _validate_artifact_with_retry(final_root, key)
         if cached is not None:
             _VALIDATED_ARTIFACTS[memo_key] = cached
             return cached
@@ -673,7 +696,7 @@ def build_seeded_archive(
             except Exception:
                 _remove_tree(staging)
                 raise
-        artifact = _validate_artifact(final_root, key)
+        artifact = _validate_artifact_with_retry(final_root, key)
         if artifact is None:
             raise RuntimeError("published seeded archive failed its own validation")
         _VALIDATED_ARTIFACTS[memo_key] = artifact

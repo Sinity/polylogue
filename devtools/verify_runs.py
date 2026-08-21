@@ -1184,6 +1184,17 @@ def aggregate_pytest_statistics(
             raw = json.loads(containment_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 containment = raw
+    summary = _read_json_object(step_dir / "summary.json") or {}
+    raw_ddl_counts = summary.get("archive_tier_init_counts")
+    archive_tier_init_counts = (
+        {
+            str(key): value
+            for key, value in raw_ddl_counts.items()
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+        if isinstance(raw_ddl_counts, Mapping)
+        else {}
+    )
 
     parent_cleanup = (step_result or {}).get("basetemp_cleanup")
     return {
@@ -1210,6 +1221,7 @@ def aggregate_pytest_statistics(
                 None,
             ),
         },
+        "archive_tier_init_counts": archive_tier_init_counts,
         "resources": {
             "peak_tree_rss_kb": max(
                 (int(row["tree_rss_kb"]) for row in resources if isinstance(row.get("tree_rss_kb"), int)),
@@ -1328,6 +1340,7 @@ def aggregate_native_testmon_run(
     peak_storage_bytes: int | None = None
     read_bytes = 0
     write_bytes = 0
+    archive_tier_init_counts: dict[str, int] = {}
     cleanup_complete = True
     containment_complete = True
     selection_complete = True
@@ -1360,6 +1373,12 @@ def aggregate_native_testmon_run(
         def _peak(current: int | None, value: object) -> int | None:
             return max(current or 0, value) if isinstance(value, int) else current
 
+        lane_ddl_counts = statistics.get("archive_tier_init_counts") if isinstance(statistics, Mapping) else None
+        if isinstance(lane_ddl_counts, Mapping):
+            for key, value in lane_ddl_counts.items():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    rendered_key = str(key)
+                    archive_tier_init_counts[rendered_key] = archive_tier_init_counts.get(rendered_key, 0) + value
         if isinstance(resources, Mapping):
             peak_rss_kb = _peak(peak_rss_kb, resources.get("peak_tree_rss_kb"))
             peak_pss_kb = _peak(peak_pss_kb, resources.get("peak_tree_pss_kb"))
@@ -1503,6 +1522,7 @@ def aggregate_native_testmon_run(
         "terminal_green": terminal_green,
         "wall_s": round(invocation_duration_s, 4),
         "collection_wall_s": round(collection_wall_s, 4),
+        "archive_tier_init_counts": dict(sorted(archive_tier_init_counts.items())),
         "resources": {
             "peak_tree_rss_kb": peak_rss_kb,
             "peak_tree_pss_kb": peak_pss_kb,

@@ -54,11 +54,6 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
-#: Tests in this module monkeypatch ``ARCHIVE_DDL_BY_TIER``, so no test here may
-#: inherit or export a tier prototype minted from a synthetic DDL -- see
-#: ``clear_tier_prototypes`` (tests/conftest.py) and polylogue-s5iyt.
-pytestmark = pytest.mark.usefixtures("clear_tier_prototypes")
-
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
 
 
