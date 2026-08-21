@@ -370,88 +370,13 @@ issue numbers in agent-authored PR bodies/comments/commits unless the operator
 explicitly asks for that exact PR to change that exact issue's state. Use
 `Ref #N` + explicit `Remaining #N scope:` instead.
 
-### Verification — testmon inner loop, never blanket-run
+### Verification and schema
 
-The default path is `devtools verify`: static/generated gates +
-**pytest-testmon affected-selection** (only tests whose dependency graph touches
-your change; seconds-to-minutes). For a single target: `devtools test <file>` or
-`devtools test -k <expr>`.
+Use `devtools`, never bare `pytest`. It supplies the checkout guard, containment, receipts, and managed testmon state. `devtools test <node-or--k>` is the focused inner loop; do not run broad test directories. Plain `devtools verify` is the complete-corpus, testmon-attested gate and repairs/reuses native state itself. `devtools verify --quick` is the static fast gate and does not replace a terminal full verify. Use `devtools why` before reading receipts by hand.
 
-**Anti-pattern (do NOT):** `devtools test tests/unit/<dir>` over whole
-directories, or blanket `pytest tests/unit`. Running broad directories is
-effectively the full suite (>1h) and re-confirms tests your change never
-touched. A mypy-green, behavior-preserving refactor needs only its
-testmon-affected set.
+Batch changes before verification. Classify unrelated selected failures instead of claiming them fixed. Verify in the context that failed. Touching dependencies, `conftest.py`, `devtools/pytest*.py`, the interpreter, or collection environment changes the testmon digest, so batch those edits deliberately. Record disproved hypotheses on the relevant Bead.
 
-- `mypy --strict` (via `devtools verify`) is the primary net for type/identifier
-  refactors — trust it. Config in `pyproject.toml`, no exclude list.
-- Plain `devtools verify` owns the native pytest-testmon lifecycle. It repairs
-  invalid local state, optionally copies a matching main-checkout database,
-  and automatically runs the complete correctness corpus when no valid native
-  environment exists. Never ask an operator or agent to seed or repair it.
-- There is no `--all` flag anymore: every plain `devtools verify` is scoped
-  to the complete correctness corpus (benchmarks excluded), executes only
-  changed-dependency/never-recorded/previously-failing tests, attests the
-  rest from unchanged recorded greens, and earns release-baseline authority
-  when coverage is complete and green.
-- `devtools verify --quick` = format + lint + mypy + `render all --check`
-  (no tests); it runs on `git push` via the pre-push hook. It is a fast gate,
-  not a substitute for the default baseline before a PR.
-- If failures land in files your change didn't touch and testmon didn't select,
-  classify as pre-existing/flaky (re-run the exact node) before assuming yours.
-
-Don't treat CI as the first verification pass — anticipate failures locally.
-
-**`devtools test` forwards arbitrary pytest arguments, and it is FASTER than
-bare pytest.** Nothing said so, so an agent reaches for `pytest` directly and
-silently opts out of the checkout guard, containment, and receipts. Measured on
-the same 1342 tests: 124s through `devtools test` (managed xdist) versus 393s
-bare single-process. Node ids, `-k`, `-x`, `-q` all pass through. There is no
-case where bare `pytest` is the right call in this repo.
-
-**Editing the working tree during a run is now safe.** `devtools verify` runs
-against a frozen reflink snapshot bind-mounted at the checkout's own path, by
-default — not behind a flag. Edit, commit, run `bd`, start another agent; none
-of it reaches the running verify. `--no-isolated` opts out for debugging.
-Concurrent verifies were always safe: they serialize on
-`.cache/native-testmon-lifecycle.lock`.
-
-**A bootstrap costs ~9.5x a warm run (2701s vs 285s, measured over 1233 recorded
-runs), and two very different things cause it.** `devtools why` now names which:
-  - `absent` — the *environment digest* changed, so no graph for it exists.
-    Digest inputs include the installed distribution set, `tests/**/conftest.py`,
-    `devtools/pytest*.py`, the interpreter, and the `HYPOTHESIS_PROFILE` /
-    `POLYLOGUE_CI` environment variables. **Consequence worth planning around:
-    touching conftest or bumping a dependency invalidates every graph.** Batch
-    such changes rather than dribbling them across days.
-  - `incomplete` — a sound graph exists but has not fingerprinted every changed
-    module; the receipt names exactly which files.
-
-**`devtools why`** explains the most recent run — diagnosis, cause, what to do,
-the selection decision, non-green tests, failing steps. Reach for it before
-opening receipt JSON or the testmon SQLite by hand.
-
-**Verify in the context that was failing, and say which context you verified
-in.** A test that fails only inside a full `devtools verify` will pass when run
-standalone; "I ran it and it passed" is then not evidence the fix works. This
-session claimed three supervisor-test fixes on exactly that mistake, and the
-gate failed identically afterwards.
-
-**Record disproved hypotheses on the bead.** When an investigation eliminates a
-cause, write it down (`bd update --append-notes`) so the next session does not
-re-run it. `polylogue-b9yw7` carries three; `polylogue-gibn1`'s notes eliminated
-two candidates and made the third finding cheap.
-
-### Schema-touching changes
-
-See [Schema regimes](#schema-regimes-durability-keyed). Durable tiers → numbered
-additive migration + backup manifest; derived tiers → edit canonical DDL +
-an explicitly declared lifecycle delta. Non-semantic deltas may use the
-clone-validated `index_fast_forward_plan()` route; semantic deltas require
-`polylogue ops maintenance rebuild-index`. Ad hoc open-path upgrade code is not
-an accepted third route. `devtools lab policy schema-versioning` validates the
-declarations, durable migration slots, and same-version benign-DDL shapes; it
-does not infer architecture from helper names.
+Classify every schema change first: durable tier means additive numbered migration plus verified backup manifest; derived tier means canonical DDL plus declared lifecycle delta. Semantic parser changes require `polylogue ops maintenance rebuild-index`; do not add an ad hoc third upgrade path.
 
 ### Multi-lane / merge-train tooling — use these, don't reinvent the discipline by hand
 
@@ -528,40 +453,7 @@ a tool without a line in this file is a tool the next session won't use.
 
 ### Coordinator dispatch: no poll loops
 
-A coordinator running background subagents (`run_in_background: true`, or a
-teammate/job spawned via `agent-control`) already gets an automatic
-completion notification when the agent finishes (Claude Code >=2.1.211) — the
-harness wakes the coordinator itself; nothing needs to ask "done yet?". A
-2026-08-02 mining pass over six days of fanout sessions counted 101
-`ScheduleWakeup` + 78 `Monitor` calls, almost all of them a coordinator turn
-re-deriving state a notification would have delivered for free, and traced
-part of that session's 16 compactions to this churn (polylogue-kzse6,
-polylogue-ltfj9 report item 2).
-
-The rule the data supports:
-
-- **`Monitor` only with a genuine until-condition** (an until-loop over a
-  concrete, checkable state — e.g. waiting for a lock file to clear, a port
-  to open) — never as a bare "poll and see if it's done yet" against a
-  background agent job.
-- **`ScheduleWakeup` only for a genuine wall-clock deadline** the harness
-  cannot observe on its own (a CI grace window, an external system's SLA) —
-  never as a substitute for the automatic completion notification.
-- If you notice yourself reaching for either tool to check on a background
-  agent's progress, that noticing is itself the signal to stop: let the
-  notification arrive, or use a non-polling progress peek (`/tasks`,
-  tailing the agent's transcript, or an `agent-control` status/read-output
-  call made once out of genuine curiosity, not on a timer) instead of a
-  loop.
-- This doctrine assumes Claude Code >=2.1.211; on an older install
-  completion notifications are best-effort, and a bounded wall-clock
-  `ScheduleWakeup` fallback is legitimate until upgrading.
-
-This is a coordinator-behavior rule, not a code change: `ScheduleWakeup` and
-`Monitor` are harness tools, not something this repo's source controls, so
-there is no lint or detector this repo can ship to enforce it mechanically.
-The `lane`/`triage` agent definitions carry the same rule for the case where
-a dispatched agent itself spawns further background work.
+Completion notifications are authoritative. `Monitor` is only for a concrete until-condition; `ScheduleWakeup` is only for an external deadline. Do not poll background agents. On an older runtime where notifications are unreliable, use one bounded deadline wakeup instead.
 
 ### Commit / PR discipline
 
