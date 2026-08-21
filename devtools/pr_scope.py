@@ -37,6 +37,7 @@ _V1_CARRIER_KEYS = frozenset({"version", "head_sha", "assigned_beads", "beads_di
 _V2_CARRIER_KEYS = frozenset(
     {"version", "scope_kind", "assigned_beads", "mutated_beads", "dispositions", "scope_digest"}
 )
+_CARRIER_DISPOSITION_KEYS = _V2_CARRIER_KEYS | frozenset({"source_pr", "execution_id"})
 _DISPOSITION_KEYS = frozenset({"bead_id", "disposition", "evidence", "successors"})
 _EVIDENCE_KEYS = frozenset({"kind", "ref"})
 
@@ -59,6 +60,7 @@ class EvidenceKind(StrEnum):
 
 class ScopeKind(StrEnum):
     BEAD = "bead"
+    CARRIER_DISPOSITION = "carrier_disposition"
     SELF_CONTAINED = "self_contained"
 
 
@@ -81,6 +83,8 @@ class ScopeVerdict:
     mutated_beads: list[str] = field(default_factory=list)
     carrier_version: int | None = None
     scope_kind: ScopeKind | None = None
+    source_pr: int | None = None
+    execution_id: str | None = None
     dispositions: tuple[ValidatedDisposition, ...] = ()
 
 
@@ -107,6 +111,13 @@ class PullRequestMetadata:
     author_login: str | None = None
     author_type: str | None = None
     changed_files: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MergedPullRequest:
+    body: str
+    head_sha: str
+    merge_sha: str
 
 
 class NoOpenPullRequestError(ValueError):
@@ -423,6 +434,185 @@ def _validate_dispositions(
     return tuple(validated)
 
 
+def _execution_id(*, pr: int, head_sha: str, merge_sha: str, attestation: str) -> str:
+    return hashlib.sha256(f"v1\0{pr}\0{head_sha}\0{merge_sha}\0{attestation}".encode()).hexdigest()
+
+
+def _receipt_at(*, execution_id: str, head_sha: str | None, beads_path: Path) -> dict[str, Any]:
+    path = beads_path.parent / "disposition-receipts" / f"{execution_id}.json"
+    if head_sha is None:
+        text = path.read_text(encoding="utf-8")
+    else:
+        root = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+        if root.returncode != 0:
+            raise ValueError("cannot resolve checkout root for disposition receipt")
+        try:
+            relative = path.resolve().relative_to(Path(root.stdout.strip()).resolve())
+        except ValueError as exc:
+            raise ValueError("disposition receipt is outside the checkout") from exc
+        result = subprocess.run(
+            ["git", "show", f"{head_sha}:{relative.as_posix()}"], capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise ValueError(f"cannot read disposition receipt {execution_id} at PR head {head_sha[:8]}")
+        text = result.stdout
+    receipt = json.loads(text)
+    if not isinstance(receipt, dict):
+        raise ValueError(f"disposition receipt {execution_id} must be a JSON object")
+    return receipt
+
+
+def _single_parent_squash_base(merge_sha: str) -> str:
+    _ensure_local_commit(merge_sha)
+    result = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", merge_sha], capture_output=True, text=True, check=False
+    )
+    fields = result.stdout.strip().split()
+    if result.returncode != 0 or len(fields) != 2 or fields[0] != merge_sha:
+        raise ValueError(f"merged squash {merge_sha[:8]} must have exactly one parent")
+    return fields[1]
+
+
+def fetch_merged_pull_request(pr: int, *, repository: str) -> MergedPullRequest:
+    raw = _github_request_bytes(f"repos/{repository}/pulls/{pr}")
+    if raw is None:
+        raise ValueError(f"GitHub returned no metadata for source PR #{pr}")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict) or payload.get("state") != "closed" or not payload.get("merged_at"):
+        raise ValueError(f"source PR #{pr} is not merged")
+    head = payload.get("head")
+    merge_sha = payload.get("merge_commit_sha")
+    if not isinstance(head, dict) or not isinstance(head.get("sha"), str) or not isinstance(merge_sha, str):
+        raise ValueError(f"source PR #{pr} lacks an immutable head or squash SHA")
+    return MergedPullRequest(body=str(payload.get("body") or ""), head_sha=head["sha"], merge_sha=merge_sha)
+
+
+def _disposition_payload(dispositions: tuple[ValidatedDisposition, ...]) -> list[dict[str, object]]:
+    return [
+        {
+            "bead_id": item.bead_id,
+            "disposition": item.disposition.value,
+            "evidence": [asdict(ref) for ref in item.evidence],
+            "successors": list(item.successors),
+        }
+        for item in dispositions
+    ]
+
+
+def _validate_carrier_disposition_receipt(
+    *,
+    carrier: dict[str, Any],
+    records: dict[str, dict[str, Any]],
+    mutated_ids: list[str],
+    dispositions: tuple[ValidatedDisposition, ...],
+    head_sha: str,
+    receipt_at_head: bool,
+    beads_path: Path,
+    repository: str | None,
+    reasons: list[str],
+) -> tuple[int | None, str | None]:
+    source_pr = carrier.get("source_pr")
+    execution_id = carrier.get("execution_id")
+    if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
+        reasons.append("carrier_disposition scope requires a positive source_pr")
+        source_pr = None
+    if not isinstance(execution_id, str) or re.fullmatch(r"[0-9a-f]{64}", execution_id) is None:
+        reasons.append("carrier_disposition scope requires a lowercase SHA-256 execution_id")
+        execution_id = None
+    if source_pr is None or execution_id is None:
+        return source_pr, execution_id
+    try:
+        receipt = _receipt_at(
+            execution_id=execution_id, head_sha=head_sha if receipt_at_head else None, beads_path=beads_path
+        )
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        reasons.append(f"cannot resolve carrier disposition receipt: {exc}")
+        return source_pr, execution_id
+    expected_keys = {
+        "version",
+        "execution_id",
+        "pr",
+        "head_sha",
+        "merge_sha",
+        "scope_attestation_digest",
+        "marker",
+        "dispositions",
+        "changed_beads",
+    }
+    if set(receipt) != expected_keys or receipt.get("version") != 1:
+        reasons.append("carrier disposition receipt has an unsupported shape or version")
+        return source_pr, execution_id
+    if receipt.get("execution_id") != execution_id or receipt.get("pr") != source_pr:
+        reasons.append("carrier disposition receipt does not name this execution and source PR")
+    receipt_head = receipt.get("head_sha")
+    merge_sha = receipt.get("merge_sha")
+    attestation = receipt.get("scope_attestation_digest")
+    marker = receipt.get("marker")
+    if (
+        not isinstance(receipt_head, str)
+        or not receipt_head
+        or not isinstance(merge_sha, str)
+        or not merge_sha
+        or not isinstance(attestation, str)
+        or not attestation
+        or not isinstance(marker, str)
+        or not marker
+    ):
+        reasons.append("carrier disposition receipt has malformed identity fields")
+        return source_pr, execution_id
+    if execution_id != _execution_id(pr=source_pr, head_sha=receipt_head, merge_sha=merge_sha, attestation=attestation):
+        reasons.append("carrier disposition receipt execution_id does not match its identity")
+    changed = receipt.get("changed_beads")
+    if (
+        not isinstance(changed, list)
+        or sorted(changed) != sorted(mutated_ids)
+        or not all(isinstance(item, str) for item in changed)
+    ):
+        reasons.append("carrier disposition receipt changed_beads does not match mutated_beads")
+    if receipt.get("dispositions") != _disposition_payload(dispositions):
+        reasons.append("carrier disposition receipt dispositions do not match the carrier")
+    for item in dispositions:
+        record = records.get(item.bead_id)
+        if record is None:
+            continue
+        if item.disposition in {ScopeDisposition.SATISFIED, ScopeDisposition.SUPERSEDED}:
+            if record.get("status") != "closed" or record.get("close_reason") != marker:
+                reasons.append(f"{item.bead_id}: terminal receipt target is not closed by this execution")
+        elif item.disposition is ScopeDisposition.DEFERRED and record.get("status") != "deferred":
+            reasons.append(f"{item.bead_id}: deferred receipt target is not deferred")
+        elif item.disposition is ScopeDisposition.PARTIAL and record.get("status") == "closed":
+            reasons.append(f"{item.bead_id}: partial receipt target is unexpectedly closed")
+    if repository is None:
+        reasons.append("carrier_disposition scope requires GitHub repository context")
+        return source_pr, execution_id
+    try:
+        source = fetch_merged_pull_request(source_pr, repository=repository)
+        if source.head_sha != receipt_head or source.merge_sha != merge_sha:
+            reasons.append("carrier disposition receipt does not match the merged source PR")
+            return source_pr, execution_id
+        source_base = _single_parent_squash_base(merge_sha)
+        source_scope = validate_pr_body(
+            source.body,
+            head_sha=source.head_sha,
+            is_draft=False,
+            base_sha=source_base,
+            repository=repository,
+        )
+        if not source_scope.ok or source_scope.scope_kind is not ScopeKind.BEAD:
+            reasons.append("carrier disposition receipt source PR has no valid executable Bead carrier")
+        elif (
+            _disposition_payload(source_scope.dispositions) != _disposition_payload(dispositions)
+            or str(
+                attestation_payload(source_scope, head_sha=source.head_sha, base_sha=source_base)["attestation_digest"]
+            )
+            != attestation
+        ):
+            reasons.append("carrier disposition receipt does not match its source carrier attestation")
+    except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
+        reasons.append(f"cannot validate carrier disposition source PR: {exc}")
+    return source_pr, execution_id
+
+
 def validate_carrier(
     carrier: dict[str, Any],
     *,
@@ -430,19 +620,21 @@ def validate_carrier(
     is_draft: bool,
     beads_path: Path = _BEADS_PATH,
     base_sha: str | None = None,
+    repository: str | None = None,
 ) -> ScopeVerdict:
     reasons: list[str] = []
     version = carrier.get("version")
     if type(version) is not int or version not in {_V1, _VERSION}:
         return ScopeVerdict(ok=False, reasons=[f"carrier version must be {_V1} or {_VERSION}"])
     is_v1 = version == _V1
-    _validate_keys(
-        carrier,
-        label="carrier",
-        allowed=_V1_CARRIER_KEYS if is_v1 else _V2_CARRIER_KEYS,
-        required=_V1_CARRIER_KEYS if is_v1 else _V2_CARRIER_KEYS,
-        reasons=reasons,
-    )
+    if is_v1:
+        _validate_keys(
+            carrier,
+            label="carrier",
+            allowed=_V1_CARRIER_KEYS,
+            required=_V1_CARRIER_KEYS,
+            reasons=reasons,
+        )
     assigned_ids = _bead_ids(
         carrier.get("assigned_beads"), label="assigned_beads", allow_empty=not is_v1, reasons=reasons
     )
@@ -454,9 +646,20 @@ def validate_carrier(
         scope_kind = carrier.get("scope_kind")
         if scope_kind not in _SCOPE_KINDS:
             reasons.append(f"scope_kind must be one of: {', '.join(sorted(_SCOPE_KINDS))}")
+        _validate_keys(
+            carrier,
+            label="carrier",
+            allowed=_CARRIER_DISPOSITION_KEYS
+            if scope_kind == ScopeKind.CARRIER_DISPOSITION.value
+            else _V2_CARRIER_KEYS,
+            required=_CARRIER_DISPOSITION_KEYS
+            if scope_kind == ScopeKind.CARRIER_DISPOSITION.value
+            else _V2_CARRIER_KEYS,
+            reasons=reasons,
+        )
         mutated_ids = _bead_ids(carrier.get("mutated_beads"), label="mutated_beads", allow_empty=True, reasons=reasons)
-        if scope_kind == ScopeKind.BEAD.value and not assigned_ids:
-            reasons.append("bead scope requires at least one assigned Bead")
+        if scope_kind in {ScopeKind.BEAD.value, ScopeKind.CARRIER_DISPOSITION.value} and not assigned_ids:
+            reasons.append(f"{scope_kind} scope requires at least one assigned Bead")
         if scope_kind == ScopeKind.SELF_CONTAINED.value and (
             assigned_ids or mutated_ids or carrier.get("dispositions") != []
         ):
@@ -524,6 +727,20 @@ def validate_carrier(
         records=records,
         reasons=reasons,
     )
+    source_pr: int | None = None
+    execution_id: str | None = None
+    if not is_v1 and carrier.get("scope_kind") == ScopeKind.CARRIER_DISPOSITION.value:
+        source_pr, execution_id = _validate_carrier_disposition_receipt(
+            carrier=carrier,
+            records=records,
+            mutated_ids=mutated_ids,
+            dispositions=validated_dispositions,
+            head_sha=head_sha,
+            receipt_at_head=base_sha is not None,
+            beads_path=beads_path,
+            repository=repository,
+            reasons=reasons,
+        )
     if not is_draft and not is_v1 and carrier.get("scope_kind") == ScopeKind.BEAD.value:
         for bead_id in assigned_ids:
             record = records.get(bead_id)
@@ -543,6 +760,8 @@ def validate_carrier(
         scope_kind=ScopeKind(carrier["scope_kind"])
         if not is_v1 and carrier.get("scope_kind") in _SCOPE_KINDS
         else None,
+        source_pr=source_pr,
+        execution_id=execution_id,
         dispositions=validated_dispositions if not reasons else (),
     )
 
@@ -554,6 +773,7 @@ def validate_pr_body(
     is_draft: bool,
     beads_path: Path = _BEADS_PATH,
     base_sha: str | None = None,
+    repository: str | None = None,
 ) -> ScopeVerdict:
     carrier, reasons = extract_carrier(body)
     if carrier is None:
@@ -564,6 +784,7 @@ def validate_pr_body(
         is_draft=is_draft,
         beads_path=beads_path,
         base_sha=base_sha,
+        repository=repository,
     )
 
 
@@ -600,6 +821,7 @@ def build_carrier(
     head_sha: str,
     beads_path: Path = _BEADS_PATH,
     base_sha: str | None = None,
+    repository: str | None = None,
 ) -> dict[str, Any]:
     """Build a carrier from hand-authored scope intent.
 
@@ -642,7 +864,13 @@ def build_carrier(
         carrier.pop("head_sha", None)
         carrier.pop("beads_digest", None)
     carrier["scope_digest"] = carrier_digest(carrier)
-    verdict = validate_carrier(carrier, head_sha=head_sha, is_draft=False, beads_path=beads_path)
+    verdict = validate_carrier(
+        carrier,
+        head_sha=head_sha,
+        is_draft=False,
+        beads_path=beads_path,
+        repository=repository,
+    )
     if not verdict.ok:
         raise ValueError("invalid scope input: " + "; ".join(verdict.reasons))
     return carrier
@@ -670,6 +898,9 @@ def attestation_payload(scope: ScopeVerdict, *, head_sha: str, base_sha: str | N
             for disposition in scope.dispositions
         ],
     }
+    if scope.scope_kind is ScopeKind.CARRIER_DISPOSITION:
+        payload["source_pr"] = scope.source_pr
+        payload["execution_id"] = scope.execution_id
     payload["attestation_digest"] = _digest(payload)
     return payload
 
@@ -925,6 +1156,7 @@ def _run_validator_source(
     source: bytes,
     *,
     metadata: PullRequestMetadata,
+    repository: str,
     beads_path: Path,
 ) -> int:
     with tempfile.TemporaryDirectory(prefix="polylogue-pr-scope-base-") as temporary:
@@ -949,6 +1181,8 @@ def _run_validator_source(
             "--beads-path",
             str(beads_path.resolve()),
         ]
+        if "--repo" in help_result.stdout:
+            argv.extend(["--repo", repository])
         if "--base-sha" in help_result.stdout:
             argv.extend(["--base-sha", metadata.base_sha])
         result = subprocess.run(
@@ -1004,7 +1238,7 @@ def check_ci_metadata(
     base_source = fetch_base_validator_source(repository=repository, base_sha=metadata.base_sha)
     if base_source is not None:
         print(f"pr-scope CI base validator: revision {metadata.base_sha[:8]}")
-        return _run_validator_source(base_source, metadata=metadata, beads_path=beads_path)
+        return _run_validator_source(base_source, metadata=metadata, repository=repository, beads_path=beads_path)
 
     print(
         f"pr-scope CI bootstrap: base revision {metadata.base_sha[:8]} has no validator; "
@@ -1017,6 +1251,7 @@ def check_ci_metadata(
         is_draft=metadata.is_draft,
         beads_path=beads_path,
         base_sha=metadata.base_sha,
+        repository=repository,
     )
     return _emit_verdict(verdict, head_sha=metadata.head_sha, as_json=False)
 
@@ -1029,6 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
     render.add_argument("--input", required=True, type=Path, help="JSON with assigned_beads and dispositions")
     render.add_argument("--head-sha", default=None, help="v1 transition head SHA (default: current git HEAD)")
     render.add_argument("--beads-path", type=Path, default=_BEADS_PATH)
+    render.add_argument("--repo", help="GitHub OWNER/REPO for carrier_disposition source validation")
     render.add_argument(
         "--base-sha",
         default=None,
@@ -1067,11 +1303,17 @@ def main(argv: list[str] | None = None) -> int:
             payload = json.loads(args.input.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("input must be a JSON object")
+            repository = (
+                resolve_repository(args.repo)
+                if payload.get("scope_kind") == ScopeKind.CARRIER_DISPOSITION.value
+                else None
+            )
             carrier = build_carrier(
                 payload,
                 head_sha=args.head_sha or _git_head_sha(),
                 beads_path=args.beads_path,
                 base_sha=args.base_sha,
+                repository=repository,
             )
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
             print(f"REFUSING to render pr-scope carrier: {exc}", file=sys.stderr)
@@ -1119,6 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
                 is_draft=metadata.is_draft,
                 beads_path=args.beads_path,
                 base_sha=metadata.base_sha,
+                repository=repository,
             )
             if not verdict.ok:
                 return _emit_verdict(verdict, head_sha=metadata.head_sha, as_json=False)
@@ -1153,12 +1396,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--base-sha is required with --body-file for a v2 carrier")
             if extracted_carrier is not None and extracted_carrier.get("version") == _VERSION:
                 _require_checkout_authority(head_sha=head_sha, beads_path=args.beads_path)
+            repository = (
+                resolve_repository(args.repo)
+                if extracted_carrier is not None
+                and extracted_carrier.get("scope_kind") == ScopeKind.CARRIER_DISPOSITION.value
+                else None
+            )
         verdict = validate_pr_body(
             body,
             head_sha=head_sha,
             is_draft=is_draft,
             beads_path=args.beads_path,
             base_sha=base_sha,
+            repository=repository,
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"REFUSING to check pr-scope carrier: {exc}", file=sys.stderr)

@@ -1312,6 +1312,168 @@ def test_check_rejects_a_terminal_target_before_the_pr_is_merged(beads_path: Pat
     assert any("pre-applied terminal disposition" in reason for reason in verdict.reasons)
 
 
+def test_carrier_disposition_scope_binds_the_committed_receipt_and_source_pr(
+    beads_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [json.loads(line) for line in beads_path.read_text().splitlines()]
+    marker = "carrier-disposition:v1:pr=4040:merge=" + "m" * 40 + ":execution=" + "0" * 64
+    records[0]["status"] = "closed"
+    records[0]["close_reason"] = marker
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    disposition = pr_scope.ValidatedDisposition(
+        bead_id=ASSIGNED,
+        disposition=pr_scope.ScopeDisposition.SATISFIED,
+        evidence=(pr_scope.EvidenceRef(kind=pr_scope.EvidenceKind.TEST, ref="source proof"),),
+        successors=(),
+    )
+    source_scope = pr_scope.ScopeVerdict(
+        ok=True,
+        scope_digest="source-scope",
+        beads_digest="source-beads",
+        assigned_beads=[ASSIGNED],
+        mutated_beads=[],
+        carrier_version=2,
+        scope_kind=pr_scope.ScopeKind.BEAD,
+        dispositions=(disposition,),
+    )
+    source_head = "h" * 40
+    merge_sha = "m" * 40
+    source_attestation = str(
+        pr_scope.attestation_payload(source_scope, head_sha=source_head, base_sha="b" * 40)["attestation_digest"]
+    )
+    execution_id = pr_scope._execution_id(
+        pr=4040,
+        head_sha=source_head,
+        merge_sha=merge_sha,
+        attestation=source_attestation,
+    )
+    marker = f"carrier-disposition:v1:pr=4040:merge={merge_sha}:execution={execution_id}"
+    records[0]["close_reason"] = marker
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    receipt = {
+        "version": 1,
+        "execution_id": execution_id,
+        "pr": 4040,
+        "head_sha": source_head,
+        "merge_sha": merge_sha,
+        "scope_attestation_digest": source_attestation,
+        "marker": marker,
+        "dispositions": pr_scope._disposition_payload((disposition,)),
+        "changed_beads": [ASSIGNED],
+    }
+    receipt_path = beads_path.parent / "disposition-receipts" / f"{execution_id}.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps(receipt))
+    carrier = {
+        "version": 2,
+        "scope_kind": "carrier_disposition",
+        "source_pr": 4040,
+        "execution_id": execution_id,
+        "assigned_beads": [ASSIGNED],
+        "mutated_beads": [ASSIGNED],
+        "dispositions": pr_scope._disposition_payload((disposition,)),
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_merged_pull_request",
+        lambda pr, *, repository: pr_scope.MergedPullRequest(body="source", head_sha=source_head, merge_sha=merge_sha),
+    )
+    monkeypatch.setattr(pr_scope, "_single_parent_squash_base", lambda _sha: "b" * 40)
+    monkeypatch.setattr(pr_scope, "validate_pr_body", lambda *_args, **_kwargs: source_scope)
+
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        repository="Sinity/polylogue",
+    )
+
+    assert verdict.ok
+    assert verdict.scope_kind is pr_scope.ScopeKind.CARRIER_DISPOSITION
+    assert verdict.source_pr == 4040
+    assert verdict.execution_id == execution_id
+
+
+def test_carrier_disposition_scope_rejects_an_independently_closed_target(
+    beads_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [json.loads(line) for line in beads_path.read_text().splitlines()]
+    records[0]["status"] = "closed"
+    records[0]["close_reason"] = "unrelated closure"
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    disposition = pr_scope.ValidatedDisposition(
+        bead_id=ASSIGNED,
+        disposition=pr_scope.ScopeDisposition.SATISFIED,
+        evidence=(pr_scope.EvidenceRef(kind=pr_scope.EvidenceKind.TEST, ref="source proof"),),
+        successors=(),
+    )
+    source_head = "h" * 40
+    merge_sha = "m" * 40
+    source_scope = pr_scope.ScopeVerdict(
+        ok=True,
+        scope_digest="source-scope",
+        beads_digest="source-beads",
+        assigned_beads=[ASSIGNED],
+        mutated_beads=[],
+        carrier_version=2,
+        scope_kind=pr_scope.ScopeKind.BEAD,
+        dispositions=(disposition,),
+    )
+    attestation = str(
+        pr_scope.attestation_payload(source_scope, head_sha=source_head, base_sha="b" * 40)["attestation_digest"]
+    )
+    execution_id = pr_scope._execution_id(pr=4040, head_sha=source_head, merge_sha=merge_sha, attestation=attestation)
+    receipt_path = beads_path.parent / "disposition-receipts" / f"{execution_id}.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "execution_id": execution_id,
+                "pr": 4040,
+                "head_sha": source_head,
+                "merge_sha": merge_sha,
+                "scope_attestation_digest": attestation,
+                "marker": f"carrier-disposition:v1:pr=4040:merge={merge_sha}:execution={execution_id}",
+                "dispositions": pr_scope._disposition_payload((disposition,)),
+                "changed_beads": [ASSIGNED],
+            }
+        )
+    )
+    carrier = {
+        "version": 2,
+        "scope_kind": "carrier_disposition",
+        "source_pr": 4040,
+        "execution_id": execution_id,
+        "assigned_beads": [ASSIGNED],
+        "mutated_beads": [ASSIGNED],
+        "dispositions": pr_scope._disposition_payload((disposition,)),
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_merged_pull_request",
+        lambda pr, *, repository: pr_scope.MergedPullRequest(body="source", head_sha=source_head, merge_sha=merge_sha),
+    )
+    monkeypatch.setattr(pr_scope, "_single_parent_squash_base", lambda _sha: "b" * 40)
+    monkeypatch.setattr(pr_scope, "validate_pr_body", lambda *_args, **_kwargs: source_scope)
+
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        repository="Sinity/polylogue",
+    )
+
+    assert not verdict.ok
+    assert any("not closed by this execution" in reason for reason in verdict.reasons)
+
+
 def test_check_rejects_stale_canonical_beads_digest(
     beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
