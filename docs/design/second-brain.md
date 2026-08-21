@@ -85,9 +85,8 @@ hook to add framing.
 
 ## Implementation
 
-`build_resume_brief()` and `render_resume_brief()` already exist in
-`polylogue/insights/resume.py`. They compute the data but aren't wired as a
-hook-format output.
+`build_resume_brief()` already exists in `polylogue/insights/resume.py`. It
+computes the data but isn't wired as a hook-format output.
 
 What's needed:
 1. A `SessionStart` hook handler that calls `build_resume_brief()` with the
