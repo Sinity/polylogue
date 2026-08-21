@@ -1430,7 +1430,7 @@ def aggregate_native_testmon_run(
     for outcome in outcome_by_node.values():
         outcomes[outcome] = outcomes.get(outcome, 0) + 1
     native_corpus = tuple(sorted({canonical_test_nodeid(nodeid) for nodeid in corpus_nodeids}))
-    complete_mode = selection_mode in {"bootstrap", "full"}
+    complete_mode = selection_mode in {"all", "bootstrap", "full"}
     corpus = native_corpus
     corpus_set = set(corpus)
     lane_names = [lane["lane"] for lane in lanes]

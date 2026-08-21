@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.protocols import VectorProvider
 from polylogue.ui.facade import ConsoleLike, PlainConsole
 
 # ---------------------------------------------------------------------------
@@ -38,6 +37,7 @@ class TestVectorProviderConformance:
 
     def test_isinstance(self, tmp_path: Path) -> None:
         """isinstance() is a structural check — sqlite-vec extension not required."""
+        from polylogue.core.protocols import VectorProvider
         from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 
         provider = SqliteVecProvider(voyage_key="dummy", db_path=tmp_path / "vec.db")

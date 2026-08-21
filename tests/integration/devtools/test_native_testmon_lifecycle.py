@@ -418,10 +418,17 @@ def test_serial_owner():
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    first, bootstrap = _run_production_verify(repo)
+    unavailable, unavailable_payload = _run_production_verify(repo)
+
+    assert unavailable.returncode == 2, unavailable.stderr
+    assert unavailable_payload["diagnosis"] == "native_testmon_graph_unavailable"
+    assert unavailable_payload["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert not [step for step in unavailable_payload["steps"] if step.get("semantic_lane")]
+
+    first, bootstrap = _run_production_verify(repo, "--all")
 
     assert first.returncode == 0, f"{first.stderr}\n{json.dumps(bootstrap, indent=2, sort_keys=True)}"
-    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert bootstrap["testmon_environment"]["selection_mode"] == "all"
     aggregate = bootstrap["pytest_aggregate"]
     assert aggregate["complete_corpus_covered"] is True
     assert aggregate["terminal_green"] is True
@@ -436,10 +443,6 @@ def test_serial_owner():
         if isinstance(arg, str) and arg.startswith("--testmon-env=")
     }
     assert environments == {f"--testmon-env={bootstrap['testmon_environment']['name']}"}
-    # Each lane carries the pytest runtime timeout in full. The previous
-    # strictly-decreasing assertion held only because the invocation budget
-    # handed each lane whatever wall clock was left; with that gone, a lane is
-    # bounded by how long a lane may run, not by how much of an hour remains.
     lane_timeouts = [step["timeout_s"] for step in lane_steps]
     assert all(timeout > 0 for timeout in lane_timeouts)
     assert lane_timeouts[0] == lane_timeouts[1]
@@ -452,9 +455,6 @@ def test_serial_owner():
     assert second.returncode == 0, second.stderr
     assert warm["testmon_environment"]["selection_mode"] == "full"
     assert warm["pytest_aggregate"]["selected_union_count"] == 0
-    # Zero execution, complete attested coverage: every corpus test's recorded
-    # deps are unchanged and green, so the warm run still earns release
-    # authority -- the fold's central claim.
     assert warm["verification_scope"] == "release-baseline"
     assert warm["release_baseline_allowed"] is True
 
@@ -494,19 +494,19 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    completed, payload = _run_production_verify(repo)
+    completed, payload = _run_production_verify(repo, "--all")
 
     assert completed.returncode == 0, completed.stderr
     assert payload["tier"] == "full"
-    assert payload["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert payload["testmon_environment"]["selection_mode"] == "all"
     assert payload["verification_scope"] == "release-baseline"
     assert payload["release_baseline_allowed"] is True
     assert payload["worktree_fingerprint"] == payload["final_worktree_fingerprint"]
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
     assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
     assert [step["name"] for step in lanes] == [
-        "pytest native parallel (bootstrap)",
-        "pytest native serial (bootstrap)",
+        "pytest native parallel (all)",
+        "pytest native serial (all)",
     ]
     for step in lanes:
         assert "--testmon-noselect" in step["statistics"]["command"]
@@ -519,7 +519,7 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["external_addopts_neutralized"] is True
     assert aggregate["external_plugins_neutralized"] is True
     assert aggregate["closed_world_collection"] is True
-    assert aggregate["selection_mode"] == "bootstrap"
+    assert aggregate["selection_mode"] == "all"
     assert aggregate["environment"]["native_corpus_count"] == 2
     assert aggregate["corpus"]["count"] == 2
     assert aggregate["selected_union_count"] == 2
@@ -541,13 +541,11 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
         connection.execute("DELETE FROM test_execution WHERE test_name LIKE '%serial%'")
     warm_completed, warm = _run_production_verify(repo)
 
-    assert warm_completed.returncode == 0, warm_completed.stderr
+    assert warm_completed.returncode == 2, warm_completed.stderr
+    assert warm["diagnosis"] == "native_testmon_graph_unavailable"
     assert warm["testmon_environment"]["selection_mode"] == "bootstrap"
     assert "attestation refused" in warm["testmon_selection"]["state_reason"]
-    warm_aggregate = warm["pytest_aggregate"]
-    assert warm_aggregate["corpus"]["count"] == 2
-    assert warm_aggregate["terminal_union_count"] == 2
-    assert warm["release_baseline_allowed"] is True
+    assert not [step for step in warm["steps"] if step.get("semantic_lane")]
 
 
 def test_release_native_runs_override_a_reduced_hypothesis_profile(tmp_path: Path) -> None:
@@ -585,11 +583,12 @@ def test_release_native_runs_override_a_reduced_hypothesis_profile(tmp_path: Pat
 
     completed, payload = _run_production_verify(
         repo,
+        "--all",
         environment_overrides={"HYPOTHESIS_PROFILE": "verify"},
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert payload["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert payload["testmon_environment"]["selection_mode"] == "all"
     assert payload["release_baseline_allowed"] is True
 
 
@@ -655,7 +654,7 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     else:
         monkeypatch.setenv("PYTEST_ADDOPTS", environment_addopts)
 
-    completed, payload = _run_production_verify(repo)
+    completed, payload = _run_production_verify(repo, "--all")
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -702,7 +701,7 @@ def test_production_verify_all_drops_pythonpath_startup_injection(tmp_path: Path
         encoding="utf-8",
     )
 
-    completed, payload = _run_production_verify(repo)
+    completed, payload = _run_production_verify(repo, "--all")
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -819,10 +818,10 @@ def test_production_affected_verify_neutralizes_execution_suppressing_addopts(
     _git(repo, "push", "-qu", "origin", "master")
     monkeypatch.setenv("PYTEST_ADDOPTS", ambient_addopts)
 
-    seeded, bootstrap = _run_production_verify(repo)
+    seeded, bootstrap = _run_production_verify(repo, "--all")
 
     assert seeded.returncode == 0, seeded.stderr
-    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert bootstrap["testmon_environment"]["selection_mode"] == "all"
     tests.write_text(
         "import pytest\n\n"
         "def test_parallel_body():\n"
@@ -904,7 +903,7 @@ def test_production_verify_all_owns_complete_test_root_over_configured_testpaths
     monkeypatch.setenv("PYTEST_PLUGINS", "ambient_narrow")
     monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
 
-    completed, payload = _run_production_verify(repo)
+    completed, payload = _run_production_verify(repo, "--all")
 
     assert completed.returncode == 1
     assert payload["release_baseline_allowed"] is False
@@ -961,9 +960,9 @@ def test_runtime_json_only_mutation_is_recorded_but_not_caught(tmp_path: Path) -
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    seeded, bootstrap = _run_production_verify(repo)
+    seeded, bootstrap = _run_production_verify(repo, "--all")
     assert seeded.returncode == 0, seeded.stderr
-    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert bootstrap["testmon_environment"]["selection_mode"] == "all"
 
     pricing_data.write_text('{"test-model": {"input_cost_per_token": 0}}\n', encoding="utf-8")
     completed, mutated = _run_production_verify(repo)
@@ -1027,9 +1026,9 @@ def test_production_verify_test_runtime_data_mutation_is_recorded_but_not_caught
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    seeded, bootstrap = _run_production_verify(repo)
+    seeded, bootstrap = _run_production_verify(repo, "--all")
     assert seeded.returncode == 0, seeded.stderr
-    assert bootstrap["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert bootstrap["testmon_environment"]["selection_mode"] == "all"
 
     data.write_text("0\n", encoding="utf-8")
     completed, mutated = _run_production_verify(repo)
@@ -1083,7 +1082,7 @@ def test_production_verify_deleted_module_rebuilds_and_fails_dependents(tmp_path
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    seeded, bootstrap = _run_production_verify(repo)
+    seeded, bootstrap = _run_production_verify(repo, "--all")
     assert seeded.returncode == 0, seeded.stderr
     assert bootstrap["pytest_aggregate"]["selected_union_count"] == 1
 
@@ -1126,7 +1125,7 @@ def test_production_verify_moved_module_rebuilds_and_fails_dependents(tmp_path: 
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    seeded, bootstrap = _run_production_verify(repo)
+    seeded, bootstrap = _run_production_verify(repo, "--all")
     assert seeded.returncode == 0, seeded.stderr
     assert bootstrap["pytest_aggregate"]["selected_union_count"] == 1
 
@@ -1171,7 +1170,7 @@ def test_production_verify_deleted_module_with_updated_imports_rebuilds_successf
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    seeded, _bootstrap = _run_production_verify(repo)
+    seeded, _bootstrap = _run_production_verify(repo, "--all")
     assert seeded.returncode == 0, seeded.stderr
 
     _git(repo, "rm", "polylogue/old.py")
@@ -1215,7 +1214,7 @@ def test_production_verify_moved_module_with_updated_imports_rebuilds_successful
     _git(repo, "branch", "-M", "master")
     _git(repo, "push", "-qu", "origin", "master")
 
-    seeded, _bootstrap = _run_production_verify(repo)
+    seeded, _bootstrap = _run_production_verify(repo, "--all")
     assert seeded.returncode == 0, seeded.stderr
 
     _git(repo, "mv", "polylogue/old.py", "polylogue/renamed.py")

@@ -23,9 +23,6 @@ import builtins
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.json import JSONDocument, JSONValue
-
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -36,9 +33,9 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.archive.stats import ArchiveStats
-    from polylogue.core.enums import MaterialOrigin
+    from polylogue.core.enums import MaterialOrigin, Provider, ValidationMode, ValidationStatus
+    from polylogue.core.json import JSONDocument, JSONValue
     from polylogue.core.types import SessionId
-    from polylogue.storage.archive_views import SessionRenderProjection
     from polylogue.storage.query_models import SessionRecordQuery
     from polylogue.storage.runtime import (
         ArtifactObservationRecord,
@@ -343,11 +340,6 @@ class SessionOutputStore(Protocol):
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
     ) -> AsyncIterator[Message]: ...
-
-    async def get_render_projection(
-        self,
-        session_id: str,
-    ) -> SessionRenderProjection | None: ...
 
     async def get_session_stats(self, session_id: str) -> dict[str, int]: ...
 

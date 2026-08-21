@@ -12,8 +12,9 @@ does only the checkout boundary work that the plugin cannot do itself:
   SQLite online backup plus atomic rename.
 
 There are no seed markers, completion stamps, shard ledgers, or release grants.
-An absent main database is normal.  The next plain verify invocation builds
-the current environment by running the ordinary correctness corpus.
+An absent graph is reported to the caller.  Only an explicitly requested
+complete-corpus run may build a new environment; plain verification reuses a
+compatible graph or refuses before pytest starts.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S = 60.0
 _DESCRIPTOR_FD_ROOTS = (Path("/proc/self/fd"), Path("/dev/fd"))
 
 NativeStateStatus = Literal["absent", "valid", "invalid", "incomplete"]
-NativeSelectionMode = Literal["bootstrap", "affected"]
+NativeSelectionMode = Literal["all", "bootstrap", "affected"]
 ASTClassification = Literal["declaration-only", "executable", "source-unreadable"]
 
 _ENVIRONMENT_INPUTS = (
@@ -565,20 +566,27 @@ def _is_type_checking_guard(node: ast.expr) -> bool:
     )
 
 
+def _is_literal_all_assignment(node: ast.Assign) -> bool:
+    """Recognize an export declaration that coverage cannot fingerprint."""
+    if not all(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets):
+        return False
+    return isinstance(node.value, (ast.List, ast.Tuple)) and all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str) for element in node.value.elts
+    )
+
+
 def _body_is_executable(body: list[ast.stmt]) -> bool:
     for index, node in enumerate(body):
         if _is_docstring(node, first=index == 0):
             continue
         if isinstance(node, ast.Pass):
             continue
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "typing"
-            and all(alias.name == "TYPE_CHECKING" for alias in node.names)
-        ):
-            # Importing the sentinel only enables a declaration-only guard.
-            # Imports elsewhere execute at module import time and therefore
-            # remain executable graph inputs.
+        if isinstance(node, ast.ImportFrom) and node.module in {"typing", "collections.abc"}:
+            # Type vocabulary has no traceable behavior on its own. A module
+            # whose remaining body is declarations stays outside testmon's
+            # coverage graph, just like a pure enum declaration.
+            continue
+        if isinstance(node, ast.Import) and all(alias.name == "builtins" for alias in node.names):
             continue
         if (
             isinstance(node, ast.ImportFrom)
@@ -613,12 +621,14 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
                 return True
             continue
         if isinstance(node, ast.ClassDef):
-            if _is_pure_enum_declaration(node):
+            if _is_pure_enum_declaration(node) or _is_pure_protocol_declaration(node):
                 continue
             if node.decorator_list or node.bases or node.keywords or _body_is_executable(node.body):
                 return True
             continue
         if isinstance(node, ast.Assign):
+            if _is_literal_all_assignment(node):
+                continue
             return True
         if isinstance(node, ast.AnnAssign):
             if node.value is not None:
@@ -644,6 +654,17 @@ def _is_pure_enum_declaration(node: ast.ClassDef) -> bool:
             continue
         return False
     return True
+
+
+def _is_pure_protocol_declaration(node: ast.ClassDef) -> bool:
+    """Recognize runtime-checkable Protocol shapes that coverage cannot fingerprint."""
+    bases = {base.id for base in node.bases if isinstance(base, ast.Name)}
+    if "Protocol" not in bases:
+        return False
+    for decorator in node.decorator_list:
+        if not (isinstance(decorator, ast.Name) and decorator.id == "runtime_checkable"):
+            return False
+    return not _body_is_executable(node.body)
 
 
 def classify_source_ast(source_path: Path) -> ASTClassification:

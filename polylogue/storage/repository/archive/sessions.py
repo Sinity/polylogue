@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.storage.archive_views import SessionRenderProjection
 from polylogue.storage.hydrators import (
     message_from_record,
     session_from_records,
@@ -96,21 +95,6 @@ class RepositoryArchiveSessionMixin:
             att_records,
             session_event_records,
             tags=tags_by_id.get(resolved_session_id, ()),
-        )
-
-    async def get_render_projection(self, session_id: str) -> SessionRenderProjection | None:
-        conv_record = await self.queries.get_session(session_id)
-        if not conv_record:
-            return None
-
-        msg_records, att_records = await asyncio.gather(
-            self.queries.get_messages(session_id),
-            self.queries.get_attachments(session_id),
-        )
-        return SessionRenderProjection(
-            session=conv_record,
-            messages=msg_records,
-            attachments=att_records,
         )
 
     async def view(self, session_id: str) -> Session | None:

@@ -372,7 +372,7 @@ explicitly asks for that exact PR to change that exact issue's state. Use
 
 ### Verification and schema
 
-Use `devtools`, never bare `pytest`. It supplies the checkout guard, containment, receipts, and managed testmon state. `devtools test <node-or--k>` is the focused inner loop; do not run broad test directories. Plain `devtools verify` is the complete-corpus, testmon-attested gate and repairs/reuses native state itself. `devtools verify --quick` is the static fast gate and does not replace a terminal full verify. Use `devtools why` before reading receipts by hand.
+Use `devtools`, never bare `pytest`. It supplies the checkout guard, containment, and managed testmon state. `devtools test <node-or--k>` is the focused inner loop. Plain `devtools verify` reuses a compatible testmon graph and runs its selected tests; without a compatible graph it refuses rather than starting the whole corpus. `devtools verify --all` is the explicit complete-corpus route for intentional integration checkpoints. `devtools verify --quick` is the static fast gate. Use `devtools why` before reading receipts by hand.
 
 Batch changes before verification. Classify unrelated selected failures instead of claiming them fixed. Verify in the context that failed. Touching dependencies, `conftest.py`, `devtools/pytest*.py`, the interpreter, or collection environment changes the testmon digest, so batch those edits deliberately. Record disproved hypotheses on the relevant Bead.
 
@@ -581,9 +581,9 @@ Core loop:
   changing docs, CLI help, or schema. **Gotcha:** `render all --check` can print
   per-surface `sync OK` yet still exit 1 — grep the output for `out of sync`,
   don't trust the tail line.
-- `devtools verify [--quick|--lab]` — plain (no flag) is the complete-corpus
-  attested gate; see
-  [Verification](#verification--testmon-inner-loop-never-blanket-run).
+- `devtools verify [--quick|--lab|--all]` — plain verification runs testmon's
+  selected tests from a compatible graph; `--all` is the explicit complete-corpus
+  route. See [Verification](#verification--testmon-inner-loop-never-blanket-run).
 - `devtools test <sel>` — focused pytest through the managed harness. Forwards
   arbitrary pytest args and is faster than bare pytest; see Verification.
 - `devtools why [--run <id>]` — explain the most recent run: diagnosis, cause,

@@ -227,8 +227,6 @@ def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None)
     ui.console = MagicMock()
     ui.confirm = MagicMock(return_value=True)
     if repo is not None:
-        if not isinstance(repo.get_render_projection, AsyncMock):
-            repo.get_render_projection = AsyncMock(return_value=None)
         if not isinstance(repo.get_session_stats, AsyncMock):
             repo.get_session_stats = AsyncMock(return_value={})
         if not isinstance(repo.get_message_counts_batch, AsyncMock):
