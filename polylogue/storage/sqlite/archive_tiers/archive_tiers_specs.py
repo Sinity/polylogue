@@ -492,7 +492,7 @@ RAW_REVISION_HEADS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "accepted_frontier_kind",
-            f"""accepted_frontier_kind   TEXT NOT NULL CHECK ({literal_check("accepted_frontier_kind", "byte", "semantic")})""",
+            f"""accepted_frontier_kind   TEXT NOT NULL CHECK({literal_check("accepted_frontier_kind", "byte", "semantic")})""",
         ),
         _raw_column("accepted_frontier", """accepted_frontier        INTEGER NOT NULL CHECK(accepted_frontier >= 0)"""),
         _raw_column(
@@ -867,7 +867,7 @@ SESSION_LINKS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "inheritance",
-            f"""inheritance             TEXT CHECK ({literal_check("inheritance", "prefix-sharing", "spawned-fresh")} OR inheritance IS NULL)""",
+            f"""inheritance             TEXT CHECK({literal_check("inheritance", "prefix-sharing", "spawned-fresh")} OR inheritance IS NULL)""",
         ),
         _raw_column(
             "status",
@@ -1026,7 +1026,7 @@ SESSION_COMMITS_SPEC = _make_table_spec(
         _raw_column("repo_id", """repo_id         TEXT REFERENCES repos(repo_id) ON DELETE CASCADE"""),
         _raw_column(
             "detection_type",
-            f"""detection_type  TEXT NOT NULL CHECK ({literal_check("detection_type", "time_window", "file_overlap", "explicit_ref", "origin_reported")})""",
+            f"""detection_type  TEXT NOT NULL CHECK({literal_check("detection_type", "time_window", "file_overlap", "explicit_ref", "origin_reported")})""",
         ),
         _raw_column("method", """method          TEXT"""),
         _raw_column("confidence", """confidence      REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1)"""),
@@ -1055,7 +1055,7 @@ ATTACHMENTS_SPEC = _make_table_spec(
         _raw_column(
             "acquisition_status",
             f"""acquisition_status     TEXT NOT NULL DEFAULT 'unfetched'
-                               CHECK ({literal_check("acquisition_status", "acquired", "unavailable", "unfetched")})""",
+                               CHECK({literal_check("acquisition_status", "acquired", "unavailable", "unfetched")})""",
         ),
         _raw_column("ref_count", """ref_count              INTEGER NOT NULL DEFAULT 0 CHECK(ref_count >= 0)"""),
     ),
@@ -1081,7 +1081,7 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         _raw_column("position", """position               INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "upload_origin",
-            f"""upload_origin          TEXT CHECK ({literal_check("upload_origin", "drive", "paste", "url", "oauth")} OR upload_origin IS NULL)""",
+            f"""upload_origin          TEXT CHECK({literal_check("upload_origin", "drive", "paste", "url", "oauth")} OR upload_origin IS NULL)""",
         ),
         _raw_column("source_url", """source_url             TEXT"""),
         _raw_column("caption", """caption                TEXT"""),
@@ -1095,7 +1095,7 @@ ATTACHMENT_NATIVE_IDS_SPEC = _make_table_spec(
         _raw_column("ref_id", """ref_id     TEXT NOT NULL REFERENCES attachment_refs(ref_id) ON DELETE CASCADE"""),
         _raw_column(
             "id_kind",
-            f"""id_kind    TEXT NOT NULL CHECK ({literal_check("id_kind", "attachment", "file", "drive", "url")})""",
+            f"""id_kind    TEXT NOT NULL CHECK({literal_check("id_kind", "attachment", "file", "drive", "url")})""",
         ),
         _raw_column("native_id", """native_id  TEXT NOT NULL"""),
     ),
@@ -1155,7 +1155,7 @@ SESSION_MODEL_USAGE_SPEC = _make_table_spec(
         _raw_column("cost_credits", """cost_credits            REAL"""),
         _raw_column(
             "cost_provenance",
-            f"""cost_provenance         TEXT CHECK ({literal_check("cost_provenance", "origin_reported", "priced", "estimated")} OR cost_provenance IS NULL)""",
+            f"""cost_provenance         TEXT CHECK({literal_check("cost_provenance", "origin_reported", "priced", "estimated")} OR cost_provenance IS NULL)""",
         ),
     ),
     table_constraints=(
@@ -1199,7 +1199,7 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         _raw_column("position", """position                       INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "provider_event_type",
-            f"""provider_event_type            TEXT NOT NULL CHECK ({literal_check("provider_event_type", "token_count", "message_usage")})""",
+            f"""provider_event_type            TEXT NOT NULL CHECK({literal_check("provider_event_type", "token_count", "message_usage")})""",
         ),
         _raw_column("model_name", """model_name                     TEXT"""),
         _raw_column(
@@ -1260,7 +1260,7 @@ SESSION_TAGS_SPEC = _make_table_spec(
         _raw_column("session_id", """session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""),
         _raw_column("tag", """tag           TEXT NOT NULL"""),
         _raw_column(
-            "tag_source", f"""tag_source    TEXT NOT NULL CHECK ({literal_check("tag_source", "user", "auto")})"""
+            "tag_source", f"""tag_source    TEXT NOT NULL CHECK({literal_check("tag_source", "user", "auto")})"""
         ),
         _raw_column("method", """method        TEXT"""),
         _raw_column("confidence", """confidence    REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1)"""),
@@ -1274,7 +1274,9 @@ INSIGHT_MATERIALIZATION_SPEC = _make_table_spec(
     (
         _raw_column(
             "insight_type",
-            f"""insight_type                 TEXT NOT NULL CHECK ({literal_check("insight_type", "session_profile", "work_events", "phases", "latency", "thread", "runs", "observed_events", "context_snapshots", "provider_usage")})""",
+            """insight_type                 TEXT NOT NULL CHECK(insight_type IN (
+                                    'session_profile', 'work_events', 'phases', 'latency', 'thread',
+                                    'runs', 'observed_events', 'context_snapshots', 'provider_usage'))""",
         ),
         _raw_column(
             "session_id",
