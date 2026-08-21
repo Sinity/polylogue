@@ -15,14 +15,11 @@ version: 2.1
 #     suite's pre-merge gate remains local `devtools verify` (testmon), same
 #     as the repo's GitHub-era policy where the heavy suite ran post-merge
 #     only.
-#   - lab-policies (scheduled pipeline named "nightly"): the `lab policy *`
-#     checks that stay --lab-only because they scan the whole Beads/backlog
-#     corpus rather than the current diff (bead-graph) or
-#     are otherwise not cheap/deterministic enough for every push
-#     (timestamp-doctrine, insight-honesty). Runs nightly so a policy that fails
-#     continuously is at least visible somewhere, per polylogue-ze5i AC2,
-#     instead of only reachable via a human remembering `devtools verify
-#     --lab`.
+#   - policy-checks (scheduled pipeline named "nightly"): the policy checks
+#     that scan the whole Beads/backlog corpus rather than the current diff
+#     (bead-graph) or are otherwise not cheap/deterministic enough for every
+#     push (timestamp-doctrine, insight-honesty). Runs nightly so a policy that
+#     fails continuously is at least visible somewhere, per polylogue-ze5i AC2.
 #   - full-suite (scheduled pipeline named "nightly"): full coverage suite +
 #     dependency audit on a larger executor.
 #   - release-verify (v* tags): build artifacts and store them.
@@ -107,16 +104,16 @@ jobs:
       # diff, and that must not mask a genuine regression
       # in timestamp-doctrine/insight-honesty going unnoticed.
       - run:
-          name: lab policy timestamp-doctrine
-          command: ~/.local/bin/uv run devtools lab policy timestamp-doctrine
+          name: policy timestamp-doctrine
+          command: ~/.local/bin/uv run devtools verify timestamp-doctrine
           when: always
       - run:
-          name: lab policy insight-honesty
-          command: ~/.local/bin/uv run devtools lab policy insight-honesty
+          name: policy insight-honesty
+          command: ~/.local/bin/uv run devtools verify insight-honesty
           when: always
       - run:
-          name: lab policy bead-graph
-          command: ~/.local/bin/uv run devtools lab policy bead-graph --export .beads/issues.jsonl
+          name: policy bead-graph
+          command: ~/.local/bin/uv run devtools verify bead-graph --export .beads/issues.jsonl
           when: always
 
   full-suite:

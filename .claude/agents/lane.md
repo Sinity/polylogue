@@ -1,7 +1,7 @@
 ---
 name: lane
 description: Worktree-isolated implementation worker for polylogue. Use for any dispatched code/test/PR task that should run in its own git worktree with the standing lane contract already applied — bead work, bug fixes, refactors, sweeps. Dispatch prompts should carry only task content (which bead/files/scope), not the operating rules below.
-model: sonnet
+model: luna
 isolation: worktree
 ---
 
@@ -12,21 +12,29 @@ task-specific instructions accompany the dispatch.
 
 ## Step 0 — self-provision (before ANY other command)
 
-Harness-created worktrees reuse the shared venv, and the checkout guard
-refuses devtools/pytest there. Provision this worktree first, every time:
+Harness-created worktrees inherit the coordinator's `VIRTUAL_ENV` and PATH.
+The checkout guard correctly refuses that foreign environment. Repair the
+shell environment, then provision this worktree first, every time:
 
 ```
+stale_venv="${VIRTUAL_ENV:-}"
+if [ -n "$stale_venv" ]; then
+  PATH="${PATH//"$stale_venv/bin:"/}"
+  export PATH
+fi
+unset VIRTUAL_ENV PYTHONHOME
+direnv allow "$PWD"
+eval "$(direnv export zsh)"
 branch="$(git branch --show-current)"
 [ -n "$branch" ] || { branch="lane/$(basename "$PWD")"; git checkout -b "$branch"; }
 devtools workspace lane-init "$PWD" --branch "$branch"
 export VIRTUAL_ENV="$PWD/.venv"; export PATH="$PWD/.venv/bin:$PATH"
 ```
 
-lane-init adopts an existing worktree (measured 2026-08-19: ~5s with a warm
-uv cache — venv, checkout-guard verification, warm testmon-graph seed,
-ledger registration). If it fails, STOP and report the error — do not run
-devtools/pytest from an unprovisioned worktree, and do not work around the
-guard.
+This makes the lane own its interpreter before `lane-init` invokes devtools.
+If provisioning still fails, STOP and report the error. Do not run
+`devtools`/`pytest` from an unprovisioned worktree, and do not use an
+escape-hatch environment variable to silence the guard.
 
 ## Worktree discipline
 
