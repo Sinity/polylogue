@@ -12,28 +12,19 @@ task-specific instructions accompany the dispatch.
 
 ## Step 0 — self-provision (before ANY other command)
 
-Harness-created worktrees inherit the coordinator's `VIRTUAL_ENV` and PATH.
-The checkout guard correctly refuses that foreign environment. Repair the
-shell environment, then provision this worktree first, every time:
+`devtools workspace lane-init` is the automatic environment bootstrap. It
+accepts the harness's inherited environment only for this exact command, then
+provisions and proves the worktree-local interpreter before any ordinary
+command can run. Invoke it first, every time:
 
 ```
-stale_venv="${VIRTUAL_ENV:-}"
-if [ -n "$stale_venv" ]; then
-  PATH="${PATH//"$stale_venv/bin:"/}"
-  export PATH
-fi
-unset VIRTUAL_ENV PYTHONHOME
-direnv allow "$PWD"
-eval "$(direnv export zsh)"
 branch="$(git branch --show-current)"
 [ -n "$branch" ] || { branch="lane/$(basename "$PWD")"; git checkout -b "$branch"; }
 devtools workspace lane-init "$PWD" --branch "$branch"
-export VIRTUAL_ENV="$PWD/.venv"; export PATH="$PWD/.venv/bin:$PATH"
 ```
 
-This makes the lane own its interpreter before `lane-init` invokes devtools.
-If provisioning still fails, STOP and report the error. Do not run
-`devtools`/`pytest` from an unprovisioned worktree, and do not use an
+If provisioning fails, STOP and report the error. Do not repair shell state by
+hand, run `devtools`/`pytest` from an unprovisioned worktree, or use an
 escape-hatch environment variable to silence the guard.
 
 ## Worktree discipline
