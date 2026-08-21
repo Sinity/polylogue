@@ -166,6 +166,36 @@ def test_v2_rendered_carrier_stays_valid_when_the_head_changes(
     assert _validate_rendered_without_mutation_scope(rendered, beads_path, head_sha="b" * 40).ok
 
 
+def test_build_carrier_forwards_the_base_used_for_a_carrier_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+    beads_path: Path,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def validate(*_args: object, **kwargs: object) -> pr_scope.ScopeVerdict:
+        observed.update(kwargs)
+        return pr_scope.ScopeVerdict(ok=True)
+
+    monkeypatch.setattr(pr_scope, "validate_carrier", validate)
+    base_sha = "b" * 40
+    pr_scope.build_carrier(
+        {
+            "scope_kind": "carrier_disposition",
+            "source_pr": 4040,
+            "execution_id": "a" * 64,
+            "assigned_beads": [ASSIGNED],
+            "mutated_beads": [ASSIGNED],
+            "dispositions": _v2_input()["dispositions"],
+        },
+        head_sha=HEAD_SHA,
+        beads_path=beads_path,
+        base_sha=base_sha,
+        repository="Sinity/polylogue",
+    )
+
+    assert observed["base_sha"] == base_sha
+
+
 def test_v2_self_contained_scope_needs_no_invented_bead(
     beads_path: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

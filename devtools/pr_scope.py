@@ -897,6 +897,7 @@ def build_carrier(
     override the derivation.
     """
     carrier = dict(input_payload)
+    resolved_base = base_sha
     if "mutated_beads" not in input_payload:
         resolved_base = base_sha or _default_base_sha()
         if resolved_base is not None:
@@ -928,6 +929,7 @@ def build_carrier(
         head_sha=head_sha,
         is_draft=False,
         beads_path=beads_path,
+        base_sha=(resolved_base if carrier.get("scope_kind") == ScopeKind.CARRIER_DISPOSITION else None),
         repository=repository,
     )
     if not verdict.ok:

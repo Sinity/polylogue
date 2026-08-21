@@ -1,0 +1,73 @@
+{
+  "changed_beads": [
+    "polylogue-1tsco",
+    "polylogue-inygw",
+    "polylogue-ohkfy",
+    "polylogue-reindex-registry-two-plane-subset"
+  ],
+  "dispositions": [
+    {
+      "bead_id": "polylogue-ohkfy",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "test",
+          "ref": "devtools test tests/unit/devtools/test_verify_bead_graph.py"
+        },
+        {
+          "kind": "command",
+          "ref": "devtools lab policy bead-graph --export .beads/issues.jsonl --forcing-root polylogue-818fy --json"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-1tsco",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "test",
+          "ref": "devtools test tests/unit/devtools/test_verify_bead_graph.py"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-reindex-registry-two-plane-subset",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "test",
+          "ref": "devtools test tests/unit/maintenance/test_archive_verification.py"
+        },
+        {
+          "kind": "command",
+          "ref": "devtools lab policy bead-graph --export .beads/issues.jsonl --json"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-inygw",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "test",
+          "ref": "devtools test tests/unit/devtools/test_pr_scope.py"
+        },
+        {
+          "kind": "diff",
+          "ref": ".circleci/config.yml"
+        }
+      ],
+      "successors": []
+    }
+  ],
+  "execution_id": "ab3afc0da71eec8405f2ab3024b7c8cc901885c5d989368f2dab2009dcb261af",
+  "head_sha": "f9c346f248486e4f7b1a95275e47a19dd6ab9813",
+  "marker": "carrier-disposition:v1:pr=4040:merge=31d09d5fe3f2082c675e1b91733d79b430f1b3fd:execution=ab3afc0da71eec8405f2ab3024b7c8cc901885c5d989368f2dab2009dcb261af",
+  "merge_sha": "31d09d5fe3f2082c675e1b91733d79b430f1b3fd",
+  "pr": 4040,
+  "scope_attestation_digest": "de5f2e0cfb44f41ab8d4cb884247c6922d682ceefa3c77556dc53b641c309b50",
+  "version": 1
+}
