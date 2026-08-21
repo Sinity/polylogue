@@ -438,6 +438,10 @@ def _execution_id(*, pr: int, head_sha: str, merge_sha: str, attestation: str) -
     return hashlib.sha256(f"v1\0{pr}\0{head_sha}\0{merge_sha}\0{attestation}".encode()).hexdigest()
 
 
+def _execution_marker(*, pr: int, merge_sha: str, execution_id: str) -> str:
+    return f"carrier-disposition:v1:pr={pr}:merge={merge_sha}:execution={execution_id}"
+
+
 def _receipt_at(*, execution_id: str, head_sha: str | None, beads_path: Path) -> dict[str, Any]:
     path = beads_path.parent / "disposition-receipts" / f"{execution_id}.json"
     if head_sha is None:
@@ -528,7 +532,7 @@ def _validate_carrier_disposition_receipt(
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         reasons.append(f"cannot resolve carrier disposition receipt: {exc}")
         return source_pr, execution_id
-    expected_keys = {
+    legacy_keys = {
         "version",
         "execution_id",
         "pr",
@@ -539,7 +543,15 @@ def _validate_carrier_disposition_receipt(
         "dispositions",
         "changed_beads",
     }
-    if set(receipt) != expected_keys or receipt.get("version") != 1:
+    receipt_version = receipt.get("version")
+    if set(receipt) == legacy_keys and receipt_version == 1:
+        receipt_base = None
+    elif set(receipt) == legacy_keys | {"base_sha"} and receipt_version == 2:
+        receipt_base = receipt.get("base_sha")
+        if not isinstance(receipt_base, str) or _GIT_OBJECT_PATTERN.fullmatch(receipt_base) is None:
+            reasons.append("carrier disposition receipt has malformed attested base")
+            return source_pr, execution_id
+    else:
         reasons.append("carrier disposition receipt has an unsupported shape or version")
         return source_pr, execution_id
     if receipt.get("execution_id") != execution_id or receipt.get("pr") != source_pr:
@@ -562,12 +574,12 @@ def _validate_carrier_disposition_receipt(
         return source_pr, execution_id
     if execution_id != _execution_id(pr=source_pr, head_sha=receipt_head, merge_sha=merge_sha, attestation=attestation):
         reasons.append("carrier disposition receipt execution_id does not match its identity")
+    if marker != _execution_marker(pr=source_pr, merge_sha=merge_sha, execution_id=execution_id):
+        reasons.append("carrier disposition receipt marker does not match its canonical execution identity")
     changed = receipt.get("changed_beads")
-    if (
-        not isinstance(changed, list)
-        or sorted(changed) != sorted(mutated_ids)
-        or not all(isinstance(item, str) for item in changed)
-    ):
+    if not isinstance(changed, list) or not all(isinstance(item, str) for item in changed):
+        reasons.append("carrier disposition receipt changed_beads must be a list of Bead IDs")
+    elif sorted(changed) != sorted(mutated_ids):
         reasons.append("carrier disposition receipt changed_beads does not match mutated_beads")
     if receipt.get("dispositions") != _disposition_payload(dispositions):
         reasons.append("carrier disposition receipt dispositions do not match the carrier")
@@ -592,7 +604,7 @@ def _validate_carrier_disposition_receipt(
         if source.head_sha != receipt_head or source.merge_sha != merge_sha:
             reasons.append("carrier disposition receipt does not match the merged source PR")
             return source_pr, execution_id
-        source_base = _single_parent_squash_base(merge_sha)
+        source_base = receipt_base or _single_parent_squash_base(merge_sha)
         source_scope = validate_pr_body(
             source.body,
             head_sha=source.head_sha,
