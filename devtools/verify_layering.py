@@ -32,7 +32,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 _DEFAULT_WRITER_MODULE_MARKER = "Writer module:"
 _TWIN_WRITE_CONTRACT_MARKER = "Twin-write contract:"
 _WRITER_TIER_RE = re.compile(r"[a-z][a-z0-9_-]*")
-_SQL_MUTATION_RE = re.compile(r"(?:^|\n)\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b", re.IGNORECASE)
+_SQL_MUTATION_RE = re.compile(r"(?:^|\n)\s*(?:INSERT|UPDATE|DELETE|REPLACE\s+INTO)\b", re.IGNORECASE)
 _SQL_MUTATION_TABLE_RE = re.compile(
     r"^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+[`\"\[]?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,

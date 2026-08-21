@@ -7,6 +7,7 @@ These tests verify that:
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 from pathlib import Path
@@ -308,3 +309,28 @@ def test_layering_main_fails_closed_on_missing_package_docstring(
 
     assert verify_layering.main([]) == 1
     assert "polylogue/example/__init__.py: package_docstring_missing" in capsys.readouterr().out
+
+
+def test_mutation_scanner_distinguishes_replace_projection_from_replace_into() -> None:
+    tree = ast.parse(
+        '''
+
+def read_projection(conn):
+    conn.execute("""
+        SELECT
+            REPLACE(path, '/', '') AS normalized_path
+        FROM files
+    """)
+
+
+def write_row(conn):
+    conn.execute("""
+        REPLACE INTO files(path) VALUES (?)
+    """)
+'''
+    )
+
+    calls = verify_layering._mutation_calls(tree)
+
+    assert len(calls) == 1
+    assert verify_layering._mutation_table(verify_layering._mutation_sql(calls[0], values={}) or "") == "files"
