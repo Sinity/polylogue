@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
@@ -10,7 +11,13 @@ from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import (
     MESSAGES_SPEC,
     TABLE_SPECS,
 )
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
 
 class TestColumnSpecReordering:
@@ -116,3 +123,23 @@ class TestColumnSpecReordering:
 
         for spec in TABLE_SPECS.values():
             assert spec.ddl_body in index_ddl
+
+    def test_archive_ddl_mapping_exposes_each_tier_script(self) -> None:
+        """The public archive DDL map must preserve every tier's fresh-create script."""
+        assert ARCHIVE_DDL_BY_TIER == {
+            ArchiveTier.AUDIT: AUDIT_DDL,
+            ArchiveTier.EMBEDDINGS: EMBEDDINGS_DDL,
+            ArchiveTier.INDEX: INDEX_DDL,
+            ArchiveTier.OPS: OPS_DDL,
+            ArchiveTier.SOURCE: SOURCE_DDL,
+            ArchiveTier.USER: USER_DDL,
+        }
+
+    def test_non_vector_tier_scripts_create_their_schema(self) -> None:
+        """Fresh archive tiers must execute the scripts exported through the public map."""
+        for tier in (ArchiveTier.AUDIT, ArchiveTier.INDEX, ArchiveTier.OPS, ArchiveTier.SOURCE, ArchiveTier.USER):
+            with sqlite3.connect(":memory:") as connection:
+                connection.executescript(ARCHIVE_DDL_BY_TIER[tier])
+                tables = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+
+            assert tables, tier
