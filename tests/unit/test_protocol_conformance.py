@@ -37,13 +37,11 @@ class TestVectorProviderConformance:
 
     def test_isinstance(self, tmp_path: Path) -> None:
         """isinstance() is a structural check — sqlite-vec extension not required."""
-        from importlib import import_module, reload
-
+        from polylogue.core.protocols import VectorProvider
         from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 
-        protocols = reload(import_module("polylogue.core.protocols"))
         provider = SqliteVecProvider(voyage_key="dummy", db_path=tmp_path / "vec.db")
-        assert isinstance(provider, protocols.VectorProvider)
+        assert isinstance(provider, VectorProvider)
 
     def test_extension_loadable(self, tmp_path: Path) -> None:
         """sqlite-vec extension must load — skip only if package is absent, fail if it can't load."""

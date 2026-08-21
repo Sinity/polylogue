@@ -88,6 +88,27 @@ def test_pure_enum_contracts_are_non_traceable_runtime_inputs(tmp_path: Path) ->
     assert impact.runtime_data_paths == ("devtools/verification_contracts.py",)
 
 
+def test_runtime_protocol_contracts_are_non_traceable_runtime_inputs(tmp_path: Path) -> None:
+    module = tmp_path / "polylogue" / "core" / "protocols.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING, Protocol, runtime_checkable\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from polylogue.storage.models import Record\n\n"
+        "@runtime_checkable\n"
+        "class RecordStore(Protocol):\n"
+        "    async def get(self, record_id: str) -> Record | None: ...\n",
+        encoding="utf-8",
+    )
+
+    assert classify_source_ast(module) == "declaration-only"
+    impact = classify_native_testmon_changes(tmp_path, ("polylogue/core/protocols.py",))
+
+    assert impact.executable_paths == ()
+    assert impact.runtime_data_paths == ("polylogue/core/protocols.py",)
+
+
 def test_executable_paths_require_current_runtime_modules_not_deleted_ones(tmp_path: Path) -> None:
     module = tmp_path / "polylogue" / "runtime.py"
     module.parent.mkdir()

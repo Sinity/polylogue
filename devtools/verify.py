@@ -2608,19 +2608,14 @@ def _native_pytest_steps(
     pytest_cmd.extend(_PYTEST_CLOSED_WORLD_COLLECTION_ARGS)
     native_args = ["--testmon", f"--testmon-env={testmon_environment}"]
     if testmon_mode in ("affected", "full"):
-        # "full" (--all) used to re-execute every test unconditionally, which
-        # made every terminal validation a from-scratch ~45-minute run even
-        # when a green recording of the identical content existed minutes
-        # earlier (2026-08-18: a cap-killed 93%-complete run was followed by
-        # two complete reruns of the same bytes). forceselect executes what
-        # changed or was never recorded; a recorded test testmon deselects is
-        # BY MECHANISM one whose recorded deps all match and whose last
-        # outcome was green (failures are always reselected) -- the same
-        # soundness premise every affected-gated merge already trusts. A
-        # digest change (deps, harness, profile) voids the recording and
-        # falls back to executing everything, unchanged.
+        # "full" runs changed or unrecorded tests and attests unchanged green
+        # recordings. A digest change (dependencies, harness, or profile)
+        # voids that recording and bootstraps the corpus.
         native_args.append("--testmon-forceselect")
     else:
+        # ``all`` deliberately bypasses selection while retaining testmon's
+        # dependency recording. It is the explicit complete-corpus route for
+        # untraceable runtime inputs and diagnostic certification.
         native_args.append("--testmon-noselect")
 
     parallel_cmd = [
@@ -2657,7 +2652,7 @@ def _native_pytest_steps(
 
 def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
     """Accept only a command produced by the managed native-lane builder."""
-    match = re.fullmatch(r"pytest native (parallel|serial) \((bootstrap|full)\)", label)
+    match = re.fullmatch(r"pytest native (parallel|serial) \((all|bootstrap|full)\)", label)
     if match is None:
         return False
     environment_args = [arg for arg in cmd if arg.startswith("--testmon-env=")]
@@ -2743,7 +2738,7 @@ def build_verify_steps(
         _report_dir = PYTEST_JUNIT_REPORT_DIR
         _report_dir.mkdir(parents=True, exist_ok=True)
         PYTEST_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        if testmon_mode not in {"affected", "bootstrap", "full"}:
+        if testmon_mode not in {"affected", "all", "bootstrap", "full"}:
             raise ValueError(f"unknown native testmon mode: {testmon_mode}")
         if not testmon_environment:
             raise ValueError("native testmon environment is required for pytest verification")
@@ -3084,7 +3079,7 @@ def _release_baseline_allowed(
     checkout_stable: bool,
     aggregate: Mapping[str, Any] | None,
 ) -> bool:
-    if selection_mode not in {"bootstrap", "full"} or exit_code != 0 or not checkout_stable or aggregate is None:
+    if selection_mode not in {"all", "bootstrap", "full"} or exit_code != 0 or not checkout_stable or aggregate is None:
         return False
     if verification_scope != VerificationScope.RELEASE_BASELINE:
         return False
@@ -3195,6 +3190,13 @@ def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the local verification baseline.")
     parser.add_argument("--quick", action="store_true", help="Skip pytest and run only fast local gates.")
     parser.add_argument("--commit", action="store_true", help="Pre-commit tier: format + lint + mypy only.")
+    parser.add_argument(
+        "--all",
+        "--full",
+        dest="all_tests",
+        action="store_true",
+        help="Execute the complete native pytest corpus without testmon selection.",
+    )
     parser.add_argument(
         "--lab",
         action="store_true",
@@ -3406,7 +3408,11 @@ def _main(argv: list[str] | None = None) -> int:
         # changed-dep, never-recorded, and previously-failing tests, and
         # attests the rest from their unchanged recorded greens. "bootstrap"
         # (no sound graph for this environment digest) executes everything.
-        testmon_mode = "full" if preparation.selection_mode == "affected" else preparation.selection_mode
+        testmon_mode = (
+            "all"
+            if args.all_tests
+            else ("full" if preparation.selection_mode == "affected" else preparation.selection_mode)
+        )
         # Record the cause, not just the outcome. A bootstrap is ~9.5x a warm
         # run; which of the two triggers fired decides whether better selection
         # could have avoided it, and the receipt previously said neither.
@@ -3689,7 +3695,7 @@ def _main(argv: list[str] | None = None) -> int:
             attestation_sound=attestation_sound,
         )
         if (
-            testmon_mode in ("full", "bootstrap")
+            testmon_mode in ("all", "full", "bootstrap")
             and pytest_aggregate.get("complete_corpus_covered") is True
             and native_environment is not None
         ):

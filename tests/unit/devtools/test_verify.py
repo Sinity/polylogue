@@ -123,9 +123,13 @@ def test_quick_verify_omits_pytest() -> None:
 
 @pytest.mark.parametrize(
     ("mode", "selection_flag"),
-    # "full" selects incrementally since the 2026-08-18 overhaul: recorded
-    # unchanged-green tests are attested coverage, not re-execution fodder.
-    [("bootstrap", "--testmon-noselect"), ("full", "--testmon-forceselect")],
+    # "full" selects incrementally since the 2026-08-18 overhaul. "all"
+    # deliberately re-executes the corpus for untraceable runtime inputs.
+    [
+        ("all", "--testmon-noselect"),
+        ("bootstrap", "--testmon-noselect"),
+        ("full", "--testmon-forceselect"),
+    ],
 )
 def test_native_testmon_uses_exactly_two_semantic_lanes(
     monkeypatch: pytest.MonkeyPatch,
@@ -171,7 +175,7 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
         assert "--override-ini=norecursedirs=" in command
 
 
-@pytest.mark.parametrize("mode", ["bootstrap", "full"])
+@pytest.mark.parametrize("mode", ["all", "bootstrap", "full"])
 def test_native_lane_command_contract_rejects_unowned_selectors(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
@@ -3256,7 +3260,7 @@ def test_run_propagates_pytest_addopts_basetemp_to_resource_policy(
     assert captured["POLYLOGUE_PYTEST_EXPLICIT_BASETEMP"] == str(explicit)
 
 
-@pytest.mark.parametrize("mode", ["bootstrap", "full"])
+@pytest.mark.parametrize("mode", ["all", "bootstrap", "full"])
 def test_managed_native_lane_removes_environment_addopts_before_pytest(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
