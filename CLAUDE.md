@@ -378,78 +378,15 @@ Batch changes before verification. Classify unrelated selected failures instead 
 
 Classify every schema change first: durable tier means additive numbered migration plus verified backup manifest; derived tier means canonical DDL plus declared lifecycle delta. Semantic parser changes require `polylogue ops maintenance rebuild-index`; do not add an ad hoc third upgrade path.
 
-### Multi-lane / merge-train tooling — use these, don't reinvent the discipline by hand
+### Parallel lane workflow
 
-Discoverable-only tooling is inert tooling: a command that exists but isn't
-named here is invisible to the next session unless it happens to remember it
-from transcript, so it doesn't get used and the failure mode it exists to
-prevent recurs. These four are load-bearing steps in the fanout/merge-train
-workflow, not optional conveniences — use them at the point named, every time:
+Use tools to eliminate repeated manual steps, not to prove a local ceremony happened. The normal delivery unit is one coherent integration branch, not one PR per implementation lane.
 
-- **When provisioning any lane worktree (spawn time, before dispatch)**:
-  `devtools workspace lane-init <path> --branch <branch> [--beads ids]` —
-  creates worktree+branch, provisions the lane's OWN venv (`uv sync --extra
-  dev`; this expands to the documented `dev-common` + `speed` dependency set;
-  a shared-venv worktree cannot run devtools/pytest at all), guard-verifies
-  imports resolve inside the lane, runs verify-worktree, registers the lane in
-  `.cache/fanout/lanes.jsonl`,
-  and prints the per-lane `POLYLOGUE_PYTEST_WORKERS` budget for the planned
-  concurrency. At 16 lanes this is the difference between lanes that verify
-  and lanes that idle on guard refusals.
-- **Before claiming a batch of ready beads**: `devtools workspace bead-cluster`
-  — footprint/overlap/contention clustering so overlapping-file beads land on
-  one branch instead of colliding across parallel lanes.
-- **When dispatching a worktree-isolated lane**: give the worker the current
-  Bead acceptance criteria, verified file ownership, relevant prior commits,
-  concrete non-goals, and exact verification commands directly. Do not insert
-  a generated Markdown packet between the current evidence and the worker.
-- **Before opening a non-draft PR for a Bead lane**: render the versioned
-  carrier with `devtools workspace pr-scope render --input <scope.json>`, put
-  it in the PR body beside the human whole-Bead disposition matrix, then run
-  `devtools workspace pr-scope check --pr <PR>`. The v2 carrier is stable PR
-  intent: scope kind, assigned and mutated Beads, typed dispositions, evidence
-  refs, and open successors for residual work. It never parses acceptance
-  prose. `devtools workspace pr-scope sync --pr <PR>` reports the current
-  head-bound attestation, including canonical Bead state, without editing the
-  PR body after every commit. `mutated_beads` must name every Bead record this
-  PR changes. A self-contained PR uses the typed `self_contained` scope with
-  empty Bead lists.
-  CircleCI uses `pr-scope check-ci`, resolves PR metadata through public GitHub
-  REST when `CIRCLE_PULL_REQUEST` is absent, and executes the validator from
-  the PR base revision so candidate code cannot weaken validation once that job
-  runs. This is advisory defense-in-depth, not a protected merge authority:
-  this user-owned repository has no required-workflow ruleset, and PR-controlled
-  CI configuration can omit the job. The local merge wrapper is likewise an
-  operational convention, not a security boundary. Do not describe either
-  path as unspoofable or repository-enforced.
-- **Immediately after spawning a worktree-isolated lane, not after it reports
-  back**: `devtools workspace verify-worktree <path> --expect-branch
-  <branch>` — confirms the worktree is real and isolated before the lane has
-  had a chance to run anything. Waiting until the lane reports is too late:
-  the 2026-08-01 incident this check exists for was a silent worktree-escape
-  where ~1700 lines of half-finished output had already landed directly in
-  the coordinator's live tree by the time the lane reported back.
-- **To squash-merge any PR**: use `devtools workspace merge <PR>` instead of
-  a bare `gh pr merge --squash` — it wraps `merge-gate record`/`check` at the
-  actual merge boundary instead of leaving them a step a coordinator must
-  remember. It validates the current non-draft PR's structured scope carrier,
-  then auto-records a receipt if none is fresh for the current head
-  sha (running `--command`, default `devtools verify`), BLOCKs the merge on
-  any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
-  exit, a changed head-bound scope attestation, an unresolved GitHub review thread, or a changes-requested review), strips a
-  doubled `(#N) (#N)` squash-subject suffix, then runs the actual
-  `gh pr merge --squash`, then records the exact-head scope attestation in the merge ledger. Carrier dispositions are whole-Bead scope declarations, not Beads lifecycle commands: this wrapper never invokes `bd`, mutates Dolt, exports `.beads/issues.jsonl`, or pushes `master`. After a merged PR, run `devtools workspace carrier-dispositions <PR> --base-export <follow-on>/.beads/issues.jsonl --output <follow-on>/.beads/issues.jsonl`: it validates the merged PR/head/attestation and live successor/registry state, applies one guarded `bd batch`, and writes a scoped export plus receipt for a normal follow-on PR. The follow-on uses the typed `carrier_disposition` scope, which binds its changed Beads and copied dispositions to the committed receipt and revalidates the source PR's exact merged carrier. An unledgered external merge may use the explicit `carrier-dispositions recover <PR>` form. It validates the immutable head against the squash parent, records distinct post-merge recovery provenance, and does not retroactively claim pre-merge gate admission. A terminal verify failure does not erase the post-merge ledger reconciliation. `--dry-run` runs every check without merging;
-  `--with-verify` immediately runs and records the merge-train's terminal
-  verify after merging. `devtools workspace merge train-status`
-  reports (exit 1) any PRs merged since the last recorded terminal verify.
-  The terminal step records itself: any plain `devtools verify` that earns
-  release-baseline authority at origin/master writes the ledger entry — no
-  separate record command exists. The lower-level
-  `devtools workspace merge-gate record/check` commands still exist for
-  ad hoc receipt inspection, but the merge action itself should go through
-  `workspace merge`.
-If you build a new tool in this family, add it here in the same sentence —
-a tool without a line in this file is a tool the next session won't use.
+- **Lane bootstrap:** a harness-created lane runs `python -m devtools workspace lane-init "$PWD"` first. The command derives an existing lane branch, provisions and guard-verifies its local venv, and verifies Git isolation. Later `devtools` commands route through that local interpreter automatically. Do not export or repair interpreter variables by hand.
+- **Lane work:** give each lane concrete ownership and focused verification. A lane commits each completed logical chunk and reports its commit plus focused test result. It does not open an individual PR, render a carrier, or run a merge-gate receipt ritual unless it owns an explicitly assigned batch branch.
+- **Integration:** assimilate disjoint lane commits into the current batch branch. Resolve only actual Git, generated-surface, schema-slot, or test-environment conflicts. Use `devtools workspace bead-cluster` as advisory planning, then check actual changed paths before integration. Do not serialize independent implementation behind a coordinator PR queue.
+- **Verification:** lanes run exact focused `devtools test` selectors. Plain `devtools verify` runs the compatible selected testmon set or refuses; it never promotes an unavailable graph into a complete corpus. `devtools verify --all` is an explicit end-of-wave or operator-directed checkpoint.
+- **Publication:** open one PR for a coherent batch. Keep merge automation only where it removes real manual mistakes; do not make receipts, carrier updates, or a complete corpus a per-lane admission requirement. The lane runtime and merge surface are being reduced toward derived Git/job state and batch integration.
 
 ### Coordinator dispatch: no poll loops
 

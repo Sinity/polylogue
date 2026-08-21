@@ -425,19 +425,18 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "workspace lane-init",
         "workspace",
-        "Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record.",
+        "Provision a lane worktree with an isolated, guard-verified interpreter.",
         "devtools.lane_init",
         use_when=(
-            "Before dispatching a lane in a high-concurrency fanout: creates the worktree/branch "
-            "if missing, provisions its OWN venv via uv sync (a shared-venv worktree cannot run "
-            "devtools/pytest -- checkout guard), proves import polylogue resolves inside the lane, "
-            "runs verify-worktree, appends the lane to .cache/fanout/lanes.jsonl (resumable fanout "
-            "state, polylogue-in94), and prints the per-lane POLYLOGUE_PYTEST_WORKERS budget for "
-            "the planned concurrency."
+            "Before a lane runs repository tooling: creates the worktree/branch if missing, provisions "
+            "its own venv via uv sync, proves import polylogue resolves inside the lane, and runs "
+            "verify-worktree. Existing lanes derive their checked-out branch automatically. Selected "
+            "verification owns shared testmon graph reuse; devtools routes later lane commands through "
+            "the local interpreter without shell exports."
         ),
         examples=(
-            "devtools workspace lane-init /realm/worktrees/lane-cursors --branch feature/sources/cursor-catchup --beads polylogue-2qrx,polylogue-ix5r",
-            "devtools workspace lane-init /realm/worktrees/lane-x --branch feature/x --expected-lanes 16 --json",
+            'python -m devtools workspace lane-init "$PWD"',
+            "devtools workspace lane-init /realm/worktrees/lane-cursors --branch feature/sources/cursor-catchup",
         ),
     ),
     CommandSpec(

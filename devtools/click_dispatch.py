@@ -10,13 +10,19 @@ Generates Click commands from the CommandSpec catalog and preserves:
 from __future__ import annotations
 
 import json as json_mod
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import click
 
-from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.checkout_guard import (
+    CheckoutImportMismatchError,
+    assert_polylogue_matches_checkout,
+    find_git_worktree_root,
+)
 from devtools.command_catalog import (
     COMMAND_SPECS,
     CommandSpec,
@@ -270,10 +276,47 @@ def _is_lane_init_bootstrap(argv: list[str]) -> bool:
     return normalized[:2] == ["workspace", "lane-init"]
 
 
+def _run_from_invoking_lane(argv: list[str]) -> int | None:
+    """Re-exec from an invoking lane's source and interpreter when possible.
+
+    Console scripts installed in the coordinator's editable venv resolve their
+    own modules from that coordinator. A linked worktree is the authority for
+    its source and, after bootstrap, its interpreter. Detecting that boundary
+    here removes the exported-VIRTUAL_ENV ritual from every worker command.
+    """
+    worktree = find_git_worktree_root(Path.cwd())
+    if worktree is None:
+        return None
+    lane_python = worktree / ".venv" / "bin" / "python"
+    if lane_python.is_file() and Path(sys.executable).absolute() != lane_python.absolute():
+        from devtools.lane_init import lane_command_env
+
+        return subprocess.run(
+            [str(lane_python), "-m", "devtools", *argv],
+            cwd=worktree,
+            env=lane_command_env(worktree),
+            check=False,
+        ).returncode
+    if worktree != _REPO_ROOT and _is_lane_init_bootstrap(argv):
+        # No lane interpreter exists yet. Re-enter with ``-m`` from the
+        # worktree so module resolution uses its source before the bootstrap
+        # provenance check allows the one exception to the ordinary guard.
+        return subprocess.run(
+            [sys.executable, "-m", "devtools", *argv],
+            cwd=worktree,
+            env=os.environ.copy(),
+            check=False,
+        ).returncode
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for programmatic use of the Click-based devtools CLI."""
 
     command_argv = list(argv or [])
+    lane_exit_code = _run_from_invoking_lane(command_argv)
+    if lane_exit_code is not None:
+        return lane_exit_code
     if not _is_lane_init_bootstrap(command_argv):
         try:
             assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")

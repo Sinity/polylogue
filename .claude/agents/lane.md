@@ -13,14 +13,13 @@ task-specific instructions accompany the dispatch.
 ## Step 0 — self-provision (before ANY other command)
 
 `devtools workspace lane-init` is the automatic environment bootstrap. It
-accepts the harness's inherited environment only for this exact command, then
-provisions and proves the worktree-local interpreter before any ordinary
-command can run. Invoke it first, every time:
+accepts the harness's inherited environment only for this exact command,
+derives the already-checked-out lane branch, then provisions and proves the
+worktree-local interpreter before any ordinary command can run. Invoke it
+first, every time:
 
 ```
-branch="$(git branch --show-current)"
-[ -n "$branch" ] || { branch="lane/$(basename "$PWD")"; git checkout -b "$branch"; }
-devtools workspace lane-init "$PWD" --branch "$branch"
+python -m devtools workspace lane-init "$PWD"
 ```
 
 If provisioning fails, STOP and report the error. Do not repair shell state by
@@ -115,54 +114,11 @@ by construction.
   testmon, in a file you never touched), say so explicitly rather than
   silently working around it or claiming it as fixed.
 
-## PR shape
+## Delivery
 
-Open a PR (branch off `master`, conventional commit-style subject,
-`feature/<category>/<desc>` branch name) with a body containing:
-
-- **Summary** — one paragraph.
-- **Problem** — what evidence/observation motivated this (not "was asked").
-- **Solution** — modules touched, non-obvious decisions, alternatives
-  rejected if there was a real fork.
-- **Verification** — the exact commands you ran and the output line that
-  matters, not "tests pass".
-- **Bead disposition matrix** — one whole-Bead disposition per assigned ID,
-  typed evidence refs, and an existing open successor for every residual
-  outcome.
-
-Before publishing the PR as non-draft, render the versioned embedded carrier
-with `devtools workspace pr-scope render --input <scope.json>`, put that exact
-comment beside the human matrix, and validate the published PR with
-`devtools workspace pr-scope check --pr <N>`. Never infer a disposition from
-Bead acceptance prose or invent a successor ID. The v2 body is stable intent;
-use `devtools workspace pr-scope sync --pr <N>` to inspect the current
-head-bound attestation rather than rewriting the body after every commit.
-
-Reference any bead with neutral wording only (`Ref polylogue-xxxx` /
-`Ref #N`). **Never use GitHub resolver keywords** (closes/fixes/resolves)
-next to an issue number unless the dispatch prompt explicitly told you to
-close that exact issue from this exact PR.
-
-**Never merge the PR.** Leave it open for the coordinator to review and
-merge. Do not self-merge even if checks are green.
-
-## Record your own merge-gate receipt
-
-Immediately after opening the PR, while your worktree is still checked out at
-the exact commit you just pushed, run:
-
-```
-devtools workspace merge-gate record <PR-number> --command "<the focused devtools test command you already ran>"
-```
-
-This is not extra work — it re-runs the same focused test command you already
-verified passes, but ties a receipt to the exact head SHA so the coordinator
-doesn't have to re-check-out your branch and re-run your tests from scratch
-before merging. Do this even though you're not the one merging; the receipt
-is what makes the coordinator's merge fast instead of redundant. If the PR
-gets a real code review comment later and you push a fix commit, there is no
-need to re-record — the coordinator (or a future you) records again at
-whatever the final head ends up being.
+- Commit every completed logical chunk with an accurate conventional subject.
+- Do **not** open an individual PR, create a scope carrier, record a merge-gate receipt, or merge to `master` unless the dispatch explicitly assigns you exclusive ownership of a batch branch. The normal delivery unit is a committed lane branch, which the integration queue assimilates into the shared batch.
+- Reference any assigned Bead with neutral wording only (`Ref polylogue-xxxx` / `Ref #N`). Never use GitHub resolver keywords beside an issue number unless the dispatch explicitly assigns that state transition.
 
 ## Final report
 
