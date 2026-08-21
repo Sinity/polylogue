@@ -174,6 +174,119 @@ async def test_cheap_read_completes_while_expensive_read_runs(tmp_path: Path) ->
         await slow
 
 
+async def test_interactive_read_starts_while_scan_submission_is_saturated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission waits must not consume storage adapter workers."""
+    from polylogue.storage.sqlite import async_adapter
+    from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
+
+    root = _bootstrap_archive(tmp_path)
+    adapter = ArchiveReadAsyncAdapter(max_workers=2)
+    monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
+    controller = QueryAdmissionController(capacity=2, reserved_interactive=1)
+    release_scans = threading.Event()
+    first_scan_started = threading.Event()
+    interactive_started = threading.Event()
+
+    def blocking_scan(store: ArchiveStore) -> int:
+        first_scan_started.set()
+        assert release_scans.wait(timeout=5)
+        return _cheap_work(store)
+
+    def interactive_work(store: ArchiveStore) -> int:
+        interactive_started.set()
+        return _cheap_work(store)
+
+    second_scan: asyncio.Task[int] | None = None
+    interactive: asyncio.Task[int] | None = None
+    first_scan = asyncio.create_task(
+        execute_archive_read(
+            root,
+            blocking_scan,
+            ctx=QueryExecutionContext.create(query_text="scan-1", workload_class="scan", timeout_s=5.0),
+            controller=controller,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(first_scan_started.wait, 2)
+        second_scan_ctx = QueryExecutionContext.create(query_text="scan-2", workload_class="scan", timeout_s=5.0)
+        second_scan = asyncio.create_task(
+            execute_archive_read(root, blocking_scan, ctx=second_scan_ctx, controller=controller)
+        )
+        deadline = time.monotonic() + 2
+        while controller.queue_position(second_scan_ctx) is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+        assert controller.queue_position(second_scan_ctx) == 0
+        interactive = asyncio.create_task(
+            execute_archive_read(
+                root,
+                interactive_work,
+                ctx=QueryExecutionContext.create(query_text="interactive", timeout_s=5.0),
+                controller=controller,
+            )
+        )
+        assert await asyncio.to_thread(interactive_started.wait, 1)
+    finally:
+        release_scans.set()
+        await asyncio.gather(
+            first_scan,
+            *(task for task in (second_scan, interactive) if task is not None),
+            return_exceptions=True,
+        )
+        adapter.close()
+    assert controller.in_flight_weight == 0
+
+
+async def test_cancelled_pre_admission_scan_never_reaches_archive_worker(tmp_path: Path) -> None:
+    """Cancellation removes a queued read before storage submission."""
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    release_first_scan = threading.Event()
+    first_scan_started = threading.Event()
+    cancelled_scan_started = threading.Event()
+
+    def blocking_scan(store: ArchiveStore) -> int:
+        first_scan_started.set()
+        assert release_first_scan.wait(timeout=5)
+        return _cheap_work(store)
+
+    def cancelled_scan(store: ArchiveStore) -> int:
+        cancelled_scan_started.set()
+        return _cheap_work(store)
+
+    first_scan = asyncio.create_task(
+        execute_archive_read(
+            root,
+            blocking_scan,
+            ctx=QueryExecutionContext.create(query_text="scan-holder", workload_class="scan", timeout_s=5.0),
+            controller=controller,
+        )
+    )
+    queued_scan: asyncio.Task[int] | None = None
+    try:
+        assert await asyncio.to_thread(first_scan_started.wait, 2)
+        queued_ctx = QueryExecutionContext.create(query_text="cancelled-scan", workload_class="scan", timeout_s=5.0)
+        queued_scan = asyncio.create_task(
+            execute_archive_read(root, cancelled_scan, ctx=queued_ctx, controller=controller)
+        )
+        deadline = time.monotonic() + 2
+        while controller.queue_position(queued_ctx) is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+        assert controller.queue_position(queued_ctx) == 0
+
+        queued_scan.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued_scan
+        assert controller.queue_position(queued_ctx) is None
+    finally:
+        release_first_scan.set()
+        await asyncio.gather(first_scan, *(task for task in (queued_scan,) if task is not None), return_exceptions=True)
+
+    assert cancelled_scan_started.is_set() is False
+    assert controller.in_flight_weight == 0
+
+
 def test_admission_fifo_within_class(tmp_path: Path) -> None:
     controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
     holder = QueryExecutionContext.create(query_text="hold", timeout_s=None)
