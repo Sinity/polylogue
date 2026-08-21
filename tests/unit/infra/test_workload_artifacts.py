@@ -243,6 +243,65 @@ def test_journal_mode_delete_reraises_lock_once_deadline_elapses(
         _journal_mode_delete_with_retry(_AlwaysLockedConnection(), name="index.db")  # type: ignore[arg-type]
 
 
+def test_validate_artifact_preserves_transient_sqlite_contention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock means "try again", never "delete and republish".
+
+    Anti-vacuity: folding ``sqlite3.OperationalError`` back into
+    ``_validate_artifact``'s invalid-artifact catch-all makes this return
+    ``None`` and routes a good shared artifact into the expensive rebuild path.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    key = seeded_archive_key(())
+    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+
+    class _Manifest:
+        protocol_version = artifacts._ARTIFACT_PROTOCOL_VERSION
+        key: str
+        files: tuple[object, ...] = ()
+        facts: tuple[object, ...] = ()
+
+    manifest = _Manifest()
+    manifest.key = key.value
+    monkeypatch.setattr(artifacts, "_read_manifest", lambda _path: manifest)
+    monkeypatch.setattr(
+        artifacts,
+        "_sqlite_integrity",
+        lambda _root: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    with pytest.raises(artifacts._ArtifactValidationContentionError, match="contended"):
+        artifacts._validate_artifact(tmp_path, key)
+
+
+def test_artifact_validation_retries_transient_contention(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A brief validation lock settles before the builder considers republishing.
+
+    Anti-vacuity: removing the retry helper or turning its contention exception
+    into ``None`` leaves no path that retries validation before a cache miss can
+    delete the published artifact.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    attempts = 0
+
+    def flaky_validate(_root: Path, _key: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise artifacts._ArtifactValidationContentionError("locked")
+        return None
+
+    monkeypatch.setattr(artifacts, "_validate_artifact", flaky_validate)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    assert artifacts._validate_artifact_with_retry(Path("unused"), seeded_archive_key(())) is None
+    assert attempts == 3
+
+
 # ---------------------------------------------------------------------------
 # Cache identity: what a published artifact is, and is not, a function of
 # ---------------------------------------------------------------------------

@@ -338,6 +338,7 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
         + "\n"
     )
     (step / "containment.json").write_text(json.dumps({"tmpfs_cleanup_complete": False, "exit_code": 0}))
+    (step / "summary.json").write_text(json.dumps({"archive_tier_init_counts": {"index.prototype_hit": 3}}))
 
     result = aggregate_pytest_statistics(
         step,
@@ -350,6 +351,7 @@ def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_p
     assert result["phases"]["setup"]["count"] == 1
     assert result["storage"]["basetemp_logical_bytes_max"] == 12 * 1024
     assert result["resources"]["peak_tree_pss_kb"] == 80
+    assert result["archive_tier_init_counts"] == {"index.prototype_hit": 3}
     assert result["cleanup"]["complete"] is True
 
 
@@ -550,13 +552,19 @@ def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp
                 "external_addopts_neutralized": True,
                 "external_plugins_neutralized": True,
                 "closed_world_collection": True,
-                "statistics": {"cleanup": {"complete": True}},
+                "statistics": {
+                    "archive_tier_init_counts": {"index.prototype_hit": 2},
+                    "cleanup": {"complete": True},
+                },
             },
             {
                 "semantic_lane": "serial",
                 "artifact_dir": "serial",
                 "exit": 0,
-                "statistics": {"cleanup": {"complete": True}},
+                "statistics": {
+                    "archive_tier_init_counts": {"index.prototype_hit": 1, "source.ddl_fresh": 4},
+                    "cleanup": {"complete": True},
+                },
             },
         ],
         environment_name="polylogue-test",
@@ -576,6 +584,7 @@ def test_native_aggregate_requires_both_lanes_to_neutralize_external_addopts(tmp
     assert result["lanes"][1]["closed_world_collection"] is False
     assert result["selected_union_count"] == 2
     assert result["terminal_union_count"] == 2
+    assert result["archive_tier_init_counts"] == {"index.prototype_hit": 3, "source.ddl_fresh": 4}
     assert result["non_green_count"] == 0
     assert result["complete_corpus_covered"] is False
     assert result["terminal_green"] is False

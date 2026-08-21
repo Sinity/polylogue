@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers import archive_init
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, archive_init
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitBlockedError,
     initialize_archive_tier_files,
@@ -101,6 +101,43 @@ def test_tier_init_counts_separate_page_copy_from_fresh_ddl(tmp_path: Path) -> N
 
     assert counts["index.ddl_fresh"] == 1
     assert counts["index.prototype_hit"] == 1
+
+
+def test_tier_prototype_key_includes_rendered_ddl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A same-version DDL variant must not receive a prototype from older DDL.
+
+    Anti-vacuity: returning the cache key to ``(tier, version)`` makes the
+    second initialization restore the first database by page copy, so the
+    variant-only table is absent even though the requested DDL declares it.
+    """
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    bootstrap._TIER_PROTOTYPES.clear()
+    tier = ArchiveTier.INDEX
+    original_ddl = ARCHIVE_DDL_BY_TIER[tier]
+    try:
+        bootstrap.initialize_archive_database(tmp_path / "baseline.db", tier)
+        monkeypatch.setitem(
+            ARCHIVE_DDL_BY_TIER,
+            tier,
+            f"{original_ddl}\nCREATE TABLE prototype_variant (id INTEGER PRIMARY KEY) STRICT;",
+        )
+
+        variant_path = tmp_path / "variant.db"
+        bootstrap.initialize_archive_database(variant_path, tier)
+
+        with sqlite3.connect(variant_path) as conn:
+            assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'prototype_variant'").fetchone() == (
+                "prototype_variant",
+            )
+
+        monkeypatch.setitem(ARCHIVE_DDL_BY_TIER, tier, original_ddl)
+        original_path = tmp_path / "original.db"
+        bootstrap.initialize_archive_database(original_path, tier)
+        with sqlite3.connect(original_path) as conn:
+            assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'prototype_variant'").fetchone() is None
+    finally:
+        bootstrap._TIER_PROTOTYPES.clear()
 
 
 def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Path) -> None:
