@@ -6,12 +6,11 @@ remain in their owning tiers and are linked by typed receipt references.
 
 from __future__ import annotations
 
-from polylogue.storage.sqlite.archive_tiers.common import literal_check
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 AUDIT_SCHEMA_VERSION = 2
 
-AUDIT_DDL = f"""
+AUDIT_DDL = """
 CREATE TABLE IF NOT EXISTS archive_authority (
     archive_instance_id TEXT PRIMARY KEY,
     created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0),
@@ -28,13 +27,21 @@ CREATE TABLE IF NOT EXISTS operation_previews (
     parameter_digest           TEXT NOT NULL,
     target_digest              TEXT NOT NULL,
     target_count               INTEGER NOT NULL CHECK(target_count >= 0),
-    destructive_class          TEXT NOT NULL CHECK ({literal_check("destructive_class", "additive", "reversible", "maintenance", "reset", "delete", "excise")}),
-    required_confirmation      TEXT NOT NULL CHECK ({literal_check("required_confirmation", "role_only", "confirm_flag", "bound_token")}),
+    destructive_class          TEXT NOT NULL CHECK(destructive_class IN (
+        'additive', 'reversible', 'maintenance', 'reset', 'delete', 'excise'
+    )),
+    required_confirmation      TEXT NOT NULL CHECK(required_confirmation IN (
+        'role_only', 'confirm_flag', 'bound_token'
+    )),
     required_capability_count  INTEGER NOT NULL CHECK(required_capability_count >= 0),
     principal_actor_ref        TEXT NOT NULL,
-    principal_surface          TEXT NOT NULL CHECK ({literal_check("principal_surface", "cli", "api", "mcp", "daemon", "maintenance", "internal")}),
+    principal_surface          TEXT NOT NULL CHECK(principal_surface IN (
+        'cli', 'api', 'mcp', 'daemon', 'maintenance', 'internal'
+    )),
     role_label                 TEXT,
-    state                      TEXT NOT NULL CHECK ({literal_check("state", "prepared", "consumed", "expired", "stale", "cancelled")}),
+    state                      TEXT NOT NULL CHECK(state IN (
+        'prepared', 'consumed', 'expired', 'stale', 'cancelled'
+    )),
     created_at_ms              INTEGER NOT NULL CHECK(created_at_ms >= 0),
     expires_at_ms              INTEGER NOT NULL CHECK(expires_at_ms >= created_at_ms),
     plan_format                TEXT NOT NULL CHECK(plan_format = 'polylogue.mutation-plan/v1'),
@@ -54,8 +61,11 @@ CREATE TABLE IF NOT EXISTS operation_preview_targets (
     target_ref          TEXT NOT NULL,
     identity_digest     TEXT NOT NULL,
     effect_identity     TEXT NOT NULL,
-    durability          TEXT NOT NULL CHECK ({literal_check("durability", "durable", "derived", "disposable", "external")}),
-    recovery_policy     TEXT NOT NULL CHECK ({literal_check("recovery_policy", "rebuild", "restore_verified_backup", "reauthenticate", "retry_convergent", "reconcile_required", "none")}),
+    durability          TEXT NOT NULL CHECK(durability IN ('durable', 'derived', 'disposable', 'external')),
+    recovery_policy     TEXT NOT NULL CHECK(recovery_policy IN (
+        'rebuild', 'restore_verified_backup', 'reauthenticate',
+        'retry_convergent', 'reconcile_required', 'none'
+    )),
     PRIMARY KEY(preview_id, ordinal)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_operation_preview_targets_ref
@@ -71,11 +81,11 @@ CREATE TABLE IF NOT EXISTS operation_authorizations (
     authorization_id       TEXT PRIMARY KEY,
     preview_id             TEXT NOT NULL REFERENCES operation_previews(preview_id),
     actor_ref              TEXT NOT NULL,
-    surface                TEXT NOT NULL CHECK ({literal_check("surface", "cli", "api", "mcp", "daemon", "maintenance", "internal")}),
+    surface                TEXT NOT NULL CHECK(surface IN ('cli', 'api', 'mcp', 'daemon', 'maintenance', 'internal')),
     role_label             TEXT,
-    confirmation_strength  TEXT NOT NULL CHECK ({literal_check("confirmation_strength", "role_only", "confirm_flag", "bound_token")}),
+    confirmation_strength  TEXT NOT NULL CHECK(confirmation_strength IN ('role_only', 'confirm_flag', 'bound_token')),
     token_sha256           TEXT NOT NULL UNIQUE CHECK(length(token_sha256) = 64),
-    state                  TEXT NOT NULL CHECK ({literal_check("state", "active", "consumed", "expired", "revoked")}),
+    state                  TEXT NOT NULL CHECK(state IN ('active', 'consumed', 'expired', 'revoked')),
     issued_at_ms           INTEGER NOT NULL CHECK(issued_at_ms >= 0),
     expires_at_ms          INTEGER NOT NULL CHECK(expires_at_ms >= issued_at_ms),
     consumed_at_ms         INTEGER
@@ -103,10 +113,10 @@ CREATE TABLE IF NOT EXISTS operation_runs (
     target_digest             TEXT NOT NULL,
     target_count              INTEGER NOT NULL CHECK(target_count >= 0),
     actor_ref                 TEXT NOT NULL,
-    surface                   TEXT NOT NULL CHECK ({literal_check("surface", "cli", "api", "mcp", "daemon", "maintenance", "internal")}),
+    surface                   TEXT NOT NULL CHECK(surface IN ('cli', 'api', 'mcp', 'daemon', 'maintenance', 'internal')),
     role_label                TEXT,
     idempotency_key_hash      TEXT,
-    status                    TEXT NOT NULL CHECK ({literal_check("status", "pending", "running", "completed", "failed", "interrupted")}),
+    status                    TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed', 'interrupted')),
     terminal_reason           TEXT,
     affected_count            INTEGER NOT NULL DEFAULT 0 CHECK(affected_count >= 0),
     rejected_count            INTEGER NOT NULL DEFAULT 0 CHECK(rejected_count >= 0),
@@ -142,7 +152,10 @@ CREATE TABLE IF NOT EXISTS operation_targets (
     target_ref                   TEXT NOT NULL,
     identity_digest              TEXT NOT NULL,
     effect_identity              TEXT NOT NULL,
-    state                        TEXT NOT NULL CHECK ({literal_check("state", "pending", "running", "applied", "already_satisfied", "rejected", "failed", "unknown", "acknowledged", "cancelled")}),
+    state                        TEXT NOT NULL CHECK(state IN (
+        'pending', 'running', 'applied', 'already_satisfied', 'rejected',
+        'failed', 'unknown', 'acknowledged', 'cancelled'
+    )),
     attempt_count                INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
     current_attempt_id          TEXT,
     domain_receipt_kind         TEXT,
@@ -173,7 +186,9 @@ CREATE TABLE IF NOT EXISTS operation_attempts (
     worker_id                     TEXT,
     lease_expires_at_ms           INTEGER,
     prepared_precondition_digest  TEXT,
-    state                         TEXT NOT NULL CHECK ({literal_check("state", "running", "applied", "failed", "unknown", "reconciled", "cancelled")}),
+    state                         TEXT NOT NULL CHECK(state IN (
+        'running', 'applied', 'failed', 'unknown', 'reconciled', 'cancelled'
+    )),
     started_at_ms                 INTEGER NOT NULL CHECK(started_at_ms >= 0),
     finished_at_ms                INTEGER,
     error_code                    TEXT,
@@ -196,7 +211,7 @@ CREATE TABLE IF NOT EXISTS operation_events (
     actor_ref      TEXT,
     occurred_at_ms INTEGER NOT NULL CHECK(occurred_at_ms >= 0),
     detail_format  TEXT NOT NULL DEFAULT 'polylogue.audit-event/v1',
-    detail_json    TEXT NOT NULL DEFAULT '{{}}',
+    detail_json    TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY(operation_id, sequence)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_operation_events_type_time

@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     detection_warnings_json TEXT NOT NULL DEFAULT '[]'
     ,logical_source_key      TEXT
     ,revision_kind           TEXT NOT NULL DEFAULT 'unknown'
-        CHECK ({literal_check("revision_kind", "full", "append", "unknown")})
+        CHECK(revision_kind IN ('full', 'append', 'unknown'))
     ,source_revision         TEXT
     ,predecessor_source_revision TEXT
     ,predecessor_raw_id      TEXT
@@ -157,7 +157,7 @@ WHERE decision IS NULL OR decision IN ('ambiguous', 'deferred');
 CREATE TABLE IF NOT EXISTS raw_membership_census (
     raw_id             TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     parser_fingerprint TEXT NOT NULL,
-    status             TEXT NOT NULL CHECK ({literal_check("status", "complete", "failed", "non_session")}),
+    status             TEXT NOT NULL CHECK(status IN ('complete', 'failed', 'non_session')),
     member_count       INTEGER NOT NULL CHECK(member_count >= 0),
     censused_at_ms     INTEGER NOT NULL CHECK(censused_at_ms >= 0),
     detail             TEXT NOT NULL DEFAULT ''
@@ -171,9 +171,7 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
 -- which verified backup manifest -- never edited after being written.
 CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    verdict                     TEXT NOT NULL CHECK ({
-    literal_check("verdict", "exact_match", "codex_header_strip_match")
-}),
+    verdict                     TEXT NOT NULL CHECK(verdict IN ('exact_match', 'codex_header_strip_match')),
     previous_revision_authority TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
     source_path                 TEXT NOT NULL,
     blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
@@ -263,9 +261,7 @@ CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
     blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
     duplicate_of_raw_id         TEXT NOT NULL,
     duplicate_of_session_id     TEXT NOT NULL,
-    previous_revision_authority TEXT NOT NULL CHECK ({
-    literal_check("previous_revision_authority", "asserted", "byte_proven", "quarantined")
-}),
+    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
     promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
     tool_version                TEXT NOT NULL,
     backup_manifest_path        TEXT NOT NULL,
@@ -297,9 +293,10 @@ CREATE TABLE IF NOT EXISTS raw_failure_disposition_receipts (
     previous_artifact_kind     TEXT NOT NULL,
     previous_support_status    TEXT NOT NULL,
     previous_classification_reason TEXT NOT NULL,
-    disposition_kind           TEXT NOT NULL CHECK ({
-    literal_check("disposition_kind", "terminal_corrupt_input", "terminal_unsupported_shape")
-}),
+    disposition_kind           TEXT NOT NULL CHECK(disposition_kind IN (
+        'terminal_corrupt_input',
+        'terminal_unsupported_shape'
+    )),
     manifest_sha256            TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
     disposed_at_ms             INTEGER NOT NULL CHECK(disposed_at_ms >= 0),
     tool_version               TEXT NOT NULL,
@@ -391,7 +388,7 @@ ON raw_unknown_export_reclassification_receipts(reclassified_at_ms);
 CREATE TABLE IF NOT EXISTS raw_authority_parser_census (
     raw_id                  TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     parser_fingerprint      TEXT NOT NULL,
-    status                  TEXT NOT NULL CHECK ({literal_check("status", "complete", "failed")}),
+    status                  TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
     logical_keys_json       TEXT NOT NULL CHECK(json_valid(logical_keys_json)),
     detail                  TEXT NOT NULL DEFAULT '',
     censused_at_ms          INTEGER NOT NULL CHECK(censused_at_ms >= 0)
@@ -403,10 +400,8 @@ CREATE TABLE IF NOT EXISTS raw_authority_censuses (
     scope_json              TEXT NOT NULL CHECK(json_valid(scope_json)),
     residual_json           TEXT NOT NULL CHECK(json_valid(residual_json)),
     parser_fingerprint      TEXT NOT NULL,
-    mode                    TEXT NOT NULL CHECK ({literal_check("mode", "census", "dry_run", "apply")}),
-    lifecycle_status        TEXT NOT NULL CHECK ({
-    literal_check("lifecycle_status", "planned", "completed", "interrupted")
-}),
+    mode                    TEXT NOT NULL CHECK(mode IN ('census', 'dry_run', 'apply')),
+    lifecycle_status        TEXT NOT NULL CHECK(lifecycle_status IN ('planned', 'completed', 'interrupted')),
     quiescent               INTEGER NOT NULL CHECK(quiescent IN (0, 1)),
     inventory_digest        TEXT NOT NULL CHECK(length(inventory_digest) = 64),
     residual_digest         TEXT NOT NULL CHECK(length(residual_digest) = 64),
@@ -456,11 +451,10 @@ CREATE TABLE IF NOT EXISTS raw_authority_census_plans (
     plan_id            TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
     ordinal            INTEGER NOT NULL CHECK(ordinal >= 0),
     selected           INTEGER NOT NULL CHECK(selected IN (0, 1)),
-    outcome_status     TEXT NOT NULL CHECK ({
-    literal_check(
-        "outcome_status", "executed", "retryable", "deferred", "terminal", "rejected_stale", "carried_forward"
-    )
-}),
+    outcome_status     TEXT NOT NULL CHECK(outcome_status IN (
+                           'executed', 'retryable', 'deferred', 'terminal',
+                           'rejected_stale', 'carried_forward'
+                       )),
     reason             TEXT NOT NULL,
     next_action        TEXT NOT NULL,
     application_receipt_json TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(application_receipt_json)),
@@ -541,9 +535,7 @@ ON raw_authority_verdicts(logical_source_key);
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
     ref_id          TEXT NOT NULL,
-    ref_type        TEXT NOT NULL CHECK ({
-    literal_check("ref_type", "raw_payload", "attachment", "sidecar", "hook_payload")
-}),
+    ref_type        TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar', 'hook_payload')),
     source_path     TEXT,
     size_bytes      INTEGER NOT NULL CHECK(size_bytes >= 0),
     acquired_at_ms  INTEGER NOT NULL,
@@ -752,11 +744,9 @@ CREATE TABLE IF NOT EXISTS sinex_publication_obligations (
     protocol_version     TEXT NOT NULL CHECK(protocol_version != ''),
     revision_id          TEXT NOT NULL,
     manifest_digest      TEXT NOT NULL,
-    mode                 TEXT NOT NULL CHECK ({literal_check("mode", "mirror", "primary")}),
+    mode                 TEXT NOT NULL CHECK(mode IN ('mirror', 'primary')),
     status               TEXT NOT NULL DEFAULT 'pending'
-                             CHECK ({
-    literal_check("status", "pending", "publishing", "confirmed", "durable_debt", "rejected")
-}),
+                             CHECK(status IN ('pending', 'publishing', 'confirmed', 'durable_debt', 'rejected')),
     attempt_count        INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
     last_attempt_at_ms   INTEGER,
     last_receipt_state   TEXT,
@@ -818,11 +808,10 @@ CREATE TABLE IF NOT EXISTS sinex_publication_receipts (
     manifest_digest    TEXT NOT NULL,
     attempt_number     INTEGER NOT NULL CHECK(attempt_number > 0),
     request_id         TEXT NOT NULL,
-    receipt_state      TEXT CHECK (receipt_state IS NULL OR {
-    literal_check(
-        "receipt_state", "raw_accepted", "persisted_confirmed", "durable_debt", "spool_accepted_lossless", "rejected"
-    )
-}),
+    receipt_state      TEXT CHECK(receipt_state IS NULL OR receipt_state IN (
+                            'raw_accepted', 'persisted_confirmed', 'durable_debt',
+                            'spool_accepted_lossless', 'rejected'
+                        )),
     receipt_detail     TEXT NOT NULL DEFAULT '',
     error_code         TEXT,
     received_at_ms     INTEGER NOT NULL CHECK(received_at_ms >= 0),
