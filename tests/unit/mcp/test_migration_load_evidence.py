@@ -19,9 +19,9 @@ import sqlite3
 import threading
 import tracemalloc
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -377,12 +377,20 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         capacity_barrier = threading.Barrier(DEFAULT_CAPACITY)
         barrier_participants = 0
         participant_lock = threading.Lock()
-        original_admit = QueryAdmissionController.admit_blocking
+        original_admit_async = QueryAdmissionController.admit_async
 
-        @contextmanager
-        def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> Iterator[None]:
+        @asynccontextmanager
+        async def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> AsyncIterator[None]:
+            """Observe after async admission, then synchronize admitted readers.
+
+            The consolidated MCP tools are async and therefore use
+            ``admit_async``; observing ``admit_blocking`` would never see this
+            route.  The barrier runs in a worker thread so the per-request
+            event loops can all reach the rendezvous without blocking one
+            another.
+            """
             nonlocal barrier_participants
-            with original_admit(self, ctx):
+            async with original_admit_async(self, ctx):
                 with observation_lock:
                     observed_in_flight.append(self.in_flight_weight)
                     observed_admission_owners.append(ctx.owner_ref)
@@ -391,10 +399,14 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
                     if is_participant:
                         barrier_participants += 1
                 if is_participant:
-                    capacity_barrier.wait(timeout=10)
+                    await asyncio.to_thread(capacity_barrier.wait, timeout=10)
                 yield
 
-        monkeypatch.setattr(QueryAdmissionController, "admit_blocking", observe_admission)
+        monkeypatch.setattr(QueryAdmissionController, "admit_async", observe_admission)
+
+        # The production route is async; the barrier above deliberately holds
+        # the first capacity-sized set after admission so the max-in-flight
+        # assertion measures overlapping leases rather than scheduling order.
 
         before_files = _archive_files(archive_root)
 
