@@ -1,0 +1,97 @@
+{
+  "scope_kind": "carrier_disposition",
+  "source_pr": 4048,
+  "execution_id": "3002b7a9cd4f1f1586a743603544d3e28ef2b64e5ca513a0f2669ce5f8b43ea5",
+  "assigned_beads": [
+    "polylogue-l218h",
+    "polylogue-oizgt",
+    "polylogue-5stpo",
+    "polylogue-kn6nz",
+    "polylogue-czh1x"
+  ],
+  "mutated_beads": [
+    "polylogue-czh1x",
+    "polylogue-kn6nz",
+    "polylogue-l218h",
+    "polylogue-oizgt"
+  ],
+  "dispositions": [
+    {
+      "bead_id": "polylogue-l218h",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "44c084816"
+        },
+        {
+          "kind": "test",
+          "ref": "#4033 focused lifecycle and quick-gate evidence"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-oizgt",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "44c084816"
+        },
+        {
+          "kind": "test",
+          "ref": "#4033 warm attestation and semantic-drift coverage"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-5stpo",
+      "disposition": "partial",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "6d49d1d8d"
+        },
+        {
+          "kind": "test",
+          "ref": "494 affected tests passed in 189.69s"
+        }
+      ],
+      "successors": [
+        "polylogue-5stpo.1"
+      ]
+    },
+    {
+      "bead_id": "polylogue-kn6nz",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "6d49d1d8d"
+        },
+        {
+          "kind": "test",
+          "ref": "test_workload_artifacts contention regressions"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-czh1x",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "6d49d1d8d"
+        },
+        {
+          "kind": "test",
+          "ref": "test_archive_tier_init DDL-variant regression"
+        }
+      ],
+      "successors": []
+    }
+  ]
+}
