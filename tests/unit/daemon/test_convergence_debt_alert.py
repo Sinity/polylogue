@@ -447,121 +447,100 @@ def test_aggregate_debt_by_family_buckets_subjects() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_evaluate_emits_no_alerts_when_below_warning() -> None:
-    thresholds = ConvergenceDebtThresholds(default_warning=5, default_error=10)
+@pytest.mark.parametrize(
+    ("count", "warning", "error", "expected"),
+    [
+        # The threshold matrix is inclusive at both ladder boundaries.
+        (0, 2, 5, None),
+        (1, 2, 5, None),
+        (2, 2, 5, HealthSeverity.WARNING),
+        (4, 2, 5, HealthSeverity.WARNING),
+        (5, 2, 5, HealthSeverity.ERROR),
+        (6, 2, 5, HealthSeverity.ERROR),
+    ],
+)
+def test_evaluate_threshold_matrix(
+    count: int,
+    warning: int,
+    error: int,
+    expected: HealthSeverity | None,
+) -> None:
+    thresholds = ConvergenceDebtThresholds(default_warning=warning, default_error=error)
     state = AlertDedupState()
-    summary = _summary([_item(subject_id="/x/a.jsonl")])  # only one item
+    summary = _summary([_item(subject_id=f"/x/a{i}.jsonl") for i in range(count)])
 
     alerts = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=0.0)
 
-    assert alerts == []
-
-
-def test_evaluate_ignores_deliberate_deferred_debt() -> None:
-    thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=1)
-    state = AlertDedupState()
-    deferred = _item(subject_id="/x/deferred.jsonl").model_copy(update={"status": "deferred", "retry_due": False})
-    summary = ConvergenceDebtSummary(deferred_count=1, recent=[deferred])
-
-    alerts = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=0.0)
-
-    assert alerts == []
-
-
-def test_evaluate_emits_warning_when_count_crosses_warning_threshold() -> None:
-    thresholds = ConvergenceDebtThresholds(default_warning=2, default_error=10)
-    state = AlertDedupState()
-    summary = _summary([_item(subject_id=f"/x/a{i}.jsonl") for i in range(2)])
-
-    alerts = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=0.0)
-
+    if expected is None:
+        assert alerts == []
+        return
     assert len(alerts) == 1
-    alert = alerts[0]
-    assert alert.severity == HealthSeverity.WARNING
-    assert alert.tier == HealthTier.MEDIUM
-    assert alert.check_name == "convergence_debt[unknown]"
+    assert alerts[0].severity == expected
+    assert alerts[0].tier == HealthTier.MEDIUM
+    assert alerts[0].check_name == "convergence_debt[unknown]"
 
 
-def test_evaluate_emits_error_when_count_crosses_error_threshold() -> None:
-    thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=3)
-    state = AlertDedupState()
-    summary = _summary([_item(subject_id=f"/x/a{i}.jsonl") for i in range(3)])
-
-    alerts = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=0.0)
-
-    assert len(alerts) == 1
-    assert alerts[0].severity == HealthSeverity.ERROR
-
-
-def test_evaluate_dedups_repeated_alerts_within_window() -> None:
+@pytest.mark.parametrize(
+    ("elapsed", "emits"),
+    [
+        (599.999, False),  # strictly inside the window is suppressed
+        (600.0, True),  # the exact boundary is outside for re-emission
+        (600.001, True),  # and remains outside thereafter
+    ],
+)
+def test_evaluate_dedup_window_boundary_is_exact(elapsed: float, emits: bool) -> None:
     thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=10, dedup_window_s=600)
     state = AlertDedupState()
     summary = _summary([_item(subject_id="/x/a.jsonl")])
 
     first = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=1000.0)
-    second = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=1100.0)
+    second = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=1000.0 + elapsed)
 
     assert len(first) == 1
-    assert second == []  # within the 600s dedup window
+    assert bool(second) is emits
+    if emits:
+        assert second[0].severity == HealthSeverity.WARNING
 
 
-def test_evaluate_reemits_after_dedup_window_expires() -> None:
-    thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=10, dedup_window_s=600)
-    state = AlertDedupState()
-    summary = _summary([_item(subject_id="/x/a.jsonl")])
-
-    first = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=1000.0)
-    second = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=1700.0)
-
-    assert len(first) == 1
-    assert len(second) == 1
-    assert second[0].severity == HealthSeverity.WARNING
-
-
-def test_evaluate_escalation_fires_immediately_through_dedup_window() -> None:
-    # An escalation from WARNING to ERROR must surface even within the
-    # dedup window: severity change overrides dedup.
+def test_evaluate_state_transitions_preserve_suppression_escalation_and_quiet_clear() -> None:
+    """Exercise the production evaluator across one complete alert lifecycle."""
     thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=3, dedup_window_s=3600)
     state = AlertDedupState()
+    deferred = _item(subject_id="/x/deferred.jsonl").model_copy(update={"status": "deferred", "retry_due": False})
 
-    first = evaluate_convergence_debt(
-        _summary([_item(subject_id="/x/a.jsonl")]),
-        thresholds=thresholds,
-        state=state,
-        now=0.0,
+    # Deliberately deferred work is never an alert by itself.
+    assert (
+        evaluate_convergence_debt(
+            ConvergenceDebtSummary(deferred_count=1, recent=[deferred]),
+            thresholds=thresholds,
+            state=state,
+            now=0.0,
+        )
+        == []
     )
-    second = evaluate_convergence_debt(
-        _summary([_item(subject_id=f"/x/a{i}.jsonl") for i in range(3)]),
+
+    warning = evaluate_convergence_debt(
+        _summary([_item(subject_id="/x/a.jsonl")]),
         thresholds=thresholds,
         state=state,
         now=10.0,
     )
-
-    assert first[0].severity == HealthSeverity.WARNING
-    assert len(second) == 1
-    assert second[0].severity == HealthSeverity.ERROR
-
-
-def test_evaluate_emits_resolution_alert_when_debt_clears() -> None:
-    # After firing a warning, a subsequent run with no debt should emit a
-    # single OK resolution alert so notification backends see the clear.
-    thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=10, dedup_window_s=3600)
-    state = AlertDedupState()
-
-    first = evaluate_convergence_debt(
-        _summary([_item(subject_id="/x/a.jsonl")]),
+    # Severity changes bypass dedup, so the error is immediate even though the
+    # warning was emitted only ten seconds earlier.
+    escalation = evaluate_convergence_debt(
+        _summary([_item(subject_id=f"/x/a{i}.jsonl") for i in range(3)]),
         thresholds=thresholds,
         state=state,
-        now=0.0,
+        now=20.0,
     )
-    second = evaluate_convergence_debt(_summary([]), thresholds=thresholds, state=state, now=10.0)
-    third = evaluate_convergence_debt(_summary([]), thresholds=thresholds, state=state, now=20.0)
+    resolution = evaluate_convergence_debt(_summary([]), thresholds=thresholds, state=state, now=30.0)
+    quiet = evaluate_convergence_debt(_summary([]), thresholds=thresholds, state=state, now=31.0)
 
-    assert first[0].severity == HealthSeverity.WARNING
-    assert len(second) == 1
-    assert second[0].severity == HealthSeverity.OK
-    # Once cleared, no further OK alerts fire on subsequent quiet runs.
-    assert third == []
+    assert [alert.severity for alert in warning] == [HealthSeverity.WARNING]
+    assert [alert.severity for alert in escalation] == [HealthSeverity.ERROR]
+    assert [alert.severity for alert in resolution] == [HealthSeverity.OK]
+    # Once cleared, quiet runs do not repeat the OK resolution.
+    assert quiet == []
 
 
 # ---------------------------------------------------------------------------
