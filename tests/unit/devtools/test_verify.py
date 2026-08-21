@@ -43,6 +43,7 @@ from devtools.verify import (
     PYTEST_REPORT_PATH,
     ROOT,
     SERIAL_LANE_MAX_WORKERS,
+    STORAGE_SCALE_LANE_MAX_WORKERS,
     _anchor_verification_paths,
     _native_lane_failure_requires_stop,
     _parse_pytest_test_count,
@@ -131,7 +132,7 @@ def test_quick_verify_omits_pytest() -> None:
         ("full", "--testmon-forceselect"),
     ],
 )
-def test_native_testmon_uses_exactly_two_semantic_lanes(
+def test_native_testmon_partitions_storage_scale_from_semantic_lanes(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
     selection_flag: str,
@@ -149,16 +150,21 @@ def test_native_testmon_uses_exactly_two_semantic_lanes(
     assert [label for label, _command in pytest_steps] == [
         f"pytest native parallel ({mode})",
         f"pytest native serial ({mode})",
+        f"pytest native storage-scale ({mode})",
     ]
     parallel = pytest_steps[0][1]
     serial = pytest_steps[1][1]
-    assert _pytest_marker_expr(parallel) == "not load_sensitive"
-    assert _pytest_marker_expr(serial) == "load_sensitive"
+    storage_scale = pytest_steps[2][1]
+    assert _pytest_marker_expr(parallel) == "not load_sensitive and not storage_scale"
+    assert _pytest_marker_expr(serial) == "load_sensitive and not storage_scale"
+    assert _pytest_marker_expr(storage_scale) == "storage_scale"
     assert parallel[parallel.index("-n") + 1] == "8"
     # The load_sensitive lane is bounded, not serial: it is capped at
     # SERIAL_LANE_MAX_WORKERS rather than pinned to a single process.
     assert serial[serial.index("-n") + 1] == str(min(8, SERIAL_LANE_MAX_WORKERS))
+    assert storage_scale[storage_scale.index("-n") + 1] == str(STORAGE_SCALE_LANE_MAX_WORKERS)
     assert "--dist=loadgroup" in serial
+    assert "--dist=loadgroup" in storage_scale
     for _label, command in pytest_steps:
         assert "--testmon" in command
         assert "--testmon-env=env-digest" in command
@@ -208,7 +214,7 @@ def test_native_corpus_excludes_only_benchmark_directory() -> None:
 
     complete_command = next(command for label, command in complete_steps if "parallel" in label)
     complete_expr = _pytest_marker_expr(complete_command)
-    assert complete_expr == "not load_sensitive"
+    assert complete_expr == "not load_sensitive and not storage_scale"
     assert "--ignore=tests/benchmarks" in complete_command
     assert "--ignore=tests/integration" not in complete_command
 

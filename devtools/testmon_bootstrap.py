@@ -1556,23 +1556,15 @@ def prepare_native_testmon_environment(
             current_nodeids=local.environment.nodeids if local.environment is not None else (),
         )
         if violation is not None:
-            # The graph can still SELECT soundly, but it may not ATTEST the
-            # tests it would deselect -- re-execute the corpus and re-certify.
+            # A coverage certificate governs a stronger release-attestation
+            # claim, not testmon's sound dependency selection. Keep selecting
+            # from the compatible graph; only an explicit --all run renews a
+            # stale certificate.
             local = NativeTestmonState(
                 local.status,
-                f"attestation refused, re-executing corpus: {violation}",
+                f"attestation unavailable: {violation}",
                 local.environment,
                 local.missing_executable_paths,
-            )
-            return NativeTestmonPreparation(
-                environment_name,
-                "bootstrap",
-                local,
-                None,
-                (),
-                linked,
-                main_checkout,
-                fallback_allowed,
             )
         return NativeTestmonPreparation(
             environment_name,
@@ -1673,19 +1665,9 @@ def prepare_native_testmon_environment(
             if violation is not None:
                 local = NativeTestmonState(
                     local.status,
-                    f"attestation refused, re-executing corpus: {violation}",
+                    f"attestation unavailable: {violation}",
                     local.environment,
                     local.missing_executable_paths,
-                )
-                return NativeTestmonPreparation(
-                    environment_name,
-                    "bootstrap",
-                    local,
-                    copied_from,
-                    removed,
-                    linked,
-                    main_checkout,
-                    fallback_allowed,
                 )
             return NativeTestmonPreparation(
                 environment_name,

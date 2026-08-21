@@ -22,6 +22,7 @@ from devtools.pytest_collection_contract import (
     PARALLEL_MARKER_EXPRESSION,
     PROGRESS_PLUGIN_NAME,
     SERIAL_MARKER_EXPRESSION,
+    STORAGE_SCALE_MARKER_EXPRESSION,
 )
 from devtools.verify import _native_pytest_steps
 
@@ -32,6 +33,7 @@ def _commands() -> dict[str, list[str]]:
         testmon_environment="env-under-test",
         parallel_worker_args=["-n", "4"],
         serial_worker_args=["--dist=loadgroup", "-n", "2"],
+        storage_scale_worker_args=["--dist=loadgroup", "-n", "1"],
     )
     return dict(steps)
 
@@ -50,7 +52,7 @@ def test_closed_world_collection_args_reach_the_built_command() -> None:
             assert argument in cmd, f"{label} is missing collection arg {argument!r}"
 
 
-def test_the_two_lanes_use_the_declared_marker_expressions() -> None:
+def test_the_semantic_lanes_use_the_declared_marker_expressions() -> None:
     """The lanes partition the corpus; the expressions that split it are digest
     inputs precisely because changing them changes what each lane collects."""
     commands = _commands()
@@ -59,12 +61,16 @@ def test_the_two_lanes_use_the_declared_marker_expressions() -> None:
 
     assert PARALLEL_MARKER_EXPRESSION in markers.values()
     assert SERIAL_MARKER_EXPRESSION in markers.values()
-    assert set(markers.values()) == {PARALLEL_MARKER_EXPRESSION, SERIAL_MARKER_EXPRESSION}, (
-        "a lane is collecting under an expression the digest does not cover"
-    )
+    assert STORAGE_SCALE_MARKER_EXPRESSION in markers.values()
+    assert set(markers.values()) == {
+        PARALLEL_MARKER_EXPRESSION,
+        SERIAL_MARKER_EXPRESSION,
+        STORAGE_SCALE_MARKER_EXPRESSION,
+    }, "a lane is collecting under an expression the digest does not cover"
 
 
-def test_marker_expressions_are_complementary() -> None:
-    """Together the lanes must cover the corpus, or the union silently omits tests."""
-    assert SERIAL_MARKER_EXPRESSION in PARALLEL_MARKER_EXPRESSION
-    assert f"not {SERIAL_MARKER_EXPRESSION}" == PARALLEL_MARKER_EXPRESSION
+def test_marker_expressions_partition_storage_scale_from_ordinary_tests() -> None:
+    """Every storage-scale test has one lane and ordinary tests retain their lanes."""
+    assert "not storage_scale" in PARALLEL_MARKER_EXPRESSION
+    assert "not storage_scale" in SERIAL_MARKER_EXPRESSION
+    assert STORAGE_SCALE_MARKER_EXPRESSION == "storage_scale"
