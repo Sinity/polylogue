@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -124,3 +125,79 @@ def test_beads_only_gate_uses_structural_bead_graph_command(git_repo: Path, monk
 def test_parse_updates_rejects_malformed_input() -> None:
     with pytest.raises(ValueError, match="expected four fields"):
         pre_push_gate.parse_updates("refs/heads/topic only-two-fields")
+
+
+def _code_update(repo: Path) -> pre_push_gate.PushUpdate:
+    base = _git(repo, "rev-parse", "HEAD")
+    tip = _commit(repo, "polylogue/example.py", "VALUE = 1\n", "code")
+    return pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", base)
+
+
+def _quick_receipt(repo: Path, *, head: str, environment: dict[str, object]) -> None:
+    path = repo / ".cache" / "verify" / "current-run.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "tier": "quick",
+                "status": "success",
+                "exit_code": 0,
+                "git_head": head,
+                "final_git_head": head,
+                "checkout_root": str(repo.resolve()),
+                "worktree_fingerprint": "tree-fingerprint",
+                "final_worktree_fingerprint": "tree-fingerprint",
+                "environment_fingerprint": environment,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_matching_quick_receipt_is_reused(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    environment = {"python_executable": "/venv/bin/python", "artifacts": []}
+    _quick_receipt(git_repo, head=head, environment=environment)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    assert pre_push_gate.run_gate([update], cwd=git_repo) == "reused"
+    assert commands == []
+
+
+@pytest.mark.parametrize(
+    ("receipt_kwargs", "write_receipt"),
+    [
+        ({"head": "0" * 40}, True),
+        ({"head": ""}, True),
+        ({"head": ""}, False),
+    ],
+    ids=("stale-head", "foreign-environment", "missing-receipt"),
+)
+def test_incompatible_or_missing_quick_receipt_reruns_gate(
+    git_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_kwargs: dict[str, str],
+    write_receipt: bool,
+) -> None:
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    environment = {"python_executable": "/venv/bin/python", "artifacts": []}
+    if write_receipt:
+        _quick_receipt(
+            git_repo,
+            head=receipt_kwargs.get("head") or head,
+            environment=(
+                {"python_executable": "/foreign/bin/python", "artifacts": []}
+                if receipt_kwargs.get("head") == ""
+                else environment
+            ),
+        )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    assert pre_push_gate.run_gate([update], cwd=git_repo) == "quick"
+    assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
