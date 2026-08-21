@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from devtools.workspace_integrate import integrate, main
 
 
@@ -70,7 +72,7 @@ def test_ambiguous_source_requires_explicit_commit(tmp_path: Path) -> None:
     assert integrate(target, explicit_commits=[a]).status == "applied"
 
 
-def test_conflict_stops_in_place_and_json_reports_state(tmp_path: Path, capsys: object) -> None:
+def test_conflict_stops_in_place_and_json_reports_state(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repo, target = _repo(tmp_path)
     _git(repo, "switch", "lane-a")
     (repo / "base.txt").write_text("lane\n")
