@@ -1312,6 +1312,21 @@ def test_check_rejects_a_terminal_target_before_the_pr_is_merged(beads_path: Pat
     assert any("pre-applied terminal disposition" in reason for reason in verdict.reasons)
 
 
+def test_normal_scope_attestation_keeps_the_pre_receipt_digest_shape() -> None:
+    scope = pr_scope.ScopeVerdict(
+        ok=True,
+        scope_digest="scope",
+        beads_digest="beads",
+        carrier_version=2,
+        scope_kind=pr_scope.ScopeKind.BEAD,
+    )
+
+    payload = pr_scope.attestation_payload(scope, head_sha=HEAD_SHA, base_sha="b" * 40)
+
+    assert "source_pr" not in payload
+    assert "execution_id" not in payload
+
+
 def test_carrier_disposition_scope_binds_the_committed_receipt_and_source_pr(
     beads_path: Path,
     monkeypatch: pytest.MonkeyPatch,
