@@ -111,6 +111,24 @@ def test_authority_contradicted_mapping_state_remains_a_contradicted_graph_fact(
     assert [edge.kind for edge in graph.edges] == ["unresolved"]
 
 
+def test_same_child_from_distinct_parents_merges_attempt_evidence_order_independently() -> None:
+    """Hook and parser parent claims must both remain on the child attempt."""
+
+    rows = (
+        _row(parent_session_id="codex-session:hook-parent"),
+        _row(parent_session_id="codex-session:parser-parent"),
+    )
+    graph = materialize_delegation_work_evidence_graph(
+        graph_id="delegation-graph", corpus_snapshot_ref=SNAPSHOT, rows=rows
+    )
+
+    attempt = next(node for node in graph.nodes if node.kind == "attempt")
+    assert {ref.format() for ref in attempt.evidence_refs} == {
+        "codex-session:hook-parent::m1",
+        "codex-session:parser-parent::m1",
+    }
+
+
 def test_many_dispatches_from_one_parent_session_retain_distinct_call_identity() -> None:
     """A parent session dispatching two children must not collapse into one call node."""
 
