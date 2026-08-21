@@ -11,33 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from devtools.verify_worktree import _git, inspect_worktree
 
 _ACTIVE_MARKERS = ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "REBASE_HEAD")
-_GIT_SELECTION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
-
-
-@contextmanager
-def _sanitized_git_environment() -> Iterator[None]:
-    """Bind every subprocess Git invocation to its ``-C`` worktree metadata."""
-    saved = {name: os.environ.get(name) for name in _GIT_SELECTION_VARS}
-    for name in _GIT_SELECTION_VARS:
-        os.environ.pop(name, None)
-    try:
-        yield
-    finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 @dataclass
@@ -159,7 +140,7 @@ def _reconcile_cherry_pick_timeout(
     report.conflict_head = _commit_sha(target, "CHERRY_PICK_HEAD")
     status = _git(target, "status", "--porcelain")
     unmerged = any(
-        status_line[:2] in {"UU", "AA", "DD", "AU", "UA", "DU"} for status_line in status.stdout.splitlines()
+        status_line[:2] in {"UU", "AA", "DD", "AU", "UA", "DU", "UD"} for status_line in status.stdout.splitlines()
     )
     if report.conflict_head and unmerged:
         report.conflict = True
@@ -246,9 +227,8 @@ def integrate(
     source_refs: Sequence[str] = (),
     explicit_commits: Sequence[str] = (),
 ) -> IntegrationReport:
-    """Run integration with repository-selection environment sanitized."""
-    with _sanitized_git_environment():
-        return _integrate(target, source_refs, explicit_commits)
+    """Integrate commits using Git helpers bound to the requested worktree."""
+    return _integrate(target, source_refs, explicit_commits)
 
 
 def _render_text(report: IntegrationReport) -> str:
