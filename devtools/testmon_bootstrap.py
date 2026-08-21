@@ -785,7 +785,8 @@ def inspect_native_testmon_environment(
             ):
                 return NativeTestmonState("invalid", f"bound native testmon sidecar changed: {sidecar}")
         elif bound_data_path is not None:
-            return NativeTestmonState("invalid", f"unexpected native testmon sidecar: {sidecar}")
+            if not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
+                return NativeTestmonState("invalid", f"unexpected native testmon sidecar: {sidecar}")
         elif not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
             return NativeTestmonState("invalid", f"native testmon sidecar is not a single-link regular file: {sidecar}")
     # A killed writer (supervisor SIGTERM, operator interrupt) leaves a WAL

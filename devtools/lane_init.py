@@ -492,10 +492,13 @@ def _seed_testmon_graph_unlocked(
         if source_binding is None:
             return "coordinator graph disappeared before descriptor binding; first lane verify will bootstrap", False
         source_fd = source_binding.descriptor
+        bound_sidecar_fds = dict(source_binding.sidecar_descriptors)
         initial_state = inspect_native_testmon_environment(
             source,
             environment_name=initial_digest,
             data_fd=source_fd,
+            bound_data_path=source_binding.data_path,
+            bound_sidecar_fds=bound_sidecar_fds,
         )
         source_state_for_copy = initial_state
         copy_digest: str | None = initial_digest if initial_state.valid else None
@@ -540,6 +543,8 @@ def _seed_testmon_graph_unlocked(
                     source,
                     environment_name=fallback_digest,
                     data_fd=source_fd,
+                    bound_data_path=source_binding.data_path,
+                    bound_sidecar_fds=bound_sidecar_fds,
                 )
                 if fallback_state.valid:
                     copy_digest = fallback_digest
@@ -593,6 +598,7 @@ def _seed_testmon_graph_unlocked(
                 required_executable_paths=(),
                 deadline_monotonic=None,
                 source_fd=source_binding.descriptor,
+                bound_source_path=source_binding.data_path,
             )
         except NativeTestmonRepairError as exc:
             return f"graph seed failed ({exc}); first lane verify will bootstrap", False
