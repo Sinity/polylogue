@@ -78,10 +78,10 @@ def test_stale_base_head_refuses_before_recording(monkeypatch: pytest.MonkeyPatc
 
 def _scope_body(head_sha: str) -> str:
     carrier = {
-        "version": 1,
-        "head_sha": head_sha,
+        "version": 2,
+        "scope_kind": "bead",
         "assigned_beads": ["polylogue-test-scope"],
-        "beads_digest": pr_scope.canonical_beads_digest({_SCOPE_BEAD["id"]: _SCOPE_BEAD}, ["polylogue-test-scope"]),
+        "mutated_beads": [],
         "dispositions": [
             {
                 "bead_id": "polylogue-test-scope",
@@ -125,6 +125,17 @@ def _fake_run(
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return MagicMock(returncode=merge_exit, stdout="merged\n", stderr="" if merge_exit == 0 else "merge failed")
+        if cmd[:2] == ["bd", "list"]:
+            return MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {"id": "polylogue-test-scope", "status": "open"},
+                        {"id": "polylogue-feu0", "status": "open"},
+                    ]
+                ),
+                stderr="",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             threads = [
                 {
@@ -216,6 +227,11 @@ def _write_terminal_receipt(
     )
 
 
+def _record_event(events: list[str], event: str) -> int:
+    events.append(event)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # clean_merge_title
 # ---------------------------------------------------------------------------
@@ -304,6 +320,78 @@ def test_merge_auto_records_when_no_fresh_receipt_then_merges(monkeypatch: pytes
     ledger = json.loads(merge_boundary._LEDGER_PATH.read_text())
     assert ledger["merges"][0]["pr"] == 42
     assert ledger["merges"][0]["title"] == "fix: thing (#42)"
+
+
+def test_merge_records_scope_without_mutating_beads_or_directly_pushing_master(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The real merge path must not create unpublished tracker state.
+
+    ``bd`` reimports the checkout JSONL for each separate invocation.  The
+    old ``show -> close -> export`` sequence therefore treated independent
+    processes as one mutable transaction and then tried to repair the result
+    with a raw ``master`` push.  The wrapper's authority is the exact-head
+    scope attestation and merge ledger, not Beads lifecycle publication.
+    """
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    carrier = {
+        "version": 2,
+        "scope_kind": "bead",
+        "assigned_beads": ["polylogue-test-scope"],
+        "mutated_beads": [],
+        "dispositions": [
+            {
+                "bead_id": "polylogue-test-scope",
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_merge_boundary.py"}],
+                "successors": [],
+            }
+        ],
+    }
+    carrier["scope_digest"] = pr_scope.carrier_digest(carrier)
+    pr_view["body"] = pr_scope.render_carrier(carrier)
+    calls: list[list[str]] = []
+    base_run = _fake_run(pr_view)
+    merged = False
+
+    def run(cmd: list[str], **kwargs: Any) -> MagicMock:
+        nonlocal merged
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            merged = True
+            return base_run(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "view"] and merged:
+            return MagicMock(
+                returncode=0, stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "m" * 40}}), stderr=""
+            )
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify",
+        )
+        == 0
+    )
+    assert any(command[:3] == ["gh", "pr", "merge"] for command in calls)
+    assert not any(command and command[0] == "bd" for command in calls)
+    assert not any(command[:2] == ["git", "push"] for command in calls)
+    ledger = merge_boundary._read_ledger()
+    assert ledger["merge_intents"] == []
+    assert ledger["merges"][0]["pr"] == 42
+    scope = merge_gate._scope_verdict(42, pr_view, head_sha="abc123", checkout_root=tmp_path)
+    expected = pr_scope.attestation_payload(scope, head_sha="abc123", base_sha=merge_gate._base_sha(pr_view))
+    assert ledger["merges"][0]["scope_attestation_digest"] == expected["attestation_digest"]
+    assert ledger["merges"][0]["base_sha"] == "b" * 40
 
 
 def test_merge_refreshes_a_receipt_when_the_scope_attestation_changes(
@@ -492,6 +580,42 @@ def test_merge_refuses_when_pr_scope_carrier_is_missing(
     stderr = capsys.readouterr().err
     assert "invalid structured pr-scope carrier" in stderr
     assert "no fresh merge-gate receipt" not in stderr
+
+
+def test_merge_refuses_a_legacy_v1_bead_carrier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    legacy = {
+        "version": 1,
+        "head_sha": "abc123",
+        "assigned_beads": ["polylogue-test-scope"],
+        "beads_digest": pr_scope.canonical_beads_digest({_SCOPE_BEAD["id"]: _SCOPE_BEAD}, ["polylogue-test-scope"]),
+        "dispositions": [
+            {
+                "bead_id": "polylogue-test-scope",
+                "disposition": "satisfied",
+                "evidence": [{"kind": "test", "ref": "tests/unit/devtools/test_merge_boundary.py"}],
+                "successors": [],
+            }
+        ],
+    }
+    legacy["scope_digest"] = pr_scope.carrier_digest(legacy)
+    pr_view["body"] = pr_scope.render_carrier(legacy)
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=True,
+            with_verify=False,
+            verify_command="devtools verify",
+        )
+        == 2
+    )
 
 
 def test_merge_refuses_when_unresolved_review_thread_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -701,7 +825,9 @@ def test_merge_with_verify_records_terminal_full_verify(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         merge_boundary,
         "_run_post_merge_terminal_verify",
-        lambda command, target, **_kwargs: merge_boundary.cmd_record_full_verify(command, target_sha=target),
+        lambda command, target, **kwargs: merge_boundary.cmd_record_full_verify(
+            command, target_sha=target, ledger_snapshot=kwargs["ledger_snapshot"]
+        ),
     )
 
     exit_code = merge_boundary.cmd_merge(
@@ -746,6 +872,42 @@ def test_merge_with_verify_returns_nonzero_when_terminal_authority_is_rejected(
         == 1
     )
     assert merge_boundary._read_ledger()["merges"]
+    assert merge_boundary._read_ledger()["merge_intents"] == []
+
+
+def test_merge_with_verify_reconciles_intent_after_terminal_verify(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    events: list[str] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view))
+    monkeypatch.setattr(merge_boundary, "_fetched_merged_default_branch_sha", lambda _pr: "merged-master")
+    monkeypatch.setattr(
+        merge_boundary,
+        "_run_post_merge_terminal_verify",
+        lambda _command, _target, **_kwargs: _record_event(events, "verify"),
+    )
+    monkeypatch.setattr(
+        merge_boundary,
+        "_complete_merge_intent",
+        lambda _pr, _head_sha: events.append("reconciliation"),
+    )
+
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=True,
+            verify_command="devtools verify",
+        )
+        == 0
+    )
+    assert events == ["verify", "reconciliation"]
 
 
 def test_post_merge_terminal_verify_rejects_stale_feature_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -941,11 +1103,18 @@ def test_merge_write_failure_recovers_valid_pending_ledger(monkeypatch: pytest.M
 
 def test_read_ledger_clears_byte_identical_pending_write(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
-    merge_boundary._write_ledger({"merges": [], "merge_intents": [], "last_full_verify": None})
+    merge_boundary._write_ledger(
+        {"merges": [], "merge_intents": [], "retired_merge_intents": [], "last_full_verify": None}
+    )
     serialized = merge_boundary._LEDGER_PATH.read_text()
     merge_boundary._LEDGER_PENDING_PATH.write_text(serialized)
 
-    assert merge_boundary._read_ledger() == {"merges": [], "merge_intents": [], "last_full_verify": None}
+    assert merge_boundary._read_ledger() == {
+        "merges": [],
+        "merge_intents": [],
+        "retired_merge_intents": [],
+        "last_full_verify": None,
+    }
     assert not merge_boundary._LEDGER_PENDING_PATH.exists()
 
 
@@ -1262,7 +1431,14 @@ def test_external_merge_before_completion_is_reconciled_from_durable_intent(
         if cmd[:3] == ["gh", "pr", "view"] and merged:
             return MagicMock(
                 returncode=0,
-                stdout=json.dumps({"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}}),
+                stdout=json.dumps(
+                    {
+                        **pr_view,
+                        "state": "MERGED",
+                        "headRefOid": "abc123",
+                        "mergeCommit": {"oid": "merge-commit"},
+                    }
+                ),
                 stderr="",
             )
         return base_run(cmd, **kwargs)
@@ -1300,12 +1476,80 @@ def test_record_full_verify_reconciles_durable_intents_before_snapshot(
     monkeypatch.setattr(
         merge_boundary,
         "_gh_json",
-        lambda _args: {"state": "MERGED", "mergeCommit": {"oid": "merge-commit"}},
+        lambda _args: {"state": "MERGED", "headRefOid": "pr-head", "mergeCommit": {"oid": "merge-commit"}},
     )
     snapshot = merge_boundary._reconciled_terminal_verify_snapshot()
 
     assert snapshot[2] == 1
     assert not merge_boundary._read_ledger()["merge_intents"]
+
+
+def test_recovery_retires_intent_when_pr_merged_from_a_different_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._record_merge_intent(42, "old-head", "old carrier")
+    executed: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        merge_boundary,
+        "_gh_json",
+        lambda _args: {"state": "MERGED", "headRefOid": "new-head", "mergeCommit": {"oid": "merge-commit"}},
+    )
+    monkeypatch.setattr(
+        merge_boundary,
+        "_complete_merge_intent",
+        lambda pr, head_sha, **_kwargs: executed.append((pr, head_sha)),
+    )
+
+    merge_boundary._reconcile_merge_intents()
+
+    ledger = merge_boundary._read_ledger()
+    assert executed == []
+    assert ledger["merge_intents"] == []
+    assert ledger["merges"][0]["pr"] == 42
+    assert ledger["merges"][0]["head_sha"] == "new-head"
+    assert ledger["retired_merge_intents"][0]["head_sha"] == "old-head"
+    assert ledger["retired_merge_intents"][0]["observed_head_sha"] == "new-head"
+
+
+def test_same_head_retry_replaces_an_obsolete_carrier_intent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A retry must not merge a prior PR-body attestation for the same head."""
+    monkeypatch.chdir(tmp_path)
+    merge_boundary._record_merge_intent(
+        42,
+        "feature-sha",
+        "old carrier",
+        scope_attestation_digest="a" * 64,
+        base_sha="old-base",
+    )
+
+    merge_boundary._record_merge_intent(
+        42,
+        "feature-sha",
+        "current carrier",
+        scope_attestation_digest="b" * 64,
+        base_sha="current-base",
+    )
+
+    intents = merge_boundary._read_ledger()["merge_intents"]
+    assert len(intents) == 1
+    assert intents[0]["title"] == "current carrier"
+    assert intents[0]["scope_attestation_digest"] == "b" * 64
+    assert intents[0]["base_sha"] == "current-base"
+
+
+def test_merge_entry_append_is_idempotent_for_a_recovered_same_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A recovery racing the caller must not create a second merge sequence entry."""
+    monkeypatch.chdir(tmp_path)
+
+    merge_boundary._append_merge_entry(42, "feature-sha", "current carrier", base_sha="current-base")
+    merge_boundary._append_merge_entry(42, "feature-sha", "current carrier", base_sha="current-base")
+
+    entries = merge_boundary._read_ledger()["merges"]
+    assert len(entries) == 1
+    assert entries[0]["merge_sequence"] == 1
 
 
 def test_external_merge_completion_write_failure_keeps_recovery_latch(

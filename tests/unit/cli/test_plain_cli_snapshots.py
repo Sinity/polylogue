@@ -21,9 +21,11 @@ user-visible drift in rendering of real session rows triggers a snapshot diff.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from click.testing import CliRunner
@@ -31,12 +33,15 @@ from click.testing import CliRunner
 syrupy = pytest.importorskip("syrupy")
 
 from polylogue.cli.click_app import cli
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?")
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?\s?(?:ms|µs|us|s)\b")
 _HEX_HASH_RE = re.compile(r"\b[a-f0-9]{12,}\b")
 _SIZE_BYTES_FIELD_RE = re.compile(r'("(?:db_)?size_bytes": )\d+')
 _ELAPSED_FIELD_RE = re.compile(r'("elapsed_s": )(?:null|-?\d+(?:\.\d+)?)')
+_SCHEMA_VERSION_FIELD_RE = re.compile(r'("(?:expected_)?user_version": )\d+')
 # Match path-like sequences (anything with a "/" between segments).
 _PATH_RE = re.compile(r"(/[A-Za-z0-9_.\-]+){2,}")
 
@@ -165,11 +170,11 @@ def test_plain_read_all_origin_filter_snapshot(
 # Click parameter chain (known gap, tracked in #1689).
 
 
-def _invoke_json(runner: CliRunner, args: list[str]) -> str:
-    """Invoke with --plain and redact ephemeral content from JSON output."""
+def _invoke_json(runner: CliRunner, args: list[str], *, redact: bool = True) -> str:
+    """Invoke with --plain and optionally redact ephemeral JSON content."""
     result = runner.invoke(cli, ["--plain", *args], catch_exceptions=False)
     assert result.exit_code == 0, f"args={args!r} exit={result.exit_code} output={result.output!r}"
-    return _redact(result.output)
+    return _redact(result.output) if redact else result.output
 
 
 def test_json_read_all_snapshot(
@@ -540,7 +545,29 @@ def test_json_status_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     snapshot: object,
 ) -> None:
-    """``polylogue --plain status --format json`` pins JSON status shape when daemon is unreachable."""
+    """Direct status reports current tier versions while pinning its JSON shape.
+
+    Schema version values identify the package's current storage generation,
+    so they intentionally change when a tier evolves. The CLI must still
+    expose integer expected and actual versions that agree for the seeded
+    archive. The snapshot redacts only those release counters after this
+    production-path assertion, leaving every field and its surrounding shape
+    under snapshot coverage.
+    """
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
-    output = _invoke_json(runner, ["ops", "status", "--format", "json"])
-    assert output == snapshot
+    output = _invoke_json(runner, ["ops", "status", "--format", "json"], redact=False)
+    payload = cast(dict[str, object], json.loads(output))
+    assert payload["source"] == "direct"
+    assert payload["daemon_liveness"] is False
+    archive_tiers = payload["archive_tiers"]
+    assert isinstance(archive_tiers, dict)
+    for tier_name, tier_status in archive_tiers.items():
+        assert isinstance(tier_name, str)
+        assert isinstance(tier_status, dict)
+        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier(tier_name)]
+        assert tier_status["expected_user_version"] == expected_version
+        assert tier_status["user_version"] == expected_version
+        assert tier_status["version_status"] == "ok"
+
+    redacted_output = _redact(output)
+    assert _SCHEMA_VERSION_FIELD_RE.sub(r"\1<SCHEMA_VERSION>", redacted_output) == snapshot

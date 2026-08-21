@@ -154,6 +154,17 @@ def _validate_ledger(data: object) -> dict[str, Any]:
                     or entry["merge_sequence"] <= 0
                 )
             )
+            or (
+                entry.get("scope_attestation_digest") is not None
+                and (
+                    not isinstance(entry.get("scope_attestation_digest"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", entry["scope_attestation_digest"]) is None
+                )
+            )
+            or (
+                entry.get("base_sha") is not None
+                and (not isinstance(entry.get("base_sha"), str) or not entry["base_sha"])
+            )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge entry")
     intents = data.get("merge_intents")
@@ -170,8 +181,35 @@ def _validate_ledger(data: object) -> dict[str, Any]:
             or not isinstance(intent.get("title"), str)
             or not intent["title"]
             or not _is_real_number(intent.get("intent_at"))
+            or (
+                intent.get("scope_attestation_digest") is not None
+                and (
+                    not isinstance(intent.get("scope_attestation_digest"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", intent["scope_attestation_digest"]) is None
+                )
+            )
+            or (
+                intent.get("base_sha") is not None
+                and (not isinstance(intent.get("base_sha"), str) or not intent["base_sha"])
+            )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge intent")
+    retired_intents = data.get("retired_merge_intents")
+    if not isinstance(retired_intents, list):
+        raise LedgerStateError("merge-train ledger contains malformed retired merge intents")
+    for intent in retired_intents:
+        if (
+            not isinstance(intent, dict)
+            or not isinstance(intent.get("pr"), int)
+            or isinstance(intent.get("pr"), bool)
+            or intent["pr"] <= 0
+            or not isinstance(intent.get("head_sha"), str)
+            or not intent["head_sha"]
+            or not _is_real_number(intent.get("retired_at"))
+            or not isinstance(intent.get("retired_reason"), str)
+            or not intent["retired_reason"]
+        ):
+            raise LedgerStateError("merge-train ledger contains a malformed retired merge intent")
     receipt = data.get("last_full_verify")
     if receipt is None:
         return data
@@ -219,7 +257,7 @@ def _validate_ledger(data: object) -> dict[str, Any]:
 def _read_ledger_unlocked() -> dict[str, Any]:
     _recover_pending_ledger_unlocked()
     if not _LEDGER_PATH.exists():
-        return {"merges": [], "merge_intents": [], "last_full_verify": None}
+        return {"merges": [], "merge_intents": [], "retired_merge_intents": [], "last_full_verify": None}
     try:
         data = json.loads(_LEDGER_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -227,6 +265,7 @@ def _read_ledger_unlocked() -> dict[str, Any]:
     if isinstance(data, dict):
         data.setdefault("merges", [])
         data.setdefault("merge_intents", [])
+        data.setdefault("retired_merge_intents", [])
         data.setdefault("last_full_verify", None)
     return _validate_ledger(data)
 
@@ -239,6 +278,7 @@ def _read_ledger_file(path: Path, *, description: str) -> dict[str, Any]:
     if isinstance(data, dict):
         data.setdefault("merges", [])
         data.setdefault("merge_intents", [])
+        data.setdefault("retired_merge_intents", [])
         data.setdefault("last_full_verify", None)
     return _validate_ledger(data)
 
@@ -286,6 +326,7 @@ def _durable_replace(source: Path, destination: Path) -> None:
 def _write_ledger_unlocked(ledger: dict[str, Any]) -> None:
     ledger.setdefault("merges", [])
     ledger.setdefault("merge_intents", [])
+    ledger.setdefault("retired_merge_intents", [])
     ledger.setdefault("last_full_verify", None)
     _validate_ledger(ledger)
     parent = _LEDGER_PATH.parent
@@ -324,32 +365,89 @@ def _merge_sequence(ledger: Mapping[str, Any]) -> int:
     return sequence
 
 
-def _append_merge_entry(pr: int, head_sha: str, title: str) -> None:
+def _append_merge_entry(
+    pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None, base_sha: str | None = None
+) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
-        _append_merge_entry_unlocked(ledger, pr, head_sha, title)
+        _append_merge_entry_unlocked(
+            ledger, pr, head_sha, title, scope_attestation_digest=scope_attestation_digest, base_sha=base_sha
+        )
         _write_ledger_unlocked(ledger)
 
 
-def _append_merge_entry_unlocked(ledger: dict[str, Any], pr: int, head_sha: str, title: str) -> None:
+def _append_merge_entry_unlocked(
+    ledger: dict[str, Any],
+    pr: int,
+    head_sha: str,
+    title: str,
+    *,
+    scope_attestation_digest: str | None = None,
+    base_sha: str | None = None,
+) -> None:
+    existing = [entry for entry in ledger["merges"] if entry.get("pr") == pr and entry.get("head_sha") == head_sha]
+    if existing:
+        if len(existing) != 1:
+            raise LedgerStateError(f"merge-train ledger has duplicate entries for PR #{pr} @ {head_sha[:8]}")
+        existing_entry = existing[0]
+        if scope_attestation_digest is not None and existing_entry.get("scope_attestation_digest") not in {
+            None,
+            scope_attestation_digest,
+        }:
+            raise LedgerStateError(
+                f"merge-train ledger has conflicting scope attestations for PR #{pr} @ {head_sha[:8]}"
+            )
+        if base_sha is not None and existing_entry.get("base_sha") not in {None, base_sha}:
+            raise LedgerStateError(f"merge-train ledger has conflicting base SHAs for PR #{pr} @ {head_sha[:8]}")
+        return
     merge_sequence = _merge_sequence(ledger) + 1
-    ledger["merges"].append(
-        {
-            "pr": pr,
-            "head_sha": head_sha,
-            "title": title,
-            "merged_at": time.time(),
-            "merge_sequence": merge_sequence,
-        }
-    )
+    entry: dict[str, Any] = {
+        "pr": pr,
+        "head_sha": head_sha,
+        "title": title,
+        "merged_at": time.time(),
+        "merge_sequence": merge_sequence,
+    }
+    if scope_attestation_digest is not None:
+        entry["scope_attestation_digest"] = scope_attestation_digest
+    if base_sha is not None:
+        entry["base_sha"] = base_sha
+    ledger["merges"].append(entry)
 
 
-def _record_merge_intent(pr: int, head_sha: str, title: str) -> None:
+def _record_merge_intent(
+    pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None, base_sha: str | None = None
+) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
-        if not any(intent.get("pr") == pr and intent.get("head_sha") == head_sha for intent in ledger["merge_intents"]):
-            ledger["merge_intents"].append({"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()})
-            _write_ledger_unlocked(ledger)
+        matching = [
+            intent
+            for intent in ledger["merge_intents"]
+            if intent.get("pr") == pr and intent.get("head_sha") == head_sha
+        ]
+        if len(matching) > 1:
+            raise LedgerStateError(f"merge-train ledger has duplicate intents for PR #{pr} @ {head_sha[:8]}")
+        intent: dict[str, Any] = {"pr": pr, "head_sha": head_sha, "title": title, "intent_at": time.time()}
+        if scope_attestation_digest is not None:
+            intent["scope_attestation_digest"] = scope_attestation_digest
+        if base_sha is not None:
+            intent["base_sha"] = base_sha
+        if matching:
+            existing = matching[0]
+            if all(existing.get(key) == value for key, value in intent.items() if key != "intent_at"):
+                return
+            retired = dict(existing)
+            retired.update(
+                {
+                    "retired_at": time.time(),
+                    "retired_reason": "same-head merge retry replaced its validated carrier intent",
+                    "replacement_scope_attestation_digest": scope_attestation_digest,
+                }
+            )
+            ledger["retired_merge_intents"].append(retired)
+            ledger["merge_intents"] = [item for item in ledger["merge_intents"] if item is not existing]
+        ledger["merge_intents"].append(intent)
+        _write_ledger_unlocked(ledger)
 
 
 def _complete_merge_intent(pr: int, head_sha: str) -> None:
@@ -361,22 +459,103 @@ def _complete_merge_intent(pr: int, head_sha: str) -> None:
             return
         intent = matching[0]
         if not any(entry.get("pr") == pr and entry.get("head_sha") == head_sha for entry in ledger["merges"]):
-            _append_merge_entry_unlocked(ledger, pr, head_sha, str(intent["title"]))
+            digest = intent.get("scope_attestation_digest")
+            _append_merge_entry_unlocked(
+                ledger,
+                pr,
+                head_sha,
+                str(intent["title"]),
+                scope_attestation_digest=digest if isinstance(digest, str) else None,
+                base_sha=intent.get("base_sha") if isinstance(intent.get("base_sha"), str) else None,
+            )
         ledger["merge_intents"] = [item for item in intents if item is not intent]
         _write_ledger_unlocked(ledger)
 
 
-def _reconcile_merge_intents() -> None:
+def _retire_superseded_merge_intent(intent: Mapping[str, Any], *, observed_head_sha: str, observed_title: str) -> None:
+    """Ledger an externally observed replacement merge, then retire its old intent."""
+    with _ledger_lock():
+        ledger = _read_ledger_unlocked()
+        matching = [
+            item
+            for item in ledger["merge_intents"]
+            if item.get("pr") == intent.get("pr") and item.get("head_sha") == intent.get("head_sha")
+        ]
+        if not matching:
+            return
+        if not any(
+            entry.get("pr") == intent.get("pr") and entry.get("head_sha") == observed_head_sha
+            for entry in ledger["merges"]
+        ):
+            _append_merge_entry_unlocked(ledger, int(intent["pr"]), observed_head_sha, observed_title)
+        retired = dict(matching[0])
+        retired.update(
+            {
+                "retired_at": time.time(),
+                "retired_reason": "PR merged from a different head; recorded scope attestation was not accepted",
+                "observed_head_sha": observed_head_sha,
+            }
+        )
+        ledger["retired_merge_intents"].append(retired)
+        ledger["merge_intents"] = [item for item in ledger["merge_intents"] if item is not matching[0]]
+        _write_ledger_unlocked(ledger)
+
+
+def _reconcile_merge_intents(*, skip: set[tuple[int, str]] | None = None) -> None:
     """Resolve durable pre-merge intents against GitHub after a restart."""
     ledger = _read_ledger()
     for intent in list(ledger["merge_intents"]):
+        identity = (int(intent["pr"]), str(intent["head_sha"]))
+        if skip is not None and identity in skip:
+            continue
         try:
-            info = _gh_json(["pr", "view", str(intent["pr"]), "--json", "state,mergeCommit"])
+            info = _gh_json(
+                [
+                    "pr",
+                    "view",
+                    str(intent["pr"]),
+                    "--json",
+                    "state,mergeCommit,headRefOid,baseRefOid,title,body,isDraft,author,files",
+                ]
+            )
         except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
             raise LedgerStateError(f"could not reconcile merge intent for PR #{intent['pr']}: {exc}") from exc
-        merge_commit = info.get("mergeCommit")
-        if info.get("state") != "MERGED" or not isinstance(merge_commit, dict) or not merge_commit.get("oid"):
+        if info.get("state") != "MERGED":
             raise LedgerStateError(f"unresolved durable merge intent for PR #{intent['pr']}")
+        observed_head_sha = info.get("headRefOid")
+        if not isinstance(observed_head_sha, str) or not observed_head_sha:
+            raise LedgerStateError(f"merged PR #{intent['pr']} has no observable merged head")
+        if observed_head_sha != intent["head_sha"]:
+            observed_title = info.get("title")
+            _retire_superseded_merge_intent(
+                intent,
+                observed_head_sha=observed_head_sha,
+                observed_title=observed_title
+                if isinstance(observed_title, str) and observed_title
+                else str(intent["title"]),
+            )
+            continue
+        recorded_attestation = intent.get("scope_attestation_digest")
+        if recorded_attestation is not None:
+            recorded_base_sha = intent.get("base_sha")
+            if not isinstance(recorded_base_sha, str) or not recorded_base_sha:
+                raise LedgerStateError(f"merge intent for PR #{intent['pr']} lacks its merge-time base SHA")
+            scope_info = {**info, "baseRefOid": recorded_base_sha}
+            scope = merge_gate._scope_verdict(
+                int(intent["pr"]),
+                scope_info,
+                head_sha=observed_head_sha,
+                checkout_root=merge_gate._repository_root(),
+            )
+            observed_attestation = pr_scope.attestation_payload(
+                scope,
+                head_sha=observed_head_sha,
+                base_sha=recorded_base_sha,
+            )["attestation_digest"]
+            if not scope.ok or observed_attestation != recorded_attestation:
+                raise LedgerStateError(
+                    f"merged PR #{intent['pr']} no longer matches its recorded exact-head scope attestation"
+                )
         _complete_merge_intent(int(intent["pr"]), str(intent["head_sha"]))
         if any(
             item.get("pr") == intent["pr"] and item.get("head_sha") == intent["head_sha"]
@@ -695,6 +874,9 @@ def cmd_merge(
         for reason in scope.reasons:
             print(f"  - {reason}", file=sys.stderr)
         return 2
+    if scope.carrier_version != 2 or scope.scope_kind is None:
+        print(f"REFUSING to merge PR #{pr}: workspace merge requires a v2 structured pr-scope carrier", file=sys.stderr)
+        return 2
 
     if not _receipt_is_fresh_for_scope(
         pr,
@@ -761,62 +943,88 @@ def cmd_merge(
     if not final_scope.ok or final_attestation != initial_attestation:
         print(f"REFUSING to merge PR #{pr}: structured scope changed after merge-gate validation", file=sys.stderr)
         return 1
-
     try:
-        _record_merge_intent(pr, head_sha, clean_title)
+        _record_merge_intent(
+            pr,
+            head_sha,
+            clean_title,
+            scope_attestation_digest=str(final_attestation),
+            base_sha=merge_gate._base_sha(final_info),
+        )
+        merge_result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "merge",
+                str(pr),
+                "--squash",
+                "--match-head-commit",
+                head_sha,
+                "--subject",
+                clean_title,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
     except LedgerStateError as exc:
         print(f"REFUSING to merge PR #{pr}: could not durably record merge intent: {exc}", file=sys.stderr)
         return 1
-
-    merge_result = subprocess.run(
-        [
-            "gh",
-            "pr",
-            "merge",
-            str(pr),
-            "--squash",
-            "--match-head-commit",
-            head_sha,
-            "--subject",
-            clean_title,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
     if merge_result.returncode != 0:
         print(f"gh pr merge failed: {merge_result.stderr.strip()[:500]}", file=sys.stderr)
         return merge_result.returncode
 
     print(f"merged PR #{pr} @ {head_sha[:8]}: {clean_title!r}")
+
+    terminal_exit = 0
+    if with_verify:
+        try:
+            _append_merge_entry(
+                pr,
+                head_sha,
+                clean_title,
+                scope_attestation_digest=str(final_attestation),
+                base_sha=merge_gate._base_sha(final_info),
+            )
+            _reconcile_merge_intents(skip={(pr, head_sha)})
+            ledger_snapshot = _terminal_verify_snapshot()
+        except LedgerStateError as exc:
+            print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
+            terminal_exit = 1
+        else:
+            target_sha = _fetched_merged_default_branch_sha(pr)
+            if target_sha is None:
+                print(
+                    "REFUSING terminal verify: the fetched default branch does not prove this squash merge is included",
+                    file=sys.stderr,
+                )
+                terminal_exit = 1
+            else:
+                print(f"running post-merge broad verify (merge-train terminal step): {verify_command!r}")
+                terminal_exit = _run_post_merge_terminal_verify(
+                    verify_command, target_sha, ledger_snapshot=ledger_snapshot
+                )
+
     try:
         _complete_merge_intent(pr, head_sha)
     except LedgerStateError as exc:
-        print(f"REFUSING to continue: merge-train ledger is not durably writable: {exc}", file=sys.stderr)
+        print(
+            f"MERGED PR #{pr}, but merge-ledger reconciliation remains incomplete: {exc}. "
+            f"Recovery: devtools workspace merge train-status",
+            file=sys.stderr,
+        )
         return 1
 
-    if with_verify:
-        try:
-            ledger_snapshot = _reconciled_terminal_verify_snapshot()
-        except LedgerStateError as exc:
-            print(f"REFUSING terminal verify: {exc}", file=sys.stderr)
-            return 1
-        target_sha = _fetched_merged_default_branch_sha(pr)
-        if target_sha is None:
-            print(
-                "REFUSING terminal verify: the fetched default branch does not prove this squash merge is included",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"running post-merge broad verify (merge-train terminal step): {verify_command!r}")
-        return _run_post_merge_terminal_verify(verify_command, target_sha, ledger_snapshot=ledger_snapshot)
+    if terminal_exit != 0:
+        return terminal_exit
 
-    print(
-        "REMINDER: this merge-train's terminal ledger step (one green complete-corpus verify since "
-        "the last merge) is not yet recorded -- run `devtools verify` on merged master before "
-        "declaring the train done (an accepted run records itself), or check "
-        "`devtools workspace merge train-status`."
-    )
+    if not with_verify:
+        print(
+            "REMINDER: this merge-train's terminal ledger step (one green complete-corpus verify since "
+            "the last merge) is not yet recorded -- run `devtools verify` on merged master before "
+            "declaring the train done (an accepted run records itself), or check "
+            "`devtools workspace merge train-status`."
+        )
     return 0
 
 

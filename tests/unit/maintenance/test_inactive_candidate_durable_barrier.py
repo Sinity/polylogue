@@ -16,6 +16,7 @@ from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.revision_backfill import (
+    RawParsePrefetchCache,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
     validate_frozen_source_authority,
@@ -129,9 +130,14 @@ def test_resumed_candidate_validates_only_selected_raw_page(
         archive_root: Path,
         *,
         selected_raw_ids: list[str] | None = None,
+        prefetch_cache: RawParsePrefetchCache | None = None,
     ) -> None:
         selections.append(None if selected_raw_ids is None else tuple(selected_raw_ids))
-        original_validate(archive_root, selected_raw_ids=selected_raw_ids)
+        original_validate(
+            archive_root,
+            selected_raw_ids=selected_raw_ids,
+            prefetch_cache=prefetch_cache,
+        )
 
     monkeypatch.setattr(revision_backfill_module, "validate_frozen_source_authority", record_validation)
     first = rebuild_index_from_source_sync(

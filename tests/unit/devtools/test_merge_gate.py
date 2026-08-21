@@ -29,6 +29,11 @@ def _scope_bead_record(tmp_path: Path) -> None:
     (beads_dir / "issues.jsonl").write_text(json.dumps(_SCOPE_BEAD) + "\n")
 
 
+@pytest.fixture(autouse=True)
+def _frozen_merge_gate_clock(frozen_clock: FrozenClock) -> None:
+    del frozen_clock
+
+
 def _scope_body(head_sha: str) -> str:
     carrier = {
         "version": 1,

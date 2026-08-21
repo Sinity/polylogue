@@ -747,7 +747,10 @@ def inspect_native_testmon_environment(
     """Validate one native environment without interpreting plugin internals."""
     _ensure_deadline(deadline_monotonic)
     sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
-    sqlite_data_path = _descriptor_bound_path(data_fd) if data_fd is not None else data_path
+    # SQLite derives ``-wal``/``-shm`` from the pathname it opens.  The retained
+    # descriptor proves this public inode before the read; opening through
+    # ``/proc/self/fd/<n>`` would instead strand the legitimate public WAL.
+    sqlite_data_path = data_path
     if data_fd is not None:
         try:
             opened = os.fstat(data_fd)
@@ -1178,9 +1181,10 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
         raise NativeTestmonRepairError(f"cannot bind owned testmon child {name}: {exc}") from exc
 
 
-def _descriptor_bound_path(file_descriptor: int) -> Path:
+def _descriptor_bound_path(file_descriptor: int, *, owner_pid: int | None = None) -> Path:
     """Return a path that reopens the exact held descriptor, or fail closed."""
-    for root in _DESCRIPTOR_FD_ROOTS:
+    roots = (Path("/proc") / str(owner_pid) / "fd",) if owner_pid is not None else _DESCRIPTOR_FD_ROOTS
+    for root in roots:
         candidate = root / str(file_descriptor)
         try:
             os.stat(candidate)
@@ -1307,7 +1311,13 @@ def _atomic_copy_sqlite_database(
         if source_fd is None:
             source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
         else:
-            source_path = _descriptor_bound_path(source_fd)
+            opened_source = os.fstat(source_fd)
+            current_source = source.stat()
+            if (opened_source.st_dev, opened_source.st_ino) != (current_source.st_dev, current_source.st_ino):
+                raise NativeTestmonRepairError("source testmon database changed before SQLite backup")
+            # Retain the descriptor as the inode authority, but use the public
+            # basename so SQLite can replay its paired WAL while copying.
+            source_path = source
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
         if source_fd is None:
             # Retain the source inode before SQLite opens it.  The returned
@@ -1349,6 +1359,11 @@ def _atomic_copy_sqlite_database(
                 progress=lambda _status, _remaining, _total: _ensure_deadline(deadline_monotonic),
                 sleep=0.05,
             )
+        if source_fd is not None:
+            opened_source = os.fstat(source_fd)
+            current_source = source.stat()
+            if (opened_source.st_dev, opened_source.st_ino) != (current_source.st_dev, current_source.st_ino):
+                raise NativeTestmonRepairError("source testmon database changed during SQLite backup")
         _ensure_deadline(deadline_monotonic)
         # Validate through the held descriptor.  Reopening ``temporary`` by
         # name here would allow a replacement of that directory entry to

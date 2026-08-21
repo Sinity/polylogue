@@ -67,10 +67,13 @@ _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
 # A hook creates a day-shard directory before atomically publishing its first
 # envelope. An added-directory event can therefore precede the child-file
 # event that a recursive watcher is about to install. Poll only that new shard
-# until its first envelope is visible, rather than leaving it to periodic
-# catch-up or relying on a scheduler-dependent fixed grace period.
+# until its first envelope is durably acknowledged, rather than leaving it to
+# periodic catch-up or relying on a scheduler-dependent fixed grace period.
 _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S = 0.05
-_HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS = 5.0
+# A publish can be delayed by a paused hook process, so this is a poll-interval
+# cap, not a retry lifetime. The task ends only when the shard disappears, its
+# first envelope is acknowledged, or the watcher stops.
+_HOOK_SPOOL_DIRECTORY_RETRY_MAX_POLL_S = 5.0 * 60.0
 # A catch-up writer owns the only archive writer for the whole chunk.  The
 # former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
 # starving fresh watcher events.  Keep historical convergence fair by
@@ -273,6 +276,7 @@ class LiveWatcher:
         self._failed_retry_task: asyncio.Task[None] | None = None
         self._periodic_catch_up_task: asyncio.Task[None] | None = None
         self._hook_spool_directory_retry_tasks: dict[Path, asyncio.Task[None]] = {}
+        self._hook_spool_drain_lock = asyncio.Lock()
         self._failed_retry_deadline: float | None = None
         self._last_enqueue_at = 0.0
         self._last_batch_at: float = 0.0
@@ -389,6 +393,7 @@ class LiveWatcher:
                     continue
                 if self._is_hook_spool_path(path):
                     await self._drain_hook_spool()
+                    self._cancel_hook_spool_directory_retry_if_acknowledged(path.parent)
                     continue
                 self._enqueue(path)
 
@@ -468,9 +473,8 @@ class LiveWatcher:
     async def _retry_hook_spool_directory_until_populated(self, directory: Path) -> None:
         """Wait for an added shard's first envelope until it is acknowledged."""
 
-        deadline = asyncio.get_running_loop().time() + _HOOK_SPOOL_DIRECTORY_RETRY_MAX_SECONDS
         delay_s = _HOOK_SPOOL_DIRECTORY_RETRY_POLL_S
-        while not self._stop.is_set() and asyncio.get_running_loop().time() < deadline:
+        while not self._stop.is_set():
             try:
                 if not directory.exists():
                     return
@@ -487,9 +491,21 @@ class LiveWatcher:
                     raise
                 logger.warning("live.watcher: archive busy while draining new hook shard; will retry")
             except OSError:
-                return
+                if not directory.exists():
+                    return
+                logger.warning("live.watcher: unable to inspect new hook shard; will retry")
             await asyncio.sleep(delay_s)
-            delay_s = min(delay_s * 2, 0.5)
+            delay_s = min(delay_s * 2, _HOOK_SPOOL_DIRECTORY_RETRY_MAX_POLL_S)
+
+    def _cancel_hook_spool_directory_retry_if_acknowledged(self, directory: Path) -> None:
+        """Release a directory retry once a child-file notification drained it."""
+
+        directory = directory.resolve()
+        if self._hook_spool_directory_has_envelope(directory):
+            return
+        task = self._hook_spool_directory_retry_tasks.get(directory)
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
 
     def _cancel_hook_spool_directory_retries(self) -> None:
         for task in tuple(self._hook_spool_directory_retry_tasks.values()):
@@ -673,31 +689,32 @@ class LiveWatcher:
         live ingest and catch-up chunks.
         """
 
-        try:
-            self._batch_processor.require_cursor_authority()
-        except CursorAuthorityBlockedError as exc:
-            logger.warning("live.watcher: hook-spool drain refused by cursor authority: %s", exc)
-            return
+        async with self._hook_spool_drain_lock:
+            try:
+                self._batch_processor.require_cursor_authority()
+            except CursorAuthorityBlockedError as exc:
+                logger.warning("live.watcher: hook-spool drain refused by cursor authority: %s", exc)
+                return
 
-        total_acknowledged = 0
-        while True:
-            result = await self._run_writer_sync(
-                "watcher.hook_spool.drain",
-                drain_hook_event_spool,
-                Path(self._polylogue.archive_root),
-                root=self._hook_spool_root(),
-                limit=_HOOK_SPOOL_DRAIN_BATCH_LIMIT,
-            )
-            total_acknowledged += result.acknowledged
-            if result.failed:
-                logger.warning(
-                    "live.watcher: hook spool drain left %d event(s) pending",
-                    result.failed,
+            total_acknowledged = 0
+            while True:
+                result = await self._run_writer_sync(
+                    "watcher.hook_spool.drain",
+                    drain_hook_event_spool,
+                    Path(self._polylogue.archive_root),
+                    root=self._hook_spool_root(),
+                    limit=_HOOK_SPOOL_DRAIN_BATCH_LIMIT,
                 )
-            if result.acknowledged == 0 or result.remaining <= result.failed:
-                break
-        if total_acknowledged:
-            logger.info("live.watcher: acknowledged %d hook spool event(s)", total_acknowledged)
+                total_acknowledged += result.acknowledged
+                if result.failed:
+                    logger.warning(
+                        "live.watcher: hook spool drain left %d event(s) pending",
+                        result.failed,
+                    )
+                if result.acknowledged == 0 or result.remaining <= result.failed:
+                    break
+            if total_acknowledged:
+                logger.info("live.watcher: acknowledged %d hook spool event(s)", total_acknowledged)
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}

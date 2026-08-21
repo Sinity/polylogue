@@ -3673,8 +3673,8 @@ def validate_archive_verification_registry(
             status = waiver_bead_statuses.get(spec.waiver.bead_id)
             if status is None:
                 errors.append(f"{spec.name}: waiver bead {spec.waiver.bead_id} is unknown")
-            elif status != "open":
-                errors.append(f"{spec.name}: waiver bead {spec.waiver.bead_id} is {status}, not open")
+            elif status not in {"open", "in_progress", "deferred"}:
+                errors.append(f"{spec.name}: waiver bead {spec.waiver.bead_id} is {status}, not unresolved")
     if errors:
         raise ValueError("invalid archive verification registry: " + "; ".join(errors))
 

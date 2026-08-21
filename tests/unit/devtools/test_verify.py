@@ -2946,14 +2946,13 @@ def test_native_verifier_keeps_descriptor_binding_for_parent_inspection(
 
     monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
-        assert state.data_path == descriptor_root / str(state.descriptor) / verify.TESTMON_DATA.name
-        assert state.executable_data_path == tmp_path / verify.TESTMON_DATA
+        assert state.data_path == Path(f"/proc/{os.getpid()}/fd/{state.descriptor}") / verify.TESTMON_DATA.name
         with patch("devtools.verify._run_step", side_effect=fake_run_step):
             assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
     finally:
         state.close()
 
-    assert captured["native_testmon_data"] == state.executable_data_path
+    assert captured["native_testmon_data"] == state.data_path
 
 
 @pytest.mark.uses_real_clock("The systemd scope and xdist worker are independent exec boundaries.")
@@ -2982,7 +2981,7 @@ def test_native_verifier_gives_xdist_worker_a_real_sqlite_path_through_systemd(
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.setenv(CGROUP_MODE_ENV, "require")
     state = verify._open_owned_native_testmon_state(tmp_path)
-    executable_data_path = state.executable_data_path
+    executable_data_path = state.data_path
     observed = tmp_path / "contained-worker.json"
     module = tmp_path / "test_xdist_testmon_state.py"
     module.write_text(
@@ -4352,6 +4351,10 @@ def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TIMEOUT_S", "0")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S", "1.5")
     monkeypatch.setenv("POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S", "0.1")
+    # This is the actual full-suite topology: a unit-test worker launches a
+    # managed xdist supervisor of its own.  The nested controller must not
+    # inherit the outer worker identity in the liveness event ledger.
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "outer-gw7")
     run = VerifyRun(tier="storage-scale-deadlock-xdist", argv=[], git_head=None, root=tmp_path)
 
     rc, _elapsed, metadata = _run(
@@ -4389,6 +4392,7 @@ def test_storage_scale_deadlock_cannot_hide_progress_stall_in_xdist(
     assert fixture_path.is_relative_to(verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale")
     heartbeat_events = [event for event in events if event.get("progress_kind") == "storage_scale_heartbeat"]
     assert len(heartbeat_events) <= 2
+    assert any(event.get("worker_id") == "controller" for event in events)
     assert any(event.get("worker_id") == "gw0" for event in events)
 
 

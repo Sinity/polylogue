@@ -9,6 +9,7 @@ hard-coded list of project-specific edges.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+DEPENDENCY_KINDS = frozenset({"blocks", "parent-child", "relates-to", "discovered-from", "supersedes"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +157,8 @@ def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
             if edge in seen_edges:
                 findings.append(Finding("duplicate-dependency", bead_id, f"duplicate {dep_type} edge to {target}"))
             seen_edges.add(edge)
+            if dep_type not in DEPENDENCY_KINDS:
+                findings.append(Finding("unknown-dependency-kind", bead_id, f"unknown dependency kind {dep_type!r}"))
             if target not in by_id:
                 findings.append(
                     Finding("missing-dependency-target", bead_id, f"{dep_type} target {target!r} does not exist")
@@ -174,16 +179,119 @@ def collect_findings(issues: list[dict[str, Any]]) -> list[Finding]:
     return sorted(findings, key=lambda finding: (finding.kind, finding.bead_id, finding.detail))
 
 
-def build_report(issues: list[dict[str, Any]], *, cycles_ok: bool, cycles_output: str) -> dict[str, Any]:
+def _graph_digest(issues: list[dict[str, Any]]) -> str:
+    records = [
+        {
+            "id": issue["id"],
+            "status": issue.get("status"),
+            # Preserve malformed records in the digest without asking Python
+            # to order values of unrelated JSON types (for example None and
+            # str). Structural findings below remain the authority on their
+            # validity.
+            "dependencies": sorted(
+                json.dumps(dependency, sort_keys=True, separators=(",", ":"))
+                for dependency in _dependency_records(issue)
+            ),
+        }
+        for issue in sorted(issues, key=lambda item: str(item["id"]))
+    ]
+    return hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _forcing_report(issues: list[dict[str, Any]], root: str, *, graph_sha256: str) -> dict[str, Any]:
+    by_id = {str(issue["id"]): issue for issue in issues}
+    if root not in by_id:
+        raise RuntimeError(f"forcing root {root!r} does not exist")
+    pending = [root]
+    blockers: set[str] = set()
+    while pending:
+        bead_id = pending.pop()
+        for dependency in _dependency_records(by_id[bead_id]):
+            if dependency.get("type") != "blocks":
+                continue
+            target = dependency.get("depends_on_id")
+            if isinstance(target, str) and target and target in by_id and target not in blockers:
+                blockers.add(target)
+                pending.append(target)
+    blocker_ids = sorted(blockers)
+    statuses = {bead_id: str(by_id[bead_id].get("status", "unknown")) for bead_id in blocker_ids}
+    status_counts: dict[str, int] = defaultdict(int)
+    for status in statuses.values():
+        status_counts[status] += 1
+    unresolved_ids = sorted(bead_id for bead_id, status in statuses.items() if status != "closed")
+    forcing_payload = {
+        "root_bead_id": root,
+        "graph_sha256": graph_sha256,
+        "blocker_ids": blocker_ids,
+        "statuses": statuses,
+    }
+    return {
+        "root_bead_id": root,
+        "forcing_sha256": hashlib.sha256(
+            json.dumps(forcing_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "blocker_ids": blocker_ids,
+        "status_counts": dict(sorted(status_counts.items())),
+        "unresolved_ids": unresolved_ids,
+        "resolved": not unresolved_ids,
+    }
+
+
+def _registry_findings(issues: list[dict[str, Any]]) -> list[Finding]:
+    """Cross-check existing runtime registries against one immutable Beads population."""
+    from polylogue.maintenance.archive_verification import (
+        ARCHIVE_VERIFICATION_CHECKS,
+        validate_archive_verification_registry,
+    )
+    from polylogue.maintenance.live_proof import LIVE_PROOF_SPECS, validate_live_proof_registry
+
+    status_by_bead = {str(issue["id"]): str(issue.get("status", "unknown")) for issue in issues}
+    findings: list[Finding] = []
+    try:
+        validate_archive_verification_registry(waiver_bead_statuses=status_by_bead)
+    except ValueError as exc:
+        findings.append(Finding("archive-verification-registry", "registry", str(exc)))
+    try:
+        validate_live_proof_registry()
+    except ValueError as exc:
+        findings.append(Finding("live-proof-registry", "registry", str(exc)))
+    for archive_spec in ARCHIVE_VERIFICATION_CHECKS:
+        if archive_spec.incident is not None and archive_spec.incident.bead_id not in status_by_bead:
+            findings.append(Finding("unknown-incident-bead", archive_spec.name, archive_spec.incident.bead_id))
+    for proof_spec in LIVE_PROOF_SPECS:
+        if proof_spec.bead_id not in status_by_bead:
+            findings.append(Finding("unknown-live-proof-bead", proof_spec.proof_id.value, proof_spec.bead_id))
+    return findings
+
+
+def build_report(
+    issues: list[dict[str, Any],],
+    *,
+    cycles_ok: bool,
+    cycles_output: str,
+    forcing_roots: list[str] | None = None,
+) -> dict[str, Any]:
     findings = collect_findings(issues)
+    findings.extend(_registry_findings(issues))
+    findings.sort(key=lambda finding: (finding.kind, finding.bead_id, finding.detail))
     structured_cycles_ok = not any(finding.kind in {"parent-cycle", "blocks-cycle"} for finding in findings)
     counts: dict[str, int] = defaultdict(int)
     for finding in findings:
         counts[finding.kind] += 1
+    graph_sha256 = _graph_digest(issues)
+    forcing = [_forcing_report(issues, root, graph_sha256=graph_sha256) for root in sorted(set(forcing_roots or []))]
     return {
-        "report_version": 2,
+        "report_version": 3,
         "cycles": {"ok": cycles_ok and structured_cycles_ok, "output": cycles_output},
         "issues_scanned": len(issues),
+        "graph_sha256": graph_sha256,
+        "dependency_kind_counts": {
+            kind: sum(
+                1 for issue in issues for dependency in _dependency_records(issue) if dependency.get("type") == kind
+            )
+            for kind in sorted(DEPENDENCY_KINDS)
+        },
+        "forcing": forcing,
         "findings": [{"kind": f.kind, "id": f.bead_id, "detail": f.detail} for f in findings],
         "counts": dict(sorted(counts.items())),
     }
@@ -202,6 +310,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--export", type=Path, help="validate a JSONL export without touching the shared live Beads database"
     )
+    parser.add_argument(
+        "--forcing-root", action="append", default=[], help="Bead ID whose transitive blocks closure to report"
+    )
+    parser.add_argument(
+        "--require-resolved", action="store_true", help="fail when a requested forcing closure has non-closed blockers"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -213,9 +327,9 @@ def main(argv: list[str] | None = None) -> int:
             if not cycles_ok:
                 raise RuntimeError(f"dependency cycle check failed: {cycles_output}")
             issues = _run_bd_list_all()
-        report = build_report(issues, cycles_ok=cycles_ok, cycles_output=cycles_output)
+        report = build_report(issues, cycles_ok=cycles_ok, cycles_output=cycles_output, forcing_roots=args.forcing_root)
     except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
-        payload = {"report_version": 2, "error": str(exc)}
+        payload = {"report_version": 3, "error": str(exc)}
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -223,6 +337,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(json.dumps(report, indent=2, sort_keys=True) if args.json else _format_report(report))
+    unresolved = [item["root_bead_id"] for item in report["forcing"] if not item["resolved"]]
+    if args.require_resolved and unresolved:
+        print(f"bead-graph: unresolved forcing blockers for {', '.join(unresolved)}", file=sys.stderr)
+        return 1
     return 0 if not report["findings"] else 1
 
 

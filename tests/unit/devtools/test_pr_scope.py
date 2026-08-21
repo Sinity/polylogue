@@ -1022,6 +1022,85 @@ def test_ci_check_bootstraps_once_when_base_has_no_validator(
     )
 
 
+def test_check_ci_refuses_when_the_expected_head_has_no_open_pr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The production CLI must not turn an unbound commit into a green CI skip."""
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_pr_for_head",
+        lambda **_kwargs: (_ for _ in ()).throw(pr_scope.NoOpenPullRequestError("no open PR for test head")),
+    )
+
+    assert (
+        pr_scope.main(
+            [
+                "check-ci",
+                "--repo",
+                "Sinity/polylogue",
+                "--expected-head-sha",
+                HEAD_SHA,
+            ]
+        )
+        == 2
+    )
+    assert "no open PR for test head" in capsys.readouterr().err
+
+
+def test_check_ci_validates_a_fork_head_named_master_before_default_branch_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unbound SHA named master is not a default-branch build without a tip match."""
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_pr_for_head",
+        lambda **_kwargs: (_ for _ in ()).throw(pr_scope.NoOpenPullRequestError("no open PR for fork master head")),
+    )
+    monkeypatch.setattr(pr_scope, "_origin_master_sha", lambda: "b" * 40)
+
+    assert (
+        pr_scope.main(
+            [
+                "check-ci",
+                "--repo",
+                "Sinity/polylogue",
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--allow-default-branch",
+            ]
+        )
+        == 2
+    )
+
+
+def test_check_ci_skips_only_an_unbound_fetched_default_branch_tip(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        pr_scope,
+        "fetch_pr_for_head",
+        lambda **_kwargs: (_ for _ in ()).throw(pr_scope.NoOpenPullRequestError("no open PR for master tip")),
+    )
+    monkeypatch.setattr(pr_scope, "_origin_master_sha", lambda: HEAD_SHA)
+
+    assert (
+        pr_scope.main(
+            [
+                "check-ci",
+                "--repo",
+                "Sinity/polylogue",
+                "--expected-head-sha",
+                HEAD_SHA,
+                "--allow-default-branch",
+            ]
+        )
+        == 0
+    )
+    assert "confirmed non-PR default-branch build" in capsys.readouterr().out
+
+
 def test_fetch_base_validator_prefers_local_base_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1219,6 +1298,18 @@ def test_check_uses_prospective_merge_state_for_assigned_bead(
 
     assert not verdict.ok
     assert f"assigned Bead record(s) missing: {ASSIGNED}" in verdict.reasons
+
+
+def test_check_rejects_a_terminal_target_before_the_pr_is_merged(beads_path: Path) -> None:
+    carrier = pr_scope.build_carrier(_v2_input(), head_sha=HEAD_SHA, beads_path=beads_path)
+    records = [json.loads(line) for line in beads_path.read_text().splitlines()]
+    records[0]["status"] = "closed"
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+
+    verdict = pr_scope.validate_carrier(carrier, head_sha=HEAD_SHA, is_draft=False, beads_path=beads_path)
+
+    assert not verdict.ok
+    assert any("pre-applied terminal disposition" in reason for reason in verdict.reasons)
 
 
 def test_check_rejects_stale_canonical_beads_digest(
