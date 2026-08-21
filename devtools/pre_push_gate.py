@@ -173,7 +173,22 @@ def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
     )
     candidate = _has_compatible_quick_receipt(cwd=cwd, head=current, provenance=provenance_before)
     provenance_after = _current_provenance(cwd) if candidate and _worktree_is_clean(cwd) else None
-    if candidate and provenance_before == provenance_after:
+    # This reuse gate is an opportunistic same-user performance optimization
+    # (skip a redundant quick verification the working tree already proved),
+    # not an authorization or attestation boundary. The worktree fingerprint
+    # diffs tracked content against HEAD, so it cannot by itself distinguish
+    # "nothing changed" from "HEAD moved to a different commit with an
+    # identical tree" (amend, rebase --onto, a concurrent writer) — re-sample
+    # live HEAD here and require it still match both the initially observed
+    # HEAD and every non-delete pushed local SHA before trusting reuse.
+    head_after = _git("rev-parse", "HEAD", cwd=cwd) if candidate else None
+    reuse_ok = (
+        candidate
+        and provenance_before == provenance_after
+        and head_after == current
+        and _updates_match_head(updates, head_after)
+    )
+    if reuse_ok:
         print(f"pre-push: compatible quick receipt reused ({current[:8]}).", file=sys.stderr)
         return "reused"
 
