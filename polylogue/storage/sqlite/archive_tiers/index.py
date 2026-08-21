@@ -2,21 +2,7 @@
 
 from __future__ import annotations
 
-from typing import get_args
-
-from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.topology.edge import topology_status_composes_sql, topology_status_excluded_sql
-from polylogue.core.enums import (
-    BranchType,
-    LinkType,
-    Origin,
-    PasteBoundary,
-    SessionKind,
-    SessionRefKind,
-    TitleSource,
-    TopologyEdgeStatus,
-    WebConstructType,
-)
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
@@ -25,16 +11,7 @@ from polylogue.storage.fts.sql import (
     FTS_UNICODE_TOKENIZER,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
-from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
-from polylogue.storage.sqlite.archive_tiers.common import (
-    CONTENT_HASH_CHECK,
-    check,
-    json_array_check,
-    json_object_check,
-    literal_check,
-    nullable_check,
-)
-from polylogue.storage.sqlite.archive_tiers.types import DelegationMappingState, DelegationResultStatus
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
@@ -471,32 +448,9 @@ _TRIGRAM_BULK_GUARD_NOT_SET = (
     f"NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{FTS_BULK_SESSION_WRITE_GUARD}')"
 )
 
-FTS_FRESHNESS_STATE_DDL = """
+FTS_FRESHNESS_STATE_DDL = f"""
 CREATE TABLE IF NOT EXISTS fts_freshness_state (
-    surface TEXT PRIMARY KEY,
-    state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
-    checked_at TEXT NOT NULL,
-    source_rows INTEGER NOT NULL DEFAULT 0,
-    indexed_rows INTEGER NOT NULL DEFAULT 0,
-    missing_rows INTEGER NOT NULL DEFAULT 0,
-    excess_rows INTEGER NOT NULL DEFAULT 0,
-    duplicate_rows INTEGER NOT NULL DEFAULT 0,
-    detail TEXT,
-    -- polylogue-rlvj (v52): a 'ready' verdict must be backed by an exact
-    -- count that actually balances -- a scoped/targeted repair's correct
-    -- answer to a narrower question must not be written here as a global
-    -- 'ready'. See INDEX_SCHEMA_VERSION's v52 comment above for the live
-    -- incident (messages_fts reported ready/missing_rows=0 while 12,659
-    -- blocks were unindexed).
-    CHECK (
-        state != 'ready'
-        OR (
-            missing_rows = 0
-            AND excess_rows = 0
-            AND duplicate_rows = 0
-            AND source_rows = indexed_rows
-        )
-    )
+    {TABLE_SPECS["fts_freshness_state"].ddl_body}
 ) STRICT;
 """
 
@@ -506,54 +460,13 @@ INDEX_DDL = f"""
 -- relation family invalidates an offset resume without inventing an archive-
 -- wide generation for unrelated tiers.
 CREATE TABLE IF NOT EXISTS query_unit_frame_state (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    epoch INTEGER NOT NULL DEFAULT 0 CHECK (epoch >= 0)
+    {TABLE_SPECS["query_unit_frame_state"].ddl_body}
 ) STRICT;
 
 INSERT OR IGNORE INTO query_unit_frame_state(singleton, epoch) VALUES (1, 0);
 
 CREATE TABLE IF NOT EXISTS raw_revision_applications (
-    decision_id              TEXT PRIMARY KEY,
-    raw_id                   TEXT NOT NULL,
-    session_id               TEXT NOT NULL,
-    logical_source_key       TEXT NOT NULL,
-    source_revision          TEXT NOT NULL,
-    acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
-    decision                 TEXT NOT NULL CHECK ({check("decision", ApplicationDecision)}),
-    accepted_raw_id          TEXT,
-    accepted_source_revision TEXT,
-    accepted_content_hash    BLOB CHECK(
-                                 accepted_content_hash IS NULL OR length(accepted_content_hash) = 32
-                             ),
-    accepted_frontier_kind   TEXT CHECK(
-                                 accepted_frontier_kind IS NULL
-                                 OR accepted_frontier_kind IN ('byte', 'semantic')
-                             ),
-    accepted_frontier        INTEGER CHECK(
-                                 accepted_frontier IS NULL OR accepted_frontier >= 0
-                             ),
-    baseline_raw_id          TEXT,
-    predecessor_raw_id       TEXT,
-    append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
-    detail                   TEXT NOT NULL,
-    decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0),
-    CHECK(
-        (
-            accepted_raw_id IS NULL
-            AND accepted_source_revision IS NULL
-            AND accepted_content_hash IS NULL
-            AND accepted_frontier_kind IS NULL
-            AND accepted_frontier IS NULL
-        )
-        OR
-        (
-            accepted_raw_id IS NOT NULL
-            AND accepted_source_revision IS NOT NULL
-            AND accepted_content_hash IS NOT NULL
-            AND accepted_frontier_kind IS NOT NULL
-            AND accepted_frontier IS NOT NULL
-        )
-    )
+    {TABLE_SPECS["raw_revision_applications"].ddl_body}
 ) STRICT;
 
 DROP INDEX IF EXISTS idx_raw_revision_applications_identity;
@@ -571,108 +484,11 @@ CREATE INDEX IF NOT EXISTS idx_raw_revision_applications_logical
 ON raw_revision_applications(logical_source_key, acquisition_generation, raw_id);
 
 CREATE TABLE IF NOT EXISTS raw_revision_heads (
-    logical_source_key       TEXT PRIMARY KEY,
-    session_id               TEXT NOT NULL,
-    accepted_raw_id          TEXT NOT NULL,
-    accepted_source_revision TEXT NOT NULL,
-    accepted_content_hash    BLOB NOT NULL CHECK(length(accepted_content_hash) = 32),
-    accepted_frontier_kind   TEXT NOT NULL CHECK(accepted_frontier_kind IN ('byte', 'semantic')),
-    accepted_frontier        INTEGER NOT NULL CHECK(accepted_frontier >= 0),
-    acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
-    append_end_offset        INTEGER CHECK(append_end_offset IS NULL OR append_end_offset >= 0),
-    decided_at_ms            INTEGER NOT NULL CHECK(decided_at_ms >= 0)
+    {TABLE_SPECS["raw_revision_heads"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS sessions (
-    session_id              TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE,
-    native_id               TEXT NOT NULL,
-    origin                  TEXT NOT NULL CHECK ({check("origin", Origin)}),
-    parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
-    root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
-    raw_id                  TEXT,
-    -- Written by the parsed-session chokepoint in the same transaction as
-    -- this row. Pre-v64 generations are intentionally nullable until replay.
-    parser_fingerprint      TEXT,
-    lowering_fingerprint    TEXT,
-    branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)}),
-    active_leaf_message_id  TEXT,
-    title                   TEXT,
-    session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)}),
-    -- polylogue-5dfu: NULL is already the "no title evidence" state for a
-    -- nullable column; TitleSource.UNKNOWN was a redundant second spelling of
-    -- the same fact (every read site that branches on title_source treats
-    -- NULL and 'unknown' identically -- see archive.py's has_real_title
-    -- check), so the enum was collapsed to only the members a producer
-    -- actually assigns and this CHECK is now generated from it like the
-    -- other enum-backed columns instead of hand-listing the values.
-    title_source            TEXT CHECK({nullable_check("title_source", TitleSource)}),
-    -- Specific provenance beyond TitleSource's coarse strategy label: which
-    -- exact evidence row won (e.g. "codex-thread-name:<id>",
-    -- "codex-history:<id>", "message:<provider_message_id>") plus a 0..1
-    -- confidence signal for that resolution (polylogue-ih67 AC#5, ref/
-    -- confidence slice). Both derived/rebuildable, never hand-edited.
-    title_ref               TEXT,
-    title_confidence        REAL CHECK(title_confidence IS NULL OR (title_confidence >= 0 AND title_confidence <= 1)),
-    -- polylogue-2qx.4 (v46): the human-readable name behind an opaque
-    -- native/slug id -- e.g. Claude Code Task-tool subagent slugs
-    -- ("greedy-squishing-hamming") so subagent rows read a name instead of
-    -- "5ecdb160-...:agent-af4e". Distinct from `title` (the session's own
-    -- resolved title): this is a display label for the session's identity,
-    -- not its content.
-    display_name            TEXT,
-    -- polylogue-2qx.4 (v46): per-session provider run configuration
-    -- (aistudio-drive runSettings: temperature/topP/topK/maxOutputTokens/
-    -- thinkingLevel/safetySettings/enable* flags). A JSON column by
-    -- deliberate decision -- decomposing a provider-specific settings bag
-    -- into typed columns would couple this schema to one provider for no
-    -- query benefit; nothing here is queried across origins today.
-    run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)}),
-    -- polylogue-o4j2 (v47): non-blank chunkedPrompt.pendingInputs entries --
-    -- the operator's not-yet-submitted textbox draft(s) -- verbatim as a
-    -- JSON array of {{text, role, token_count}} objects. Deliberately a
-    -- session-row field, NOT a session_event: a draft is CURRENT mutable
-    -- UI state (edited in place, then disappears entirely on submit), not
-    -- an append-only historical fact, so it must stay outside
-    -- session_revision_projection's message/attachment/event comparison
-    -- axes (polylogue-aggz Invariant 1) -- exactly the shape polylogue-bu1i
-    -- and polylogue-nuec were fixed for, on a third axis (mutable session
-    -- state rather than acquisition state or provider-remeasurement).
-    pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)}),
-    git_branch              TEXT,
-    git_repository_url      TEXT,
-    provider_project_ref    TEXT,
-    commit_hash             TEXT,
-    instructions_text       TEXT,
-    reported_duration_ms    INTEGER CHECK(reported_duration_ms IS NULL OR reported_duration_ms >= 0),
-    -- polylogue-gt1z (v49): exact provider-reported session cost total, when
-    -- the origin's own export carries one (claude-code-session costUSD,
-    -- hermes-session state.db) -- ParsedSession.reported_cost_usd verbatim.
-    -- NULL means the origin never reports a session-level total, not a
-    -- measured zero (a genuine $0 total is preserved by the parser same as
-    -- any other reported value). Feeds `_session_level_estimate`'s
-    -- ``status == "exact"`` cost path; per-model catalog pricing in
-    -- session_model_usage remains the token-total authority (see that
-    -- table's header) -- this column is a parallel exact-dollar figure, not
-    -- a token source.
-    reported_cost_usd       REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0),
-    message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
-    word_count              INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
-    tool_use_count          INTEGER NOT NULL DEFAULT 0 CHECK(tool_use_count >= 0),
-    thinking_count          INTEGER NOT NULL DEFAULT 0 CHECK(thinking_count >= 0),
-    paste_count             INTEGER NOT NULL DEFAULT 0 CHECK(paste_count >= 0),
-    user_message_count      INTEGER NOT NULL DEFAULT 0 CHECK(user_message_count >= 0),
-    authored_user_message_count INTEGER NOT NULL DEFAULT 0 CHECK(authored_user_message_count >= 0),
-    assistant_message_count INTEGER NOT NULL DEFAULT 0 CHECK(assistant_message_count >= 0),
-    system_message_count    INTEGER NOT NULL DEFAULT 0 CHECK(system_message_count >= 0),
-    tool_message_count      INTEGER NOT NULL DEFAULT 0 CHECK(tool_message_count >= 0),
-    user_word_count         INTEGER NOT NULL DEFAULT 0 CHECK(user_word_count >= 0),
-    authored_user_word_count INTEGER NOT NULL DEFAULT 0 CHECK(authored_user_word_count >= 0),
-    assistant_word_count    INTEGER NOT NULL DEFAULT 0 CHECK(assistant_word_count >= 0),
-    content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK},
-    created_at_ms           INTEGER,
-    updated_at_ms           INTEGER,
-    sort_key_ms             INTEGER GENERATED ALWAYS AS (COALESCE(updated_at_ms, created_at_ms)) STORED,
-    PRIMARY KEY(origin, native_id)
+    {TABLE_SPECS["sessions"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_origin_sort
@@ -691,8 +507,7 @@ ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS messages (
-    {MESSAGES_SPEC.ddl_column_definitions},
-    PRIMARY KEY(session_id, position, variant_index)
+    {TABLE_SPECS["messages"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_position
@@ -750,8 +565,7 @@ ON messages(session_id, is_active_leaf)
 WHERE is_active_leaf = 1;
 
 CREATE TABLE IF NOT EXISTS blocks (
-    {BLOCKS_SPEC.ddl_column_definitions},
-    PRIMARY KEY(message_id, position)
+    {TABLE_SPECS["blocks"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_blocks_session_position
@@ -791,30 +605,7 @@ ON blocks(message_id, position)
 WHERE search_text != '';
 
 CREATE TABLE IF NOT EXISTS web_content_constructs (
-    construct_id    TEXT GENERATED ALWAYS AS (block_id || ':' || position) STORED UNIQUE,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    block_id        TEXT NOT NULL REFERENCES blocks(block_id) ON DELETE CASCADE,
-    position        INTEGER NOT NULL CHECK(position >= 0),
-    provider        TEXT NOT NULL,
-    construct_type  TEXT NOT NULL CHECK ({check("construct_type", WebConstructType)}),
-    provider_key    TEXT,
-    title           TEXT,
-    url             TEXT,
-    text            TEXT,
-    source_id       TEXT,
-    group_id        TEXT,
-    group_title     TEXT,
-    query           TEXT,
-    asset_pointer   TEXT,
-    mime_type       TEXT,
-    status          TEXT,
-    task_id         TEXT,
-    task_type       TEXT,
-    rank            INTEGER,
-    start_index     INTEGER,
-    end_index       INTEGER,
-    PRIMARY KEY(block_id, position)
+    {TABLE_SPECS["web_content_constructs"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_web_constructs_session_type
@@ -858,17 +649,7 @@ WHERE query IS NOT NULL;
 -- file-trajectory grading declares unavailable ("observed" only) --
 -- this is what raises it to "checkpointed".
 CREATE TABLE IF NOT EXISTS file_edits (
-    tool_use_block_id   TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
-    session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    message_id          TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    file_path           TEXT,
-    structured_patch_json TEXT CHECK ({json_array_check("structured_patch_json", nullable=True)}),
-    original_file       TEXT,
-    old_string          TEXT,
-    new_string          TEXT,
-    replace_all         INTEGER CHECK(replace_all IN (0, 1) OR replace_all IS NULL),
-    user_modified       INTEGER CHECK(user_modified IN (0, 1) OR user_modified IS NULL),
-    observed_at_ms      INTEGER
+    {TABLE_SPECS["file_edits"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_file_edits_session
@@ -889,15 +670,7 @@ WHERE file_path IS NOT NULL;
 -- session (Claude Code pr-link, 20,702 occurrences on the wire today;
 -- generalizes to issue refs so a second tracker never needs its own table).
 CREATE TABLE IF NOT EXISTS session_refs (
-    ref_id          TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position        INTEGER NOT NULL CHECK(position >= 0),
-    kind            TEXT NOT NULL CHECK ({check("kind", SessionRefKind)}),
-    repo            TEXT,
-    ref_number      INTEGER,
-    url             TEXT NOT NULL,
-    observed_at_ms  INTEGER,
-    PRIMARY KEY(session_id, position)
+    {TABLE_SPECS["session_refs"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_refs_kind
@@ -988,19 +761,7 @@ END;
 -- hours on a whale session replace). The actions VIEW below re-joins blocks
 -- by block_id to serve tool_input/output_text to readers at query time.
 CREATE TABLE IF NOT EXISTS action_pairs (
-    tool_use_block_id      TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
-    session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    tool_id                TEXT,
-    use_rank               INTEGER,
-    tool_name              TEXT,
-    semantic_type          TEXT,
-    tool_command           TEXT,
-    tool_path              TEXT,
-    tool_result_block_id   TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
-    is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL),
-    exit_code              INTEGER,
-    FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE
+    {TABLE_SPECS["action_pairs"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_action_pairs_session_order
@@ -1075,16 +836,7 @@ JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
 LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;
 
 CREATE TABLE IF NOT EXISTS session_events (
-    event_id                   TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
-    session_id                 TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    source_message_id          TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
-    source_message_provider_id TEXT,
-    position                   INTEGER NOT NULL CHECK(position >= 0),
-    event_type                 TEXT NOT NULL CHECK(length(trim(event_type)) > 0),
-    summary                    TEXT NOT NULL,
-    payload_json               TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")}),
-    occurred_at_ms             INTEGER,
-    PRIMARY KEY(session_id, position)
+    {TABLE_SPECS["session_events"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_events_source_message
@@ -1092,15 +844,7 @@ ON session_events(source_message_id)
 WHERE source_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS session_agent_policies (
-    policy_id         TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
-    session_id        TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    source_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
-    position          INTEGER NOT NULL CHECK(position >= 0),
-    approval_policy   TEXT,
-    sandbox_policy    TEXT,
-    network_policy    TEXT,
-    observed_at_ms    INTEGER,
-    PRIMARY KEY(session_id, position)
+    {TABLE_SPECS["session_agent_policies"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_agent_policies_source_message
@@ -1108,49 +852,7 @@ ON session_agent_policies(source_message_id)
 WHERE source_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS session_links (
-    src_session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    dst_origin              TEXT NOT NULL CHECK ({check("dst_origin", Origin)}),
-    dst_native_id           TEXT NOT NULL,
-    link_type               TEXT NOT NULL CHECK ({check("link_type", LinkType)}),
-    resolved_dst_session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
-    -- Lineage normalization (#2467): for a prefix-sharing child (fork / resume /
-    -- spawned subagent / auto-compaction copy) the child stores only its own
-    -- divergent tail; `branch_point_message_id` is the last parent message the
-    -- child inherited, and `inheritance` records whether the child shares the
-    -- parent's leading prefix ('prefix-sharing') or is a fresh spawn that merely
-    -- references the parent ('spawned-fresh'). NULL until the parent is resolved.
-    -- Deliberately NOT a FK: message_id is deterministic, so a parent full-replace
-    -- re-ingest re-creates the same id. An `ON DELETE SET NULL` FK would instead
-    -- null this during the parent's DELETE step and permanently break the child's
-    -- composition (the cascade fires before the re-INSERT) — see #2467 audit.
-    branch_point_message_id TEXT,
-    inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
-    -- polylogue-5dfu: TopologyEdgeStatus used to declare 4 members
-    -- (unresolved/resolved/repaired/quarantined) while only 2 were ever
-    -- storable here -- unresolved/resolved is already carried by
-    -- resolved_dst_session_id IS NOT NULL, so those two members were never
-    -- assigned anywhere outside a Pydantic field default. Narrowed the enum
-    -- to the two exception markers a resolver actually writes and generated
-    -- this CHECK from it, replacing the hand-written literal list that had
-    -- silently drifted out of sync with `_status_value`'s narrower runtime
-    -- projection.
-    status                  TEXT CHECK({nullable_check("status", TopologyEdgeStatus)}),
-    -- polylogue-2qx.4 (v46): the parent-session tool_use block that
-    -- dispatched this child (Claude Code parentToolUseID, 842,819 records /
-    -- 185,982 distinct dispatch ids on the wire). This IS the delegation
-    -- edge's join key; `method` records how the edge was derived (e.g.
-    -- 'parent-tool-use-id') once a resolver populates this column. Replaces
-    -- delegation_facts' cardinality-gated ordinal dispatch<->child pairing,
-    -- which only resolved 12.8% of cases. Not a FK to sessions -- it is a
-    -- block within the PARENT session, resolvable independently of whether
-    -- src/dst session identity has resolved yet.
-    parent_tool_use_block_id TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
-    method                  TEXT,
-    confidence              REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0 AND 1),
-    evidence_json           TEXT NOT NULL DEFAULT '[]',
-    observed_at_ms          INTEGER NOT NULL,
-    resolved_at_ms          INTEGER,
-    PRIMARY KEY(src_session_id, dst_origin, dst_native_id, link_type)
+    {TABLE_SPECS["session_links"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_links_dst
@@ -1176,28 +878,7 @@ AFTER DELETE ON session_links BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS threads (
-    thread_id                    TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
-    dominant_repo_id             TEXT REFERENCES repos(repo_id) ON DELETE SET NULL,
-    materializer_version         INTEGER NOT NULL DEFAULT 5,
-    materialized_at              TEXT NOT NULL DEFAULT '',
-    source_updated_at            TEXT,
-    input_high_water_mark        TEXT,
-    input_high_water_mark_source TEXT,
-    input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0),
-    start_time                   TEXT,
-    end_time                     TEXT,
-    dominant_repo                TEXT,
-    session_ids_json             TEXT NOT NULL DEFAULT '[]',
-    session_count                INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0),
-    depth                        INTEGER NOT NULL DEFAULT 0 CHECK(depth >= 0),
-    branch_count                 INTEGER NOT NULL DEFAULT 0 CHECK(branch_count >= 0),
-    total_messages               INTEGER NOT NULL DEFAULT 0 CHECK(total_messages >= 0),
-    total_cost_usd               REAL NOT NULL DEFAULT 0.0,
-    wall_duration_ms             INTEGER NOT NULL DEFAULT 0 CHECK(wall_duration_ms >= 0),
-    work_event_breakdown_json    TEXT NOT NULL DEFAULT '{{}}',
-    payload_json                 TEXT NOT NULL DEFAULT '{{}}',
-    search_text                  TEXT NOT NULL DEFAULT '',
-    created_at_ms                INTEGER NOT NULL DEFAULT 0
+    {TABLE_SPECS["threads"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_threads_time
@@ -1213,17 +894,11 @@ ON threads(end_time DESC, start_time DESC);
 -- instead of an FTS5 MATCH. See lifecycle.py's v63 declaration.
 
 CREATE TABLE IF NOT EXISTS thread_sessions (
-    thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
-    session_id   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position     INTEGER NOT NULL CHECK(position >= 0),
-    PRIMARY KEY(thread_id, session_id)
+    {TABLE_SPECS["thread_sessions"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS session_working_dirs (
-    session_id  TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    path        TEXT NOT NULL,
-    position    INTEGER NOT NULL CHECK(position >= 0),
-    PRIMARY KEY(session_id, path)
+    {TABLE_SPECS["session_working_dirs"].ddl_body}
 ) STRICT;
 
 -- polylogue-cijx.4 decision 1: a repository is keyed on its normalized
@@ -1245,12 +920,7 @@ CREATE TABLE IF NOT EXISTS session_working_dirs (
 -- values (first-seen wins), not part of the identity key -- every checkout
 -- root actually observed for a repo_id is recorded in `repo_checkouts`.
 CREATE TABLE IF NOT EXISTS repos (
-    repo_id           TEXT PRIMARY KEY,
-    origin_url        TEXT NOT NULL DEFAULT '',
-    root_path         TEXT NOT NULL DEFAULT '',
-    repo_name         TEXT NOT NULL DEFAULT '',
-    first_seen_at_ms  INTEGER NOT NULL,
-    last_seen_at_ms   INTEGER NOT NULL
+    {TABLE_SPECS["repos"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_repos_root_path
@@ -1264,40 +934,18 @@ WHERE root_path != '';
 -- keeps a single representative value for existing readers, this table is
 -- the complete enumeration for readers that need it.
 CREATE TABLE IF NOT EXISTS repo_checkouts (
-    repo_id           TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
-    root_path         TEXT NOT NULL,
-    first_seen_at_ms  INTEGER NOT NULL,
-    last_seen_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY(repo_id, root_path)
+    {TABLE_SPECS["repo_checkouts"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS session_repos (
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    repo_id         TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
-    -- This session's own observed checkout root (may differ from
-    -- repos.root_path's representative value when other sessions checked
-    -- out the same repo identity elsewhere) -- needed so repo-relative path
-    -- projection (decision 2) strips the *correct* prefix for this session
-    -- regardless of which checkout wrote the shared repos row first.
-    root_path       TEXT NOT NULL DEFAULT '',
-    branch_name     TEXT NOT NULL DEFAULT '',
-    observed_at_ms  INTEGER NOT NULL,
-    PRIMARY KEY(session_id, repo_id)
+    {TABLE_SPECS["session_repos"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_repos_repo
 ON session_repos(repo_id);
 
 CREATE TABLE IF NOT EXISTS session_commits (
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    commit_sha      TEXT NOT NULL,
-    repo_id         TEXT REFERENCES repos(repo_id) ON DELETE CASCADE,
-    detection_type  TEXT NOT NULL CHECK(detection_type IN ('time_window', 'file_overlap', 'explicit_ref', 'origin_reported')),
-    method          TEXT,
-    confidence      REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
-    evidence_json   TEXT NOT NULL DEFAULT '{{}}',
-    created_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY(session_id, commit_sha)
+    {TABLE_SPECS["session_commits"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_commits_hash
@@ -1308,38 +956,15 @@ ON session_commits(repo_id)
 WHERE repo_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS attachments (
-    attachment_id          TEXT PRIMARY KEY,
-    display_name           TEXT,
-    media_type             TEXT,
-    byte_count             INTEGER NOT NULL DEFAULT 0 CHECK(byte_count >= 0),
-    -- #2468: real SHA-256 of the stored bytes when acquired, else NULL. Previously
-    -- a synthetic hash of attachment metadata was written here, falsely implying a
-    -- blob existed (0 blobs were ever stored). `acquisition_status` records whether
-    -- the bytes were fetched ('acquired'), are known unrecoverable from the source
-    -- polylogue holds ('unavailable'), or have not yet been fetched ('unfetched').
-    blob_hash              BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32),
-    acquisition_status     TEXT NOT NULL DEFAULT 'unfetched'
-                               CHECK(acquisition_status IN ('acquired', 'unavailable', 'unfetched')),
-    ref_count              INTEGER NOT NULL DEFAULT 0 CHECK(ref_count >= 0)
+    {TABLE_SPECS["attachments"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS attachment_refs (
-    ref_id                 TEXT GENERATED ALWAYS AS (message_id || ':attachment:' || position) STORED UNIQUE,
-    attachment_id          TEXT NOT NULL REFERENCES attachments(attachment_id) ON DELETE CASCADE,
-    session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    position               INTEGER NOT NULL CHECK(position >= 0),
-    upload_origin          TEXT CHECK(upload_origin IN ('drive', 'paste', 'url', 'oauth') OR upload_origin IS NULL),
-    source_url             TEXT,
-    caption                TEXT,
-    PRIMARY KEY(message_id, position)
+    {TABLE_SPECS["attachment_refs"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS attachment_native_ids (
-    ref_id     TEXT NOT NULL REFERENCES attachment_refs(ref_id) ON DELETE CASCADE,
-    id_kind    TEXT NOT NULL CHECK(id_kind IN ('attachment', 'file', 'drive', 'url')),
-    native_id  TEXT NOT NULL,
-    PRIMARY KEY(ref_id, id_kind, native_id)
+    {TABLE_SPECS["attachment_native_ids"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_attachment_refs_session
@@ -1357,18 +982,7 @@ CREATE INDEX IF NOT EXISTS idx_attachment_native_ids_native
 ON attachment_native_ids(id_kind, native_id);
 
 CREATE TABLE IF NOT EXISTS paste_spans (
-    paste_id        TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE,
-    message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position        INTEGER NOT NULL CHECK(position >= 0),
-    start_offset    INTEGER CHECK(start_offset IS NULL OR start_offset >= 0),
-    end_offset      INTEGER CHECK(end_offset IS NULL OR end_offset >= start_offset),
-    boundary_state  TEXT NOT NULL CHECK ({check("boundary_state", PasteBoundary)}),
-    source_event_id TEXT,
-    source_marker   TEXT,
-    content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32),
-    observed_at_ms  INTEGER,
-    PRIMARY KEY(message_id, position)
+    {TABLE_SPECS["paste_spans"].ddl_body}
 ) STRICT;
 
 -- polylogue-623q: paste_spans has no index leading with session_id (its PK
@@ -1398,58 +1012,11 @@ ON paste_spans(session_id);
 -- -- they are kept.
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
-    session_id              TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    model_name              TEXT NOT NULL,
-    input_tokens            INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
-    output_tokens           INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
-    cache_read_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
-    cache_write_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
-    message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
-    cost_usd                REAL,
-    cost_credits            REAL,
-    cost_provenance         TEXT CHECK(cost_provenance IN ('origin_reported', 'priced', 'estimated') OR cost_provenance IS NULL),
-    -- polylogue-shnc (v49): a provenance label that ASSERTS pricing evidence
-    -- must actually carry that evidence -- the forensic audit found 5,016
-    -- live rows with cost_provenance='priced' and cost_usd NULL (a
-    -- self-contradiction worse than an honest NULL provenance) and 3,417
-    -- 'origin_reported' rows with cost_usd NULL despite the rollup writer's
-    -- own naming implying a reported dollar figure existed.
-    -- 'origin_reported' is reserved for a genuine provider-reported dollar
-    -- total (sessions.reported_cost_usd, polylogue-gt1z) copied onto a
-    -- session_model_usage row; provider-usage-event TOKEN rollups (Codex
-    -- cumulative token_count) are catalog-priced under 'priced' instead (see
-    -- write.py's _price_provider_usage_tokens) -- conflating the two made a
-    -- catalog estimate read as if the provider itself reported that dollar
-    -- figure downstream (archive.py's list_cost_rollup_insights basis split).
-    -- polylogue-resk (v61): the CHECK's ``priced_with IS NOT NULL`` half was
-    -- dropped along with the column itself; ``cost_usd IS NOT NULL`` alone
-    -- still makes the shnc self-contradiction unrepresentable.
-    CHECK (cost_provenance != 'priced' OR cost_usd IS NOT NULL),
-    CHECK (cost_provenance != 'origin_reported' OR cost_usd IS NOT NULL),
-    PRIMARY KEY(session_id, model_name)
+    {TABLE_SPECS["session_model_usage"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS session_provider_usage_events (
-    usage_event_id                 TEXT GENERATED ALWAYS AS (session_id || ':usage:' || position) STORED UNIQUE,
-    session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    source_message_id              TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
-    position                       INTEGER NOT NULL CHECK(position >= 0),
-    provider_event_type            TEXT NOT NULL CHECK(provider_event_type IN ('token_count', 'message_usage')),
-    model_name                     TEXT,
-    last_input_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_input_tokens >= 0),
-    last_output_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(last_output_tokens >= 0),
-    last_cached_input_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(last_cached_input_tokens >= 0),
-    last_cache_write_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(last_cache_write_tokens >= 0),
-    last_reasoning_output_tokens   INTEGER NOT NULL DEFAULT 0 CHECK(last_reasoning_output_tokens >= 0),
-    last_total_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_total_tokens >= 0),
-    total_input_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(total_input_tokens >= 0),
-    total_output_tokens            INTEGER NOT NULL DEFAULT 0 CHECK(total_output_tokens >= 0),
-    total_cached_input_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(total_cached_input_tokens >= 0),
-    total_cache_write_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0),
-    total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
-    total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
-    occurred_at_ms                 INTEGER,
-    PRIMARY KEY(session_id, position)
+    {TABLE_SPECS["session_provider_usage_events"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_session
@@ -1460,13 +1027,7 @@ ON session_provider_usage_events(source_message_id)
 WHERE source_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS session_tags (
-    session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    tag           TEXT NOT NULL,
-    tag_source    TEXT NOT NULL CHECK(tag_source IN ('user', 'auto')),
-    method        TEXT,
-    confidence    REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1),
-    evidence_json TEXT,
-    PRIMARY KEY(session_id, tag, tag_source)
+    {TABLE_SPECS["session_tags"].ddl_body}
 ) STRICT;
 
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_insert
@@ -1519,40 +1080,11 @@ AFTER DELETE ON session_tags BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS insight_materialization (
-    insight_type                 TEXT NOT NULL CHECK(insight_type IN (
-                                    'session_profile', 'work_events', 'phases', 'latency', 'thread',
-                                    'runs', 'observed_events', 'context_snapshots', 'provider_usage')),
-    session_id                   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    materializer_version         INTEGER NOT NULL,
-    materialized_at_ms           INTEGER NOT NULL,
-    source_updated_at_ms         INTEGER,
-    source_sort_key_ms           INTEGER,
-    input_high_water_mark_ms     INTEGER,
-    input_high_water_mark_source TEXT,
-    input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0),
-    PRIMARY KEY(insight_type, session_id)
+    {TABLE_SPECS["insight_materialization"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS session_work_events (
-    event_id           TEXT GENERATED ALWAYS AS (session_id || ':work_event:' || position) STORED UNIQUE,
-    session_id         TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position           INTEGER NOT NULL CHECK(position >= 0),
-    work_event_type    TEXT NOT NULL,
-    summary            TEXT NOT NULL,
-    confidence         REAL NOT NULL DEFAULT 0.0 CHECK(confidence BETWEEN 0 AND 1),
-    start_index        INTEGER NOT NULL DEFAULT 0 CHECK(start_index >= 0),
-    end_index          INTEGER NOT NULL DEFAULT 0 CHECK(end_index >= start_index),
-    started_at_ms      INTEGER,
-    ended_at_ms        INTEGER,
-    duration_ms        INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0),
-    file_paths_json    TEXT NOT NULL DEFAULT '[]',
-    tools_used_json    TEXT NOT NULL DEFAULT '[]',
-    input_high_water_mark        TEXT,
-    input_high_water_mark_source TEXT,
-    evidence_json      TEXT NOT NULL DEFAULT '{{}}',
-    inference_json     TEXT NOT NULL DEFAULT '{{}}',
-    search_text        TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY(session_id, position)
+    {TABLE_SPECS["session_work_events"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_work_events_session
@@ -1573,50 +1105,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
 -- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
 
 CREATE TABLE IF NOT EXISTS session_phases (
-    phase_id        TEXT GENERATED ALWAYS AS (session_id || ':phase:' || position) STORED UNIQUE,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position        INTEGER NOT NULL CHECK(position >= 0),
-    start_index     INTEGER NOT NULL DEFAULT 0 CHECK(start_index >= 0),
-    end_index       INTEGER NOT NULL DEFAULT 0 CHECK(end_index >= start_index),
-    started_at_ms   INTEGER,
-    ended_at_ms     INTEGER,
-    duration_ms     INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0),
-    tool_counts_json TEXT NOT NULL DEFAULT '{{}}',
-    word_count      INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
-    input_high_water_mark        TEXT,
-    input_high_water_mark_source TEXT,
-    evidence_json   TEXT NOT NULL DEFAULT '{{}}',
-    inference_json  TEXT NOT NULL DEFAULT '{{}}',
-    search_text     TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY(session_id, position)
+    {TABLE_SPECS["session_phases"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_phases_session
 ON session_phases(session_id, position);
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (
-    session_id                       TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
-    materializer_version             INTEGER NOT NULL DEFAULT 5,
-    materialized_at                  TEXT NOT NULL,
-    source_updated_at                TEXT,
-    source_sort_key                  REAL,
-    input_high_water_mark            TEXT,
-    input_high_water_mark_source     TEXT,
-    input_row_count                  INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0),
-    source_name                      TEXT NOT NULL,
-    title                            TEXT,
-    first_message_at                 TEXT,
-    last_message_at                  TEXT,
-    canonical_session_date           TEXT,
-    median_tool_call_ms              INTEGER NOT NULL DEFAULT 0 CHECK(median_tool_call_ms >= 0),
-    p90_tool_call_ms                 INTEGER NOT NULL DEFAULT 0 CHECK(p90_tool_call_ms >= 0),
-    max_tool_call_ms                 INTEGER NOT NULL DEFAULT 0 CHECK(max_tool_call_ms >= 0),
-    stuck_tool_count                 INTEGER NOT NULL DEFAULT 0 CHECK(stuck_tool_count >= 0),
-    median_agent_response_ms         INTEGER NOT NULL DEFAULT 0 CHECK(median_agent_response_ms >= 0),
-    median_user_response_ms          INTEGER NOT NULL DEFAULT 0 CHECK(median_user_response_ms >= 0),
-    tool_call_count_by_category_json TEXT NOT NULL DEFAULT '{{}}',
-    evidence_payload_json            TEXT NOT NULL DEFAULT '{{}}',
-    search_text                      TEXT NOT NULL DEFAULT ''
+    {TABLE_SPECS["session_latency_profiles"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_latency_profiles_provider
@@ -1629,80 +1125,7 @@ CREATE INDEX IF NOT EXISTS idx_session_latency_profiles_stuck
 ON session_latency_profiles(stuck_tool_count DESC, canonical_session_date DESC);
 
 CREATE TABLE IF NOT EXISTS session_profiles (
-    session_id                      TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
-    logical_session_id              TEXT,
-    materializer_version            INTEGER NOT NULL DEFAULT 5,
-    materialized_at                 TEXT NOT NULL DEFAULT '',
-    source_updated_at               TEXT,
-    source_sort_key                 REAL,
-    input_high_water_mark           TEXT,
-    input_high_water_mark_source    TEXT,
-    input_row_count                 INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0),
-    source_name                     TEXT NOT NULL DEFAULT '',
-    title                           TEXT,
-    first_message_at                TEXT,
-    last_message_at                 TEXT,
-    canonical_session_date          TEXT,
-    repo_paths_json                 TEXT,
-    repo_names_json                 TEXT,
-    tags_json                       TEXT,
-    auto_tags_json                  TEXT,
-    message_count                   INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
-    substantive_count               INTEGER NOT NULL DEFAULT 0 CHECK(substantive_count >= 0),
-    attachment_count                INTEGER NOT NULL DEFAULT 0 CHECK(attachment_count >= 0),
-    work_event_count                INTEGER NOT NULL DEFAULT 0 CHECK(work_event_count >= 0),
-    phase_count                     INTEGER NOT NULL DEFAULT 0 CHECK(phase_count >= 0),
-    word_count                      INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
-    tool_use_count                  INTEGER NOT NULL DEFAULT 0 CHECK(tool_use_count >= 0),
-    thinking_count                  INTEGER NOT NULL DEFAULT 0 CHECK(thinking_count >= 0),
-    total_cost_usd                  REAL NOT NULL DEFAULT 0,
-    total_duration_ms               INTEGER NOT NULL DEFAULT 0 CHECK(total_duration_ms >= 0),
-    engaged_duration_ms             INTEGER NOT NULL DEFAULT 0 CHECK(engaged_duration_ms >= 0),
-    tool_active_duration_ms         INTEGER NOT NULL DEFAULT 0 CHECK(tool_active_duration_ms >= 0),
-    wall_duration_ms                INTEGER NOT NULL DEFAULT 0 CHECK(wall_duration_ms >= 0),
-    workflow_shape                  TEXT,
-    workflow_shape_method           TEXT,
-    workflow_shape_confidence       REAL CHECK(workflow_shape_confidence BETWEEN 0 AND 1 OR workflow_shape_confidence IS NULL),
-    workflow_shape_features_json    TEXT NOT NULL DEFAULT '{{}}',
-    terminal_state                  TEXT,
-    terminal_state_method           TEXT,
-    terminal_state_confidence       REAL CHECK(terminal_state_confidence BETWEEN 0 AND 1 OR terminal_state_confidence IS NULL),
-    terminal_state_evidence_json    TEXT NOT NULL DEFAULT '{{}}',
-    cost_is_estimated               INTEGER NOT NULL DEFAULT 0 CHECK(cost_is_estimated IN (0, 1)),
-    thinking_duration_ms            INTEGER NOT NULL DEFAULT 0 CHECK(thinking_duration_ms >= 0),
-    output_duration_ms              INTEGER NOT NULL DEFAULT 0 CHECK(output_duration_ms >= 0),
-    tool_duration_ms                INTEGER NOT NULL DEFAULT 0 CHECK(tool_duration_ms >= 0),
-    latency_percentiles_ms_json     TEXT NOT NULL DEFAULT '{{}}',
-    tool_calls_per_minute           REAL,
-    timing_provenance               TEXT NOT NULL DEFAULT 'sort_key_estimated',
-    total_input_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(total_input_tokens >= 0),
-    total_output_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(total_output_tokens >= 0),
-    total_cache_read_tokens         INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_read_tokens >= 0),
-    total_cache_write_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0),
-    total_credit_cost               REAL NOT NULL DEFAULT 0.0,
-    cost_provenance                 TEXT NOT NULL DEFAULT 'unknown',
-    per_model_cost_json             TEXT NOT NULL DEFAULT '{{}}',
-    evidence_payload_json           TEXT NOT NULL DEFAULT '{{}}',
-    inference_payload_json          TEXT NOT NULL DEFAULT '{{}}',
-    enrichment_payload_json         TEXT NOT NULL DEFAULT '{{}}',
-    evidence_search_text            TEXT NOT NULL DEFAULT '',
-    inference_search_text           TEXT NOT NULL DEFAULT '',
-    enrichment_search_text          TEXT NOT NULL DEFAULT '',
-    enrichment_version              INTEGER NOT NULL DEFAULT 1,
-    enrichment_family               TEXT NOT NULL DEFAULT 'scored_session_enrichment',
-    inference_version               INTEGER NOT NULL DEFAULT 1,
-    inference_family                TEXT NOT NULL DEFAULT 'heuristic_session_semantics',
-    search_text                     TEXT NOT NULL DEFAULT '',
-    duration_ms                     INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
-    cost_credits                    REAL,
-    cost_usd                        REAL,
-    priced_with                     TEXT,
-    priced_at_ms                    INTEGER,
-    -- 1vpm.1: dominant model by assistant output-token share + its canonical
-    -- family (anthropic/openai/deepseek/...) -- the enabling primitive for
-    -- the `delegations` view's orchestrator/subagent model identity.
-    primary_model_name              TEXT,
-    primary_model_family            TEXT
+    {TABLE_SPECS["session_profiles"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
@@ -1822,37 +1245,7 @@ END;
 -- 100% derivable from existing tables -- VIEW, not a table, matching the
 -- `actions` precedent (derived tier, no convergence stage needed).
 CREATE TABLE IF NOT EXISTS delegation_facts (
-    delegation_id                         TEXT PRIMARY KEY,
-    parent_session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    child_session_id                      TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
-    mapping_state                         TEXT NOT NULL
-                                             CHECK ({literal_check("mapping_state", *get_args(DelegationMappingState))}),
-    link_confidence                       REAL,
-    link_method                           TEXT,
-    inheritance                            TEXT,
-    branch_point_message_id               TEXT,
-    instruction_message_id               TEXT,
-    instruction_tool_use_block_id        TEXT,
-    instruction_payload                   TEXT,
-    dispatch_turn_model                  TEXT,
-    requested_model                      TEXT,
-    artifact_block_id                    TEXT,
-    artifact_text                        TEXT,
-    result_is_error                      INTEGER,
-    result_exit_code                     INTEGER,
-    result_status                        TEXT NOT NULL
-                                             CHECK ({literal_check("result_status", *get_args(DelegationResultStatus))}),
-    parent_origin                        TEXT NOT NULL,
-    parent_session_dominant_model        TEXT,
-    parent_session_dominant_model_family TEXT,
-    parent_terminal_state                TEXT,
-    child_session_dominant_model         TEXT,
-    child_session_dominant_model_family  TEXT,
-    child_cost_usd                       REAL,
-    child_cost_is_estimated              INTEGER,
-    child_tokens                         INTEGER,
-    child_wall_ms                        INTEGER,
-    child_terminal_state                 TEXT
+    {TABLE_SPECS["delegation_facts"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
@@ -1879,56 +1272,26 @@ AFTER DELETE ON delegation_facts BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
-    parent_session_id TEXT PRIMARY KEY
+    {TABLE_SPECS["delegation_refresh_scope"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS derived_refresh_guard (
-    guard_name TEXT PRIMARY KEY
+    {TABLE_SPECS["derived_refresh_guard"].ddl_body}
 ) STRICT;
 
 -- Provider-neutral topology and claims. This remains a derived tier: adapters
 -- materialize admitted source facts here, while this slice deliberately does
 -- not model repository effects or evaluated satisfaction.
 CREATE TABLE IF NOT EXISTS work_evidence_graphs (
-    graph_id              TEXT PRIMARY KEY,
-    corpus_snapshot_ref   TEXT NOT NULL
+    {TABLE_SPECS["work_evidence_graphs"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS work_evidence_nodes (
-    graph_id                       TEXT NOT NULL REFERENCES work_evidence_graphs(graph_id) ON DELETE CASCADE,
-    node_ref                       TEXT NOT NULL,
-    node_kind                      TEXT NOT NULL,
-    label                          TEXT NOT NULL,
-    evidence_refs_json             TEXT NOT NULL,
-    corpus_snapshot_ref            TEXT NOT NULL,
-    authority                      TEXT NOT NULL,
-    confidence                     REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
-    occurred_at_ms                 INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
-    actor_ref                      TEXT,
-    execution_context_id           TEXT,
-    execution_context_known_json   TEXT NOT NULL DEFAULT '[]',
-    execution_context_unknown_json TEXT NOT NULL DEFAULT '[]',
-    execution_context_addressed    INTEGER CHECK(execution_context_addressed IN (0, 1) OR execution_context_addressed IS NULL),
-    association_state              TEXT NOT NULL,
-    claim_text                     TEXT,
-    PRIMARY KEY(graph_id, node_ref)
+    {TABLE_SPECS["work_evidence_nodes"].ddl_body}
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS work_evidence_edges (
-    graph_id             TEXT NOT NULL REFERENCES work_evidence_graphs(graph_id) ON DELETE CASCADE,
-    edge_ref             TEXT NOT NULL,
-    edge_kind            TEXT NOT NULL,
-    source_ref           TEXT NOT NULL,
-    target_ref           TEXT NOT NULL,
-    evidence_refs_json   TEXT NOT NULL,
-    corpus_snapshot_ref  TEXT NOT NULL,
-    authority            TEXT NOT NULL,
-    confidence           REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
-    occurred_at_ms       INTEGER CHECK(occurred_at_ms IS NULL OR occurred_at_ms >= 0),
-    association_state    TEXT NOT NULL,
-    PRIMARY KEY(graph_id, edge_ref),
-    FOREIGN KEY(graph_id, source_ref) REFERENCES work_evidence_nodes(graph_id, node_ref) ON DELETE CASCADE,
-    FOREIGN KEY(graph_id, target_ref) REFERENCES work_evidence_nodes(graph_id, node_ref) ON DELETE CASCADE
+    {TABLE_SPECS["work_evidence_edges"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_source
@@ -2311,24 +1674,7 @@ SELECT
 FROM delegation_facts;
 
 CREATE TABLE IF NOT EXISTS session_tag_rollups (
-    tag                          TEXT NOT NULL,
-    bucket_day                   TEXT NOT NULL,
-    source_name                  TEXT NOT NULL,
-    materializer_version         INTEGER NOT NULL DEFAULT 5,
-    materialized_at              TEXT NOT NULL,
-    source_updated_at            TEXT,
-    source_sort_key              REAL,
-    input_high_water_mark        TEXT,
-    input_high_water_mark_source TEXT,
-    input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0),
-    session_count                INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0),
-    logical_session_count        INTEGER NOT NULL DEFAULT 0 CHECK(logical_session_count >= 0),
-    logical_session_ids_json     TEXT NOT NULL DEFAULT '[]',
-    explicit_count               INTEGER NOT NULL DEFAULT 0 CHECK(explicit_count >= 0),
-    auto_count                   INTEGER NOT NULL DEFAULT 0 CHECK(auto_count >= 0),
-    repo_breakdown_json          TEXT NOT NULL DEFAULT '{{}}',
-    search_text                  TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY(tag, bucket_day, source_name)
+    {TABLE_SPECS["session_tag_rollups"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_day
@@ -2343,15 +1689,7 @@ ON session_tag_rollups(source_name, tag);
 -- `raw_id` is likewise unconstrained here (source.db is a separate
 -- database file; the raw row and its blob are deliberately retained there).
 CREATE TABLE IF NOT EXISTS agent_meta_sidecar_purge_receipts (
-    session_id           TEXT PRIMARY KEY,
-    origin               TEXT NOT NULL,
-    native_id            TEXT NOT NULL,
-    raw_id               TEXT NOT NULL,
-    source_path          TEXT NOT NULL,
-    purged_at_ms         INTEGER NOT NULL CHECK(purged_at_ms >= 0),
-    tool_version         TEXT NOT NULL,
-    backup_manifest_path TEXT NOT NULL,
-    detail               TEXT NOT NULL DEFAULT ''
+    {TABLE_SPECS["agent_meta_sidecar_purge_receipts"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_agent_meta_sidecar_purge_receipts_purged_at
