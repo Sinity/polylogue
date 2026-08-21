@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS convergence_debt (
     stage          TEXT NOT NULL,
     target_type    TEXT NOT NULL,
     target_id      TEXT NOT NULL,
-    status         TEXT NOT NULL DEFAULT 'failed' CHECK ({literal_check("status", "failed", "deferred")}),
+    status         TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
     priority       INTEGER NOT NULL DEFAULT 0,
     attempts       INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
     last_error     TEXT,
@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS cursor_lag_samples (
     stuck_file_count INTEGER NOT NULL DEFAULT 1 CHECK(stuck_file_count >= 0),
     p50_lag_ms       INTEGER NOT NULL DEFAULT 0 CHECK(p50_lag_ms >= 0),
     p95_lag_ms       INTEGER NOT NULL DEFAULT 0 CHECK(p95_lag_ms >= 0),
-    severity         TEXT NOT NULL CHECK ({literal_check("severity", "info", "warning", "error", "critical")}),
+    severity         TEXT NOT NULL CHECK(severity IN ('info', 'warning', 'error', 'critical')),
     sampled_at_ms    INTEGER NOT NULL
 ) STRICT;
 
@@ -221,7 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, op
 CREATE TABLE IF NOT EXISTS judgment_scheduler_receipts (
     operation_id                    TEXT PRIMARY KEY,
     observed_at_ms                  INTEGER NOT NULL,
-    status                          TEXT NOT NULL CHECK ({literal_check("status", "completed", "parked", "failed")}),
+    status                          TEXT NOT NULL CHECK(status IN ('completed', 'parked', 'failed')),
     reason                          TEXT NOT NULL,
     retryable                       INTEGER NOT NULL CHECK(retryable IN (0, 1)),
     retry_route                     TEXT NOT NULL,
@@ -305,7 +305,7 @@ ON mcp_call_log(started_at_ms);
 CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
     call_id       TEXT NOT NULL REFERENCES mcp_call_log(call_id) ON DELETE CASCADE,
     session_id    TEXT NOT NULL,
-    relation      TEXT NOT NULL CHECK ({literal_check("relation", "primary", "member")}),
+    relation      TEXT NOT NULL CHECK(relation IN ('primary', 'member')),
     PRIMARY KEY (call_id, session_id)
 ) STRICT;
 
@@ -323,14 +323,14 @@ ON mcp_call_session_refs(session_id, call_id);
 CREATE TABLE IF NOT EXISTS route_observations (
     observation_id   TEXT PRIMARY KEY,
     trace_id         TEXT NOT NULL,
-    surface          TEXT NOT NULL CHECK ({literal_check("surface", "cli", "mcp", "daemon-http", "daemon-internal", "web")}),
+    surface          TEXT NOT NULL CHECK(surface IN ('cli', 'mcp', 'daemon-http', 'daemon-internal', 'web')),
     route            TEXT NOT NULL,
     verb             TEXT,
-    daemon_path      TEXT CHECK ({literal_check("daemon_path", "daemon", "direct")} OR daemon_path IS NULL),
+    daemon_path      TEXT CHECK(daemon_path IN ('daemon', 'direct') OR daemon_path IS NULL),
     phase            TEXT NOT NULL DEFAULT 'total',
     started_at_ms    INTEGER NOT NULL,
     duration_ms      INTEGER NOT NULL CHECK(duration_ms >= 0),
-    status           TEXT NOT NULL CHECK ({literal_check("status", "ok", "error", "degraded", "timed_out", "unavailable")}),
+    status           TEXT NOT NULL CHECK(status IN ('ok', 'error', 'degraded', 'timed_out', 'unavailable')),
     git_head         TEXT,
     archive_epoch    TEXT,
     attributes_json  TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(attributes_json)),
