@@ -222,6 +222,45 @@ def test_post_validation_provenance_drift_refuses_receipt_reuse(
     assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
 
 
+def test_head_transition_after_initial_sample_refuses_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A HEAD move between the initial sample and the reuse decision must refuse reuse.
+
+    The worktree fingerprint alone cannot observe this: it diffs the tracked tree
+    against HEAD, so a concurrent operation that moves HEAD to a different commit
+    with an identical tree (amend, rebase --onto, another writer) leaves the
+    fingerprint unchanged on both sides of the transition. Only re-sampling live
+    HEAD right before committing to reuse, and requiring it still match the
+    initially observed HEAD, can catch this.
+    """
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    moved = "f" * 40
+    environment = {"python_executable": "/venv/bin/python", "artifacts": []}
+    _quick_receipt(git_repo, head=head, environment=environment)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_worktree_is_clean", lambda cwd: True)
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    real_git = pre_push_gate._git
+    calls = {"rev_parse_head": 0}
+
+    def fake_git(*args: str, cwd: Path) -> str:
+        if args == ("rev-parse", "HEAD"):
+            calls["rev_parse_head"] += 1
+            # First sample matches the pushed SHA and the cached receipt; a
+            # simulated concurrent operation then moves HEAD before the gate
+            # commits to reuse.
+            return head if calls["rev_parse_head"] == 1 else moved
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(pre_push_gate, "_git", fake_git)
+
+    assert pre_push_gate.run_gate([update], cwd=git_repo) == "quick"
+    assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
+    assert calls["rev_parse_head"] >= 2, "the gate must re-sample live HEAD before trusting reuse"
+
+
 def test_matching_quick_receipt_is_reused(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     update = _code_update(git_repo)
     head = _git(git_repo, "rev-parse", "HEAD")
