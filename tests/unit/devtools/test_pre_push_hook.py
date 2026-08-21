@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -133,7 +134,7 @@ def _code_update(repo: Path) -> pre_push_gate.PushUpdate:
     return pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", base)
 
 
-def _quick_receipt(repo: Path, *, head: str, environment: dict[str, object]) -> None:
+def _quick_receipt(repo: Path, *, head: str, environment: Mapping[str, object]) -> None:
     path = repo / ".cache" / "verify" / "current-run.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
