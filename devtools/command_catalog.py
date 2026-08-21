@@ -385,6 +385,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace integrate",
+        "workspace",
+        "Apply an ordered list of lane commits to a clean linked integration worktree.",
+        "devtools.workspace_integrate",
+        use_when=(
+            "Integrate ready lane commits without coordinator cherry-pick ceremony. The target must be an explicit, "
+            "clean linked worktree on a non-master branch. Source refs are range-derived only when target ancestry is "
+            "unambiguous; use repeated --commit for divergent histories. Conflicts stop ordinary cherry-pick in place "
+            "and are never auto-resolved or aborted."
+        ),
+        examples=(
+            "devtools workspace integrate --target /realm/worktrees/batch feature/lane-a feature/lane-b",
+            "devtools workspace integrate --target /realm/worktrees/batch --commit abc123 --commit def456 --json",
+        ),
+    ),
+    CommandSpec(
         "workspace worktree-gc",
         "workspace",
         "Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees.",
