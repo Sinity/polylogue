@@ -2571,7 +2571,7 @@ def _subprocess_env(*, native_testmon_data: Path | None = None) -> dict[str, str
 
 
 def _stop_after_failed_step(label: str) -> bool:
-    return label in {"lab smoke", "bench slo"}
+    return label in {"verify scenario", "bench slo"}
 
 
 def _native_lane_failure_requires_stop(step: Mapping[str, Any]) -> bool:
@@ -2694,14 +2694,14 @@ def build_verify_steps(
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("verify ci-commands", _devtools_cmd("verify ci-commands")),
                 ("verify doc-commands", _devtools_cmd("verify doc-commands")),
-                ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),
+                ("verify schema-roundtrip", _devtools_cmd("verify schema-roundtrip", "--all")),
                 # Static, archive-independent, sub-second: an index bump that
                 # lands without its lifecycle.py delta declaration silently
                 # downgrades every existing generation to a full raw replay
                 # (polylogue-9rw0). Gated here, not behind --lab, because the
                 # failure surfaces as an unqueryable live archive rather than
                 # as a test failure.
-                ("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")),
+                ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
                 # Static, seconds-scale, archive-independent. A test whose
                 # entire target set is production-unreachable stays green
                 # forever regardless of live behaviour, and a test that reads
@@ -2710,7 +2710,7 @@ def build_verify_steps(
                 # gate has to live here rather than in the suite it audits.
                 # Ratcheted against docs/plans/oracle-integrity-baseline.json:
                 # pre-existing findings are exempt, new ones fail.
-                ("lab policy oracle-integrity", _devtools_cmd("lab policy oracle-integrity")),
+                ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.
@@ -2754,11 +2754,11 @@ def build_verify_steps(
         )
 
     if lab:
-        steps.append(("lab smoke", _devtools_cmd("lab smoke", "run", "archive-smoke", "--tier", "0")))
+        steps.append(("verify scenario", _devtools_cmd("verify scenario", "run", "archive-smoke", "--tier", "0")))
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
-        steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
-        steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
-        steps.append(("lab policy bead-graph", _devtools_cmd("lab policy bead-graph")))
+        steps.append(("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")))
+        steps.append(("verify insight-honesty", _devtools_cmd("verify insight-honesty")))
+        steps.append(("verify bead-graph", _devtools_cmd("verify bead-graph")))
     return steps
 
 

@@ -1,6 +1,6 @@
 """Commit a real full-corpus schema generation into committed packages.
 
-``devtools lab schema generate`` only ever produces a preview
+``devtools workspace schema generate`` only ever produces a preview
 ``GenerationResult`` -- it never writes to ``polylogue/schemas/providers/``.
 This command is the actual persisting entry point (polylogue-k45pq):
 it calls ``generate_all_schemas`` for real via

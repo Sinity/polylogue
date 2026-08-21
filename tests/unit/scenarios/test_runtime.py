@@ -83,15 +83,14 @@ def test_run_execution_dispatches_devtools_through_the_checkout_module(monkeypat
 
     monkeypatch.setattr("polylogue.scenarios.runtime.subprocess.run", fake_run)
 
-    result = run_execution(devtools_execution("lab smoke", "run", "storage-correctness", "--json"), capture_output=True)
+    result = run_execution(devtools_execution("verify scenario", "storage-correctness", "--json"), capture_output=True)
 
     assert captured_command == [
         sys.executable,
         "-m",
         "devtools",
-        "lab",
-        "smoke",
-        "run",
+        "verify",
+        "scenario",
         "storage-correctness",
         "--json",
     ]

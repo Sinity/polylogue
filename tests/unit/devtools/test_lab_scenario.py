@@ -1,4 +1,4 @@
-"""Tests for the executable lab smoke command surface."""
+"""Tests for executable verification scenarios."""
 
 from __future__ import annotations
 
@@ -79,6 +79,15 @@ def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) ->
     assert "Smoke stages:" in out
     assert "cli: ok" in out
     assert "Failed stages: none" in out
+
+
+def test_main_rejects_removed_live_archive_flag() -> None:
+    from devtools.lab_scenario import main
+
+    with pytest.raises(SystemExit) as raised:
+        main(["run", "archive-smoke", "--live"])
+
+    assert raised.value.code == 2
 
 
 def test_main_json_reports_direct_scenario_payload(capsys: pytest.CaptureFixture[str]) -> None:

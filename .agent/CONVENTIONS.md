@@ -65,7 +65,7 @@ discovered follow-ups. Run `bd prime` for workflow context.
   `bd dep cycles` clean.
 - No Dolt remote: `.beads/issues.jsonl` in git IS the sync surface; ship
   bead-state deltas in PRs (`chore(beads):`).
-- Graph lint: run `devtools lab policy bead-graph` before shipping bead deltas
+- Graph lint: run `devtools verify bead-graph` before shipping bead deltas
   (cycles, missing acceptance criteria, duplicate `wave:` labels, wave
   inversions). INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:`
   labels are flagged — polylogue does not (yet) enforce exactly-one-area, and

@@ -113,7 +113,7 @@ def test_render_schema_drift_status_prints_percent_and_examples() -> None:
     assert "20 records" in output
     assert "carry unseen shapes" in output
     assert "raw-a" in output
-    assert "devtools lab schema generate/promote" in output
+    assert "devtools workspace schema generate/promote" in output
 
 
 def test_render_schema_drift_status_stays_quiet_when_all_origins_ok() -> None:

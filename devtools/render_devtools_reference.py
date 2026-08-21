@@ -11,7 +11,6 @@ from devtools.command_catalog import (
     control_plane_command,
     featured_command_specs,
     grouped_command_specs,
-    verification_lab_command_specs,
 )
 from devtools.render_support import write_if_changed
 
@@ -19,9 +18,8 @@ MARKER = "devtools-command-catalog"
 
 
 def _render_table(category: str, commands: list[CommandSpec]) -> list[str]:
-    display_category = "Lab Checks" if category == "verification lab" else category.title()
     lines = [
-        f"### {display_category}",
+        f"### {category.title()}",
         "",
         "| Command | Description |",
         "| --- | --- |",
@@ -47,28 +45,9 @@ def _render_featured_commands(commands: tuple[CommandSpec, ...]) -> list[str]:
     return lines
 
 
-def _render_verification_lab_surface(commands: tuple[CommandSpec, ...]) -> list[str]:
-    if not commands:
-        return []
-    lines = [
-        "## Executable Lab Checks",
-        "",
-        "These commands are thin wrappers around concrete schema, provider, pipeline, smoke, and lane checks.",
-        "They are not a proof ledger or end-user archive workflow.",
-        "",
-        "| Command | Role |",
-        "| --- | --- |",
-    ]
-    for spec in commands:
-        lines.append(f"| `{spec.invocation}` | {spec.use_when or spec.description} |")
-    lines.append("")
-    return lines
-
-
 def build_command_catalog() -> str:
     groups = grouped_command_specs()
     featured = featured_command_specs()
-    verification_lab = verification_lab_command_specs()
     lines = [
         "<!-- BEGIN GENERATED: devtools-command-catalog -->",
         "## Command Catalog",
@@ -84,7 +63,6 @@ def build_command_catalog() -> str:
         "```",
         "",
     ]
-    lines.extend(_render_verification_lab_surface(verification_lab))
     if featured:
         lines.extend(_render_featured_commands(featured))
     for category, commands in groups.items():

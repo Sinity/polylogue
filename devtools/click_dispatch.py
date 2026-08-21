@@ -21,14 +21,12 @@ from devtools.command_catalog import (
     COMMAND_SPECS,
     CommandSpec,
     grouped_command_specs,
-    verification_lab_command_specs,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 GROUP_HELP: dict[str, str] = {
     "bench": "Run benchmark, mutation, SLO, and resource-budget commands.",
-    "lab": "Run executable lab evidence, schema, probe, and policy commands.",
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
     "verify": "Run the local verification baseline or focused checks. Use --inner-help for baseline flags.",
@@ -37,13 +35,9 @@ GROUP_HELP: dict[str, str] = {
 
 
 def _print_inventory(*, json: bool) -> None:
-    verification_lab = verification_lab_command_specs()
     if json:
         payload = {
             "commands": [spec.to_dict() for spec in COMMAND_SPECS],
-            "surfaces": {
-                "verification_lab": [spec.name for spec in verification_lab],
-            },
             "categories": [
                 {
                     "name": category,
@@ -57,10 +51,6 @@ def _print_inventory(*, json: bool) -> None:
         return
 
     click.echo("Commands:")
-    if verification_lab:
-        click.echo("\n  lab check surface:")
-        for spec in verification_lab:
-            click.echo(f"    {spec.name:<25} {spec.description}")
     for category, specs in grouped_command_specs().items():
         click.echo(f"\n  {category}:")
         for spec in specs:

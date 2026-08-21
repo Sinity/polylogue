@@ -51,7 +51,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # routes to `polylogue ops reset --index && polylogued run`.
 #
 # A bump without a declaration is a policy violation, not a free rebuild:
-# `devtools lab policy schema-versioning` fails, and the archive silently
+# `devtools verify schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
 #
 # polylogue-o4j2: v47 adds sessions.pending_drafts_json -- aistudio-drive's

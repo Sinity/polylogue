@@ -8,7 +8,6 @@ from devtools.command_catalog import (
     control_plane_command,
     featured_command_specs,
     grouped_command_specs,
-    verification_lab_command_specs,
 )
 from devtools.render_support import write_if_changed
 
@@ -26,8 +25,6 @@ def test_build_command_catalog_includes_discovery_and_commands() -> None:
         control_plane_command("status", "--json"),
     ):
         assert command in rendered
-    for spec in verification_lab_command_specs():
-        assert f"| `{spec.invocation}` | {spec.use_when or spec.description} |" in rendered
     for spec in featured_command_specs():
         assert f"- `{spec.invocation}`: {spec.use_when or spec.description}" in rendered
     for specs in grouped_command_specs().values():

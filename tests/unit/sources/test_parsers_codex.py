@@ -1839,7 +1839,7 @@ class TestEdgeCases:
 
 
 class TestUnreadFieldTriage:
-    """Fields identified by `devtools lab schema parser-diff --provider codex`
+    """Fields identified by `devtools workspace schema parser-diff --provider codex`
     that were previously parsed by name but silently dropped in value."""
 
     def test_turn_context_captures_truncation_policy_and_output_schema(self) -> None:

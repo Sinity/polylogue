@@ -214,7 +214,7 @@ class TestDefaultTapeContent:
 
         tape = generate_tape(spec)
 
-        assert "devtools lab smoke run reader-visual-smoke" in tape
+        assert "devtools verify scenario run reader-visual-smoke" in tape
         assert "reader-visual-smoke.json" in tape
 
     def test_browser_capture_tour_uses_deterministic_live_follow(self) -> None:

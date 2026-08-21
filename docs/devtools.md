@@ -32,7 +32,7 @@ parallel dispatch. Validate branch-local dependency records without importing
 an aging worktree into the shared Beads database:
 
 ```bash
-devtools lab policy bead-graph --export .beads/issues.jsonl --json
+devtools verify bead-graph --export .beads/issues.jsonl --json
 ```
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
@@ -47,35 +47,6 @@ devtools --list-commands --json
 devtools status
 devtools status --json
 ```
-
-## Executable Lab Checks
-
-These commands are thin wrappers around concrete schema, provider, pipeline, smoke, and lane checks.
-They are not a proof ledger or end-user archive workflow.
-
-| Command | Role |
-| --- | --- |
-| `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
-| `devtools lab snapshot read-surface` | Freeze archive read-surface behavior before archive work, then compare candidate archives against the captured envelope baseline. |
-| `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
-| `devtools lab policy oracle-integrity` | Before a deletion sweep, and as a standing gate. Catches the two ways a green test can certify nothing: its entire target set is unreachable from any production entrypoint (dead-engine suites), or it reads a real ~/.codex / ~/.claude / /realm path instead of a fixture. Reachability seeds four root classes import edges miss -- Click lazy commands, `python -m` entrypoints, ancestor packages, and literal-container registries -- resolves facade re-exports per symbol, and flags module-level Path.home()/expanduser constants in polylogue/** that capture an ambient location at import time, because import edges alone under-report and this repo has four recorded wrong deletions derived from grep. |
-| `devtools lab policy bead-graph` | Run before shipping a bead-state delta. With no source option it checks live `bd` state; `--export .beads/issues.jsonl` validates the branch snapshot without importing it into the shared database. `--forcing-root` reports a digest-bound transitive blocks closure; `--require-resolved` is for an operation boundary that requires no open blockers. The gate checks existing registry Bead references and never makes prose or campaign mirrors authority. |
-| `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
-| `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
-| `devtools lab probe cost-reconciliation` | Validate archive token accounting against optional local Codex state_5.sqlite and Claude stats-cache.json before publishing cost or usage-analysis claims. |
-| `devtools lab probe pipeline` | Run real pipeline stages and optionally capture emitted summaries as regression cases. |
-| `devtools lab run` | Run a scenario such as rebuild-safety through the direct lab command path. |
-| `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
-| `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
-| `devtools lab schema compare` | Review schema package drift between committed versions in the lab surface. |
-| `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
-| `devtools lab schema generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
-| `devtools lab schema commit` | Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live archive -- 'lab schema generate' only ever previews and never writes committed package files. |
-| `devtools lab schema promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
-| `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
-| `devtools lab schema parser-diff` | Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching is name-based, so read the parser before acting on a row. |
-| `devtools lab schema roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
-| `devtools lab probe capture-regression` | Turn a live or probe failure JSON summary into a replayable local regression artifact. |
 
 ## Core Loop
 
@@ -125,46 +96,40 @@ These are the commands worth remembering during normal repo work:
 | `devtools release build-package` | Build the default Nix package with the out-link under .local/result. |
 | `devtools release verify-distribution` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 
-### Lab Checks
-
-| Command | Description |
-| --- | --- |
-| `devtools lab policy bead-graph` | Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references. |
-| `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
-| `devtools lab policy oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
-| `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
-| `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
-| `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
-| `devtools lab probe cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
-| `devtools lab probe pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools lab provider completeness` | Report provider/importer package completeness by origin and capture mode. |
-| `devtools lab run` | Run a named archive verification scenario. |
-| `devtools lab schema audit` | Run committed provider schema package quality checks. |
-| `devtools lab schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
-| `devtools lab schema compare` | Compare two committed schema package versions for a provider. |
-| `devtools lab schema explain` | Explain a committed package element schema with evidence and annotations. |
-| `devtools lab schema generate` | Generate provider schema packages and optional evidence clusters. |
-| `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
-| `devtools lab schema parser-diff` | List observed provider wire keys that no parser references. |
-| `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
-| `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
-| `devtools lab smoke` | Run direct archive and reader smoke sets. |
-| `devtools lab snapshot read-surface` | Capture and compare archive read-surface snapshots. |
-
 ### Verification
 
 | Command | Description |
 | --- | --- |
+| `devtools bench capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
+| `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
+| `devtools verify bead-graph` | Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references. |
 | `devtools verify ci-commands` | Validate devtools invocations in structured CI run fields. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
+| `devtools verify insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
+| `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
+| `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
+| `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
+| `devtools verify scenario` | Run a named archive verification scenario. |
+| `devtools verify schema-audit` | Run committed provider schema package quality checks. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
+| `devtools verify schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
+| `devtools verify schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
+| `devtools verify timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
+| `devtools workspace cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
+| `devtools workspace schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
+| `devtools workspace schema compare` | Compare two committed schema package versions for a provider. |
+| `devtools workspace schema explain` | Explain a committed package element schema with evidence and annotations. |
+| `devtools workspace schema generate` | Generate provider schema packages and optional evidence clusters. |
+| `devtools workspace schema list` | List committed schema packages, versions, and evidence manifests. |
+| `devtools workspace schema parser-diff` | List observed provider wire keys that no parser references. |
+| `devtools workspace schema promote` | Promote a schema evidence cluster into a registered package version. |
 
 ### Benchmarking
 
@@ -267,8 +232,8 @@ When changing semantics, validation, or surfaces:
 ```bash
 devtools verify
 devtools test tests/unit/path/to/test_file.py
-devtools lab smoke run archive-smoke --tier 0
-devtools lab smoke run reader-visual-smoke
+devtools verify scenario run archive-smoke --tier 0
+devtools verify scenario run reader-visual-smoke
 devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 

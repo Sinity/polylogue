@@ -1,4 +1,4 @@
-"""Verification-lab direct smoke runner."""
+"""Executable repository verification scenarios."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ _ARCHIVE_SMOKE_CHECKS: tuple[ArchiveSmokeCheck, ...] = (
 
 
 class ArchiveSmokeResult:
-    """Direct result wrapper for the archive-smoke lab smoke."""
+    """Direct result wrapper for the archive-smoke scenario."""
 
     def __init__(
         self,
@@ -197,7 +197,7 @@ class RebuildSafetyResult:
 
 
 def get_archive_smoke_checks() -> tuple[ArchiveSmokeCheck, ...]:
-    """Return direct CLI checks for the archive-smoke lab smoke."""
+    """Return direct CLI checks for the archive-smoke scenario."""
     return _ARCHIVE_SMOKE_CHECKS
 
 
@@ -224,9 +224,6 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="action", required=True)
     run_parser = subparsers.add_parser("run", help="Run a named smoke set.")
     run_parser.add_argument("scenario", choices=_SCENARIO_NAMES, help="Smoke set to run.")
-    run_parser.add_argument(
-        "--live", action="store_true", help="Run against the active archive instead of a seeded workspace."
-    )
     run_parser.add_argument("--tier", type=int, default=None, help="Only run smoke checks at this tier.")
     run_parser.add_argument("--report-dir", type=Path, default=None, help="Directory for scenario artifacts.")
     run_parser.add_argument("--json", action="store_true", help="Emit a machine-readable scenario payload.")
@@ -343,7 +340,6 @@ def _format_scenario_summary(result: _ScenarioResult) -> str:
 
 def run_archive_smoke(
     *,
-    live: bool,
     tier: int | None,
     report_dir: Path | None,
     verbose: bool,
@@ -362,7 +358,7 @@ def run_archive_smoke(
         fail_fast=fail_fast,
         progress_stream=sys.stderr if as_json else sys.stdout,
     )
-    _write_archive_smoke_report(report_dir, check_results=check_results, live=live, tier=tier)
+    _write_archive_smoke_report(report_dir, check_results=check_results, tier=tier)
     return ArchiveSmokeResult(
         check_results=check_results,
         report_dir=report_dir,
@@ -370,7 +366,7 @@ def run_archive_smoke(
 
 
 def _scenario_payload(result: _ScenarioResult) -> dict[str, object]:
-    """Return the direct lab smoke payload without report wrapping."""
+    """Return the direct archive-smoke payload without report wrapping."""
     stage_statuses = result.stage_statuses()
     failed_stages = result.failed_stages()
     payload: dict[str, object] = {
@@ -446,7 +442,6 @@ def _write_archive_smoke_report(
     report_dir: Path | None,
     *,
     check_results: list[ArchiveSmokeCheckResult],
-    live: bool,
     tier: int | None,
 ) -> None:
     if report_dir is None:
@@ -454,7 +449,6 @@ def _write_archive_smoke_report(
     report_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "scenario": "archive-smoke",
-        "live": live,
         "tier": tier,
         "checks": [
             {
@@ -486,7 +480,6 @@ def main(argv: list[str] | None = None) -> int:
         result = RebuildSafetyResult(report_dir=args.report_dir)
     else:
         result = run_archive_smoke(
-            live=bool(args.live),
             tier=args.tier,
             report_dir=args.report_dir,
             verbose=bool(args.verbose),
@@ -501,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_main(argv: list[str] | None = None) -> int:
-    """Run a named lab scenario through the advertised ``devtools lab run`` route."""
+    """Run a named scenario through the historical direct route."""
     return main(["run", *(argv or [])])
 
 

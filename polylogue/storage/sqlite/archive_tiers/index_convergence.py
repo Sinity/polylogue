@@ -12,7 +12,7 @@ The ops tier already proved this pattern (``bootstrap.py``'s
 same-version open, zero bumps ever). This module extends the regime to the
 index tier with a narrow, explicitly registered statement list rather than a
 blanket DDL re-exec, so each entry can be policy-checked
-(``devtools lab policy schema-versioning``) for the three properties that make
+(``devtools verify schema-versioning``) for the three properties that make
 it safe to apply on every open of an already-populated, same-version archive:
 
 - **Idempotent**: ``CREATE TABLE IF NOT EXISTS`` / ``CREATE INDEX IF NOT
@@ -56,7 +56,7 @@ import aiosqlite
 class BenignDDLEntry:
     """One registered idempotent, data-non-transforming DDL statement.
 
-    ``devtools lab policy schema-versioning`` validates every registry entry's
+    ``devtools verify schema-versioning`` validates every registry entry's
     ``sql`` against the allowed idempotent-DDL shapes; see
     ``devtools/verify_schema_upgrade_lane.py``.
     """

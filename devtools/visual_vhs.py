@@ -118,7 +118,7 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
             # itself -- otherwise Wait+Screen matches the terminal's own
             # echo of the not-yet-executed command instantly.
             "Hide",
-            "Type \"devtools lab smoke run reader-visual-smoke --json --report-dir reader-evidence-tour >/dev/null 2>&1 && printf 'REA''DY\\n'\"",
+            "Type \"devtools verify scenario run reader-visual-smoke --json --report-dir reader-evidence-tour >/dev/null 2>&1 && printf 'REA''DY\\n'\"",
             "Enter",
             "Wait+Screen@150s /READY/",
             'Type "clear"',

@@ -241,7 +241,7 @@ def _seed_archive_source_payload(provider: str, seed: int) -> bytes:
             messages_max=3,
             seed=seed,
             origin="generated.test-pipeline-probe",
-            tags=("synthetic", "test", "lab probe pipeline"),
+            tags=("synthetic", "test", "bench pipeline"),
         )
     )[0]
 
@@ -732,7 +732,7 @@ async def test_run_probe_can_sample_archive_file_set_subset(tmp_path: Path) -> N
                 messages_max=3,
                 seed=301,
                 origin="generated.test-pipeline-probe-archive",
-                tags=("synthetic", "test", "lab probe pipeline"),
+                tags=("synthetic", "test", "bench pipeline"),
             )
         )[0]
     )
