@@ -812,6 +812,33 @@ def test_seed_uses_bound_source_for_certificate_read_after_public_replacement(
     assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
 
 
+def test_seed_copies_wal_backed_coordinator_graph(tmp_path: Path) -> None:
+    """Lane warmth retains source graph rows committed only to the WAL."""
+    import sqlite3
+
+    root = tmp_path / "root"
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    source_data = _certified_graph_with_names(
+        root,
+        ["polylogue-current"],
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+
+    with sqlite3.connect(source_data) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("UPDATE test_execution SET duration = ?", (7.0,))
+        connection.commit()
+        assert Path(f"{source_data}-wal").exists()
+        note, warm = lane_init._seed_testmon_graph(root, lane, attestation=_attestation("polylogue-current"))
+
+    assert warm is True
+    assert "verifies start warm" in note
+    with sqlite3.connect(lane / testmon_bootstrap.TESTMON_DATA_RELPATH) as copied:
+        duration = copied.execute("SELECT duration FROM test_execution").fetchone()
+    assert duration == (7.0,)
+
+
 def test_seed_preserves_a_certified_destination_when_source_primary_is_absent(tmp_path: Path) -> None:
     """A certified fallback lane survives an absent coordinator primary candidate."""
     from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH, inspect_native_testmon_environment

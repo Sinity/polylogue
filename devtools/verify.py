@@ -210,10 +210,7 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     except NativeTestmonRepairError:
         os.close(descriptor)
         raise
-    return _OwnedNativeTestmonState(
-        descriptor=descriptor,
-        data_path=bound,
-    )
+    return _OwnedNativeTestmonState(descriptor=descriptor, data_path=bound)
 
 
 @contextlib.contextmanager
