@@ -896,7 +896,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     # tool_result window-function pairing across every block in the archive
     # instead of reading the materialized table. Force that branch directly.
     monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
+        "polylogue.storage.sqlite.archive_tiers.archive_query_reads._action_relation_for_query",
         lambda **_kwargs: (
             f"WITH actions_global_recompute AS ({action_relation_select_sql(session_placeholders=None)})",
             "actions_global_recompute",
