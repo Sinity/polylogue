@@ -172,9 +172,9 @@ def test_git_timeout_reports_failure_and_inspects_operation_state(
 ) -> None:
     repo, target = _repo(tmp_path)
     commit = _git(repo, "rev-parse", "HEAD")
-    original_git = integration_module._git
+    original_git = integration_module.__dict__["_git"]
 
-    def timeout_on_cherry_pick(path: Path, *args: str):
+    def timeout_on_cherry_pick(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
         if args[:1] == ("cherry-pick",):
             marker = Path(original_git(path, "rev-parse", "--git-path", "CHERRY_PICK_HEAD").stdout.strip())
             if not marker.is_absolute():
