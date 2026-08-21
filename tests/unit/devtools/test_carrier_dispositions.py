@@ -88,6 +88,89 @@ def test_merged_scope_refuses_a_pr_without_its_exact_head_ledger_attestation(
         carrier_dispositions._scope_from_merged_pr(42, cwd=tmp_path)
 
 
+def test_recovery_derives_and_records_an_exact_head_attestation_for_an_unledgered_merge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    info = {
+        "state": "MERGED",
+        "headRefOid": "h" * 40,
+        "mergeCommit": {"oid": "m" * 40},
+        "body": _carrier(),
+        "isDraft": False,
+        "title": "fix: recover carrier dispositions",
+    }
+    monkeypatch.setattr(carrier_dispositions, "_gh_json", lambda _args: info)
+    monkeypatch.setattr(pr_scope, "_ensure_local_commit", lambda _revision: None)
+    monkeypatch.setattr(merge_boundary, "_read_ledger", lambda: {"merges": []})
+    monkeypatch.setattr(carrier_dispositions, "_squash_merge_base", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(carrier_dispositions, "_validate_merged_scope", lambda *_args, **_kwargs: (_scope(), "a" * 64))
+    recorded: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        merge_boundary,
+        "record_post_merge_carrier_recovery",
+        lambda *args, **kwargs: recorded.append({"args": args, **kwargs}),
+    )
+
+    assert carrier_dispositions._scope_from_merged_pr(42, cwd=tmp_path, recover_unledgered_merge=True)[-1] == "a" * 64
+    assert recorded == [
+        {
+            "args": (42, "h" * 40, "fix: recover carrier dispositions"),
+            "base_sha": "b" * 40,
+            "merge_sha": "m" * 40,
+            "scope_attestation_digest": "a" * 64,
+        }
+    ]
+
+
+def test_recovery_dry_run_does_not_publish_a_ledger_entry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    info = {
+        "state": "MERGED",
+        "headRefOid": "h" * 40,
+        "mergeCommit": {"oid": "m" * 40},
+        "body": _carrier(),
+        "isDraft": False,
+        "title": "fix: recover carrier dispositions",
+    }
+    monkeypatch.setattr(carrier_dispositions, "_gh_json", lambda _args: info)
+    monkeypatch.setattr(pr_scope, "_ensure_local_commit", lambda _revision: None)
+    monkeypatch.setattr(merge_boundary, "_read_ledger", lambda: {"merges": []})
+    monkeypatch.setattr(carrier_dispositions, "_squash_merge_base", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(carrier_dispositions, "_validate_merged_scope", lambda *_args, **_kwargs: (_scope(), "a" * 64))
+    monkeypatch.setattr(
+        merge_boundary,
+        "record_post_merge_carrier_recovery",
+        lambda *_args, **_kwargs: pytest.fail("dry-run recovery must not write a ledger entry"),
+    )
+
+    assert (
+        carrier_dispositions._scope_from_merged_pr(
+            42, cwd=tmp_path, recover_unledgered_merge=True, persist_recovery=False
+        )[-1]
+        == "a" * 64
+    )
+
+
+def test_recover_subcommand_forwards_the_explicit_recovery_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def apply(*args: object, **kwargs: object) -> int:
+        calls.append({"args": args, **kwargs})
+        return 0
+
+    monkeypatch.setattr(carrier_dispositions, "cmd_apply", apply)
+
+    assert (
+        carrier_dispositions.main(
+            ["recover", "42", "--base-export", str(tmp_path / "base.jsonl"), "--output", str(tmp_path / "output.jsonl")]
+        )
+        == 0
+    )
+    assert calls[0]["args"] == (42,)
+    assert calls[0]["recover_unledgered_merge"] is True
+
+
 def test_merged_scope_uses_the_recorded_merge_time_base_for_its_attestation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -139,6 +222,7 @@ def test_apply_uses_one_guarded_batch_and_writes_only_typed_rows(
         "_scope_from_merged_pr",
         lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
     )
+    monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
     monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: before)
     monkeypatch.setattr(
         carrier_dispositions, "_validate_live_plan", lambda *_args, **_kwargs: ["close polylogue-a marker"]
@@ -178,6 +262,7 @@ def test_apply_refuses_to_sweep_an_unrelated_live_bead_into_follow_on_export(
         "_scope_from_merged_pr",
         lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
     )
+    monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
     monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: before)
     monkeypatch.setattr(
         carrier_dispositions, "_validate_live_plan", lambda *_args, **_kwargs: ["close polylogue-a marker"]

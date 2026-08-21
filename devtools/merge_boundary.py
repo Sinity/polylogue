@@ -132,6 +132,15 @@ def _require_nonempty_string(entry: Mapping[str, Any], key: str, *, message: str
         raise LedgerStateError(message)
 
 
+def _validate_recovery_provenance(entry: Mapping[str, Any]) -> None:
+    origin = entry.get("attestation_origin")
+    recovery_merge_sha = entry.get("recovery_merge_sha")
+    if origin is None and recovery_merge_sha is None:
+        return
+    if origin != "post-merge-recovery" or not isinstance(recovery_merge_sha, str) or not recovery_merge_sha:
+        raise LedgerStateError("merge-train ledger contains malformed post-merge recovery provenance")
+
+
 def _validate_ledger(data: object) -> dict[str, Any]:
     if not isinstance(data, dict) or not isinstance(data.get("merges"), list):
         raise LedgerStateError("merge-train ledger is malformed")
@@ -167,6 +176,7 @@ def _validate_ledger(data: object) -> dict[str, Any]:
             )
         ):
             raise LedgerStateError("merge-train ledger contains a malformed merge entry")
+        _validate_recovery_provenance(entry)
     intents = data.get("merge_intents")
     if not isinstance(intents, list):
         raise LedgerStateError("merge-train ledger contains malformed merge intents")
@@ -366,12 +376,26 @@ def _merge_sequence(ledger: Mapping[str, Any]) -> int:
 
 
 def _append_merge_entry(
-    pr: int, head_sha: str, title: str, *, scope_attestation_digest: str | None = None, base_sha: str | None = None
+    pr: int,
+    head_sha: str,
+    title: str,
+    *,
+    scope_attestation_digest: str | None = None,
+    base_sha: str | None = None,
+    attestation_origin: str | None = None,
+    recovery_merge_sha: str | None = None,
 ) -> None:
     with _ledger_lock():
         ledger = _read_ledger_unlocked()
         _append_merge_entry_unlocked(
-            ledger, pr, head_sha, title, scope_attestation_digest=scope_attestation_digest, base_sha=base_sha
+            ledger,
+            pr,
+            head_sha,
+            title,
+            scope_attestation_digest=scope_attestation_digest,
+            base_sha=base_sha,
+            attestation_origin=attestation_origin,
+            recovery_merge_sha=recovery_merge_sha,
         )
         _write_ledger_unlocked(ledger)
 
@@ -384,6 +408,8 @@ def _append_merge_entry_unlocked(
     *,
     scope_attestation_digest: str | None = None,
     base_sha: str | None = None,
+    attestation_origin: str | None = None,
+    recovery_merge_sha: str | None = None,
 ) -> None:
     existing = [entry for entry in ledger["merges"] if entry.get("pr") == pr and entry.get("head_sha") == head_sha]
     if existing:
@@ -399,6 +425,20 @@ def _append_merge_entry_unlocked(
             )
         if base_sha is not None and existing_entry.get("base_sha") not in {None, base_sha}:
             raise LedgerStateError(f"merge-train ledger has conflicting base SHAs for PR #{pr} @ {head_sha[:8]}")
+        if attestation_origin is not None and existing_entry.get("attestation_origin") not in {
+            None,
+            attestation_origin,
+        }:
+            raise LedgerStateError(
+                f"merge-train ledger has conflicting attestation provenance for PR #{pr} @ {head_sha[:8]}"
+            )
+        if recovery_merge_sha is not None and existing_entry.get("recovery_merge_sha") not in {
+            None,
+            recovery_merge_sha,
+        }:
+            raise LedgerStateError(
+                f"merge-train ledger has conflicting recovery merge SHA for PR #{pr} @ {head_sha[:8]}"
+            )
         return
     merge_sequence = _merge_sequence(ledger) + 1
     entry: dict[str, Any] = {
@@ -412,7 +452,56 @@ def _append_merge_entry_unlocked(
         entry["scope_attestation_digest"] = scope_attestation_digest
     if base_sha is not None:
         entry["base_sha"] = base_sha
+    if attestation_origin is not None:
+        entry["attestation_origin"] = attestation_origin
+    if recovery_merge_sha is not None:
+        entry["recovery_merge_sha"] = recovery_merge_sha
+    _validate_recovery_provenance(entry)
     ledger["merges"].append(entry)
+
+
+def record_post_merge_carrier_recovery(
+    pr: int,
+    head_sha: str,
+    title: str,
+    *,
+    base_sha: str,
+    merge_sha: str,
+    scope_attestation_digest: str,
+) -> None:
+    """Record a verified merged carrier when the normal pre-merge ledger is absent.
+
+    This is intentionally separate from normal merge admission. The caller must
+    have derived ``base_sha`` from the single parent of GitHub's observable
+    squash merge and validated the carrier against the immutable PR head.
+    """
+    with _ledger_lock():
+        ledger = _read_ledger_unlocked()
+        matching = [entry for entry in ledger["merges"] if entry.get("pr") == pr]
+        if matching:
+            if len(matching) != 1 or matching[0].get("head_sha") != head_sha:
+                raise LedgerStateError(f"PR #{pr} already has a different merge-train ledger entry")
+            entry = matching[0]
+            expected = {
+                "scope_attestation_digest": scope_attestation_digest,
+                "base_sha": base_sha,
+                "attestation_origin": "post-merge-recovery",
+                "recovery_merge_sha": merge_sha,
+            }
+            if any(entry.get(key) != value for key, value in expected.items()):
+                raise LedgerStateError(f"PR #{pr} already has incompatible merge recovery evidence")
+            return
+        _append_merge_entry_unlocked(
+            ledger,
+            pr,
+            head_sha,
+            title,
+            scope_attestation_digest=scope_attestation_digest,
+            base_sha=base_sha,
+            attestation_origin="post-merge-recovery",
+            recovery_merge_sha=merge_sha,
+        )
+        _write_ledger_unlocked(ledger)
 
 
 def _record_merge_intent(
