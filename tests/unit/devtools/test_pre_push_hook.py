@@ -155,6 +155,73 @@ def _quick_receipt(repo: Path, *, head: str, environment: Mapping[str, object]) 
     )
 
 
+def test_foreign_pushed_update_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    environment = {"python_executable": "/venv/bin/python", "artifacts": []}
+    _quick_receipt(git_repo, head=head, environment=environment)
+    foreign_update = pre_push_gate.PushUpdate(
+        update.local_ref,
+        _git(git_repo, "rev-parse", "HEAD^"),
+        update.remote_ref,
+        update.remote_sha,
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    assert pre_push_gate.run_gate([foreign_update], cwd=git_repo) == "quick"
+    assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
+
+
+def test_dirty_worktree_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    environment = {"python_executable": "/venv/bin/python", "artifacts": []}
+    _quick_receipt(git_repo, head=head, environment=environment)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_worktree_is_clean", lambda cwd: False)
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    assert pre_push_gate.run_gate([update], cwd=git_repo) == "quick"
+    assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
+
+
+def test_toolchain_drift_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    recorded = {"python_executable": "/venv/bin/python", "quick_gate_toolchain": {"ruff": "old"}}
+    current = {"python_executable": "/venv/bin/python", "quick_gate_toolchain": {"ruff": "new"}}
+    _quick_receipt(git_repo, head=head, environment=recorded)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (current, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    assert pre_push_gate.run_gate([update], cwd=git_repo) == "quick"
+    assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
+
+
+def test_post_validation_provenance_drift_refuses_receipt_reuse(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    update = _code_update(git_repo)
+    head = _git(git_repo, "rev-parse", "HEAD")
+    environment = {"python_executable": "/venv/bin/python", "quick_gate_toolchain": {"ruff": "same"}}
+    drifted = {"python_executable": "/venv/bin/python", "quick_gate_toolchain": {"ruff": "changed"}}
+    _quick_receipt(git_repo, head=head, environment=environment)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: (environment, "tree-fingerprint"))
+    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
+
+    # The implementation must take a second live sample after receipt validation.
+    samples = iter(((environment, "tree-fingerprint"), (drifted, "tree-fingerprint")))
+    monkeypatch.setattr(pre_push_gate, "_current_provenance", lambda cwd: next(samples))
+
+    assert pre_push_gate.run_gate([update], cwd=git_repo) == "quick"
+    assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
+
+
 def test_matching_quick_receipt_is_reused(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     update = _code_update(git_repo)
     head = _git(git_repo, "rev-parse", "HEAD")
