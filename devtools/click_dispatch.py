@@ -28,6 +28,7 @@ from devtools.command_catalog import (
     CommandSpec,
     grouped_command_specs,
 )
+from devtools.lane_exec import reexec_into_lane
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -287,16 +288,9 @@ def _run_from_invoking_lane(argv: list[str]) -> int | None:
     worktree = find_git_worktree_root(Path.cwd())
     if worktree is None:
         return None
-    lane_python = worktree / ".venv" / "bin" / "python"
-    if lane_python.is_file() and Path(sys.executable).absolute() != lane_python.absolute():
-        from devtools.lane_init import lane_command_env
-
-        return subprocess.run(
-            [str(lane_python), "-m", "devtools", *argv],
-            cwd=worktree,
-            env=lane_command_env(worktree),
-            check=False,
-        ).returncode
+    exit_code = reexec_into_lane("devtools", argv, cwd=Path.cwd())
+    if exit_code is not None:
+        return exit_code
     if worktree != _REPO_ROOT and _is_lane_init_bootstrap(argv):
         # No lane interpreter exists yet. Re-enter with ``-m`` from the
         # worktree so module resolution uses its source before the bootstrap
