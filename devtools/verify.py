@@ -56,6 +56,7 @@ from devtools.pytest_collection_contract import (
     PARALLEL_MARKER_EXPRESSION,
     PROGRESS_PLUGIN_NAME,
     SERIAL_MARKER_EXPRESSION,
+    STORAGE_SCALE_MARKER_EXPRESSION,
 )
 from devtools.pytest_progress_plugin import merge_worker_collection_payloads, read_progress_counts
 from devtools.pytest_supervisor import (
@@ -1318,8 +1319,8 @@ def _run_pytest_with_heartbeat(
         else Path(env.get("POLYLOGUE_PYTEST_CONTAINMENT_PATH", str(Path.cwd() / PYTEST_CONTAINMENT_PATH)))
     )
     # Prefer the value pytest itself will read: the basetemp directory is named
-    # from it, and it is lane-scoped so the parallel and serial lanes of one
-    # verify run do not share a tree.
+    # from it, and it is lane-scoped so native lanes of one verify run do not
+    # share a tree.
     pytest_run_id = env.get("POLYLOGUE_PYTEST_RUN_ID") or (run.run_id if run is not None else str(os.getpid()))
     tmpfs_cleanup_path = _supervised_tmpfs_cleanup_path(
         root=Path(cwd) if cwd is not None else Path.cwd(),
@@ -2136,7 +2137,7 @@ def _run_step(
         budget_kb = pytest_tmpfs_budget_kb(env)
         pytest_tmpfs_budget_mb = budget_kb / 1024 if budget_kb is not None else None
         if label.startswith("pytest native"):
-            # The invocation aggregate compares the exact two-lane collection
+            # The invocation aggregate compares the exact semantic-lane collection
             # with the native environment corpus before granting release
             # authority. Keep the complete node set in these bounded artifacts.
             env["POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"] = "50000"
@@ -2588,6 +2589,7 @@ def _native_pytest_steps(
     testmon_environment: str,
     parallel_worker_args: Sequence[str],
     serial_worker_args: Sequence[str],
+    storage_scale_worker_args: Sequence[str],
 ) -> list[tuple[str, list[str]]]:
     pytest_cmd = [
         sys.executable,
@@ -2626,14 +2628,14 @@ def _native_pytest_steps(
         *parallel_worker_args,
     ]
 
-    def _serial_report_arg(arg: str) -> str:
+    def _lane_report_arg(arg: str, lane: str) -> str:
         if arg.startswith("--junitxml="):
-            return f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest-serial.xml"
+            return f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest-{lane}.xml"
         if arg.startswith("--json-report-file="):
-            return f"--json-report-file={PYTEST_REPORT_DIR / 'last-pytest-serial.json'}"
+            return f"--json-report-file={PYTEST_REPORT_DIR / f'last-pytest-{lane}.json'}"
         return arg
 
-    serial_cmd = [_serial_report_arg(arg) for arg in pytest_cmd]
+    serial_cmd = [_lane_report_arg(arg, "serial") for arg in pytest_cmd]
     serial_cmd.extend(
         [
             "-m",
@@ -2644,15 +2646,27 @@ def _native_pytest_steps(
             *serial_worker_args,
         ]
     )
+    storage_scale_cmd = [_lane_report_arg(arg, "storage-scale") for arg in pytest_cmd]
+    storage_scale_cmd.extend(
+        [
+            "-m",
+            STORAGE_SCALE_MARKER_EXPRESSION,
+            *native_args,
+            "-p",
+            "no:randomly",
+            *storage_scale_worker_args,
+        ]
+    )
     return [
         (f"pytest native parallel ({testmon_mode})", parallel_cmd),
         (f"pytest native serial ({testmon_mode})", serial_cmd),
+        (f"pytest native storage-scale ({testmon_mode})", storage_scale_cmd),
     ]
 
 
 def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bool:
     """Accept only a command produced by the managed native-lane builder."""
-    match = re.fullmatch(r"pytest native (parallel|serial) \((all|bootstrap|full)\)", label)
+    match = re.fullmatch(r"pytest native (parallel|serial|storage-scale) \((all|bootstrap|full)\)", label)
     if match is None:
         return False
     environment_args = [arg for arg in cmd if arg.startswith("--testmon-env=")]
@@ -2668,6 +2682,7 @@ def _native_pytest_command_is_closed_world(label: str, cmd: Sequence[str]) -> bo
         testmon_environment=environment_args[0].removeprefix("--testmon-env="),
         parallel_worker_args=observed_worker_args,
         serial_worker_args=observed_worker_args,
+        storage_scale_worker_args=observed_worker_args,
     )
     expected = dict(expected_steps).get(label)
     return expected is not None and list(cmd) == expected
@@ -2750,6 +2765,7 @@ def build_verify_steps(
                 testmon_environment=testmon_environment,
                 parallel_worker_args=_pytest_worker_args(),
                 serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
+                storage_scale_worker_args=_pytest_worker_args(maximum=STORAGE_SCALE_LANE_MAX_WORKERS),
             )
         )
 
@@ -2879,6 +2895,10 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 #: failures are starvation of an idle-scheduled containment slice, not a
 #: shortage of cores.
 SERIAL_LANE_MAX_WORKERS: Final = 4
+
+#: Archive-scale proofs materialize large revision chains and must not compete
+#: with the ordinary corpus for filesystem bandwidth or nested subprocesses.
+STORAGE_SCALE_LANE_MAX_WORKERS: Final = 1
 
 
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
@@ -3177,6 +3197,8 @@ def _finalize_preflight_failure(
         "release_baseline_allowed": False,
         "diagnosis": diagnosis,
     }
+    if (recorded_selection := run.testmon_selection) is not None:
+        history_entry["testmon_selection"] = recorded_selection
     _save_history(history_entry)
     if use_json:
         _print_json(history_entry)
@@ -3543,6 +3565,9 @@ def _main(argv: list[str] | None = None) -> int:
             native_graph_touched = True
         elif label.startswith("pytest native serial"):
             step_result["semantic_lane"] = "serial"
+            native_graph_touched = True
+        elif label.startswith("pytest native storage-scale"):
+            step_result["semantic_lane"] = "storage-scale"
             native_graph_touched = True
         step_results.append(step_result)
         if rc == 0:

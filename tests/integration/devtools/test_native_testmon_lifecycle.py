@@ -422,7 +422,7 @@ def test_serial_owner():
 
     assert unavailable.returncode == 2, unavailable.stderr
     assert unavailable_payload["diagnosis"] == "native_testmon_graph_unavailable"
-    assert unavailable_payload["testmon_environment"]["selection_mode"] == "bootstrap"
+    assert unavailable_payload["testmon_selection"]["selection_mode"] == "bootstrap"
     assert not [step for step in unavailable_payload["steps"] if step.get("semantic_lane")]
 
     first, bootstrap = _run_production_verify(repo, "--all")
@@ -435,7 +435,7 @@ def test_serial_owner():
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
     lane_steps = [step for step in bootstrap["steps"] if step.get("semantic_lane")]
-    assert [step["semantic_lane"] for step in lane_steps] == ["parallel", "serial"]
+    assert [step["semantic_lane"] for step in lane_steps] == ["parallel", "serial", "storage-scale"]
     environments = {
         arg
         for step in lane_steps
@@ -503,10 +503,11 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert payload["release_baseline_allowed"] is True
     assert payload["worktree_fingerprint"] == payload["final_worktree_fingerprint"]
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
-    assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
+    assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial", "storage-scale"]
     assert [step["name"] for step in lanes] == [
         "pytest native parallel (all)",
         "pytest native serial (all)",
+        "pytest native storage-scale (all)",
     ]
     for step in lanes:
         assert "--testmon-noselect" in step["statistics"]["command"]
@@ -530,22 +531,22 @@ def test_production_verify_all_grants_release_authority_after_complete_two_lane_
     assert aggregate["cleanup"] == {"complete": True}
     assert aggregate["containment"] == {"complete": True}
 
-    # A graph that loses recorded rows (an interrupted lane, damaged rows)
-    # shrinks its corpus AND its coverage claim together -- the row set is
-    # blind to its own losses, and testmon's file-level collection skip
-    # would hide the lost test from every later warm run. The certificate
-    # the completed run wrote catches the loss: attestation is refused and
-    # the corpus re-executes and re-certifies.
+    # A graph that loses recorded rows no longer triggers an implicit corpus
+    # replay. The certificate still records that the stronger attest-all-tests
+    # claim is unavailable, while testmon continues to select from the usable
+    # dependency graph. An explicit --all is the only recertification route.
     graph = repo / ".cache" / "testmon" / "testmondata"
     with sqlite3.connect(graph) as connection:
         connection.execute("DELETE FROM test_execution WHERE test_name LIKE '%serial%'")
     warm_completed, warm = _run_production_verify(repo)
 
-    assert warm_completed.returncode == 2, warm_completed.stderr
-    assert warm["diagnosis"] == "native_testmon_graph_unavailable"
-    assert warm["testmon_environment"]["selection_mode"] == "bootstrap"
-    assert "attestation refused" in warm["testmon_selection"]["state_reason"]
-    assert not [step for step in warm["steps"] if step.get("semantic_lane")]
+    assert warm_completed.returncode == 0, warm_completed.stderr
+    assert warm["testmon_environment"]["selection_mode"] == "full"
+    assert "attestation unavailable" in warm["testmon_selection"]["state_reason"]
+    lanes = [step for step in warm["steps"] if step.get("semantic_lane")]
+    assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial", "storage-scale"]
+    assert warm["pytest_aggregate"]["selected_union_count"] == 0
+    assert warm["release_baseline_allowed"] is True
 
 
 def test_release_native_runs_override_a_reduced_hypothesis_profile(tmp_path: Path) -> None:
@@ -665,8 +666,8 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     assert aggregate["terminal_union_count"] == 2
     assert aggregate["outcomes"] == {"failed": 2}
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
-    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True]
-    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True]
+    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True, True]
+    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True, True]
     assert all("--override-ini=addopts=" in step["statistics"]["command"] for step in lanes)
     assert "parallel body executed" in completed.stderr
     assert "serial body executed" in completed.stderr
@@ -842,8 +843,8 @@ def test_production_affected_verify_neutralizes_execution_suppressing_addopts(
     assert aggregate["terminal_union_count"] == 2
     assert aggregate["outcomes"] == {"failed": 2}
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
-    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True]
-    assert [step["closed_world_collection"] for step in lanes] == [True, True]
+    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True, True]
+    assert [step["closed_world_collection"] for step in lanes] == [True, True, True]
     assert "affected parallel body executed" in completed.stderr
     assert "affected serial body executed" in completed.stderr
 
@@ -917,8 +918,8 @@ def test_production_verify_all_owns_complete_test_root_over_configured_testpaths
     assert aggregate["complete_corpus_covered"] is True
     assert aggregate["terminal_green"] is False
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
-    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True]
-    assert [step["closed_world_collection"] for step in lanes] == [True, True]
+    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True, True]
+    assert [step["closed_world_collection"] for step in lanes] == [True, True, True]
     assert all(step["statistics"]["command"].count("tests") == 1 for step in lanes)
     assert "outside configured discovery executed" in completed.stderr
 

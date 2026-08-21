@@ -1327,7 +1327,7 @@ def aggregate_native_testmon_run(
     invocation_duration_s: float,
     attestation_sound: bool = True,
 ) -> dict[str, Any]:
-    """Build one compact, durable aggregate for the two semantic pytest lanes."""
+    """Build one compact, durable aggregate for the semantic pytest lanes."""
     lanes: list[dict[str, Any]] = []
     selected_union: set[str] = set()
     outcome_by_node: dict[str, str] = {}
@@ -1349,7 +1349,7 @@ def aggregate_native_testmon_run(
     closed_world_collection = True
     for step in steps:
         lane = step.get("semantic_lane")
-        if lane not in {"parallel", "serial"}:
+        if lane not in {"parallel", "serial", "storage-scale"}:
             continue
         step_dir = _safe_step_dir(root, step.get("artifact_dir"))
         selection = _read_json_object(step_dir / "selection.json") if step_dir is not None else None
@@ -1470,9 +1470,10 @@ def aggregate_native_testmon_run(
         and selection_accounted
         and (attestation_sound or corpus_set <= executed_nodes)
         and not duplicate_outcomes
-        and len(lane_names) == 2
+        and len(lane_names) == 3
         and lane_names.count("parallel") == 1
         and lane_names.count("serial") == 1
+        and lane_names.count("storage-scale") == 1
     )
     missing_terminal = (
         tuple(sorted(selected_union - executed_nodes - corpus_set))
@@ -1862,8 +1863,8 @@ class VerifyRun:
 def pytest_step_run_id(run_id: str, step_id: str) -> str:
     """Return the pytest-invocation identity for one step of a verify run.
 
-    A verify run drives more than one pytest invocation — the parallel lane
-    and then the ``load_sensitive`` serial lane — and the basetemp directory
+    A verify run drives multiple pytest invocations: the ordinary parallel
+    lane, the ``load_sensitive`` lane, and the storage-scale lane. The basetemp directory
     is named from this identity. Sharing it across both lanes made them share
     one basetemp: the serial lane's ``TempPathFactory.getbasetemp`` then tried
     to ``rm_rf`` the parallel lane's 20k-test tree and ``mkdir`` it again, and

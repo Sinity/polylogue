@@ -47,6 +47,7 @@ __all__ = [
     "PARALLEL_MARKER_EXPRESSION",
     "PROGRESS_PLUGIN_NAME",
     "SERIAL_MARKER_EXPRESSION",
+    "STORAGE_SCALE_MARKER_EXPRESSION",
 ]
 
 #: Neutralize any addopts configured in pyproject so the invocation is closed.
@@ -88,6 +89,8 @@ CLOSED_WORLD_COLLECTION_ARGS: Final[tuple[str, ...]] = (
 #: Benchmarks are excluded from correctness runs.
 IGNORED_COLLECTION_ARGS: Final[tuple[str, ...]] = ("--ignore=tests/benchmarks",)
 
-#: The two lanes partition the corpus; together they must cover it.
-PARALLEL_MARKER_EXPRESSION: Final = "not load_sensitive"
-SERIAL_MARKER_EXPRESSION: Final = "load_sensitive"
+#: The three lanes partition the correctness corpus. Storage-scale proofs run
+#: alone so their archive churn cannot contend with ordinary selected tests.
+PARALLEL_MARKER_EXPRESSION: Final = "not load_sensitive and not storage_scale"
+SERIAL_MARKER_EXPRESSION: Final = "load_sensitive and not storage_scale"
+STORAGE_SCALE_MARKER_EXPRESSION: Final = "storage_scale"
