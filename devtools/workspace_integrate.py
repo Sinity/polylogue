@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from devtools.verify_worktree import _git, inspect_worktree
+
+_ACTIVE_MARKERS = ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "REBASE_HEAD")
 
 
 @dataclass
@@ -29,6 +32,8 @@ class IntegrationReport:
     status: str = "blocked"
     conflict: bool = False
     conflict_head: str | None = None
+    empty_pick: bool = False
+    active_operation: str | None = None
     error: str | None = None
 
 
@@ -65,21 +70,62 @@ def _source_commits(target: Path, source_ref: str) -> tuple[list[str], str | Non
     return [line for line in commits.stdout.splitlines() if line], None
 
 
-def _validate_target(target: Path, report: IntegrationReport) -> str | None:
+def _git_path(target: Path, name: str) -> Path:
+    raw = Path(_git(target, "rev-parse", "--git-path", name).stdout.strip())
+    return raw if raw.is_absolute() else target / raw
+
+
+def _active_operation(target: Path) -> str | None:
+    """Return the first active Git operation marker, if any."""
+    for marker in _ACTIVE_MARKERS:
+        if _git_path(target, marker).exists():
+            return marker
+    if _git_path(target, "sequencer").is_dir():
+        return "sequencer"
+    return None
+
+
+def _validate_target(target: Path, report: IntegrationReport) -> tuple[Path | None, str | None]:
     inspection = inspect_worktree(target)
     hard_failures = inspection.hard_failures()
     if hard_failures:
-        return "; ".join(check.detail for check in hard_failures)
+        return None, "; ".join(check.detail for check in hard_failures)
+
+    show_top = _git(target, "rev-parse", "--show-toplevel")
+    if show_top.returncode:
+        return None, f"could not determine linked worktree top-level: {show_top.stderr.strip()}"
+    canonical = Path(show_top.stdout.strip()).resolve()
+    if canonical != target:
+        return None, f"--target must equal the linked worktree top-level ({canonical}), not a nested path"
+
     branch = inspection.branch
     report.branch = branch
     if branch in {None, "master", "refs/heads/master"}:
-        return "target must be on a named non-master branch"
-    status = _git(target, "status", "--porcelain")
+        return None, "target must be on a named non-master branch"
+    status = _git(canonical, "status", "--porcelain")
     if status.returncode:
-        return f"could not inspect target status: {status.stderr.strip()}"
+        return None, f"could not inspect target status: {status.stderr.strip()}"
     if status.stdout.strip():
-        return "target worktree must be clean before integration"
-    return None
+        return None, "target worktree must be clean before integration"
+    active = _active_operation(canonical)
+    if active is not None:
+        return None, f"active Git operation ({active}) must be completed before integration"
+    return canonical, None
+
+
+def _append_unique(planned: list[str], seen: set[str], commits: Sequence[str]) -> None:
+    for commit in commits:
+        if commit not in seen:
+            seen.add(commit)
+            planned.append(commit)
+
+
+def _operation_state_after_timeout(target: Path) -> str | None:
+    """Inspect operation state after a Git timeout without classifying it as conflict."""
+    try:
+        return _active_operation(target)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def integrate(
@@ -94,38 +140,60 @@ def integrate(
         source_refs=list(source_refs),
         explicit_commits=list(explicit_commits),
     )
-    target_error = _validate_target(target, report)
-    if target_error:
-        return _fail(report, target_error)
-    if not source_refs and not explicit_commits:
-        return _fail(report, "provide at least one source ref or explicit commit SHA")
+    try:
+        canonical, target_error = _validate_target(target, report)
+        if target_error:
+            return _fail(report, target_error)
+        assert canonical is not None
+        target = canonical
+        report.target = str(target)
+        if not source_refs and not explicit_commits:
+            return _fail(report, "provide at least one source ref or explicit commit SHA")
 
-    planned: list[str] = []
-    for source_ref in source_refs:
-        commits, error = _source_commits(target, source_ref)
-        if error:
-            return _fail(report, error)
-        planned.extend(commits)
-    for commit in explicit_commits:
-        resolved = _commit_sha(target, commit)
-        if resolved is None:
-            return _fail(report, f"explicit commit {commit!r} does not resolve to a commit")
-        planned.append(resolved)
-    report.planned_commits = planned
+        planned: list[str] = []
+        seen: set[str] = set()
+        for source_ref in source_refs:
+            commits, error = _source_commits(target, source_ref)
+            if error:
+                return _fail(report, error)
+            _append_unique(planned, seen, commits)
+        for commit in explicit_commits:
+            resolved = _commit_sha(target, commit)
+            if resolved is None:
+                return _fail(report, f"explicit commit {commit!r} does not resolve to a commit")
+            _append_unique(planned, seen, [resolved])
+        report.planned_commits = planned
 
-    for commit in planned:
-        result = _git(target, "cherry-pick", commit)
-        if result.returncode:
-            conflict_head = _git(target, "rev-parse", "--verify", "CHERRY_PICK_HEAD").stdout.strip()
-            report.conflict = bool(conflict_head)
-            report.conflict_head = conflict_head or None
-            report.status = "conflict" if report.conflict else "error"
-            report.error = (result.stderr or result.stdout).strip() or "git cherry-pick failed"
-            return report
-        report.applied_commits.append(commit)
+        for commit in planned:
+            try:
+                result = _git(target, "cherry-pick", commit)
+            except subprocess.TimeoutExpired as exc:
+                report.status = "timeout"
+                report.active_operation = _operation_state_after_timeout(target)
+                report.error = f"git cherry-pick timed out after {exc.timeout}s"
+                return report
+            if result.returncode:
+                conflict_head = _git(target, "rev-parse", "--verify", "CHERRY_PICK_HEAD").stdout.strip()
+                report.conflict_head = conflict_head or None
+                status = _git(target, "status", "--porcelain").stdout
+                report.empty_pick = bool(conflict_head) and not status.strip()
+                report.conflict = bool(conflict_head) and not report.empty_pick
+                if report.empty_pick:
+                    report.status = "empty"
+                    report.error = "cherry-pick produced no changes; stopped without skipping or aborting"
+                else:
+                    report.status = "conflict" if report.conflict else "error"
+                    report.error = (result.stderr or result.stdout).strip() or "git cherry-pick failed"
+                return report
+            report.applied_commits.append(commit)
 
-    report.status = "applied"
-    return report
+        report.status = "applied"
+        return report
+    except subprocess.TimeoutExpired as exc:
+        report.status = "timeout"
+        report.active_operation = _operation_state_after_timeout(target)
+        report.error = f"git command timed out after {exc.timeout}s"
+        return report
 
 
 def _render_text(report: IntegrationReport) -> str:
@@ -141,9 +209,18 @@ def _render_text(report: IntegrationReport) -> str:
     if report.conflict:
         lines.append(f"conflict: CHERRY_PICK_HEAD={report.conflict_head}")
         lines.append("conflict state left in target worktree; no automatic resolution or abort performed")
+    if report.empty_pick:
+        lines.append("empty pick: cherry-pick produced no changes; state left in target worktree")
+    if report.active_operation:
+        lines.append(f"active operation after timeout: {report.active_operation}")
     if report.error:
         lines.append(f"error: {report.error}")
     return "\n".join(lines)
+
+
+def _report_for_mixed_sources(target: Path, positional: Sequence[str], options: Sequence[str]) -> IntegrationReport:
+    report = IntegrationReport(target=str(target.expanduser().resolve()), source_refs=[*positional, *options])
+    return _fail(report, "cannot mix positional source refs with --source options; choose one form")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -158,8 +235,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", dest="as_json", help="Emit a JSON report")
     args = parser.parse_args(argv)
-    refs = [*args.source_refs, *args.source_options]
-    report = integrate(args.target, refs, args.commits)
+    if args.source_refs and args.source_options:
+        report = _report_for_mixed_sources(args.target, args.source_refs, args.source_options)
+    else:
+        refs = args.source_refs or args.source_options
+        report = integrate(args.target, refs, args.commits)
     payload = asdict(report)
     payload["ok"] = report.status == "applied"
     if args.as_json:

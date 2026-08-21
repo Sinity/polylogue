@@ -157,6 +157,16 @@ def test_mixing_positional_and_source_options_is_rejected(tmp_path: Path, capsys
     assert payload["error"] is not None and "cannot mix" in payload["error"]
 
 
+def test_empty_pick_is_not_reported_as_content_conflict(tmp_path: Path) -> None:
+    repo, target = _repo(tmp_path)
+    commit = _git(repo, "rev-parse", "HEAD")
+    report = integrate(target, explicit_commits=[commit])
+    assert report.status == "empty"
+    assert report.empty_pick is True
+    assert report.conflict is False
+    assert report.error is not None and "no changes" in report.error
+
+
 def test_git_timeout_reports_failure_and_inspects_operation_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -166,6 +176,11 @@ def test_git_timeout_reports_failure_and_inspects_operation_state(
 
     def timeout_on_cherry_pick(path: Path, *args: str):
         if args[:1] == ("cherry-pick",):
+            marker = Path(original_git(path, "rev-parse", "--git-path", "CHERRY_PICK_HEAD").stdout.strip())
+            if not marker.is_absolute():
+                marker = path / marker
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(commit + "\n")
             raise subprocess.TimeoutExpired(["git", *args], timeout=30)
         return original_git(path, *args)
 
@@ -175,3 +190,4 @@ def test_git_timeout_reports_failure_and_inspects_operation_state(
     assert report.conflict is False
     assert report.error is not None and "timed out" in report.error
     assert report.conflict_head is None
+    assert report.active_operation == "CHERRY_PICK_HEAD"
