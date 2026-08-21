@@ -149,8 +149,12 @@ def test_click_dispatch_allows_only_lane_init_to_bootstrap_foreign_environment(
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("ordinary checkout guard must not run for lane-init")
 
+    def _dispatch(command_argv: list[str]) -> int:
+        dispatched.append(command_argv)
+        return 23
+
     monkeypatch.setattr(click_dispatch, "assert_polylogue_matches_checkout", _boom)
-    monkeypatch.setattr(click_dispatch, "_dispatch", lambda command_argv: dispatched.append(command_argv) or 23)
+    monkeypatch.setattr(click_dispatch, "_dispatch", _dispatch)
 
     assert click_dispatch.main(argv) == 23
     assert dispatched == [argv]
