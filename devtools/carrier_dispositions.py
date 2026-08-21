@@ -339,7 +339,14 @@ def cmd_apply(
         if not changed_after_batch.issubset(selected):
             raise DispositionError("guarded batch changed rows outside its typed carrier scope")
         if existing_receipt is None:
-            _write_receipt(receipt_path, {**identity, "changed_beads": sorted(changed)})
+            _write_receipt(
+                receipt_path,
+                {
+                    **identity,
+                    "changed_beads": sorted(changed),
+                    "changed_records": {bead_id: after[bead_id] for bead_id in sorted(changed)},
+                },
+            )
         bd_guard.atomic_write_jsonl(output, after)
     except (
         DispositionError,

@@ -503,10 +503,22 @@ def _disposition_payload(dispositions: tuple[ValidatedDisposition, ...]) -> list
     ]
 
 
+def _legacy_record_delta_is_authorized(
+    before: dict[str, Any], after: dict[str, Any], *, disposition: ScopeDisposition
+) -> bool:
+    changed_fields = {field for field in set(before) | set(after) if before.get(field) != after.get(field)}
+    if disposition in {ScopeDisposition.SATISFIED, ScopeDisposition.SUPERSEDED}:
+        return changed_fields.issubset({"status", "close_reason", "closed_at", "updated_at"})
+    if disposition is ScopeDisposition.DEFERRED:
+        return changed_fields.issubset({"status", "updated_at"})
+    return not changed_fields
+
+
 def _validate_carrier_disposition_receipt(
     *,
     carrier: dict[str, Any],
     records: dict[str, dict[str, Any]],
+    base_records: dict[str, dict[str, Any]] | None,
     mutated_ids: list[str],
     dispositions: tuple[ValidatedDisposition, ...],
     head_sha: str,
@@ -544,13 +556,23 @@ def _validate_carrier_disposition_receipt(
         "changed_beads",
     }
     receipt_version = receipt.get("version")
+    result_records: dict[str, Any] | None
     if set(receipt) == legacy_keys and receipt_version == 1:
         receipt_base = None
-    elif set(receipt) == legacy_keys | {"base_sha"} and receipt_version == 2:
+        result_records = None
+    elif set(receipt) == legacy_keys | {"base_sha", "changed_records"} and receipt_version == 2:
         receipt_base = receipt.get("base_sha")
         if not isinstance(receipt_base, str) or _GIT_OBJECT_PATTERN.fullmatch(receipt_base) is None:
             reasons.append("carrier disposition receipt has malformed attested base")
             return source_pr, execution_id
+        candidate_result_records = receipt.get("changed_records")
+        if not isinstance(candidate_result_records, dict) or not all(
+            isinstance(bead_id, str) and isinstance(record, dict)
+            for bead_id, record in candidate_result_records.items()
+        ):
+            reasons.append("carrier disposition receipt changed_records must map Bead IDs to records")
+            return source_pr, execution_id
+        result_records = candidate_result_records
     else:
         reasons.append("carrier disposition receipt has an unsupported shape or version")
         return source_pr, execution_id
@@ -581,6 +603,21 @@ def _validate_carrier_disposition_receipt(
         reasons.append("carrier disposition receipt changed_beads must be a list of Bead IDs")
     elif sorted(changed) != sorted(mutated_ids):
         reasons.append("carrier disposition receipt changed_beads does not match mutated_beads")
+    if result_records is not None:
+        if not isinstance(changed, list) or set(result_records) != set(changed):
+            reasons.append("carrier disposition receipt changed_records does not match changed_beads")
+        elif any(records.get(bead_id) != record for bead_id, record in result_records.items()):
+            reasons.append("carrier disposition receipt does not match the resulting Bead records")
+    elif base_records is not None:
+        for item in dispositions:
+            before = base_records.get(item.bead_id)
+            after = records.get(item.bead_id)
+            if (
+                before is None
+                or after is None
+                or not _legacy_record_delta_is_authorized(before, after, disposition=item.disposition)
+            ):
+                reasons.append(f"{item.bead_id}: legacy receipt carries an unauthorized Bead record mutation")
     if receipt.get("dispositions") != _disposition_payload(dispositions):
         reasons.append("carrier disposition receipt dispositions do not match the carrier")
     if not set(mutated_ids).issubset({item.bead_id for item in dispositions}):
@@ -705,9 +742,11 @@ def validate_carrier(
                 reasons.append("mutated_beads does not match the complete Bead mutation set")
 
     records = candidate_records
+    base_records: dict[str, dict[str, Any]] | None = None
     if base_sha is not None:
         try:
-            records = _bead_records_at(base_sha)
+            base_records = _bead_records_at(base_sha)
+            records = dict(base_records)
             for bead_id in actual_mutations:
                 if bead_id in candidate_records:
                     records[bead_id] = candidate_records[bead_id]
@@ -747,6 +786,7 @@ def validate_carrier(
         source_pr, execution_id = _validate_carrier_disposition_receipt(
             carrier=carrier,
             records=records,
+            base_records=base_records,
             mutated_ids=mutated_ids,
             dispositions=validated_dispositions,
             head_sha=head_sha,

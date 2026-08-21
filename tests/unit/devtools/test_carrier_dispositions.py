@@ -242,6 +242,7 @@ def test_apply_uses_one_guarded_batch_and_writes_only_typed_rows(
     assert receipt["version"] == 2
     assert receipt["base_sha"] == "b" * 40
     assert receipt["changed_beads"] == ["polylogue-a"]
+    assert receipt["changed_records"] == after
 
 
 def test_apply_refuses_to_sweep_an_unrelated_live_bead_into_follow_on_export(

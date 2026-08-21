@@ -1417,12 +1417,21 @@ def test_carrier_disposition_scope_binds_the_committed_receipt_and_source_pr(
     )
     monkeypatch.setattr(pr_scope, "_single_parent_squash_base", lambda _sha: "b" * 40)
     monkeypatch.setattr(pr_scope, "validate_pr_body", lambda *_args, **_kwargs: source_scope)
+    monkeypatch.setattr(pr_scope, "_receipt_at", lambda **_kwargs: receipt)
+    base_record = _record(ASSIGNED)
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [ASSIGNED])
+    monkeypatch.setattr(
+        pr_scope,
+        "_bead_records_at",
+        lambda revision: {ASSIGNED: records[0]} if revision == HEAD_SHA else {ASSIGNED: base_record},
+    )
 
     verdict = pr_scope.validate_carrier(
         carrier,
         head_sha=HEAD_SHA,
         is_draft=False,
         beads_path=beads_path,
+        base_sha="b" * 40,
         repository="Sinity/polylogue",
     )
 
@@ -1430,6 +1439,20 @@ def test_carrier_disposition_scope_binds_the_committed_receipt_and_source_pr(
     assert verdict.scope_kind is pr_scope.ScopeKind.CARRIER_DISPOSITION
     assert verdict.source_pr == 4040
     assert verdict.execution_id == execution_id
+
+    records[0]["title"] = "hand-edited after the guarded batch"
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        base_sha="b" * 40,
+        repository="Sinity/polylogue",
+    )
+
+    assert not verdict.ok
+    assert any("legacy receipt carries an unauthorized Bead record mutation" in reason for reason in verdict.reasons)
+    records[0]["title"] = base_record["title"]
 
     receipt["changed_beads"] = [ASSIGNED, 7]
     receipt_path.write_text(json.dumps(receipt))
@@ -1525,6 +1548,7 @@ def test_carrier_disposition_receipt_v2_preserves_the_attested_source_base(
                 "marker": marker,
                 "dispositions": pr_scope._disposition_payload((disposition,)),
                 "changed_beads": [ASSIGNED],
+                "changed_records": {ASSIGNED: records[0]},
             }
         )
     )
@@ -1566,6 +1590,19 @@ def test_carrier_disposition_receipt_v2_preserves_the_attested_source_base(
 
     assert verdict.ok
     assert observed_bases == [attested_base]
+
+    records[0]["title"] = "hand-edited after the guarded batch"
+    beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        repository="Sinity/polylogue",
+    )
+
+    assert not verdict.ok
+    assert any("does not match the resulting Bead records" in reason for reason in verdict.reasons)
 
 
 def test_carrier_disposition_scope_rejects_an_independently_closed_target(
