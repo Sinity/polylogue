@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
@@ -426,7 +427,7 @@ class LiveWatcher:
                 if roots:
                     await self._catch_up(roots)
             except sqlite3.OperationalError as exc:
-                if not _is_database_locked(exc):
+                if not is_transient_sqlite_lock(exc):
                     raise
                 logger.warning("live.watcher: archive busy during periodic catch-up; will retry")
             # A periodic pass is deliberately a low-duty-cycle safety net.
@@ -487,7 +488,7 @@ class LiveWatcher:
                 # tier contention.  A just-created shard must get the same
                 # treatment instead of letting this narrow event-ordering
                 # recovery task die before its envelope is acknowledged.
-                if not _is_database_locked(exc):
+                if not is_transient_sqlite_lock(exc):
                     raise
                 logger.warning("live.watcher: archive busy while draining new hook shard; will retry")
             except OSError:
@@ -976,7 +977,7 @@ class LiveWatcher:
                 self._pending_paths.update(paths)
             return True
         except sqlite3.OperationalError as exc:
-            if not _is_database_locked(exc):
+            if not is_transient_sqlite_lock(exc):
                 raise
             logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(paths))
             async with self._batch_lock:
@@ -1908,17 +1909,6 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
     if isinstance(db_path, Path):
         return db_path
     return Path(polylogue.archive_root) / "ops.db"
-
-
-def _is_database_locked(exc: sqlite3.OperationalError) -> bool:
-    error_code = getattr(exc, "sqlite_errorcode", None)
-    if error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
-        return True
-    message = str(exc).lower()
-    return any(
-        locked_message in message
-        for locked_message in ("database is locked", "database table is locked", "database schema is locked")
-    )
 
 
 def _cursor_age_exceeds(cursor: CursorRecord, min_age_s: float) -> bool:

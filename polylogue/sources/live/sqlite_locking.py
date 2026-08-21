@@ -6,17 +6,12 @@ import sqlite3
 import time
 from collections.abc import Callable
 
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
 _SQLITE_LOCK_RETRY_DELAYS_S: tuple[float, ...] = (0.05, 0.2, 0.5)
-
-
-def is_transient_sqlite_lock(exc: sqlite3.OperationalError) -> bool:
-    """Return true for SQLite lock/busy errors worth treating as transient."""
-    message = str(exc).lower()
-    return "database is locked" in message or "database table is locked" in message or "database is busy" in message
 
 
 def best_effort_cursor_write(label: str, write: Callable[[], None]) -> bool:

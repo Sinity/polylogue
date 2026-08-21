@@ -140,6 +140,42 @@ def test_tier_prototype_key_includes_rendered_ddl(tmp_path: Path, monkeypatch: p
         bootstrap._TIER_PROTOTYPES.clear()
 
 
+def test_cached_index_prototype_replays_same_version_convergence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A page-copy hit must still apply newly registered benign DDL."""
+    from polylogue.storage.sqlite.archive_tiers import bootstrap, index_convergence
+
+    bootstrap.reset_archive_tier_init_counts()
+    bootstrap._TIER_PROTOTYPES.clear()
+    try:
+        with sqlite3.connect(tmp_path / "first.db") as first:
+            bootstrap.initialize_archive_tier(first, ArchiveTier.INDEX)
+
+        entry = index_convergence.BenignDDLEntry(
+            name="cached_prototype_test_table",
+            sql="CREATE TABLE IF NOT EXISTS cached_prototype_test_table (id TEXT PRIMARY KEY) STRICT",
+            reason="test-only same-version additive convergence",
+        )
+        monkeypatch.setattr(
+            index_convergence,
+            "INDEX_BENIGN_DDL_REGISTRY",
+            (*index_convergence.INDEX_BENIGN_DDL_REGISTRY, entry),
+        )
+        with sqlite3.connect(tmp_path / "second.db") as second:
+            bootstrap.initialize_archive_tier(second, ArchiveTier.INDEX)
+            assert second.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cached_prototype_test_table'"
+            ).fetchone() == (1,)
+    finally:
+        bootstrap._TIER_PROTOTYPES.clear()
+
+    counts = bootstrap.archive_tier_init_counts()
+    assert counts["index.ddl_fresh"] == 1
+    assert counts["index.prototype_hit"] == 1
+
+
 def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Path) -> None:
     """Only ops.db re-executes its WHOLE schema on a same-version open.
 
@@ -167,24 +203,42 @@ def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Pat
     assert "index.ddl_reapply" not in counts
 
 
-def test_tier_init_counts_classify_the_uncached_embeddings_tier(tmp_path: Path) -> None:
-    """EMBEDDINGS is excluded from the prototype cache, so a fresh archive pays DDL.
-
-    Each new archive gets a real DDL execution rather than a page copy; a
-    same-version reopen returns without work, like every tier except OPS.
-    """
+def test_embeddings_prototype_restore_keeps_sqlite_vec_ready(tmp_path: Path) -> None:
+    """A cached embeddings prototype restores an operational vec0 schema."""
     from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
     bootstrap.reset_archive_tier_init_counts()
+    bootstrap._TIER_PROTOTYPES.clear()
+    try:
+        first_path = tmp_path / "e1.db"
+        second_path = tmp_path / "e2.db"
+        first = sqlite3.connect(first_path)
+        try:
+            loaded, error = try_load_sqlite_vec(first)
+            if not loaded:
+                pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+            bootstrap.initialize_archive_tier(first, ArchiveTier.EMBEDDINGS)
+        finally:
+            first.close()
 
-    bootstrap.initialize_archive_database(tmp_path / "e1.db", ArchiveTier.EMBEDDINGS)
-    bootstrap.initialize_archive_database(tmp_path / "e2.db", ArchiveTier.EMBEDDINGS)
-    bootstrap.initialize_archive_database(tmp_path / "e1.db", ArchiveTier.EMBEDDINGS)
+        second = sqlite3.connect(second_path)
+        try:
+            bootstrap.initialize_archive_tier(second, ArchiveTier.EMBEDDINGS)
+            table = second.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'message_embeddings'"
+            ).fetchone()
+            assert table is not None
+            assert "vec0" in str(table[0])
+            assert second.execute("SELECT COUNT(*) FROM message_embeddings").fetchone() == (0,)
+        finally:
+            second.close()
+    finally:
+        bootstrap._TIER_PROTOTYPES.clear()
 
     counts = bootstrap.archive_tier_init_counts()
-
-    assert counts["embeddings.ddl_fresh"] == 2
-    assert not any(key.startswith("embeddings.prototype_hit") for key in counts)
+    assert counts["embeddings.ddl_fresh"] == 1
+    assert counts["embeddings.prototype_hit"] == 1
 
 
 # ---------------------------------------------------------------------------
