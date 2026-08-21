@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import (
     BLOCKS_SPEC,
     MESSAGES_SPEC,
     TABLE_SPECS,
 )
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 class TestColumnSpecReordering:
@@ -107,3 +109,10 @@ class TestColumnSpecReordering:
         assert "PRIMARY KEY(session_id, position)" in spec.ddl_body
         assert spec.writable_columns[0].name == "session_id"
         assert reordered.writable_columns[0].name == "occurred_at_ms"
+
+    def test_index_ddl_uses_every_declared_table_spec(self) -> None:
+        """The executable index schema must render every table declaration."""
+        index_ddl = ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX]
+
+        for spec in TABLE_SPECS.values():
+            assert spec.ddl_body in index_ddl
